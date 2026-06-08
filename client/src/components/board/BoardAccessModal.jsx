@@ -13,8 +13,10 @@ import useToastStore from '../../store/toastStore';
  *   - Read only (view tasks, no edits)
  *   - Can edit  (full control of board content)
  *
- * Org admins always have full access and are shown as such (not editable).
- * Only rendered for the board creator; the server enforces the same rule.
+ * No one has access to a private board except its creator until access is
+ * granted here — org admins included, so they appear with the same picker as
+ * every other member. Only rendered for the board creator; the server enforces
+ * the same rule.
  */
 
 const LEVELS = [
@@ -36,8 +38,6 @@ const initials = (name = '', email = '') => {
 
 const BoardAccessModal = ({ board, isOpen, onClose }) => {
   const members = useOrgStore((s) => s.members);
-  const adminId = useOrgStore((s) => s.adminId);
-  const adminIds = useOrgStore((s) => s.adminIds);
   const fetchMembers = useOrgStore((s) => s.fetchMembers);
   const setBoardAccess = useBoardStore((s) => s.setBoardAccess);
   const currentUser = useAuthStore((s) => s.user);
@@ -53,13 +53,6 @@ const BoardAccessModal = ({ board, isOpen, onClose }) => {
       fetchMembers(orgId).catch(() => {});
     }
   }, [isOpen, orgId, fetchMembers]);
-
-  const adminSet = useMemo(() => {
-    const set = new Set();
-    if (adminId) set.add(String(adminId));
-    (adminIds || []).forEach((a) => set.add(String(idOf(a))));
-    return set;
-  }, [adminId, adminIds]);
 
   // user id -> granted level, derived from the live board record.
   const grantByUser = useMemo(() => {
@@ -122,8 +115,7 @@ const BoardAccessModal = ({ board, isOpen, onClose }) => {
         <div className="flex flex-col gap-1">
           {grantable.map((m) => {
             const id = String(m._id);
-            const isAdminMember = adminSet.has(id);
-            const level = isAdminMember ? 'edit' : grantByUser.get(id) || 'none';
+            const level = grantByUser.get(id) || 'none';
             return (
               <div
                 key={id}
@@ -171,36 +163,27 @@ const BoardAccessModal = ({ board, isOpen, onClose }) => {
                   </div>
                 </div>
 
-                {isAdminMember ? (
-                  <span
-                    className="font-body shrink-0"
-                    style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
-                  >
-                    Admin · full access
-                  </span>
-                ) : (
-                  <select
-                    value={level}
-                    disabled={savingId === id}
-                    onChange={(e) => handleChange(id, e.target.value)}
-                    className="font-body shrink-0"
-                    style={{
-                      fontSize: 13,
-                      padding: '6px 10px',
-                      borderRadius: 'var(--radius-md)',
-                      border: '1.5px solid var(--color-border-strong)',
-                      background: 'var(--color-bg-surface)',
-                      color: 'var(--color-text-primary)',
-                      cursor: savingId === id ? 'wait' : 'pointer',
-                    }}
-                  >
-                    {LEVELS.map((l) => (
-                      <option key={l.value} value={l.value}>
-                        {l.label}
-                      </option>
-                    ))}
-                  </select>
-                )}
+                <select
+                  value={level}
+                  disabled={savingId === id}
+                  onChange={(e) => handleChange(id, e.target.value)}
+                  className="font-body shrink-0"
+                  style={{
+                    fontSize: 13,
+                    padding: '6px 10px',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1.5px solid var(--color-border-strong)',
+                    background: 'var(--color-bg-surface)',
+                    color: 'var(--color-text-primary)',
+                    cursor: savingId === id ? 'wait' : 'pointer',
+                  }}
+                >
+                  {LEVELS.map((l) => (
+                    <option key={l.value} value={l.value}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
               </div>
             );
           })}

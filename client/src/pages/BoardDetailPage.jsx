@@ -202,8 +202,9 @@ const BoardDetailPage = () => {
   const orgId = currentOrg?._id || null;
 
   // --- Effective board permissions ---------------------------------------
-  // Org admins always have full control. On a private board, the creator can
-  // additionally grant members 'read' or 'edit' access (see BoardAccessModal).
+  // A private board is the creator's alone until they grant members 'read' or
+  // 'edit' access via the "Share" modal — org admins get no automatic access.
+  // Public boards stay readable by everyone and editable by org admins.
   // `canEdit` gates every edit/create affordance; `isBoardCreator` gates the
   // access-management ("Share") control.
   const currentUserId = currentUser?._id ? String(currentUser._id) : null;
@@ -214,11 +215,14 @@ const BoardDetailPage = () => {
     );
     return entry ? entry.level : null;
   }, [board, currentUserId]);
-  const canEdit = isAdmin || myGrant === 'edit';
   const isBoardCreator =
     !!board &&
     !!currentUserId &&
     String(refId(board.createdBy)) === currentUserId;
+  const canEdit =
+    isBoardCreator ||
+    myGrant === 'edit' ||
+    (board?.visibility === 'public' && isAdmin);
 
   // If we navigated directly and the boards list is empty, fetch it so the
   // header can resolve the board metadata.

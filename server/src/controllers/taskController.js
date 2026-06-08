@@ -75,6 +75,9 @@ const loadBoardContext = async (boardId, userId) => {
   }
 
   const access = resolveBoardAccess(board, org, userId);
+  if (!access.canRead) {
+    return { status: 403, error: 'Access denied' };
+  }
   return { board, org, isAdmin: access.canEdit, readOnly: access.readOnly };
 };
 

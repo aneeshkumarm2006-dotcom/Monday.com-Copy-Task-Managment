@@ -90,12 +90,16 @@ const getBoards = async (req, res) => {
       return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
-    const admin = isOrgAdmin(org, userId);
-    // Non-admins see public boards plus any private board they've been
-    // granted access to.
-    const visibilityFilter = admin
-      ? {}
-      : { $or: [{ visibility: 'public' }, { 'memberAccess.user': userId }] };
+    // Everyone — admins included — sees public boards plus any private board
+    // they created or have been granted access to. Org admins no longer see
+    // every private board automatically.
+    const visibilityFilter = {
+      $or: [
+        { visibility: 'public' },
+        { createdBy: userId },
+        { 'memberAccess.user': userId },
+      ],
+    };
     const boards = await Board.find({ organisation: orgId, ...visibilityFilter })
       .sort({ order: 1, updatedAt: -1 });
 
@@ -606,10 +610,13 @@ const reorderBoards = async (req, res) => {
       return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
-    const admin = isOrgAdmin(org, userId);
-    const visibilityFilter = admin
-      ? {}
-      : { $or: [{ visibility: 'public' }, { 'memberAccess.user': userId }] };
+    const visibilityFilter = {
+      $or: [
+        { visibility: 'public' },
+        { createdBy: userId },
+        { 'memberAccess.user': userId },
+      ],
+    };
     const currentIds = await Board.distinct('_id', { organisation, ...visibilityFilter });
     const currentSet = new Set(currentIds.map((id) => id.toString()));
     const orderedSet = new Set(orderedIds.map((id) => String(id)));

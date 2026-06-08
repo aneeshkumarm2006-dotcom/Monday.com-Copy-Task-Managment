@@ -1,16 +1,19 @@
 /**
  * Board-level access resolution.
  *
- * Layered on top of the org admin/member model. A private board is normally
- * visible only to org admins; its creator can additionally grant individual
- * org members one of two access levels via `board.memberAccess`:
+ * Layered on top of the org admin/member model. A private board is visible
+ * ONLY to its creator until the creator explicitly grants individual org
+ * members one of two access levels via `board.memberAccess`:
  *
  *   - 'read' — may view the board and its tasks, but cannot mutate anything
  *   - 'edit' — admin-equivalent power over board CONTENT (create/edit/delete
  *              tasks, groups, columns, statuses, labels) — i.e. everything
  *              except managing the board's own access list / lifecycle
  *
- * Public boards stay readable by every org member (unchanged behaviour).
+ * Org admins get NO automatic access to a private board — they must be granted
+ * access by the creator like any other member (the creator may, of course,
+ * grant other admins). Public boards stay readable by every org member, with
+ * org admins able to edit them (unchanged behaviour).
  */
 
 /** Whether `userId` is the primary or an additional admin of `org`. */
@@ -45,10 +48,14 @@ const isBoardCreator = (board, userId) =>
  */
 const resolveBoardAccess = (board, org, userId) => {
   const orgAdmin = isOrgAdmin(org, userId);
+  const creator = isBoardCreator(board, userId);
   const level = boardGrantLevel(board, userId);
   const isPublic = board.visibility === 'public';
-  const canRead = orgAdmin || isPublic || level === 'read' || level === 'edit';
-  const canEdit = orgAdmin || level === 'edit';
+  // Private boards: only the creator and explicitly granted members get in —
+  // org admins have no automatic access. Public boards: every member reads,
+  // org admins edit.
+  const canRead = creator || isPublic || level === 'read' || level === 'edit';
+  const canEdit = creator || level === 'edit' || (isPublic && orgAdmin);
   const readOnly = !canEdit && level === 'read';
   return { orgAdmin, level, canRead, canEdit, readOnly };
 };

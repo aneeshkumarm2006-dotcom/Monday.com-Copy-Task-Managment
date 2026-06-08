@@ -43,6 +43,9 @@ const loadBoardContext = async (boardId, userId) => {
     return { status: 403, error: 'Not a member of this organisation' };
   }
   const access = resolveBoardAccess(board, org, userId);
+  if (!access.canRead) {
+    return { status: 403, error: 'Access denied' };
+  }
   return { board, org, isAdmin: access.canEdit };
 };
 
