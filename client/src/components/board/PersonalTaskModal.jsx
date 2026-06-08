@@ -1,12 +1,12 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Modal from '../ui/Modal';
 import Input from '../ui/Input';
 import Button from '../ui/Button';
 import DatePickerPopover from '../ui/DatePickerPopover';
-import { createTask } from '../../services/taskService';
+import { createTask, updateTask } from '../../services/taskService';
 
 /**
- * PersonalTaskModal — simplified create-task form for personal (non-board) tasks.
+ * PersonalTaskModal — simplified create/edit form for personal (non-board) tasks.
  *
  * Personal tasks have no group, board, or assignee. The current user is always
  * the creator and sole viewer. See Macan_PDR.md Section 4.4 and
@@ -15,7 +15,9 @@ import { createTask } from '../../services/taskService';
  * Props:
  *   isOpen    — boolean
  *   onClose   — () => void
- *   onCreated — (task) => void — called after the task is saved
+ *   onCreated — (task) => void — called after a new task is saved
+ *   task      — task object — when provided, the modal edits this task
+ *   onUpdated — (task) => void — called after an existing task is saved
  */
 
 const PRIORITIES = [
@@ -74,10 +76,30 @@ const SelectField = ({ label, value, onChange, options, disabled }) => (
   </div>
 );
 
-const PersonalTaskModal = ({ isOpen, onClose, onCreated }) => {
+const toDateInput = (val) => (val ? String(val).slice(0, 10) : '');
+
+const PersonalTaskModal = ({ isOpen, onClose, onCreated, task, onUpdated }) => {
+  const isEdit = Boolean(task);
   const [form, setForm] = useState(INITIAL_FORM);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Populate the form when opening in edit mode (or reset for create mode).
+  useEffect(() => {
+    if (!isOpen) return;
+    if (task) {
+      setForm({
+        name: task.name || '',
+        priority: task.priority || 'medium',
+        status: task.status || 'not_started',
+        dueDate: toDateInput(task.dueDate),
+        note: task.note || '',
+      });
+    } else {
+      setForm(INITIAL_FORM);
+    }
+    setError('');
+  }, [isOpen, task]);
 
   const set = (field) => (e) =>
     setForm((f) => ({ ...f, [field]: e.target.value }));
@@ -101,20 +123,26 @@ const PersonalTaskModal = ({ isOpen, onClose, onCreated }) => {
     setSaving(true);
     setError('');
     try {
-      const task = await createTask({
+      const payload = {
         name: form.name.trim(),
         priority: form.priority,
         status: form.status,
-        dueDate: form.dueDate || undefined,
-        note: form.note.trim() || undefined,
-        isPersonal: true,
-      });
-      onCreated?.(task);
+        dueDate: form.dueDate || null,
+        note: form.note.trim() || '',
+      };
+      if (isEdit) {
+        const updated = await updateTask(task._id, payload);
+        onUpdated?.(updated);
+      } else {
+        const created = await createTask({ ...payload, isPersonal: true });
+        onCreated?.(created);
+      }
       reset();
       onClose();
     } catch (err) {
       setError(
-        err?.response?.data?.error || 'Failed to create task. Please try again.'
+        err?.response?.data?.error ||
+          `Failed to ${isEdit ? 'update' : 'create'} task. Please try again.`
       );
     } finally {
       setSaving(false);
@@ -125,7 +153,7 @@ const PersonalTaskModal = ({ isOpen, onClose, onCreated }) => {
     <Modal
       isOpen={isOpen}
       onClose={handleClose}
-      title="Create Personal Task"
+      title={isEdit ? 'Edit Personal Task' : 'Create Personal Task'}
       maxWidth={480}
       footer={
         <>
@@ -133,7 +161,13 @@ const PersonalTaskModal = ({ isOpen, onClose, onCreated }) => {
             Cancel
           </Button>
           <Button variant="primary" onClick={handleSubmit} disabled={saving}>
-            {saving ? 'Creating…' : 'Create Task'}
+            {saving
+              ? isEdit
+                ? 'Saving…'
+                : 'Creating…'
+              : isEdit
+                ? 'Save Changes'
+                : 'Create Task'}
           </Button>
         </>
       }

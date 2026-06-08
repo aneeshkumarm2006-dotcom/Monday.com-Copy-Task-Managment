@@ -3,6 +3,7 @@ import {
   Plus,
   ClipboardList,
   Trash2,
+  Pencil,
   Calendar as CalendarIcon,
   StickyNote,
 } from 'lucide-react';
@@ -79,7 +80,7 @@ const EmptyState = ({ onAdd }) => (
   </div>
 );
 
-const TaskCard = ({ task, onStatusChange, onPriorityChange, onDelete }) => {
+const TaskCard = ({ task, onStatusChange, onPriorityChange, onDelete, onEdit }) => {
   const [deleting, setDeleting] = useState(false);
 
   const handleDelete = async () => {
@@ -149,16 +150,28 @@ const TaskCard = ({ task, onStatusChange, onPriorityChange, onDelete }) => {
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={handleDelete}
-          disabled={deleting}
-          aria-label="Delete task"
-          className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] shrink-0"
-          style={{ width: 32, height: 32 }}
-        >
-          <Trash2 size={16} color="var(--color-text-muted)" />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={() => onEdit(task)}
+            disabled={deleting}
+            aria-label="Edit task"
+            className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
+            style={{ width: 32, height: 32 }}
+          >
+            <Pencil size={16} color="var(--color-text-muted)" />
+          </button>
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={deleting}
+            aria-label="Delete task"
+            className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
+            style={{ width: 32, height: 32 }}
+          >
+            <Trash2 size={16} color="var(--color-text-muted)" />
+          </button>
+        </div>
       </div>
 
       <div className="flex items-center gap-2 mt-3 flex-wrap">
@@ -276,6 +289,7 @@ const MyTasksPage = () => {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
   const [filter, setFilter] = useState('all');
 
   const fetchTasks = useCallback(async () => {
@@ -323,6 +337,14 @@ const MyTasksPage = () => {
 
   const handleCreated = (task) => {
     setTasks((prev) => [task, ...prev]);
+  };
+
+  const handleUpdated = (task) => {
+    setTasks((prev) => prev.map((t) => (t._id === task._id ? task : t)));
+  };
+
+  const handleEdit = (task) => {
+    setEditingTask(task);
   };
 
   const filtered =
@@ -433,6 +455,7 @@ const MyTasksPage = () => {
                 onStatusChange={handleStatusChange}
                 onPriorityChange={handlePriorityChange}
                 onDelete={handleDelete}
+                onEdit={handleEdit}
               />
             ))}
           </div>
@@ -443,6 +466,13 @@ const MyTasksPage = () => {
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
         onCreated={handleCreated}
+      />
+
+      <PersonalTaskModal
+        isOpen={Boolean(editingTask)}
+        task={editingTask}
+        onClose={() => setEditingTask(null)}
+        onUpdated={handleUpdated}
       />
     </PageWrapper>
   );
