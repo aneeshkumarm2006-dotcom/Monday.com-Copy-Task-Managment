@@ -67,7 +67,7 @@ const NavLinks = ({ isAdmin, onNavigate }) => {
   const links = [
     { to: '/dashboard', label: 'Dashboard' },
     { to: '/boards', label: 'My Boards' },
-    { to: '/my-tasks', label: 'My Tasks' },
+    { to: '/my-tasks', label: 'My Work' },
     { to: '/members', label: 'Members' },
     ...(isAdmin
       ? [

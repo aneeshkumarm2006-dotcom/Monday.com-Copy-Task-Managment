@@ -1,4 +1,7 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Calendar, momentLocalizer } from 'react-big-calendar';
+import moment from 'moment';
+import 'react-big-calendar/lib/css/react-big-calendar.css';
 import {
   Plus,
   ClipboardList,
@@ -6,12 +9,21 @@ import {
   Pencil,
   Calendar as CalendarIcon,
   StickyNote,
+  ChevronLeft,
+  ChevronRight,
+  Briefcase,
 } from 'lucide-react';
 import PageWrapper from '../components/layout/PageWrapper';
 import PersonalTaskModal from '../components/board/PersonalTaskModal';
+import CommentPanel from '../components/board/CommentPanel';
+import CalendarThemeStyles from '../components/calendar/CalendarThemeStyles';
 import Chip from '../components/ui/Chip';
 import Button from '../components/ui/Button';
 import { getMyTasks, updateTask, deleteTask } from '../services/taskService';
+import { isStatusDone } from '../utils/statusUtils';
+import { taskToEvent, eventPropGetter } from '../utils/calendarEvents';
+
+const localizer = momentLocalizer(moment);
 
 const STATUSES = [
   { value: 'not_started', label: 'Not Started' },
@@ -27,6 +39,11 @@ const PRIORITIES = [
   { value: 'critical', label: 'Critical' },
 ];
 
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
 const formatDate = (dateStr) => {
   if (!dateStr) return null;
   const d = new Date(dateStr);
@@ -36,6 +53,213 @@ const formatDate = (dateStr) => {
     year: 'numeric',
   });
 };
+
+/* ------------------------------------------------------------------ */
+/* Sub-tab navigation                                                  */
+/* ------------------------------------------------------------------ */
+
+const SUB_TABS = [
+  { key: 'work', label: 'My Work' },
+  { key: 'personal', label: 'Personal Tasks' },
+  { key: 'calendar', label: 'Calendar' },
+];
+
+const SubTabs = ({ active, onChange, counts }) => (
+  <div
+    role="tablist"
+    aria-label="My Work views"
+    className="flex items-center gap-1 mt-6"
+    style={{ borderBottom: '1px solid var(--color-border)' }}
+  >
+    {SUB_TABS.map((t) => {
+      const isActive = t.key === active;
+      const count = counts[t.key];
+      return (
+        <button
+          key={t.key}
+          role="tab"
+          aria-selected={isActive}
+          type="button"
+          onClick={() => onChange(t.key)}
+          className="relative font-body font-medium text-[14px] px-3 py-2.5 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            cursor: 'pointer',
+            color: isActive
+              ? 'var(--color-accent)'
+              : 'var(--color-text-secondary)',
+            fontWeight: isActive ? 600 : 500,
+          }}
+        >
+          {t.label}
+          {typeof count === 'number' && (
+            <span
+              className="ml-1.5 font-body"
+              style={{
+                fontSize: 12,
+                color: 'var(--color-text-muted)',
+              }}
+            >
+              {count}
+            </span>
+          )}
+          {isActive && (
+            <span
+              aria-hidden="true"
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                bottom: -1,
+                height: 2,
+                background: 'var(--color-accent)',
+                borderRadius: 2,
+              }}
+            />
+          )}
+        </button>
+      );
+    })}
+  </div>
+);
+
+/* ------------------------------------------------------------------ */
+/* My Work tab — board tasks (not done) assigned to the user           */
+/* ------------------------------------------------------------------ */
+
+const WorkTaskCard = ({ task, onSelect }) => (
+  <button
+    type="button"
+    onClick={() => onSelect(task)}
+    className="w-full text-left bg-surface transition-shadow duration-150 hover:shadow-[var(--shadow-md)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+    style={{
+      borderRadius: 'var(--radius-lg)',
+      boxShadow: 'var(--shadow-card)',
+      padding: '16px 20px',
+      border: 'none',
+      cursor: 'pointer',
+    }}
+  >
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0 flex-1">
+        <p
+          className="font-body font-semibold truncate"
+          style={{ fontSize: 15, color: 'var(--color-text-primary)' }}
+        >
+          {task.name}
+        </p>
+        {task.board?.name && (
+          <div className="flex items-center gap-1.5 mt-1.5">
+            <Briefcase size={13} color="var(--color-text-muted)" />
+            <span
+              className="font-body truncate"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+            >
+              {task.board.name}
+            </span>
+          </div>
+        )}
+        {task.dueDate && (
+          <div className="flex items-center gap-1.5 mt-1.5">
+            <CalendarIcon size={13} color="var(--color-text-muted)" />
+            <span
+              className="font-body"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+            >
+              {formatDate(task.dueDate)}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+
+    <div className="flex items-center gap-2 mt-3 flex-wrap">
+      <Chip type="status" value={task.status} board={task.board} />
+      <Chip type="priority" value={task.priority} />
+    </div>
+  </button>
+);
+
+const WorkTab = ({ tasks, loading, onSelect }) => {
+  if (loading) {
+    return (
+      <div className="flex flex-col gap-3 mt-6">
+        {[0, 1, 2].map((i) => (
+          <div
+            key={i}
+            className="animate-pulse bg-surface"
+            style={{
+              height: 80,
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-card)',
+            }}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  if (tasks.length === 0) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center"
+        style={{ padding: '80px 20px' }}
+      >
+        <div
+          className="flex items-center justify-center"
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: 'var(--radius-full)',
+            background: 'var(--color-accent-light)',
+            marginBottom: 20,
+          }}
+        >
+          <Briefcase size={28} color="var(--color-accent)" />
+        </div>
+        <h3
+          className="font-display font-bold"
+          style={{ fontSize: 18, color: 'var(--color-text-primary)' }}
+        >
+          You're all caught up
+        </h3>
+        <p
+          className="font-body mt-2"
+          style={{
+            fontSize: 14,
+            color: 'var(--color-text-secondary)',
+            maxWidth: 360,
+            textAlign: 'center',
+          }}
+        >
+          No open board tasks are assigned to you. Tasks you still need to
+          finish will show up here.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3 mt-6">
+      {tasks.map((task) => (
+        <WorkTaskCard key={task._id} task={task} onSelect={onSelect} />
+      ))}
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Personal tasks tab                                                  */
+/* ------------------------------------------------------------------ */
+
+const FILTER_OPTIONS = [
+  { value: 'all', label: 'All' },
+  { value: 'not_started', label: 'Not Started' },
+  { value: 'working_on_it', label: 'Working on it' },
+  { value: 'done', label: 'Done' },
+  { value: 'stuck', label: 'Stuck' },
+];
 
 const EmptyState = ({ onAdd }) => (
   <div
@@ -277,116 +501,22 @@ const DropdownMenu = ({ items, selected, onSelect, onClose }) => {
   );
 };
 
-const FILTER_OPTIONS = [
-  { value: 'all', label: 'All' },
-  { value: 'not_started', label: 'Not Started' },
-  { value: 'working_on_it', label: 'Working on it' },
-  { value: 'done', label: 'Done' },
-  { value: 'stuck', label: 'Stuck' },
-];
-
-const MyTasksPage = () => {
-  const [tasks, setTasks] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingTask, setEditingTask] = useState(null);
-  const [filter, setFilter] = useState('all');
-
-  const fetchTasks = useCallback(async () => {
-    try {
-      const all = await getMyTasks();
-      // Only show personal tasks (isPersonal: true)
-      setTasks(all.filter((t) => t.isPersonal));
-    } catch (err) {
-      console.error('Failed to fetch personal tasks:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchTasks();
-  }, [fetchTasks]);
-
-  const handleStatusChange = async (taskId, newStatus) => {
-    setTasks((prev) =>
-      prev.map((t) => (t._id === taskId ? { ...t, status: newStatus } : t))
-    );
-    try {
-      await updateTask(taskId, { status: newStatus });
-    } catch {
-      fetchTasks();
-    }
-  };
-
-  const handlePriorityChange = async (taskId, newPriority) => {
-    setTasks((prev) =>
-      prev.map((t) => (t._id === taskId ? { ...t, priority: newPriority } : t))
-    );
-    try {
-      await updateTask(taskId, { priority: newPriority });
-    } catch {
-      fetchTasks();
-    }
-  };
-
-  const handleDelete = async (taskId) => {
-    setTasks((prev) => prev.filter((t) => t._id !== taskId));
-    await deleteTask(taskId);
-  };
-
-  const handleCreated = (task) => {
-    setTasks((prev) => [task, ...prev]);
-  };
-
-  const handleUpdated = (task) => {
-    setTasks((prev) => prev.map((t) => (t._id === task._id ? task : t)));
-  };
-
-  const handleEdit = (task) => {
-    setEditingTask(task);
-  };
-
+const PersonalTab = ({
+  tasks,
+  loading,
+  filter,
+  onFilterChange,
+  onAdd,
+  onStatusChange,
+  onPriorityChange,
+  onDelete,
+  onEdit,
+}) => {
   const filtered =
     filter === 'all' ? tasks : tasks.filter((t) => t.status === filter);
 
   return (
-    <PageWrapper>
-      {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-3">
-          <div
-            className="flex items-center justify-center"
-            style={{
-              width: 40,
-              height: 40,
-              borderRadius: 'var(--radius-lg)',
-              background: 'var(--color-accent-light)',
-            }}
-          >
-            <ClipboardList size={20} color="var(--color-accent)" />
-          </div>
-          <div>
-            <h1
-              className="font-display font-bold"
-              style={{ fontSize: 22, color: 'var(--color-text-primary)' }}
-            >
-              My Tasks
-            </h1>
-            <p
-              className="font-body"
-              style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}
-            >
-              Your personal tasks — only visible to you
-            </p>
-          </div>
-        </div>
-
-        <Button variant="primary" icon={Plus} onClick={() => setModalOpen(true)}>
-          Add Task
-        </Button>
-      </div>
-
+    <>
       {/* Filter bar */}
       {tasks.length > 0 && (
         <div className="flex items-center gap-2 mt-6 flex-wrap">
@@ -394,7 +524,7 @@ const MyTasksPage = () => {
             <button
               key={opt.value}
               type="button"
-              onClick={() => setFilter(opt.value)}
+              onClick={() => onFilterChange(opt.value)}
               className="font-body text-[13px] font-medium px-3 py-1.5 transition-colors duration-150"
               style={{
                 borderRadius: 'var(--radius-full)',
@@ -417,7 +547,6 @@ const MyTasksPage = () => {
         </div>
       )}
 
-      {/* Content */}
       <div className="mt-6">
         {loading ? (
           <div className="flex flex-col gap-3">
@@ -434,7 +563,7 @@ const MyTasksPage = () => {
             ))}
           </div>
         ) : tasks.length === 0 ? (
-          <EmptyState onAdd={() => setModalOpen(true)} />
+          <EmptyState onAdd={onAdd} />
         ) : filtered.length === 0 ? (
           <p
             className="font-body text-center"
@@ -452,15 +581,321 @@ const MyTasksPage = () => {
               <TaskCard
                 key={task._id}
                 task={task}
-                onStatusChange={handleStatusChange}
-                onPriorityChange={handlePriorityChange}
-                onDelete={handleDelete}
-                onEdit={handleEdit}
+                onStatusChange={onStatusChange}
+                onPriorityChange={onPriorityChange}
+                onDelete={onDelete}
+                onEdit={onEdit}
               />
             ))}
           </div>
         )}
       </div>
+    </>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Calendar tab — board work + personal tasks of the current user      */
+/* ------------------------------------------------------------------ */
+
+const CalendarTab = ({ events, onSelect }) => {
+  const [view, setView] = useState('month');
+  const [date, setDate] = useState(() => new Date());
+
+  const handleNavigate = (action) => {
+    setDate((prev) => {
+      const next = new Date(prev);
+      const delta = action === 'PREV' ? -1 : 1;
+      if (view === 'week') {
+        next.setDate(prev.getDate() + delta * 7);
+      } else {
+        next.setMonth(prev.getMonth() + delta);
+        next.setDate(1);
+      }
+      return next;
+    });
+  };
+
+  const label =
+    view === 'week'
+      ? `${moment(date).startOf('week').format('MMM D')} – ${moment(date)
+          .endOf('week')
+          .format('MMM D, YYYY')}`
+      : `${MONTH_NAMES[date.getMonth()]} ${date.getFullYear()}`;
+
+  return (
+    <div className="mt-6">
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {/* Month/Week toggle */}
+        <div
+          className="flex items-center bg-surface"
+          style={{
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-full)',
+            padding: 2,
+          }}
+        >
+          {[
+            { value: 'month', label: 'Month' },
+            { value: 'week', label: 'Week' },
+          ].map((opt) => {
+            const activeView = opt.value === view;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setView(opt.value)}
+                aria-pressed={activeView}
+                className="font-body font-medium transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+                style={{
+                  fontSize: 12,
+                  height: 28,
+                  padding: '0 14px',
+                  borderRadius: 'var(--radius-full)',
+                  background: activeView ? 'var(--color-accent)' : 'transparent',
+                  color: activeView ? '#FFFFFF' : 'var(--color-text-secondary)',
+                  border: 'none',
+                  cursor: 'pointer',
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Navigation */}
+        <div
+          className="flex items-center gap-1 bg-surface"
+          style={{
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-full)',
+            padding: '2px 6px',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => handleNavigate('PREV')}
+            aria-label="Previous"
+            className="flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
+            style={{ width: 28, height: 28, border: 'none', background: 'transparent', cursor: 'pointer' }}
+          >
+            <ChevronLeft size={16} color="var(--color-text-secondary)" />
+          </button>
+          <span
+            className="font-body font-medium"
+            style={{
+              fontSize: 13,
+              color: 'var(--color-text-primary)',
+              minWidth: 140,
+              textAlign: 'center',
+              padding: '0 8px',
+            }}
+          >
+            {label}
+          </span>
+          <button
+            type="button"
+            onClick={() => handleNavigate('NEXT')}
+            aria-label="Next"
+            className="flex items-center justify-center rounded-full transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
+            style={{ width: 28, height: 28, border: 'none', background: 'transparent', cursor: 'pointer' }}
+          >
+            <ChevronRight size={16} color="var(--color-text-secondary)" />
+          </button>
+        </div>
+      </div>
+
+      <div
+        className="bg-surface macan-calendar-wrap mt-5"
+        style={{
+          borderRadius: 'var(--radius-lg)',
+          boxShadow: 'var(--shadow-card)',
+          padding: 12,
+          position: 'relative',
+        }}
+      >
+        <Calendar
+          localizer={localizer}
+          events={events}
+          date={date}
+          view={view}
+          onNavigate={setDate}
+          onView={setView}
+          onSelectEvent={(event) => onSelect(event.resource)}
+          eventPropGetter={eventPropGetter}
+          views={['month', 'week']}
+          popup
+          toolbar={false}
+          style={{ height: view === 'week' ? 640 : 720 }}
+        />
+      </div>
+
+      <CalendarThemeStyles />
+    </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Page                                                                */
+/* ------------------------------------------------------------------ */
+
+const MyWorkPage = () => {
+  const [allTasks, setAllTasks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState('work');
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
+  const [filter, setFilter] = useState('all');
+  const [selectedTask, setSelectedTask] = useState(null);
+
+  const fetchTasks = useCallback(async () => {
+    try {
+      // getMyTasks returns both the user's assigned board tasks and their
+      // personal tasks — a single source for all three sub-tabs.
+      const all = await getMyTasks();
+      setAllTasks(all);
+    } catch (err) {
+      console.error('Failed to fetch tasks:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTasks();
+  }, [fetchTasks]);
+
+  // Board tasks assigned to the user that aren't done yet.
+  const workTasks = useMemo(
+    () =>
+      allTasks.filter(
+        (t) => !t.isPersonal && !isStatusDone(t.board, t.status)
+      ),
+    [allTasks]
+  );
+
+  const personalTasks = useMemo(
+    () => allTasks.filter((t) => t.isPersonal),
+    [allTasks]
+  );
+
+  // Every task with a due date — board work + personal — for the calendar.
+  const calendarEvents = useMemo(
+    () => allTasks.filter((t) => t.dueDate).map(taskToEvent),
+    [allTasks]
+  );
+
+  const handleStatusChange = async (taskId, newStatus) => {
+    setAllTasks((prev) =>
+      prev.map((t) => (t._id === taskId ? { ...t, status: newStatus } : t))
+    );
+    try {
+      await updateTask(taskId, { status: newStatus });
+    } catch {
+      fetchTasks();
+    }
+  };
+
+  const handlePriorityChange = async (taskId, newPriority) => {
+    setAllTasks((prev) =>
+      prev.map((t) => (t._id === taskId ? { ...t, priority: newPriority } : t))
+    );
+    try {
+      await updateTask(taskId, { priority: newPriority });
+    } catch {
+      fetchTasks();
+    }
+  };
+
+  const handleDelete = async (taskId) => {
+    setAllTasks((prev) => prev.filter((t) => t._id !== taskId));
+    await deleteTask(taskId);
+  };
+
+  const handleCreated = (task) => {
+    setAllTasks((prev) => [task, ...prev]);
+  };
+
+  const handleUpdated = (task) => {
+    setAllTasks((prev) => prev.map((t) => (t._id === task._id ? task : t)));
+  };
+
+  return (
+    <PageWrapper>
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div className="flex items-center gap-3">
+          <div
+            className="flex items-center justify-center"
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: 'var(--radius-lg)',
+              background: 'var(--color-accent-light)',
+            }}
+          >
+            <Briefcase size={20} color="var(--color-accent)" />
+          </div>
+          <div>
+            <h1
+              className="font-display font-bold"
+              style={{ fontSize: 22, color: 'var(--color-text-primary)' }}
+            >
+              My Work
+            </h1>
+            <p
+              className="font-body"
+              style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}
+            >
+              Your board tasks, personal to-dos, and calendar in one place
+            </p>
+          </div>
+        </div>
+
+        {activeTab === 'personal' && (
+          <Button variant="primary" icon={Plus} onClick={() => setModalOpen(true)}>
+            Add Task
+          </Button>
+        )}
+      </div>
+
+      {/* Sub-tabs */}
+      <SubTabs
+        active={activeTab}
+        onChange={setActiveTab}
+        counts={{
+          work: loading ? undefined : workTasks.length,
+          personal: loading ? undefined : personalTasks.length,
+        }}
+      />
+
+      {/* Tab content */}
+      {activeTab === 'work' && (
+        <WorkTab
+          tasks={workTasks}
+          loading={loading}
+          onSelect={setSelectedTask}
+        />
+      )}
+
+      {activeTab === 'personal' && (
+        <PersonalTab
+          tasks={personalTasks}
+          loading={loading}
+          filter={filter}
+          onFilterChange={setFilter}
+          onAdd={() => setModalOpen(true)}
+          onStatusChange={handleStatusChange}
+          onPriorityChange={handlePriorityChange}
+          onDelete={handleDelete}
+          onEdit={setEditingTask}
+        />
+      )}
+
+      {activeTab === 'calendar' && (
+        <CalendarTab events={calendarEvents} onSelect={setSelectedTask} />
+      )}
 
       <PersonalTaskModal
         isOpen={modalOpen}
@@ -474,8 +909,14 @@ const MyTasksPage = () => {
         onClose={() => setEditingTask(null)}
         onUpdated={handleUpdated}
       />
+
+      <CommentPanel
+        task={selectedTask}
+        isOpen={!!selectedTask}
+        onClose={() => setSelectedTask(null)}
+      />
     </PageWrapper>
   );
 };
 
-export default MyTasksPage;
+export default MyWorkPage;
