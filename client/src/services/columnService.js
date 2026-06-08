@@ -59,19 +59,3 @@ export const deleteColumn = async (boardId, columnId) => {
   );
   return data.columns;
 };
-
-/**
- * GET /api/boards/templates — list available board templates.
- */
-export const listBoardTemplates = async () => {
-  const { data } = await api.get('/api/boards/templates');
-  return data.templates;
-};
-
-/**
- * POST /api/boards?template=<id> — create a new board from a template.
- */
-export const createBoardFromTemplate = async (templateId, payload) => {
-  const { data } = await api.post(`/api/boards?template=${templateId}`, payload);
-  return data.board;
-};

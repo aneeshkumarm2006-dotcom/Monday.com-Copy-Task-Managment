@@ -63,6 +63,28 @@ const columnSchema = new mongoose.Schema(
   { _id: true, timestamps: false }
 );
 
+/**
+ * Per-board access grant (private boards only). The board's creator may grant
+ * individual org members `read` (view-only) or `edit` (admin-equivalent over
+ * board content) access. Absence of an entry means "no access" — the member
+ * cannot see the private board at all. See [boardAccess.js](../utils/boardAccess.js).
+ */
+const boardAccessSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    level: {
+      type: String,
+      enum: ['read', 'edit'],
+      required: true,
+    },
+  },
+  { _id: false, timestamps: false }
+);
+
 const boardSchema = new mongoose.Schema(
   {
     name: {
@@ -82,6 +104,9 @@ const boardSchema = new mongoose.Schema(
       enum: ['public', 'private'],
       default: 'private',
     },
+    // Per-member access grants for private boards. Managed by the board's
+    // creator; ignored for public boards (every member can already read those).
+    memberAccess: { type: [boardAccessSchema], default: [] },
     order: { type: Number, default: 0, index: true },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,

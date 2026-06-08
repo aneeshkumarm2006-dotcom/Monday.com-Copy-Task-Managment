@@ -10,9 +10,6 @@ import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import * as orgService from '../services/orgService';
 import * as profileService from '../services/profileService';
-import * as columnService from '../services/columnService';
-import useBoardStore from '../store/boardStore';
-import useToastStore from '../store/toastStore';
 /**
  * Settings Page — org and profile.
  * See Macan_Design.md Section 7.8.
@@ -709,160 +706,6 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
   );
 };
 
-/* --------------------------- Templates Tab ------------------------- */
-
-/**
- * TemplatesTab — lists built-in board templates. Each card has a "Create
- * board" action that creates a new board pre-seeded with the template's
- * columns (`POST /api/boards?template=<id>`). Admin-only.
- *
- * Phase 1, F1 — wired up via /api/boards/templates.
- */
-const TemplatesTab = ({ orgId, isAdmin }) => {
-  const navigate = useNavigate();
-  const [templates, setTemplates] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [createOpen, setCreateOpen] = useState(null); // template id
-  const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const addBoardLocal = useBoardStore((s) => s.addBoardLocal);
-  const toastError = useToastStore((s) => s.error);
-  const toastSuccess = useToastStore((s) => s.success);
-
-  useEffect(() => {
-    columnService
-      .listBoardTemplates()
-      .then((t) => setTemplates(t || []))
-      .catch((err) => toastError(err?.response?.data?.error || 'Could not load templates'))
-      .finally(() => setLoading(false));
-  }, [toastError]);
-
-  const handleCreate = async (templateId) => {
-    if (!orgId) {
-      toastError('Select a workspace first');
-      return;
-    }
-    if (!name.trim()) return;
-    setBusy(true);
-    try {
-      const board = await columnService.createBoardFromTemplate(templateId, {
-        name: name.trim(),
-        organisation: orgId,
-      });
-      addBoardLocal(board);
-      toastSuccess?.(`Board "${board.name}" created from template`);
-      setCreateOpen(null);
-      setName('');
-      navigate(`/boards/${board._id}`);
-    } catch (err) {
-      toastError(err?.response?.data?.error || 'Could not create board');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (!isAdmin) {
-    return (
-      <p className="font-body" style={{ color: 'var(--color-text-muted)' }}>
-        Only org admins can create boards from templates.
-      </p>
-    );
-  }
-
-  if (loading) {
-    return <p className="font-body" style={{ color: 'var(--color-text-muted)' }}>Loading templates…</p>;
-  }
-
-  if (templates.length === 0) {
-    return <p className="font-body" style={{ color: 'var(--color-text-muted)' }}>No templates available.</p>;
-  }
-
-  return (
-    <div>
-      <header className="mb-4">
-        <h2 className="font-display" style={{ fontSize: 18, fontWeight: 700 }}>
-          Board Templates
-        </h2>
-        <p className="mt-1 font-body" style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
-          Pre-built board layouts. Pick one and we'll seed a new board with the right columns.
-        </p>
-      </header>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {templates.map((t) => (
-          <div
-            key={t.id}
-            className="bg-surface"
-            style={{
-              padding: 16,
-              border: '1px solid var(--color-border)',
-              borderRadius: 'var(--radius-lg)',
-            }}
-          >
-            <h3 className="font-display" style={{ fontSize: 15, fontWeight: 700 }}>{t.name}</h3>
-            <p className="mt-1 font-body" style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
-              {t.description}
-            </p>
-            <p className="mt-2 font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-              {t.columns?.length || 0} columns: {t.columns?.slice(0, 4).map((c) => c.name).join(', ')}
-              {t.columns?.length > 4 ? '…' : ''}
-            </p>
-            <div className="mt-3">
-              <Button
-                variant="primary"
-                onClick={() => {
-                  setCreateOpen(t.id);
-                  setName(t.name);
-                }}
-              >
-                Create board
-              </Button>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {createOpen && (
-        <Modal
-          open
-          onClose={() => {
-            setCreateOpen(null);
-            setName('');
-          }}
-          title="Name your new board"
-        >
-          <div style={{ padding: 16 }}>
-            <Input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Board name"
-            />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setCreateOpen(null);
-                  setName('');
-                }}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="primary"
-                onClick={() => handleCreate(createOpen)}
-                disabled={busy || !name.trim()}
-              >
-                {busy ? 'Creating…' : 'Create'}
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
-    </div>
-  );
-};
-
 /* ------------------------------ Page ------------------------------ */
 
 const SettingsPage = () => {
@@ -899,7 +742,7 @@ const SettingsPage = () => {
 
   // If a non-admin has an admin-only tab selected, bounce them to Profile
   useEffect(() => {
-    if (!isAdmin && (activeTab === 'organisation' || activeTab === 'templates')) {
+    if (!isAdmin && activeTab === 'organisation') {
       setActiveTab('profile');
     }
   }, [isAdmin, activeTab]);
@@ -953,9 +796,6 @@ const SettingsPage = () => {
           onDeleteOrg={handleDeleteOrg}
         />
       );
-    }
-    if (activeTab === 'templates') {
-      return <TemplatesTab orgId={currentOrg?._id} isAdmin={isAdmin} />;
     }
     return (
       <ProfileTab

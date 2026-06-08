@@ -19,20 +19,14 @@ const Organisation = require('../models/Organisation');
 const BoardConnection = require('../models/BoardConnection');
 const { getColumnType, MIRROR_AGGREGATIONS } = require('../utils/columnTypes');
 const { wouldCreateMirrorCycle } = require('../services/mirrorRefresh');
-
-const isOrgAdmin = (org, userId) =>
-  !!org &&
-  (
-    (org.admin && org.admin.toString() === userId) ||
-    (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId))
-  );
+const { resolveBoardAccess } = require('../utils/boardAccess');
 
 /**
  * Load board + org and confirm the calling user is a member.
  *
- * Returns { board, org, isAdmin } on success, or { status, error } on
- * failure. Mirrors `loadBoardContext` in boardController so we don't
- * couple the two controllers but keep the same shape.
+ * `isAdmin` means "may edit board content" — true org admins and members
+ * granted edit access on a private board both qualify. Returns
+ * { board, org, isAdmin } on success, or { status, error } on failure.
  */
 const loadBoardContext = async (boardId, userId) => {
   if (!boardId || !mongoose.Types.ObjectId.isValid(boardId)) {
@@ -48,7 +42,8 @@ const loadBoardContext = async (boardId, userId) => {
   if (!isMember) {
     return { status: 403, error: 'Not a member of this organisation' };
   }
-  return { board, org, isAdmin: isOrgAdmin(org, userId) };
+  const access = resolveBoardAccess(board, org, userId);
+  return { board, org, isAdmin: access.canEdit };
 };
 
 const serializeColumns = (board) =>

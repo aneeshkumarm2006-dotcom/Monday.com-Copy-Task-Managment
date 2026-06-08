@@ -1,4 +1,4 @@
-import { Building2, UserCircle2, LayoutTemplate } from 'lucide-react';
+import { Building2, UserCircle2 } from 'lucide-react';
 
 /**
  * SettingsSidebar — left-rail tab nav used exclusively by the Settings page.
@@ -11,7 +11,6 @@ import { Building2, UserCircle2, LayoutTemplate } from 'lucide-react';
  */
 const TABS = [
   { key: 'organisation', label: 'Organisation', icon: Building2, adminOnly: true },
-  { key: 'templates', label: 'Templates', icon: LayoutTemplate, adminOnly: true },
   { key: 'profile', label: 'Profile', icon: UserCircle2, adminOnly: false },
 ];
 

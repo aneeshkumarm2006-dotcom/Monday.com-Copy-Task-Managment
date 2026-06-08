@@ -5,19 +5,12 @@ const Comment = require('../models/Comment');
 const Notification = require('../models/Notification');
 const Organisation = require('../models/Organisation');
 const eventBus = require('../services/eventBus');
-
-/**
- * Resolve whether the current user is the admin of the given org.
- */
-const isOrgAdmin = (org, userId) =>
-  !!org &&
-  (
-    (org.admin && org.admin.toString() === userId) ||
-    (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId))
-  );
+const { resolveBoardAccess } = require('../utils/boardAccess');
 
 /**
  * Load the board + its org, validating the current user is a member.
+ * `isAdmin` means "may edit board content" — true org admins and members
+ * granted edit access on a private board both qualify.
  * Returns { board, org, isAdmin } on success, or { status, error } on failure.
  */
 const loadBoardContext = async (boardId, userId) => {
@@ -32,7 +25,8 @@ const loadBoardContext = async (boardId, userId) => {
     return { status: 403, error: 'Not a member of this organisation' };
   }
 
-  return { board, org, isAdmin: isOrgAdmin(org, userId) };
+  const access = resolveBoardAccess(board, org, userId);
+  return { board, org, isAdmin: access.canEdit };
 };
 
 /**

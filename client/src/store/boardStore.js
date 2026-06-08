@@ -74,6 +74,19 @@ const useBoardStore = create((set, get) => ({
     }
   },
 
+  /**
+   * Set a member's access level on a private board ('read' | 'edit' | 'none').
+   * Creator-only on the server. Replaces the board in the cache with the
+   * updated copy so `memberAccess` (and derived permissions) stay in sync.
+   */
+  setBoardAccess: async (boardId, userId, level) => {
+    const { board } = await boardService.setBoardAccess(boardId, userId, level);
+    set((s) => ({
+      boards: s.boards.map((b) => (b._id === boardId ? board : b)),
+    }));
+    return board;
+  },
+
   // Local-only helpers
   addBoardLocal: (board) =>
     set((s) => ({ boards: [board, ...s.boards] })),

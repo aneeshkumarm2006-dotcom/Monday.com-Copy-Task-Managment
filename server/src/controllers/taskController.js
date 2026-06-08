@@ -14,6 +14,7 @@ const eventBus = require('../services/eventBus');
 const { logActivity } = require('../services/activityService');
 const { getColumnType } = require('../utils/columnTypes');
 const { embedMirrorValues } = require('../services/mirrorRefresh');
+const { resolveBoardAccess } = require('../utils/boardAccess');
 
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 // Legacy enum keys — accepted for personal tasks (which don't have a board).
@@ -37,16 +38,6 @@ const DEFAULT_STATUSES = [
 ];
 
 /**
- * Whether the current user is the admin of this org.
- */
-const isOrgAdmin = (org, userId) =>
-  !!org &&
-  (
-    (org.admin && org.admin.toString() === userId) ||
-    (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId))
-  );
-
-/**
  * Lazily seed a board's `statuses` array with the legacy default set if it's
  * empty. Catches pre-migration boards (where `migrateLabelsStatuses.js` never
  * ran) and any board that somehow lost its statuses, so the client's status
@@ -63,9 +54,11 @@ const ensureBoardStatuses = async (board) => {
 };
 
 /**
- * Load the board + its org, validating that the current user is a member
- * of the org. Returns { board, org, isAdmin } on success, or { status, error }
- * on failure.
+ * Load the board + its org, validating that the current user is a member of
+ * the org. `isAdmin` here means "may edit board content" — true org admins and
+ * members granted edit access on a private board both qualify. `readOnly`
+ * flags a member granted view-only access so write paths can reject them.
+ * Returns { board, org, isAdmin, readOnly } or { status, error } on failure.
  */
 const loadBoardContext = async (boardId, userId) => {
   const board = await Board.findById(boardId);
@@ -81,7 +74,8 @@ const loadBoardContext = async (boardId, userId) => {
     return { status: 403, error: 'Not a member of this organisation' };
   }
 
-  return { board, org, isAdmin: isOrgAdmin(org, userId) };
+  const access = resolveBoardAccess(board, org, userId);
+  return { board, org, isAdmin: access.canEdit, readOnly: access.readOnly };
 };
 
 /**
@@ -828,6 +822,12 @@ const updateTask = async (req, res) => {
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
     if (!ctx.isAdmin) {
+      // Members granted view-only access can't change anything, not even status.
+      if (ctx.readOnly) {
+        return res
+          .status(403)
+          .json({ error: 'You have read-only access to this board' });
+      }
       // Regular members can only change status (on any board task they can see).
       const allowedKeys = Object.keys(body).filter((k) => body[k] !== undefined);
       if (allowedKeys.length !== 1 || allowedKeys[0] !== 'status') {

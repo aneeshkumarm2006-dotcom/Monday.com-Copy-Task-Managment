@@ -5,13 +5,10 @@ const TaskGroup = require('../models/TaskGroup');
 const Comment = require('../models/Comment');
 const Notification = require('../models/Notification');
 const Organisation = require('../models/Organisation');
-const {
-  boardTemplates,
-  getBoardTemplate,
-  materializeTemplateColumns,
-} = require('../utils/boardTemplates');
+const { resolveBoardAccess, isBoardCreator } = require('../utils/boardAccess');
 
 const VALID_VISIBILITIES = ['public', 'private'];
+const VALID_ACCESS_LEVELS = ['read', 'edit'];
 
 /**
  * Resolve whether the current user is the admin of the given org.
@@ -51,11 +48,20 @@ const loadBoardContext = async (boardId, userId) => {
   if (!isMember) {
     return { status: 403, error: 'Not a member of this organisation' };
   }
-  const adminAccess = isOrgAdmin(org, userId);
-  if (board.visibility === 'private' && !adminAccess) {
+  const access = resolveBoardAccess(board, org, userId);
+  if (!access.canRead) {
     return { status: 403, error: 'Access denied' };
   }
-  return { board, org, isAdmin: adminAccess };
+  // `isAdmin` stays "true org admin" here (it gates org-wide concerns like the
+  // connectable-board list). `canEdit` is the board-content write gate, which
+  // members granted edit access also satisfy.
+  return {
+    board,
+    org,
+    isAdmin: access.orgAdmin,
+    canEdit: access.canEdit,
+    readOnly: access.readOnly,
+  };
 };
 
 const DEFAULT_STATUSES = [
@@ -85,7 +91,11 @@ const getBoards = async (req, res) => {
     }
 
     const admin = isOrgAdmin(org, userId);
-    const visibilityFilter = admin ? {} : { visibility: 'public' };
+    // Non-admins see public boards plus any private board they've been
+    // granted access to.
+    const visibilityFilter = admin
+      ? {}
+      : { $or: [{ visibility: 'public' }, { 'memberAccess.user': userId }] };
     const boards = await Board.find({ organisation: orgId, ...visibilityFilter })
       .sort({ order: 1, updatedAt: -1 });
 
@@ -219,21 +229,6 @@ const createBoard = async (req, res) => {
       .lean();
     const nextBoardOrder = (lastBoard?.order ?? -1) + 1;
 
-    // Template path: when `?template=<id>` is provided, look up the
-    // template and seed `board.columns` from it. Flips `useFlexibleColumns`
-    // on so the new board uses the F1 code path from the first request.
-    const templateId = req.query.template || req.body.template;
-    let templateColumns = [];
-    let useFlexibleColumns = false;
-    if (templateId) {
-      const template = getBoardTemplate(templateId);
-      if (!template) {
-        return res.status(400).json({ error: `Unknown template id: ${templateId}` });
-      }
-      templateColumns = materializeTemplateColumns(template);
-      useFlexibleColumns = true;
-    }
-
     const board = await Board.create({
       name: name.trim(),
       description: typeof description === 'string' ? description.trim() : '',
@@ -243,8 +238,8 @@ const createBoard = async (req, res) => {
       order: nextBoardOrder,
       statuses: DEFAULT_STATUSES.map((s) => ({ ...s })),
       labels: [],
-      columns: templateColumns,
-      useFlexibleColumns,
+      columns: [],
+      useFlexibleColumns: false,
     });
 
     return res.status(201).json({ board });
@@ -340,7 +335,8 @@ const deleteBoard = async (req, res) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Shared admin guard for any /labels or /statuses sub-route.
+ * Shared write guard for any /labels or /statuses sub-route. Satisfied by org
+ * admins and by members granted edit access to the board.
  */
 const requireBoardAdmin = async (req, res) => {
   const ctx = await loadBoardContext(req.params.id, req.user.userId);
@@ -348,7 +344,7 @@ const requireBoardAdmin = async (req, res) => {
     res.status(ctx.status).json({ error: ctx.error });
     return null;
   }
-  if (!ctx.isAdmin) {
+  if (!ctx.canEdit) {
     res.status(403).json({ error: 'Admin access required' });
     return null;
   }
@@ -611,7 +607,9 @@ const reorderBoards = async (req, res) => {
     }
 
     const admin = isOrgAdmin(org, userId);
-    const visibilityFilter = admin ? {} : { visibility: 'public' };
+    const visibilityFilter = admin
+      ? {}
+      : { $or: [{ visibility: 'public' }, { 'memberAccess.user': userId }] };
     const currentIds = await Board.distinct('_id', { organisation, ...visibilityFilter });
     const currentSet = new Set(currentIds.map((id) => id.toString()));
     const orderedSet = new Set(orderedIds.map((id) => String(id)));
@@ -677,25 +675,95 @@ const getConnectableBoards = async (req, res) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Per-board access grants (private boards)
+// ---------------------------------------------------------------------------
+
 /**
- * GET /api/boards/templates
+ * GET /api/boards/:id/access
  *
- * Returns the built-in template list. Authenticated route — any logged-in
- * user can browse templates; only admins can create boards from them
- * (enforced in createBoard).
+ * List the board's per-member grants. Creator-only — the board's owner is the
+ * one who manages who can see/edit a private board.
+ * Returns: { access: [{ user: {…}, level }], createdBy }
  */
-const listBoardTemplates = async (req, res) => {
+const getBoardAccess = async (req, res) => {
   try {
-    return res.json({
-      templates: boardTemplates.map((t) => ({
-        id: t.id,
-        name: t.name,
-        description: t.description,
-        columns: t.columns,
-      })),
-    });
+    const userId = req.user.userId;
+    const board = await Board.findById(req.params.id).populate(
+      'memberAccess.user',
+      'name email profilePic'
+    );
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!isBoardCreator(board, userId)) {
+      return res
+        .status(403)
+        .json({ error: 'Only the board creator can manage access' });
+    }
+    return res.json({ access: board.memberAccess, createdBy: board.createdBy });
   } catch (err) {
-    console.error('listBoardTemplates error:', err);
+    console.error('getBoardAccess error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PUT /api/boards/:id/access
+ *
+ * Body: { userId, level: 'read' | 'edit' | 'none' }
+ * Creator-only. Upserts a grant for the target org member; `'none'` removes it.
+ * Returns the updated board (so the client can refresh its cache) plus the
+ * populated access list for display.
+ */
+const setBoardAccess = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { userId: targetUserId, level } = req.body || {};
+
+    if (!targetUserId || !mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ error: 'Valid userId required' });
+    }
+    if (level !== 'none' && !VALID_ACCESS_LEVELS.includes(level)) {
+      return res.status(400).json({ error: 'Invalid access level' });
+    }
+
+    const board = await Board.findById(req.params.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!isBoardCreator(board, userId)) {
+      return res
+        .status(403)
+        .json({ error: 'Only the board creator can manage access' });
+    }
+    if (targetUserId === userId) {
+      return res
+        .status(400)
+        .json({ error: 'You already have full access as the board creator' });
+    }
+
+    const org = await Organisation.findById(board.organisation);
+    if (!org) return res.status(404).json({ error: 'Organisation not found' });
+    const isMember = org.members.some((m) => m.toString() === targetUserId);
+    if (!isMember) {
+      return res
+        .status(400)
+        .json({ error: 'User is not a member of this organisation' });
+    }
+
+    // Upsert: drop any existing grant for this user, then re-add unless 'none'.
+    board.memberAccess = (board.memberAccess || []).filter(
+      (e) => e.user.toString() !== targetUserId
+    );
+    if (level !== 'none') {
+      board.memberAccess.push({ user: targetUserId, level });
+    }
+    await board.save();
+
+    const populated = await Board.findById(board._id).populate(
+      'memberAccess.user',
+      'name email profilePic'
+    );
+    return res.json({ board, access: populated.memberAccess });
+  } catch (err) {
+    console.error('setBoardAccess error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -707,8 +775,9 @@ module.exports = {
   updateBoard,
   deleteBoard,
   reorderBoards,
-  listBoardTemplates,
   getConnectableBoards,
+  getBoardAccess,
+  setBoardAccess,
   // labels
   listLabels,
   addLabel,

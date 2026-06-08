@@ -22,17 +22,12 @@ const {
   readLinks,
 } = require('../services/mirrorRefresh');
 const { logActivity } = require('../services/activityService');
-
-const isOrgAdmin = (org, userId) =>
-  !!org &&
-  (
-    (org.admin && org.admin.toString() === userId) ||
-    (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId))
-  );
+const { resolveBoardAccess } = require('../utils/boardAccess');
 
 /**
- * Load a board + org and confirm membership. Returns { board, org, isAdmin }
- * or { status, error }. Mirrors the helper in taskController/columnController.
+ * Load a board + org and confirm membership. `isAdmin` means "may edit board
+ * content" — true org admins and members granted edit access both qualify.
+ * Returns { board, org, isAdmin } or { status, error }.
  */
 const loadBoardContext = async (boardId, userId) => {
   if (!boardId || !mongoose.Types.ObjectId.isValid(boardId)) {
@@ -44,7 +39,8 @@ const loadBoardContext = async (boardId, userId) => {
   if (!org) return { status: 404, error: 'Organisation not found' };
   const isMember = org.members.some((m) => m.toString() === userId);
   if (!isMember) return { status: 403, error: 'Not a member of this organisation' };
-  return { board, org, isAdmin: isOrgAdmin(org, userId) };
+  const access = resolveBoardAccess(board, org, userId);
+  return { board, org, isAdmin: access.canEdit };
 };
 
 /**

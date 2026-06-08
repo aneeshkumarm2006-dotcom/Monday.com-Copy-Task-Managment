@@ -9,6 +9,7 @@ import {
   Zap,
   GripVertical,
   SearchX,
+  UserPlus,
 } from 'lucide-react';
 import {
   DndContext,
@@ -44,6 +45,7 @@ import LabelPicker from '../components/board/LabelPicker';
 import EditChipsModal from '../components/board/EditChipsModal';
 import BulkActionBar from '../components/board/BulkActionBar';
 import BoardFilterBar from '../components/board/BoardFilterBar';
+import BoardAccessModal from '../components/board/BoardAccessModal';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
@@ -68,6 +70,9 @@ const GROUP_DOT_CYCLE = [
   'var(--color-card-orange)',
   'var(--color-card-purple)',
 ];
+
+/** Normalise an id that may be a populated object or a raw ObjectId string. */
+const refId = (v) => (typeof v === 'object' && v !== null ? v._id || v : v);
 
 /**
  * Determine whether the signed-in user is the admin of the current org.
@@ -173,6 +178,8 @@ const BoardDetailPage = () => {
   const [deletingGroup, setDeletingGroup] = useState(false);
   // Automations modal
   const [automationsOpen, setAutomationsOpen] = useState(false);
+  // Board access ("Share") modal — creator-only
+  const [accessModalOpen, setAccessModalOpen] = useState(false);
 
   // --- Filtering ---------------------------------------------------------
   // Filter bar at the top of the board narrows the visible tasks by name,
@@ -193,6 +200,25 @@ const BoardDetailPage = () => {
 
   const board = getBoardById(boardId) || null;
   const orgId = currentOrg?._id || null;
+
+  // --- Effective board permissions ---------------------------------------
+  // Org admins always have full control. On a private board, the creator can
+  // additionally grant members 'read' or 'edit' access (see BoardAccessModal).
+  // `canEdit` gates every edit/create affordance; `isBoardCreator` gates the
+  // access-management ("Share") control.
+  const currentUserId = currentUser?._id ? String(currentUser._id) : null;
+  const myGrant = useMemo(() => {
+    if (!board || !Array.isArray(board.memberAccess) || !currentUserId) return null;
+    const entry = board.memberAccess.find(
+      (g) => String(refId(g.user)) === currentUserId
+    );
+    return entry ? entry.level : null;
+  }, [board, currentUserId]);
+  const canEdit = isAdmin || myGrant === 'edit';
+  const isBoardCreator =
+    !!board &&
+    !!currentUserId &&
+    String(refId(board.createdBy)) === currentUserId;
 
   // If we navigated directly and the boards list is empty, fetch it so the
   // header can resolve the board metadata.
@@ -253,15 +279,15 @@ const BoardDetailPage = () => {
     return () => clearTimeout(timer);
   }, [highlightedTaskId]);
 
-  // Fetch org members (used by assignee picker) — admin only actually needs
-  // them, but caching them doesn't hurt and useful for future features.
+  // Fetch org members (used by the assignee picker + Share modal). Anyone who
+  // can edit the board needs them; the board creator needs them to share.
   useEffect(() => {
     if (!orgId) return;
-    if (!isAdmin) return;
+    if (!canEdit && !isBoardCreator) return;
     fetchMembers(orgId).catch((err) =>
       console.error('Failed to load members:', err)
     );
-  }, [orgId, isAdmin, fetchMembers]);
+  }, [orgId, canEdit, isBoardCreator, fetchMembers]);
 
   const totalTaskCount = useMemo(
     () =>
@@ -533,7 +559,7 @@ const BoardDetailPage = () => {
   };
 
   const handleLabelToggle = async (labelId, nextChecked) => {
-    if (!labelMenu || !isAdmin) return;
+    if (!labelMenu || !canEdit) return;
     const { task } = labelMenu;
     const current = (task.labels || []).map((id) => id.toString());
     const nextLabels = nextChecked
@@ -616,7 +642,7 @@ const BoardDetailPage = () => {
   // --- Row actions menu (Edit / Delete) --------------------------------
 
   const handleActionsClick = (task, event) => {
-    if (!isAdmin) return;
+    if (!canEdit) return;
     const anchor = event?.currentTarget || null;
     setActionsMenu({ task, anchor });
   };
@@ -939,39 +965,54 @@ const BoardDetailPage = () => {
           </p>
         </div>
 
-        {isAdmin && (
+        {(canEdit || isBoardCreator) && (
           <div className="flex items-center gap-2 shrink-0">
-            <Button
-              variant="secondary"
-              icon={Zap}
-              onClick={() => setAutomationsOpen(true)}
-            >
-              Automations
-            </Button>
-            <Button
-              variant="primary"
-              icon={Plus}
-              onClick={handleOpenGroupModal}
-            >
-              New Group
-            </Button>
-            <button
-              type="button"
-              aria-label="Board settings"
-              onClick={() => navigate('/settings')}
-              className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
-              style={{
-                width: 38,
-                height: 38,
-                border: '1.5px solid var(--color-border-strong)',
-              }}
-            >
-              <SettingsIcon
-                size={16}
-                color="var(--color-text-secondary)"
-                aria-hidden="true"
-              />
-            </button>
+            {isBoardCreator && !isPublic && (
+              <Button
+                variant="secondary"
+                icon={UserPlus}
+                onClick={() => setAccessModalOpen(true)}
+              >
+                Share
+              </Button>
+            )}
+            {isAdmin && (
+              <Button
+                variant="secondary"
+                icon={Zap}
+                onClick={() => setAutomationsOpen(true)}
+              >
+                Automations
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                variant="primary"
+                icon={Plus}
+                onClick={handleOpenGroupModal}
+              >
+                New Group
+              </Button>
+            )}
+            {isAdmin && (
+              <button
+                type="button"
+                aria-label="Board settings"
+                onClick={() => navigate('/settings')}
+                className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+                style={{
+                  width: 38,
+                  height: 38,
+                  border: '1.5px solid var(--color-border-strong)',
+                }}
+              >
+                <SettingsIcon
+                  size={16}
+                  color="var(--color-text-secondary)"
+                  aria-hidden="true"
+                />
+              </button>
+            )}
           </div>
         )}
       </header>
@@ -1013,12 +1054,12 @@ const BoardDetailPage = () => {
               icon={Plus}
               title="No task groups yet"
               description={
-                isAdmin
+                canEdit
                   ? 'Create your first group to start organising tasks'
                   : 'Nothing has been set up on this board yet'
               }
-              actionLabel={isAdmin ? 'Create first group' : undefined}
-              onAction={isAdmin ? handleOpenGroupModal : undefined}
+              actionLabel={canEdit ? 'Create first group' : undefined}
+              onAction={canEdit ? handleOpenGroupModal : undefined}
             />
           </div>
         ) : filtersActive && matchedTaskCount === 0 ? (
@@ -1104,7 +1145,7 @@ const BoardDetailPage = () => {
                           doneCount={doneCount}
                           collapsed={isCollapsed}
                           onToggle={() => toggleGroup(group._id)}
-                          onDeleteGroup={isAdmin ? () => handleDeleteGroup(group) : undefined}
+                          onDeleteGroup={canEdit ? () => handleDeleteGroup(group) : undefined}
                           dragHandle={
                             !dndDisabledGlobal && (
                               <button
@@ -1139,7 +1180,7 @@ const BoardDetailPage = () => {
                             <DataGrid
                               board={board}
                               tasks={groupTasks}
-                              readOnly={!isAdmin}
+                              readOnly={!canEdit}
                             />
                           ) : (
                             <TaskTable
@@ -1147,16 +1188,16 @@ const BoardDetailPage = () => {
                               board={board}
                               members={members}
                               editingTaskId={editingTaskId}
-                              isCreating={isAdmin && !filtersActive}
+                              isCreating={canEdit && !filtersActive}
                               createKey={newTaskKeysByGroup[group._id] || 0}
-                              isAdmin={isAdmin}
+                              isAdmin={canEdit}
                               highlightedTaskId={highlightedTaskId}
                               onOpenTask={handleOpenTask}
                               onStatusClick={handleStatusClick}
                               onPriorityClick={handlePriorityClick}
                               onLabelsClick={handleLabelsClick}
                               onOwnerClick={handleOwnerClick}
-                              onActionsClick={isAdmin ? handleActionsClick : undefined}
+                              onActionsClick={canEdit ? handleActionsClick : undefined}
                               onSaveNew={(payload) => handleSaveNewTask(group._id, payload)}
                               onSaveEdit={handleSaveEditTask}
                               onCancelEdit={handleCancelEdit}
@@ -1186,7 +1227,7 @@ const BoardDetailPage = () => {
           value={statusMenu.task.status}
           onSelect={handleStatusSelect}
           onEditChips={
-            isAdmin
+            canEdit
               ? () => {
                   setStatusMenu(null);
                   setEditChipsModal('statuses');
@@ -1203,9 +1244,9 @@ const BoardDetailPage = () => {
           anchorEl={labelMenu.anchor}
           board={board}
           selectedIds={labelMenu.task.labels || []}
-          onToggle={isAdmin ? handleLabelToggle : undefined}
+          onToggle={canEdit ? handleLabelToggle : undefined}
           onEditChips={
-            isAdmin
+            canEdit
               ? () => {
                   setLabelMenu(null);
                   setEditChipsModal('labels');
@@ -1230,7 +1271,7 @@ const BoardDetailPage = () => {
       )}
 
       {/* Edit chips (labels / statuses) modal */}
-      {isAdmin && editChipsModal && (
+      {canEdit && editChipsModal && (
         <EditChipsModal
           isOpen={!!editChipsModal}
           onClose={() => setEditChipsModal(null)}
@@ -1379,7 +1420,7 @@ const BoardDetailPage = () => {
       )}
 
       {/* Floating bulk-action bar (visible while >=1 task is ticked) */}
-      {isAdmin && (
+      {canEdit && (
         <BulkActionBar
           count={selectedTaskIds.size}
           groups={groups}
@@ -1433,7 +1474,7 @@ const BoardDetailPage = () => {
         board={board}
         isOpen={!!selectedTask}
         onClose={handleCloseTask}
-        isAdmin={isAdmin}
+        isAdmin={canEdit}
         onUpdateTask={async (taskId, payload) => {
           // Locate the task in the store so we can roll back on failure.
           // Search both the board buckets and the subitem cache — the panel
@@ -1494,7 +1535,7 @@ const BoardDetailPage = () => {
             throw err;
           }
         }}
-        onEditLabels={isAdmin ? () => setEditChipsModal('labels') : undefined}
+        onEditLabels={canEdit ? () => setEditChipsModal('labels') : undefined}
         onOpenSubitem={handleOpenSubitem}
         onBack={handleBackInStack}
         canGoBack={selectedTaskStack.length > 1}
@@ -1511,6 +1552,15 @@ const BoardDetailPage = () => {
           groups={groups}
           members={members}
           isAdmin={isAdmin}
+        />
+      )}
+
+      {/* Share / access management (private boards, creator-only) */}
+      {isBoardCreator && (
+        <BoardAccessModal
+          board={board}
+          isOpen={accessModalOpen}
+          onClose={() => setAccessModalOpen(false)}
         />
       )}
     </PageWrapper>

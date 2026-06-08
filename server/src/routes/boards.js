@@ -16,8 +16,9 @@ const {
   updateStatus,
   deleteStatus,
   reorderStatuses,
-  listBoardTemplates,
   getConnectableBoards,
+  getBoardAccess,
+  setBoardAccess,
 } = require('../controllers/boardController');
 const {
   listColumns,
@@ -31,10 +32,6 @@ const router = express.Router();
 
 // All board routes require authentication
 router.use(authMiddleware);
-
-// GET /api/boards/templates — list available board templates (must come
-// before /:id so "templates" isn't parsed as a board id).
-router.get('/templates', listBoardTemplates);
 
 // GET /api/boards?org=:orgId — list boards for an organisation
 router.get('/', getBoards);
@@ -78,5 +75,9 @@ router.delete('/:id/columns/:cid',    deleteColumn);
 // --- Cross-board connectivity (F2) ----------------------------------------
 // Boards a connect_boards column on this board may target.
 router.get('/:id/connectable',        getConnectableBoards);
+
+// --- Per-board access grants (private boards, creator-only) ----------------
+router.get('/:id/access',             getBoardAccess);
+router.put('/:id/access',             setBoardAccess);
 
 module.exports = router;
