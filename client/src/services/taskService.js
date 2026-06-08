@@ -13,10 +13,15 @@ export const getTasks = async (boardId, groupId) => {
 };
 
 /**
- * GET /api/tasks/my — current user's assigned + personal tasks.
+ * GET /api/tasks/my?org=:orgId — current user's assigned + personal tasks.
+ *
+ * Assigned board tasks are scoped to the given organisation; personal tasks
+ * are always included (they have no organisation).
  */
-export const getMyTasks = async () => {
-  const { data } = await api.get('/api/tasks/my');
+export const getMyTasks = async (orgId) => {
+  const params = {};
+  if (orgId) params.org = orgId;
+  const { data } = await api.get('/api/tasks/my', { params });
   return data.tasks;
 };
 

@@ -19,6 +19,7 @@ import CommentPanel from '../components/board/CommentPanel';
 import CalendarThemeStyles from '../components/calendar/CalendarThemeStyles';
 import Chip from '../components/ui/Chip';
 import Button from '../components/ui/Button';
+import useOrgStore from '../store/orgStore';
 import { getMyTasks, updateTask, deleteTask } from '../services/taskService';
 import { isStatusDone } from '../utils/statusUtils';
 import { taskToEvent, eventPropGetter } from '../utils/calendarEvents';
@@ -741,6 +742,9 @@ const CalendarTab = ({ events, onSelect }) => {
 /* ------------------------------------------------------------------ */
 
 const MyWorkPage = () => {
+  const currentOrg = useOrgStore((s) => s.currentOrg);
+  const orgId = currentOrg?._id || null;
+
   const [allTasks, setAllTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('work');
@@ -751,18 +755,21 @@ const MyWorkPage = () => {
 
   const fetchTasks = useCallback(async () => {
     try {
-      // getMyTasks returns both the user's assigned board tasks and their
-      // personal tasks — a single source for all three sub-tabs.
-      const all = await getMyTasks();
+      // getMyTasks returns the user's personal tasks plus the board tasks
+      // assigned to them within the current org — a single source for all
+      // three sub-tabs.
+      const all = await getMyTasks(orgId);
       setAllTasks(all);
     } catch (err) {
       console.error('Failed to fetch tasks:', err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [orgId]);
 
   useEffect(() => {
+    // Re-scope board work when the active organisation changes.
+    setLoading(true);
     fetchTasks();
   }, [fetchTasks]);
 

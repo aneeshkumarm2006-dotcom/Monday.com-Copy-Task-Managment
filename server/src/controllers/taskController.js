@@ -425,21 +425,49 @@ const getSubitems = async (req, res) => {
 };
 
 /**
- * GET /api/tasks/my
+ * GET /api/tasks/my?org=:orgId
+ *
+ * Assigned board tasks are scoped to boards within `org` so switching
+ * organisations doesn't leak work from another org. Personal tasks have no
+ * organisation and are always included for the current user.
  */
 const getMyTasks = async (req, res) => {
   try {
     const userId = req.user.userId;
     const userObjectId = new mongoose.Types.ObjectId(userId);
 
-    // Top-level only (subitems shouldn't clutter "My Tasks").
-    const tasks = await Task.find({
+    const orgId = req.query.org;
+
+    let boardTaskFilter = null;
+    if (orgId && mongoose.Types.ObjectId.isValid(orgId)) {
+      const org = await Organisation.findById(orgId);
+      if (org) {
+        const isMember = org.members.some((m) => m.toString() === userId);
+        if (isMember) {
+          const boards = await Board.find({ organisation: orgId }).select('_id');
+          const boardIds = boards.map((b) => b._id);
+          if (boardIds.length > 0) {
+            boardTaskFilter = {
+              board: { $in: boardIds },
+              assignedTo: userObjectId,
+              isPersonal: { $ne: true },
+              parent: null,
+            };
+          }
+        }
+      }
+    }
+
+    const personalFilter = {
       parent: null,
-      $or: [
-        { assignedTo: userObjectId, isPersonal: { $ne: true } },
-        { isPersonal: true, createdBy: userObjectId },
-      ],
-    })
+      isPersonal: true,
+      createdBy: userObjectId,
+    };
+
+    const filters = [personalFilter];
+    if (boardTaskFilter) filters.push(boardTaskFilter);
+
+    const tasks = await Task.find({ $or: filters })
       .populate('assignedTo', 'name profilePic email')
       .populate('createdBy', 'name profilePic email')
       .populate('board', 'name visibility statuses labels')
