@@ -149,6 +149,7 @@ const TaskEditRow = ({
       setStatus(initialStatus);
       setAssignedTo([]);
       setDueDate('');
+      onCancel?.();
     } else {
       onCancel?.();
     }

@@ -744,6 +744,27 @@ const BoardDetailPage = () => {
     }
   };
 
+  // --- Bulk assign -------------------------------------------------------
+
+  const handleBulkAssign = async (assigneeIds) => {
+    const ids = Array.from(selectedTaskIds);
+    if (ids.length === 0 || assigneeIds.length === 0) return;
+    setBulkBusy(true);
+    try {
+      await Promise.all(
+        ids.map(async (taskId) => {
+          const updated = await taskService.updateTask(taskId, { assignedTo: assigneeIds });
+          updateTaskLocal(updated);
+        })
+      );
+    } catch (err) {
+      console.error('Failed to bulk assign:', err);
+      toastError('Could not assign the selected tasks.');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   // --- New group creation ----------------------------------------------
 
   const handleOpenGroupModal = () => {
@@ -1429,6 +1450,8 @@ const BoardDetailPage = () => {
           count={selectedTaskIds.size}
           groups={groups}
           busy={bulkBusy}
+          members={members}
+          onAssign={handleBulkAssign}
           onMoveToGroup={handleBulkMoveToGroup}
           onDelete={() => setBulkDeleteOpen(true)}
           onClear={handleClearSelection}

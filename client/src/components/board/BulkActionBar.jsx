@@ -6,6 +6,8 @@ import {
   ChevronDown,
   CircleDot,
   Flag,
+  UserCheck,
+  Check,
 } from 'lucide-react';
 
 /**
@@ -29,6 +31,8 @@ import {
  *   onChangeStatus   — (statusId) => void
  *   onChangePriority — (priorityKey) => void
  *   onMoveToGroup    — (groupId) => void
+ *   onAssign         — (memberIds: string[]) => void
+ *   members          — [{ _id, name, profilePic }] org member list
  *   onDelete         — () => void (parent shows confirmation)
  *   onClear          — () => void
  *   busy             — disables actions while a bulk operation is in flight
@@ -38,18 +42,22 @@ const BulkActionBar = ({
   groups = [],
   statusOptions = [],
   priorityOptions = [],
+  members = [],
   onChangeStatus,
   onChangePriority,
   onMoveToGroup,
+  onAssign,
   onDelete,
   onClear,
   busy = false,
 }) => {
   // Only one popover open at a time. `openMenu` is one of: null, 'status',
-  // 'priority', 'move'.
+  // 'priority', 'assign', 'move'.
   const [openMenu, setOpenMenu] = useState(null);
+  const [assignSelection, setAssignSelection] = useState([]);
   const statusBtnRef = useRef(null);
   const priorityBtnRef = useRef(null);
+  const assignBtnRef = useRef(null);
   const moveBtnRef = useRef(null);
   const popoverRef = useRef(null);
 
@@ -58,6 +66,7 @@ const BulkActionBar = ({
     const anchors = {
       status: statusBtnRef,
       priority: priorityBtnRef,
+      assign: assignBtnRef,
       move: moveBtnRef,
     };
     const handleClick = (e) => {
@@ -76,8 +85,10 @@ const BulkActionBar = ({
     };
   }, [openMenu]);
 
-  const toggleMenu = (key) =>
+  const toggleMenu = (key) => {
+    if (key === 'assign') setAssignSelection([]);
     setOpenMenu((prev) => (prev === key ? null : key));
+  };
 
   if (count <= 0) return null;
 
@@ -166,6 +177,36 @@ const BulkActionBar = ({
               onChangePriority?.(opt.key);
             }}
             emptyMessage="No priorities available"
+          />
+        )}
+      </div>
+
+      {/* Assign */}
+      <div style={{ position: 'relative' }}>
+        <BarButton
+          ref={assignBtnRef}
+          icon={UserCheck}
+          label="Assign"
+          trailing={ChevronDown}
+          disabled={busy || members.length === 0}
+          onClick={() => toggleMenu('assign')}
+          aria-haspopup="dialog"
+          aria-expanded={openMenu === 'assign'}
+        />
+        {openMenu === 'assign' && (
+          <MemberPopover
+            ref={popoverRef}
+            members={members}
+            selected={assignSelection}
+            onToggle={(id) =>
+              setAssignSelection((prev) =>
+                prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+              )
+            }
+            onApply={() => {
+              setOpenMenu(null);
+              onAssign?.(assignSelection);
+            }}
           />
         )}
       </div>
@@ -291,6 +332,158 @@ const BulkActionBar = ({
         }
       `}</style>
     </div>
+  );
+};
+
+/**
+ * MemberPopover — multi-select member list for the bulk Assign button.
+ * Tracks selection locally; an Apply button confirms and fires onApply.
+ */
+const MemberPopover = forwardRef(function MemberPopover(
+  { members, selected, onToggle, onApply },
+  ref
+) {
+  const selectedSet = new Set(selected);
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label="Assign members to selected tasks"
+      className="bg-white"
+      style={{
+        position: 'absolute',
+        bottom: 'calc(100% + 8px)',
+        left: 0,
+        minWidth: 220,
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-md)',
+        boxShadow: 'var(--shadow-md)',
+        color: 'var(--color-text-primary)',
+        animation: 'macan-bulkbar-popover-enter 140ms ease-out',
+        overflow: 'hidden',
+      }}
+    >
+      <ul
+        role="listbox"
+        aria-multiselectable="true"
+        style={{ maxHeight: 240, overflowY: 'auto', padding: 4 }}
+      >
+        {members.length === 0 ? (
+          <li style={{ padding: '8px 10px', fontSize: 12, color: 'var(--color-text-muted)' }}>
+            No members
+          </li>
+        ) : (
+          members.map((m) => {
+            const isSelected = selectedSet.has(m._id);
+            return (
+              <li key={m._id} role="option" aria-selected={isSelected}>
+                <button
+                  type="button"
+                  onClick={() => onToggle(m._id)}
+                  className="w-full flex items-center gap-2 text-left transition-colors duration-100 hover:bg-[color:var(--color-bg-subtle)] focus:outline-none focus:bg-[color:var(--color-bg-subtle)]"
+                  style={{
+                    padding: '6px 10px',
+                    fontSize: 13,
+                    borderRadius: 'var(--radius-sm)',
+                    border: 'none',
+                    background: 'transparent',
+                    cursor: 'pointer',
+                    color: 'var(--color-text-primary)',
+                  }}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex items-center justify-center shrink-0"
+                    style={{
+                      width: 16,
+                      height: 16,
+                      borderRadius: 'var(--radius-sm)',
+                      border: isSelected
+                        ? '1.5px solid var(--color-accent)'
+                        : '1.5px solid var(--color-border-strong)',
+                      background: isSelected ? 'var(--color-accent)' : 'transparent',
+                    }}
+                  >
+                    {isSelected && (
+                      <Check size={12} color="#FFFFFF" strokeWidth={3} aria-hidden="true" />
+                    )}
+                  </span>
+                  <MemberAvatar user={m} />
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {m.name}
+                  </span>
+                </button>
+              </li>
+            );
+          })
+        )}
+      </ul>
+      <div
+        style={{
+          padding: '6px 8px',
+          borderTop: '1px solid var(--color-border)',
+          display: 'flex',
+          justifyContent: 'flex-end',
+        }}
+      >
+        <button
+          type="button"
+          onClick={onApply}
+          disabled={selected.length === 0}
+          className="transition-colors duration-150 hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] disabled:opacity-40 disabled:cursor-not-allowed"
+          style={{
+            padding: '5px 14px',
+            fontSize: 12,
+            fontWeight: 600,
+            background: 'var(--color-accent)',
+            color: '#FFFFFF',
+            border: 'none',
+            borderRadius: 'var(--radius-md)',
+            cursor: selected.length === 0 ? 'not-allowed' : 'pointer',
+          }}
+        >
+          Apply{selected.length > 0 ? ` (${selected.length})` : ''}
+        </button>
+      </div>
+    </div>
+  );
+});
+
+/** Small 24px avatar used inside MemberPopover rows. */
+const MemberAvatar = ({ user }) => {
+  const [imgError, setImgError] = useState(false);
+  const name = user?.name || '';
+  const initial = name.charAt(0).toUpperCase() || '?';
+  const base = {
+    width: 24,
+    height: 24,
+    borderRadius: '50%',
+    border: '2px solid var(--color-bg-surface, #FFFFFF)',
+    flexShrink: 0,
+  };
+  if (user?.profilePic && !imgError) {
+    return (
+      <img
+        src={user.profilePic}
+        alt={name}
+        style={{ ...base, objectFit: 'cover' }}
+        onError={() => setImgError(true)}
+      />
+    );
+  }
+  return (
+    <span
+      aria-label={name}
+      className="inline-flex items-center justify-center font-body font-semibold"
+      style={{
+        ...base,
+        background: 'var(--color-accent-light)',
+        color: 'var(--color-accent-text)',
+        fontSize: 10,
+      }}
+    >
+      {initial}
+    </span>
   );
 };
 
