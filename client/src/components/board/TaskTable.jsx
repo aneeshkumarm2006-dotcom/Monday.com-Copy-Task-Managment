@@ -368,9 +368,7 @@ const TaskTable = ({
                           onLabelsClick={onLabelsClick}
                           onOwnerClick={onOwnerClick}
                           onActionsClick={onActionsClick}
-                          onToggleExpand={
-                            task.hasSubitems ? handleToggleExpand : undefined
-                          }
+                          onToggleExpand={handleToggleExpand}
                           expanded={isExpanded}
                           isLast={isLastRow && !isExpanded}
                           highlighted={highlightedTaskId === task._id}

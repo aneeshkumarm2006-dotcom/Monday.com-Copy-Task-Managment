@@ -142,12 +142,19 @@ const TaskRow = ({
       {/* Task Name */}
       <td style={{ padding: '0 16px', minWidth: 240 }}>
         <div className="flex items-center gap-2 min-w-0">
-          {task.hasSubitems && onToggleExpand ? (
+          {onToggleExpand ? (
             <button
               type="button"
               onClick={() => onToggleExpand(task._id)}
               aria-label={expanded ? 'Collapse subitems' : 'Expand subitems'}
               aria-expanded={expanded}
+              title={
+                task.hasSubitems
+                  ? expanded
+                    ? 'Hide subitems'
+                    : 'Show subitems'
+                  : 'Add subitems'
+              }
               className="flex items-center justify-center rounded transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
               style={{
                 width: 18,
@@ -155,7 +162,12 @@ const TaskRow = ({
                 background: 'transparent',
                 border: 'none',
                 cursor: 'pointer',
-                color: 'var(--color-text-secondary)',
+                // Dim the chevron for rows that have no subtasks yet so the
+                // table stays calm; it still reads as an actionable affordance
+                // on hover/focus.
+                color: task.hasSubitems
+                  ? 'var(--color-text-secondary)'
+                  : 'var(--color-text-muted)',
                 flexShrink: 0,
                 padding: 0,
                 transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
