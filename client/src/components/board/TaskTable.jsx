@@ -240,6 +240,14 @@ const TaskTable = ({
         className="w-full"
         style={{
           borderCollapse: 'collapse',
+          // Fixed layout pins every sized column to its declared px width so a
+          // long task name can't stretch the Name column and push the others
+          // off-screen. The Name column (width null) is the only auto column,
+          // so it absorbs leftover space and truncates its content instead.
+          // minWidth = sum of fixed columns (930) + Name floor (240) so the
+          // table scrolls horizontally rather than collapsing on narrow viewports.
+          tableLayout: 'fixed',
+          minWidth: 1170,
           background: 'var(--color-bg-surface, #FFFFFF)',
         }}
       >

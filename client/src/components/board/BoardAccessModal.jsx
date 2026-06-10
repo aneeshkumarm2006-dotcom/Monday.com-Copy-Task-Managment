@@ -44,6 +44,7 @@ const BoardAccessModal = ({ board, isOpen, onClose }) => {
   const toastError = useToastStore((s) => s.error);
 
   const [savingId, setSavingId] = useState(null);
+  const [query, setQuery] = useState('');
 
   const orgId = board ? idOf(board.organisation) : null;
 
@@ -53,6 +54,11 @@ const BoardAccessModal = ({ board, isOpen, onClose }) => {
       fetchMembers(orgId).catch(() => {});
     }
   }, [isOpen, orgId, fetchMembers]);
+
+  // Clear the search box each time the modal opens.
+  useEffect(() => {
+    if (isOpen) setQuery('');
+  }, [isOpen]);
 
   // user id -> granted level, derived from the live board record.
   const grantByUser = useMemo(() => {
@@ -70,6 +76,15 @@ const BoardAccessModal = ({ board, isOpen, onClose }) => {
     () => (members || []).filter((m) => String(m._id) !== currentUserId),
     [members, currentUserId]
   );
+
+  // Members matching the current search query (by name or email).
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return grantable;
+    return grantable.filter((m) =>
+      `${m.name || ''} ${m.email || ''}`.toLowerCase().includes(q)
+    );
+  }, [grantable, query]);
 
   const handleChange = async (memberId, level) => {
     if (!board) return;
@@ -112,8 +127,35 @@ const BoardAccessModal = ({ board, isOpen, onClose }) => {
           There are no other members in this workspace to share with yet.
         </p>
       ) : (
-        <div className="flex flex-col gap-1">
-          {grantable.map((m) => {
+        <>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search members by name or email…"
+            className="font-body"
+            style={{
+              width: '100%',
+              fontSize: 13,
+              padding: '8px 12px',
+              marginBottom: 12,
+              borderRadius: 'var(--radius-md)',
+              border: '1.5px solid var(--color-border-strong)',
+              background: 'var(--color-bg-surface)',
+              color: 'var(--color-text-primary)',
+            }}
+          />
+
+          {filtered.length === 0 ? (
+            <p
+              className="font-body"
+              style={{ fontSize: 13, color: 'var(--color-text-muted)' }}
+            >
+              No members match “{query.trim()}”.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {filtered.map((m) => {
             const id = String(m._id);
             const level = grantByUser.get(id) || 'none';
             return (
@@ -185,9 +227,11 @@ const BoardAccessModal = ({ board, isOpen, onClose }) => {
                   ))}
                 </select>
               </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
     </Modal>
   );

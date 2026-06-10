@@ -208,17 +208,38 @@ const TaskRow = ({
             </button>
           ) : null}
           {!isSubtask && task.hasSubitems ? (
-            <ListTree
-              size={14}
-              aria-label="Has subtasks"
-              style={{ color: 'var(--color-text-secondary)', flexShrink: 0 }}
-            />
+            onToggleExpand ? (
+              <button
+                type="button"
+                onClick={() => onToggleExpand(task._id)}
+                aria-label={expanded ? 'Hide subtasks' : 'Show subtasks'}
+                aria-expanded={expanded}
+                title={expanded ? 'Hide subtasks' : 'Show subtasks'}
+                className="flex items-center justify-center rounded transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  color: 'var(--color-text-secondary)',
+                  flexShrink: 0,
+                }}
+              >
+                <ListTree size={14} aria-hidden="true" />
+              </button>
+            ) : (
+              <ListTree
+                size={14}
+                aria-label="Has subtasks"
+                style={{ color: 'var(--color-text-secondary)', flexShrink: 0 }}
+              />
+            )
           ) : null}
           <ChecklistBadge checklist={task.checklist} />
           <button
             type="button"
             onClick={() => onOpen?.(task)}
-            className="text-left font-body transition-colors duration-150 hover:underline hover:text-[color:var(--color-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] truncate"
+            className="text-left font-body transition-colors duration-150 hover:underline hover:text-[color:var(--color-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] truncate flex-1 min-w-0"
             style={{
               fontSize: 14,
               fontWeight: 500,
