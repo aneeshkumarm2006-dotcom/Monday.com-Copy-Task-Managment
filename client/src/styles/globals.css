@@ -358,3 +358,41 @@ li.macan-task-highlight {
     background-color: var(--color-accent-light);
   }
 }
+
+/* ==========================================================
+   CUSTOM SCROLLBAR — Section 21
+   Thin, rounded scrollbar using the site's warm palette.
+   WebKit (Chrome/Edge/Safari) + Firefox fallback.
+   ========================================================== */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+/* WebKit */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--color-border-strong);
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 150ms ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-text-secondary);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
