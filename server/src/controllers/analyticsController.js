@@ -81,6 +81,12 @@ const getAnalytics = async (req, res) => {
     const baseFilter = {
       board: { $in: scopedBoardIds },
       isPersonal: { $ne: true },
+      // Count only top-level tasks — the rows shown on a board. Subitems
+      // (parent != null) aren't surfaced in the board's task count or the
+      // TaskTable, so including them here made completion % disagree with
+      // what users see (e.g. every visible task "Done" but a stray undone
+      // subitem dragged the board to 91%).
+      parent: null,
     };
     const taskFilter = { ...baseFilter };
     if (since) taskFilter.createdAt = { $gte: since };
