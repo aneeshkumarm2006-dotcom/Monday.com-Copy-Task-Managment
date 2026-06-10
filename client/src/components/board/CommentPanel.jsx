@@ -74,6 +74,18 @@ const CommentPanel = ({
   const [error, setError] = useState('');
   const threadRef = useRef(null);
   const textareaRef = useRef(null);
+
+  // Auto-grow the textarea to fit its content (up to a max, then scroll)
+  // so long comments are fully visible instead of being clipped behind a
+  // tiny fixed-height scroll area.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const maxHeight = 200;
+    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [text]);
   // Tracks which task the currently-held `comments` belong to, so the
   // count-report effect never attributes one task's count to another while a
   // new task's comments are still loading.
@@ -984,6 +996,9 @@ const CommentPanel = ({
                   background: 'transparent',
                   border: 'none',
                   lineHeight: 1.5,
+                  minHeight: 42,
+                  display: 'block',
+                  boxSizing: 'border-box',
                 }}
               />
             </div>
