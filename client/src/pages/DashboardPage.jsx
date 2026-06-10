@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Folder, CheckCircle, Clock, TrendingUp, Activity } from 'lucide-react';
+import { Folder, CheckCircle, Clock, TrendingUp } from 'lucide-react';
 import PageWrapper from '../components/layout/PageWrapper';
 import StatCard from '../components/ui/StatCard';
 import {
   SkeletonStatCard,
   SkeletonRecentBoards,
-  SkeletonRecentActivity,
   SkeletonQuickActions,
   SkeletonGreetingBanner,
 } from '../components/ui/Skeleton';
@@ -16,99 +15,12 @@ import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
 import { getDashboardStats } from '../services/boardService';
-import { timeAgo } from '../utils/dateUtils';
 
 const INITIAL_STATS = {
   totalBoards: 0,
   completedTasks: 0,
   pendingTasks: 0,
   completionRate: 0,
-};
-
-const RecentActivity = ({ boards = [] }) => {
-  const items = boards.slice(0, 4);
-  return (
-    <section
-      className="bg-surface"
-      style={{
-        borderRadius: 'var(--radius-lg)',
-        boxShadow: 'var(--shadow-card)',
-        padding: 20,
-      }}
-    >
-      <div className="flex items-center gap-2">
-        <Activity size={18} color="var(--color-accent)" aria-hidden="true" />
-        <h2
-          className="font-display font-bold"
-          style={{ fontSize: 15, color: 'var(--color-text-primary)' }}
-        >
-          Recent Activity
-        </h2>
-      </div>
-
-      <div className="mt-3 flex flex-col">
-        {items.length === 0 ? (
-          <p
-            className="font-body"
-            style={{
-              fontSize: 13,
-              color: 'var(--color-text-muted)',
-              padding: '12px 0',
-            }}
-          >
-            Nothing here yet. Activity will appear as your team works.
-          </p>
-        ) : (
-          items.map((b, i) => (
-            <div
-              key={b._id}
-              className="flex items-center gap-3"
-              style={{
-                padding: '10px 0',
-                borderBottom:
-                  i === items.length - 1
-                    ? 'none'
-                    : '1px solid var(--color-border)',
-              }}
-            >
-              <div
-                className="flex items-center justify-center shrink-0"
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 'var(--radius-full)',
-                  background: 'var(--color-accent-light)',
-                }}
-                aria-hidden="true"
-              >
-                <Folder size={14} color="var(--color-accent)" aria-hidden="true" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p
-                  className="font-body truncate"
-                  style={{
-                    fontSize: 13,
-                    color: 'var(--color-text-primary)',
-                  }}
-                >
-                  <span className="font-semibold">{b.name}</span>{' '}
-                  <span style={{ color: 'var(--color-text-secondary)' }}>
-                    was updated
-                  </span>
-                </p>
-                <p
-                  className="font-body"
-                  style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
-                >
-                  {timeAgo(b.updatedAt || b.createdAt)}
-                </p>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-    </section>
-  );
 };
 
 const DashboardPage = () => {
@@ -220,15 +132,9 @@ const DashboardPage = () => {
         </div>
         <div className="flex flex-col gap-4 min-w-0">
           {boardsLoading && boards.length === 0 ? (
-            <>
-              <SkeletonQuickActions />
-              <SkeletonRecentActivity rows={3} />
-            </>
+            <SkeletonQuickActions />
           ) : (
-            <>
-              <QuickActions />
-              <RecentActivity boards={boards} />
-            </>
+            <QuickActions />
           )}
         </div>
       </div>
