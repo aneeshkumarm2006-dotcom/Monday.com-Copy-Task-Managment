@@ -457,7 +457,9 @@ const getMyTasks = async (req, res) => {
               board: { $in: boardIds },
               assignedTo: userObjectId,
               isPersonal: { $ne: true },
-              parent: null,
+              // Subitems assigned to the user are included so they can surface
+              // on the My Work calendar. The Work/Personal list tabs filter
+              // back down to top-level tasks client-side.
             };
           }
         }
@@ -465,7 +467,6 @@ const getMyTasks = async (req, res) => {
     }
 
     const personalFilter = {
-      parent: null,
       isPersonal: true,
       createdBy: userObjectId,
     };
@@ -477,6 +478,7 @@ const getMyTasks = async (req, res) => {
       .populate('assignedTo', 'name profilePic email')
       .populate('createdBy', 'name profilePic email')
       .populate('board', 'name visibility statuses labels')
+      .populate('parent', 'name')
       .sort({ dueDate: 1, createdAt: -1 })
       .lean();
     await annotateHasSubitems(tasks);
@@ -526,7 +528,8 @@ const getCalendarTasks = async (req, res) => {
             boardTaskFilter = {
               board: { $in: boardIds },
               isPersonal: { $ne: true },
-              parent: null,
+              // Subitems are included on the calendar (no `parent: null`):
+              // a subtask with its own due date should still show up.
               dueDate: { $gte: start, $lt: end },
             };
           }
@@ -547,6 +550,7 @@ const getCalendarTasks = async (req, res) => {
       .populate('assignedTo', 'name profilePic email')
       .populate('createdBy', 'name profilePic email')
       .populate('board', 'name visibility statuses labels')
+      .populate('parent', 'name')
       .sort({ dueDate: 1, createdAt: 1 })
       .lean();
     await annotateHasSubitems(tasks);

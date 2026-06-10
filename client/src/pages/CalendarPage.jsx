@@ -254,6 +254,12 @@ const TaskListView = ({ events, onSelect }) => {
               const solid = done
                 ? DONE_GREEN
                 : getPriorityColor(task.priority || 'low').solid;
+              const isSub = Boolean(task.parent);
+              // Subtasks show their parent's name as the secondary line;
+              // top-level tasks show the board name.
+              const subtitle = isSub
+                ? `↳ ${task.parent?.name || 'Subtask'}`
+                : task.board?.name || '';
               return (
                 <li
                   key={task._id}
@@ -268,7 +274,7 @@ const TaskListView = ({ events, onSelect }) => {
                     type="button"
                     onClick={() => onSelect(ev)}
                     className="w-full flex items-center gap-3 text-left transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus:outline-none focus:bg-[color:var(--color-bg-subtle)]"
-                    style={{ padding: '12px 16px' }}
+                    style={{ padding: '12px 16px', paddingLeft: isSub ? 36 : 16 }}
                   >
                     <span
                       aria-hidden="true"
@@ -276,7 +282,9 @@ const TaskListView = ({ events, onSelect }) => {
                         width: 10,
                         height: 10,
                         borderRadius: '50%',
-                        background: solid,
+                        // Subtasks get a hollow ring, main tasks a filled dot.
+                        background: isSub ? 'transparent' : solid,
+                        border: isSub ? `2px solid ${solid}` : 'none',
                         flexShrink: 0,
                       }}
                     />
@@ -291,7 +299,7 @@ const TaskListView = ({ events, onSelect }) => {
                       >
                         {task.name}
                       </span>
-                      {task.board?.name && (
+                      {subtitle && (
                         <span
                           className="font-body block truncate"
                           style={{
@@ -300,7 +308,7 @@ const TaskListView = ({ events, onSelect }) => {
                             marginTop: 2,
                           }}
                         >
-                          {task.board.name}
+                          {subtitle}
                         </span>
                       )}
                     </span>

@@ -773,17 +773,18 @@ const MyWorkPage = () => {
     fetchTasks();
   }, [fetchTasks]);
 
-  // Board tasks assigned to the user that aren't done yet.
+  // Board tasks assigned to the user that aren't done yet. Top-level only —
+  // subitems are kept out of the list tabs (but still shown on the calendar).
   const workTasks = useMemo(
     () =>
       allTasks.filter(
-        (t) => !t.isPersonal && !isStatusDone(t.board, t.status)
+        (t) => !t.isPersonal && !t.parent && !isStatusDone(t.board, t.status)
       ),
     [allTasks]
   );
 
   const personalTasks = useMemo(
-    () => allTasks.filter((t) => t.isPersonal),
+    () => allTasks.filter((t) => t.isPersonal && !t.parent),
     [allTasks]
   );
 
