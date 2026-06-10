@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CornerDownRight,
   GripVertical,
+  ListTree,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
@@ -205,6 +206,13 @@ const TaskRow = ({
             >
               <ChevronRight size={14} aria-hidden="true" />
             </button>
+          ) : null}
+          {!isSubtask && task.hasSubitems ? (
+            <ListTree
+              size={14}
+              aria-label="Has subtasks"
+              style={{ color: 'var(--color-text-secondary)', flexShrink: 0 }}
+            />
           ) : null}
           <ChecklistBadge checklist={task.checklist} />
           <button
