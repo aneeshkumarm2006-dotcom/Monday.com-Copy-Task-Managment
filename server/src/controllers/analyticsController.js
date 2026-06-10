@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Board = require('../models/Board');
 const Task = require('../models/Task');
+const TaskGroup = require('../models/TaskGroup');
 const Organisation = require('../models/Organisation');
 
 const LEGACY_STATUS_KEYS = ['not_started', 'working_on_it', 'done', 'stuck'];
@@ -78,15 +79,19 @@ const getAnalytics = async (req, res) => {
     }
 
     const since = rangeToSince(range);
+    // Count only tasks that are actually reachable on a board — i.e. those
+    // whose group still exists. Groups drive the rows rendered in the board
+    // UI, so a task whose group was deleted is orphaned: it never appears on
+    // the board, yet it was still being counted here. That made "Board
+    // Performance" disagree with what users see (a stray Not Started task in a
+    // deleted group held REPORTS at 91% though every visible task was Done).
+    const liveGroupIds = await TaskGroup.distinct('_id', {
+      board: { $in: scopedBoardIds },
+    });
     const baseFilter = {
       board: { $in: scopedBoardIds },
       isPersonal: { $ne: true },
-      // Count only top-level tasks — the rows shown on a board. Subitems
-      // (parent != null) aren't surfaced in the board's task count or the
-      // TaskTable, so including them here made completion % disagree with
-      // what users see (e.g. every visible task "Done" but a stray undone
-      // subitem dragged the board to 91%).
-      parent: null,
+      group: { $in: liveGroupIds },
     };
     const taskFilter = { ...baseFilter };
     if (since) taskFilter.createdAt = { $gte: since };
