@@ -8,6 +8,7 @@ const {
 } = require('../services/notificationService');
 const { sendMentionEmail } = require('../services/emailService');
 const { logActivity } = require('../services/activityService');
+const { destroyCloudinaryAssets } = require('../config/cloudinary');
 
 /**
  * Access rules (mirrors commentController):
@@ -114,6 +115,7 @@ const addUpdate = async (req, res) => {
             name: a.name || '',
             mime: a.mime || '',
             size: Number.isFinite(a.size) ? a.size : 0,
+            publicId: a.publicId || '',
           }))
       : [];
 
@@ -269,8 +271,16 @@ const editUpdate = async (req, res) => {
             name: a.name || '',
             mime: a.mime || '',
             size: Number.isFinite(a.size) ? a.size : 0,
+            publicId: a.publicId || '',
           }))
       : [];
+
+    // Destroy Cloudinary assets for attachments removed in this edit.
+    const newPublicIds = new Set(cleanAttachments.map((a) => a.publicId).filter(Boolean));
+    const removedAttachments = update.attachments.filter(
+      (a) => a.publicId && !newPublicIds.has(a.publicId)
+    );
+    await destroyCloudinaryAssets(removedAttachments);
 
     update.body = body || null;
     update.bodyText = (bodyText || '').toString().slice(0, 4000);
@@ -329,6 +339,7 @@ const deleteUpdate = async (req, res) => {
       return res.status(403).json({ error: 'Not authorised' });
     }
 
+    await destroyCloudinaryAssets(update.attachments);
     await Update.deleteOne({ _id: id });
     return res.json({ ok: true });
   } catch (err) {
@@ -367,6 +378,7 @@ const uploadAttachment = async (req, res) => {
         name: req.file.originalname || '',
         mime: req.file.mimetype || '',
         size: req.file.size || 0,
+        publicId: req.file.public_id || req.file.filename || '',
       },
     });
   } catch (err) {

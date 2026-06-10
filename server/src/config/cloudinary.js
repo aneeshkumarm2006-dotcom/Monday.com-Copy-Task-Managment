@@ -35,15 +35,33 @@ const avatarUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
 });
 
+const mimeToResourceType = (mime) => {
+  const m = (mime || '').toLowerCase();
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('video/')) return 'video';
+  return 'raw';
+};
+
 // Resolve the correct Cloudinary resource_type from a multer file object.
 // Images → 'image', Videos → 'video', everything else (PDFs, docs…) → 'raw'
 // so non-image files are served with the correct Content-Type and are not
 // misidentified as images by Cloudinary.
-const resolveResourceType = (file) => {
-  const mime = (file.mimetype || '').toLowerCase();
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('video/')) return 'video';
-  return 'raw';
+const resolveResourceType = (file) => mimeToResourceType(file.mimetype || '');
+
+// Delete an array of attachments from Cloudinary. Silently skips attachments
+// without a publicId (legacy records) and swallows per-asset errors so one
+// missing asset doesn't abort a cascade delete.
+const destroyCloudinaryAssets = async (attachments) => {
+  if (!Array.isArray(attachments) || !attachments.length) return;
+  await Promise.all(
+    attachments
+      .filter((a) => a && a.publicId)
+      .map((a) =>
+        cloudinary.uploader
+          .destroy(a.publicId, { resource_type: mimeToResourceType(a.mime) })
+          .catch(() => {})
+      )
+  );
 };
 
 /**
@@ -98,4 +116,5 @@ module.exports = {
   avatarUpload,
   updateUpload,
   taskAttachmentUpload,
+  destroyCloudinaryAssets,
 };

@@ -3,6 +3,8 @@ const Board = require('../models/Board');
 const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
 const Comment = require('../models/Comment');
+const Update = require('../models/Update');
+const ActivityLog = require('../models/ActivityLog');
 const Organisation = require('../models/Organisation');
 const User = require('../models/User');
 const {
@@ -12,6 +14,7 @@ const { sendTaskAssignmentEmail } = require('../services/emailService');
 const Notification = require('../models/Notification');
 const eventBus = require('../services/eventBus');
 const { logActivity } = require('../services/activityService');
+const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const { getColumnType } = require('../utils/columnTypes');
 const { embedMirrorValues } = require('../services/mirrorRefresh');
 const { resolveBoardAccess } = require('../utils/boardAccess');
@@ -1384,9 +1387,18 @@ const deleteTask = async (req, res) => {
 
     // Cascade subitems first — fetch their ids so their comments and
     // notifications are also cleaned up.
-    const subitems = await Task.find({ parent: id }).select('_id');
+    const subitems = await Task.find({ parent: id }).select('_id attachments').lean();
     const subitemIds = subitems.map((s) => s._id);
     const idsToDelete = [id, ...subitemIds];
+
+    // Destroy all Cloudinary assets for the task, its subitems, and their updates.
+    const updateDocs = await Update.find({ task: { $in: idsToDelete } }).select('attachments').lean();
+    const allAttachments = [
+      ...(task.attachments || []),
+      ...subitems.flatMap((s) => s.attachments || []),
+      ...updateDocs.flatMap((u) => u.attachments || []),
+    ];
+    await destroyCloudinaryAssets(allAttachments);
 
     // Log the deletion before the row disappears so the log can resolve task name.
     logActivity({
@@ -1397,7 +1409,9 @@ const deleteTask = async (req, res) => {
     });
 
     await Comment.deleteMany({ task: { $in: idsToDelete } });
+    await Update.deleteMany({ task: { $in: idsToDelete } });
     await Notification.deleteMany({ task: { $in: idsToDelete } });
+    await ActivityLog.deleteMany({ task: { $in: idsToDelete } });
     if (subitemIds.length > 0) {
       await Task.deleteMany({ _id: { $in: subitemIds } });
     }
@@ -1468,6 +1482,7 @@ const uploadTaskAttachment = async (req, res) => {
       name: req.file.originalname || '',
       mime: req.file.mimetype || '',
       size: req.file.size || 0,
+      publicId: req.file.public_id || req.file.filename || '',
       uploadedBy: userId,
     };
 
@@ -1523,6 +1538,8 @@ const deleteTaskAttachment = async (req, res) => {
     await Task.findByIdAndUpdate(id, {
       $pull: { attachments: { _id: attachmentId } },
     });
+
+    await destroyCloudinaryAssets([attachment]);
 
     logActivity({
       task,

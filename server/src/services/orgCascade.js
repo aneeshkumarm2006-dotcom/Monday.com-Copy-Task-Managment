@@ -7,6 +7,9 @@ const Update = require('../models/Update');
 const Notification = require('../models/Notification');
 const Automation = require('../models/Automation');
 const User = require('../models/User');
+const ActivityLog = require('../models/ActivityLog');
+const BoardConnection = require('../models/BoardConnection');
+const { destroyCloudinaryAssets } = require('../config/cloudinary');
 
 /**
  * Permanently delete an organisation and everything that lives under it.
@@ -28,9 +31,19 @@ const cascadeDeleteOrg = async (orgId) => {
     : [];
 
   if (taskIds.length) {
+    // Collect and destroy all Cloudinary assets before wiping the DB rows.
+    const taskDocs = await Task.find({ _id: { $in: taskIds } }).select('attachments').lean();
+    const updateDocs = await Update.find({ task: { $in: taskIds } }).select('attachments').lean();
+    const allAttachments = [
+      ...taskDocs.flatMap((t) => t.attachments || []),
+      ...updateDocs.flatMap((u) => u.attachments || []),
+    ];
+    await destroyCloudinaryAssets(allAttachments);
+
     await Update.deleteMany({ task: { $in: taskIds } });
     await Comment.deleteMany({ task: { $in: taskIds } });
     await Notification.deleteMany({ task: { $in: taskIds } });
+    await ActivityLog.deleteMany({ task: { $in: taskIds } });
     await Task.deleteMany({ _id: { $in: taskIds } });
   }
 
@@ -39,6 +52,9 @@ const cascadeDeleteOrg = async (orgId) => {
   if (boardIds.length) {
     await TaskGroup.deleteMany({ board: { $in: boardIds } });
     await Automation.deleteMany({ board: { $in: boardIds } });
+    await BoardConnection.deleteMany({
+      $or: [{ fromBoardId: { $in: boardIds } }, { toBoardId: { $in: boardIds } }],
+    });
     await Board.deleteMany({ _id: { $in: boardIds } });
   }
 

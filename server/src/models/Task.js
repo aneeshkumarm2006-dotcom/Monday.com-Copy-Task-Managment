@@ -100,6 +100,7 @@ const taskSchema = new mongoose.Schema(
             name: { type: String, default: '' },
             mime: { type: String, default: '' },
             size: { type: Number, default: 0 },
+            publicId: { type: String, default: '' },
             uploadedBy: {
               type: mongoose.Schema.Types.ObjectId,
               ref: 'User',
