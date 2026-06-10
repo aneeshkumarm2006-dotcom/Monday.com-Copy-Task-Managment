@@ -321,6 +321,8 @@ const RichEditor = ({ placeholder = 'Write an update…', onChange, editorRef, i
       <style>{`
         .macan-rich-editor .macan-rich-content {
           min-height: 80px;
+          max-height: 240px;
+          overflow-y: auto;
           outline: none;
           font-size: 14px;
           line-height: 1.55;
