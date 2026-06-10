@@ -9,10 +9,18 @@ import {
   GripVertical,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
-import { formatShortDate, isOverdue } from '../../utils/dateUtils';
+import DatePickerPopover from '../ui/DatePickerPopover';
+import { isOverdue } from '../../utils/dateUtils';
 import { isStatusDone } from '../../utils/statusUtils';
 
 const NAVBAR_HEIGHT = 56;
+
+const toYMD = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 /**
  * TaskRow — a single row in the board task table.
@@ -32,6 +40,7 @@ const TaskRow = ({
   onLabelsClick,
   onOwnerClick,
   onActionsClick,
+  onDueDateChange,
   onToggleExpand,
   expanded = false,
   isLast = false,
@@ -293,27 +302,12 @@ const TaskRow = ({
 
       {/* Due Date */}
       <td style={{ width: 140, padding: '0 16px' }}>
-        {task.dueDate ? (
-          <span
-            className="font-body"
-            style={{
-              fontSize: 13,
-              fontWeight: overdue ? 600 : 500,
-              color: overdue
-                ? 'var(--color-status-stuck)'
-                : 'var(--color-text-primary)',
-            }}
-          >
-            {formatShortDate(task.dueDate)}
-          </span>
-        ) : (
-          <span
-            className="font-body"
-            style={{ fontSize: 13, color: 'var(--color-text-muted)' }}
-          >
-            —
-          </span>
-        )}
+        <DatePickerPopover
+          variant="inline"
+          value={toYMD(task.dueDate)}
+          overdue={overdue}
+          onChange={(v) => onDueDateChange?.(task, v)}
+        />
       </td>
 
       {/* Comments */}

@@ -8,6 +8,11 @@ const MONTHS = [
   'July','August','September','October','November','December',
 ];
 
+const formatShortDisplay = (date) => {
+  if (!date) return null;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
 const parseDate = (value) => {
   if (!value) return null;
   const d = new Date(value + 'T00:00:00');
@@ -62,6 +67,8 @@ const DatePickerPopover = ({
   onChange,
   placeholder = 'Pick a date',
   disabled = false,
+  variant = 'form',
+  overdue = false,
 }) => {
   const selected = parseDate(value);
   const today    = new Date();
@@ -150,34 +157,63 @@ const DatePickerPopover = ({
   return (
     <>
       {/* Trigger */}
-      <button
-        ref={triggerRef}
-        type="button"
-        disabled={disabled}
-        onClick={handleOpen}
-        className="w-full flex items-center gap-2 font-body text-[13px]"
-        style={{
-          height: 32,
-          padding: '0 10px',
-          border: open
-            ? '1.5px solid var(--color-accent)'
-            : '1.5px solid var(--color-border)',
-          borderRadius: 'var(--radius-md)',
-          background: '#fff',
-          color: selected ? 'var(--color-text-primary)' : 'var(--color-text-muted)',
-          boxShadow: open ? '0 0 0 3px rgba(37,99,235,0.12)' : 'none',
-          cursor: disabled ? 'not-allowed' : 'pointer',
-          transition: 'border-color 150ms, box-shadow 150ms',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-        }}
-      >
-        <Calendar size={13} aria-hidden="true"
-          style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {selected ? formatDisplay(selected) : placeholder}
-        </span>
-      </button>
+      {variant === 'inline' ? (
+        <button
+          ref={triggerRef}
+          type="button"
+          disabled={disabled}
+          onClick={handleOpen}
+          className="flex items-center font-body"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            padding: '2px 4px',
+            margin: '0 -4px',
+            borderRadius: 'var(--radius-sm)',
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            fontSize: 13,
+            fontWeight: selected ? (overdue ? 600 : 500) : 400,
+            color: selected
+              ? overdue ? 'var(--color-status-stuck)' : 'var(--color-text-primary)'
+              : 'var(--color-text-muted)',
+          }}
+        >
+          {selected ? (
+            formatShortDisplay(selected)
+          ) : (
+            <Calendar size={15} aria-hidden="true" style={{ opacity: 0.5 }} />
+          )}
+        </button>
+      ) : (
+        <button
+          ref={triggerRef}
+          type="button"
+          disabled={disabled}
+          onClick={handleOpen}
+          className="w-full flex items-center gap-2 font-body text-[13px]"
+          style={{
+            height: 32,
+            padding: '0 10px',
+            border: open
+              ? '1.5px solid var(--color-accent)'
+              : '1.5px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            background: '#fff',
+            color: selected ? 'var(--color-text-primary)' : 'var(--color-text-muted)',
+            boxShadow: open ? '0 0 0 3px rgba(37,99,235,0.12)' : 'none',
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            transition: 'border-color 150ms, box-shadow 150ms',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+          }}
+        >
+          <Calendar size={13} aria-hidden="true"
+            style={{ color: 'var(--color-text-muted)', flexShrink: 0 }} />
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {selected ? formatDisplay(selected) : placeholder}
+          </span>
+        </button>
+      )}
 
       {/* Popover */}
       {open && createPortal(

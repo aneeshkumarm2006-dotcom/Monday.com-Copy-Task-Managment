@@ -643,6 +643,23 @@ const BoardDetailPage = () => {
     }
   };
 
+  // --- Inline due date change -------------------------------------------
+
+  const handleDueDateChange = async (task, newVal) => {
+    if (!currentUser) return;
+    const nextIso = newVal ? new Date(newVal + 'T00:00:00').toISOString() : null;
+    const prev = task;
+    updateTaskLocal({ ...task, dueDate: nextIso });
+    try {
+      const updated = await taskService.updateTask(task._id, { dueDate: nextIso });
+      updateTaskLocal(updated);
+    } catch (err) {
+      console.error('Failed to update due date:', err);
+      updateTaskLocal(prev);
+      toastError(err?.response?.data?.error || 'Failed to update due date. Please try again.');
+    }
+  };
+
   // --- Row actions menu (Edit / Delete) --------------------------------
 
   const handleActionsClick = (task, event) => {
@@ -1223,6 +1240,7 @@ const BoardDetailPage = () => {
                               onLabelsClick={handleLabelsClick}
                               onOwnerClick={handleOwnerClick}
                               onActionsClick={canEdit ? handleActionsClick : undefined}
+                              onDueDateChange={handleDueDateChange}
                               onSaveNew={(payload) => handleSaveNewTask(group._id, payload)}
                               onSaveEdit={handleSaveEditTask}
                               onCancelEdit={handleCancelEdit}

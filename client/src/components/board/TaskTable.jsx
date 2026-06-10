@@ -107,6 +107,7 @@ const TaskTable = ({
   onLabelsClick,
   onOwnerClick,
   onActionsClick,
+  onDueDateChange,
   onSaveNew,
   onSaveEdit,
   onCancelEdit,
@@ -366,6 +367,7 @@ const TaskTable = ({
                           onLabelsClick={onLabelsClick}
                           onOwnerClick={onOwnerClick}
                           onActionsClick={onActionsClick}
+                          onDueDateChange={onDueDateChange}
                           onToggleExpand={handleToggleExpand}
                           expanded={isExpanded}
                           isLast={isLastRow && !isExpanded}
@@ -393,6 +395,7 @@ const TaskTable = ({
                             onLabelsClick={onLabelsClick}
                             onOwnerClick={onOwnerClick}
                             onActionsClick={onActionsClick}
+                            onDueDateChange={onDueDateChange}
                             onSaveEdit={onSaveEdit}
                             onCancelEdit={onCancelEdit}
                           />
@@ -454,6 +457,7 @@ const SubtaskSection = ({
   onLabelsClick,
   onOwnerClick,
   onActionsClick,
+  onDueDateChange,
   onSaveEdit,
   onCancelEdit,
 }) => {
@@ -470,8 +474,7 @@ const SubtaskSection = ({
     setError('');
     try {
       await addSubitem(parent._id, payload);
-      // Keep the add row open so several subtasks can be added in a row.
-      setAdding(true);
+      setAdding(false);
     } catch (err) {
       console.error('Failed to add subtask:', err);
       setError(
@@ -539,6 +542,7 @@ const SubtaskSection = ({
               onLabelsClick={onLabelsClick}
               onOwnerClick={onOwnerClick}
               onActionsClick={onActionsClick}
+              onDueDateChange={onDueDateChange}
               isLast={subIsLast}
             />
           );
