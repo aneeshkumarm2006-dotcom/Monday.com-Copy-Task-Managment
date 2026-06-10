@@ -120,7 +120,7 @@ const RecentBoards = ({ boards = [], limit = 5 }) => {
 
   return (
     <section
-      className="bg-surface"
+      className="bg-surface h-full"
       style={{
         borderRadius: 'var(--radius-lg)',
         boxShadow: 'var(--shadow-card)',

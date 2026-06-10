@@ -123,14 +123,14 @@ const DashboardPage = () => {
 
       {/* Content row — 2 cols desktop (1fr + 320px), single col below lg */}
       <div className="mt-6 grid gap-6 grid-cols-1 lg:grid-cols-[1fr_320px]">
-        <div className="min-w-0">
+        <div className="min-w-0 h-full">
           {boardsLoading && boards.length === 0 ? (
             <SkeletonRecentBoards rows={4} />
           ) : (
             <RecentBoards boards={boards} />
           )}
         </div>
-        <div className="flex flex-col gap-4 min-w-0">
+        <div className="flex flex-col gap-4 min-w-0 h-full">
           {boardsLoading && boards.length === 0 ? (
             <SkeletonQuickActions />
           ) : (
