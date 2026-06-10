@@ -106,7 +106,7 @@ const TaskRow = ({
         ...sortableStyle,
         height: 48,
         borderBottom: isLast ? 'none' : '1px solid var(--color-border)',
-        background: isSubtask ? 'var(--color-bg-subtle)' : sortableStyle?.background,
+        background: sortableStyle?.background,
         opacity: isDragging ? 0.4 : sortableStyle?.opacity,
         position: isDragging ? 'relative' : sortableStyle?.position,
         zIndex: isDragging ? 20 : sortableStyle?.zIndex,
