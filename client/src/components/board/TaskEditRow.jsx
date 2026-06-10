@@ -48,6 +48,9 @@ const TaskEditRow = ({
   isLast = false,
   isAdmin = false,
   autoFocus = true,
+  // When true the name field is indented to align with subtask rows rendered
+  // beneath an expanded parent (see TaskTable's SubtaskSection).
+  isSubtask = false,
 }) => {
   // Resolve initial status. If the task has one, use it; otherwise pick the
   // first board status (or the legacy `not_started` enum for boardless rows).
@@ -186,13 +189,15 @@ const TaskEditRow = ({
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="Task name…"
-          aria-label="Task name"
+          placeholder={isSubtask ? 'Subtask name…' : 'Task name…'}
+          aria-label={isSubtask ? 'Subtask name' : 'Task name'}
           className="w-full font-body bg-white focus:outline-none"
           style={{
             fontSize: 14,
             height: 32,
             padding: '0 10px',
+            marginLeft: isSubtask ? 28 : 0,
+            width: isSubtask ? 'calc(100% - 28px)' : '100%',
             border: '1.5px solid var(--color-border)',
             borderRadius: 'var(--radius-md)',
             color: 'var(--color-text-primary)',

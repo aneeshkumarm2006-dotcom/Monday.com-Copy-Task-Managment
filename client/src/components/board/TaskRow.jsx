@@ -5,6 +5,7 @@ import {
   Plus,
   Check,
   ChevronRight,
+  CornerDownRight,
   GripVertical,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
@@ -35,6 +36,11 @@ const TaskRow = ({
   expanded = false,
   isLast = false,
   highlighted = false,
+  // When true this row is a subtask rendered beneath an expanded parent: the
+  // name cell is indented with a connector, the drag handle + select checkbox
+  // are suppressed, and the row carries a subtle tinted background so the
+  // hierarchy reads at a glance.
+  isSubtask = false,
   // Sortable wiring (optional): when provided, the row participates in
   // @dnd-kit drag-and-drop. The drag handle owns the listeners so clicking
   // anywhere else still routes to the existing handlers.
@@ -91,6 +97,7 @@ const TaskRow = ({
         ...sortableStyle,
         height: 48,
         borderBottom: isLast ? 'none' : '1px solid var(--color-border)',
+        background: isSubtask ? 'var(--color-bg-subtle)' : sortableStyle?.background,
         opacity: isDragging ? 0.4 : sortableStyle?.opacity,
         position: isDragging ? 'relative' : sortableStyle?.position,
         zIndex: isDragging ? 20 : sortableStyle?.zIndex,
@@ -99,7 +106,7 @@ const TaskRow = ({
     >
       {/* Drag handle */}
       <td style={{ width: 24, padding: '0 0 0 8px' }}>
-        {!dndDisabled && (
+        {!dndDisabled && !isSubtask && (
           <button
             ref={dragHandleRef}
             type="button"
@@ -123,25 +130,38 @@ const TaskRow = ({
         )}
       </td>
 
-      {/* Checkbox */}
+      {/* Checkbox — suppressed for subtasks (bulk selection only spans
+          top-level tasks). The cell is kept for column alignment. */}
       <td style={{ width: 40, padding: '0 0 0 16px' }}>
-        <input
-          type="checkbox"
-          checked={selected}
-          onChange={(e) => onSelect?.(task._id, e.target.checked)}
-          aria-label={`Select ${task.name}`}
-          style={{
-            width: 16,
-            height: 16,
-            accentColor: 'var(--color-accent)',
-            cursor: 'pointer',
-          }}
-        />
+        {!isSubtask && (
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={(e) => onSelect?.(task._id, e.target.checked)}
+            aria-label={`Select ${task.name}`}
+            style={{
+              width: 16,
+              height: 16,
+              accentColor: 'var(--color-accent)',
+              cursor: 'pointer',
+            }}
+          />
+        )}
       </td>
 
       {/* Task Name */}
       <td style={{ padding: '0 16px', minWidth: 240 }}>
-        <div className="flex items-center gap-2 min-w-0">
+        <div
+          className="flex items-center gap-2 min-w-0"
+          style={isSubtask ? { paddingLeft: 28 } : undefined}
+        >
+          {isSubtask ? (
+            <CornerDownRight
+              size={14}
+              aria-hidden="true"
+              style={{ color: 'var(--color-text-muted)', flexShrink: 0 }}
+            />
+          ) : null}
           {onToggleExpand ? (
             <button
               type="button"

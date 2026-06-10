@@ -1,13 +1,11 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowRight, ArrowUp, ArrowDown, Plus, GripVertical } from 'lucide-react';
+import { ArrowUp, ArrowDown, Plus } from 'lucide-react';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import TaskRow from './TaskRow';
 import TaskEditRow from './TaskEditRow';
 import TaskCardList from './TaskCardList';
 import SortableItem from '../dnd/SortableItem';
 import useTaskStore from '../../store/taskStore';
-import * as taskService from '../../services/taskService';
-import { getStatusPalette } from '../../utils/priorityColors';
 
 /**
  * TaskTable — the core spreadsheet-style table used inside a board group.
@@ -381,13 +379,22 @@ const TaskTable = ({
                           dndDisabled={dndDisabled || !groupId}
                         />
                         {isExpanded ? (
-                          <SubitemsRow
+                          <SubtaskSection
                             parent={task}
                             board={board}
+                            members={members}
                             colSpan={COLUMNS.length}
-                            onOpenTask={onOpenTask}
                             isLast={isLastRow}
                             isAdmin={isAdmin}
+                            editingTaskId={editingTaskId}
+                            onOpenTask={onOpenTask}
+                            onStatusClick={onStatusClick}
+                            onPriorityClick={onPriorityClick}
+                            onLabelsClick={onLabelsClick}
+                            onOwnerClick={onOwnerClick}
+                            onActionsClick={onActionsClick}
+                            onSaveEdit={onSaveEdit}
+                            onCancelEdit={onCancelEdit}
                           />
                         ) : null}
                       </Fragment>
@@ -419,257 +426,184 @@ const TaskTable = ({
 };
 
 /**
- * SubitemsRow — single inline `<tr colSpan>` rendered beneath an expanded
- * parent row. Lists each subitem in a compact horizontal layout and exposes
- * a "+ Add subitem" button at the bottom (admin only). Clicking a subitem
- * name opens the CommentPanel via the standard onOpenTask flow.
+ * SubtaskSection — the set of `<tr>`s rendered beneath an expanded parent.
+ *
+ * Each subtask is a full Task in its own right, so it renders through the same
+ * `TaskRow` as a top-level task (every column: name, priority, status, labels,
+ * owner, due date, comments, actions) — just flagged `isSubtask` so the name is
+ * indented and the drag handle + select checkbox are suppressed. All the row
+ * handlers are the same ones the board passes to top-level rows; the store
+ * routes subtask mutations to the parent's bucket automatically.
+ *
+ * The trailing row is an inline "Add subtask" affordance that opens the same
+ * `TaskEditRow` form used to create a top-level task, so a subtask is created
+ * with the identical fields. Returns a Fragment of sibling `<tr>`s (valid
+ * inside `<tbody>`).
  */
-const SubitemsRow = ({ parent, board, colSpan, onOpenTask, isLast, isAdmin }) => {
-  const subitems = useTaskStore(
-    (s) => s.subitemsByParent[parent._id] || null
-  );
+const SubtaskSection = ({
+  parent,
+  board,
+  members,
+  colSpan,
+  isLast,
+  isAdmin,
+  editingTaskId,
+  onOpenTask,
+  onStatusClick,
+  onPriorityClick,
+  onLabelsClick,
+  onOwnerClick,
+  onActionsClick,
+  onSaveEdit,
+  onCancelEdit,
+}) => {
+  const subitems = useTaskStore((s) => s.subitemsByParent[parent._id] || null);
   const addSubitem = useTaskStore((s) => s.addSubitem);
-  const updateSubitem = useTaskStore((s) => s.updateSubitem);
 
   const [adding, setAdding] = useState(false);
-  const [newText, setNewText] = useState('');
   const [error, setError] = useState('');
-
-  const boardStatuses = useMemo(() => {
-    if (!board || !Array.isArray(board.statuses)) return [];
-    return [...board.statuses].sort((a, b) => (a.order || 0) - (b.order || 0));
-  }, [board]);
-
-  const handleCycleStatus = async (sub) => {
-    if (boardStatuses.length === 0) return;
-    const currentId = sub.status ? sub.status.toString() : null;
-    const idx = boardStatuses.findIndex(
-      (s) => s._id.toString() === currentId
-    );
-    const next = boardStatuses[(idx + 1) % boardStatuses.length];
-    try {
-      const updated = await taskService.updateTask(sub._id, {
-        status: next._id,
-      });
-      updateSubitem(updated);
-    } catch (err) {
-      console.error('Failed to update subitem status:', err);
-      setError(
-        err?.response?.data?.error ||
-          'Failed to update status. Please try again.'
-      );
-    }
-  };
-
-  const handleAdd = async (e) => {
-    e?.preventDefault?.();
-    const trimmed = newText.trim();
-    if (!trimmed) return;
-    try {
-      await addSubitem(parent._id, { name: trimmed });
-      setNewText('');
-      setAdding(true);
-    } catch (err) {
-      console.error('Failed to add subitem:', err);
-      setError(
-        err?.response?.data?.error ||
-          'Failed to add subitem. Please try again.'
-      );
-    }
-  };
 
   const items = Array.isArray(subitems) ? subitems : [];
   const loading = subitems == null;
 
+  const handleSaveNew = async (payload) => {
+    setError('');
+    try {
+      await addSubitem(parent._id, payload);
+      // Keep the add row open so several subtasks can be added in a row.
+      setAdding(true);
+    } catch (err) {
+      console.error('Failed to add subtask:', err);
+      setError(
+        err?.response?.data?.error ||
+          'Failed to add subtask. Please try again.'
+      );
+      throw err;
+    }
+  };
+
   return (
-    <tr
-      style={{
-        background: 'var(--color-bg-subtle, #F9FAFB)',
-        borderBottom: isLast ? 'none' : '1px solid var(--color-border)',
-      }}
-    >
-      <td colSpan={colSpan} style={{ padding: '8px 16px 12px 80px' }}>
-        {error ? (
-          <p
-            className="font-body"
-            role="alert"
+    <>
+      {error ? (
+        <tr style={{ background: 'var(--color-bg-subtle)' }}>
+          <td colSpan={colSpan} style={{ padding: '6px 16px 6px 80px' }}>
+            <p
+              className="font-body"
+              role="alert"
+              style={{ fontSize: 12, color: 'var(--color-status-stuck)' }}
+            >
+              {error}
+            </p>
+          </td>
+        </tr>
+      ) : null}
+
+      {loading ? (
+        <tr style={{ background: 'var(--color-bg-subtle)' }}>
+          <td colSpan={colSpan} style={{ padding: '8px 16px 8px 80px' }}>
+            <p
+              className="font-body"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+            >
+              Loading subtasks…
+            </p>
+          </td>
+        </tr>
+      ) : (
+        items.map((sub, idx) => {
+          // The last subtask only owns the section's closing border when no
+          // trailing row (add-subtask / empty state) follows it — i.e. for a
+          // read-only viewer.
+          const subIsLast = !isAdmin && idx === items.length - 1 ? isLast : false;
+          return editingTaskId === sub._id ? (
+            <TaskEditRow
+              key={sub._id}
+              board={board}
+              members={members}
+              initialTask={sub}
+              isLast={subIsLast}
+              isAdmin={isAdmin}
+              onSave={(payload) => onSaveEdit?.(sub._id, payload)}
+              onCancel={onCancelEdit}
+            />
+          ) : (
+            <TaskRow
+              key={sub._id}
+              task={sub}
+              board={board}
+              isSubtask
+              dndDisabled
+              onOpen={onOpenTask}
+              onStatusClick={onStatusClick}
+              onPriorityClick={onPriorityClick}
+              onLabelsClick={onLabelsClick}
+              onOwnerClick={onOwnerClick}
+              onActionsClick={onActionsClick}
+              isLast={subIsLast}
+            />
+          );
+        })
+      )}
+
+      {/* Inline "Add subtask" — same form/fields as creating a top-level task */}
+      {isAdmin ? (
+        adding ? (
+          <TaskEditRow
+            board={board}
+            members={members}
+            initialTask={null}
+            isLast={isLast}
+            isAdmin={isAdmin}
+            isSubtask
+            onSave={handleSaveNew}
+            onCancel={() => setAdding(false)}
+          />
+        ) : (
+          <tr
             style={{
-              fontSize: 12,
-              color: 'var(--color-status-stuck)',
-              marginBottom: 6,
+              background: 'var(--color-bg-subtle)',
+              borderBottom: isLast ? 'none' : '1px solid var(--color-border)',
             }}
           >
-            {error}
-          </p>
-        ) : null}
-        {loading ? (
-          <p
-            className="font-body"
-            style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
-          >
-            Loading subitems…
-          </p>
-        ) : items.length === 0 ? (
-          <p
-            className="font-body"
-            style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
-          >
-            No subitems yet.
-          </p>
-        ) : (
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {items.map((sub) => {
-              const palette = getStatusPalette(board, sub.status);
-              return (
-                <li
-                  key={sub._id}
-                  className="flex items-center gap-2"
-                  style={{ padding: '3px 0' }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => handleCycleStatus(sub)}
-                    aria-label={`Status: ${palette.label}. Click to change.`}
-                    title={palette.label}
-                    style={{
-                      width: 12,
-                      height: 12,
-                      borderRadius: '50%',
-                      background: palette.solid || palette.text,
-                      border: '1.5px solid #FFFFFF',
-                      boxShadow: '0 0 0 1px var(--color-border-strong)',
-                      flexShrink: 0,
-                      cursor: 'pointer',
-                      padding: 0,
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onOpenTask?.(sub)}
-                    className="text-left font-body transition-colors duration-150 hover:underline hover:text-[color:var(--color-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] truncate"
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 500,
-                      color: 'var(--color-text-primary)',
-                      background: 'transparent',
-                      border: 'none',
-                      padding: 0,
-                      cursor: 'pointer',
-                      flex: 1,
-                      minWidth: 0,
-                    }}
-                  >
-                    {sub.name}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenTask?.(sub)}
-                    aria-label={`Open ${sub.name}`}
-                    title="Open subitem"
-                    className="flex items-center justify-center rounded transition-colors duration-150 hover:bg-[color:var(--color-border)]"
-                    style={{
-                      width: 22,
-                      height: 22,
-                      background: 'transparent',
-                      border: 'none',
-                      cursor: 'pointer',
-                      color: 'var(--color-text-muted)',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <ArrowRight size={12} aria-hidden="true" />
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-
-        {isAdmin ? (
-          adding ? (
-            <form
-              onSubmit={handleAdd}
-              className="flex items-center gap-2"
-              style={{ marginTop: 6 }}
-            >
-              <span
-                aria-hidden="true"
-                style={{
-                  width: 12,
-                  height: 12,
-                  borderRadius: '50%',
-                  border: '1.5px solid var(--color-border-strong)',
-                  flexShrink: 0,
-                }}
-              />
-              <input
-                type="text"
-                value={newText}
-                onChange={(e) => setNewText(e.target.value)}
-                onBlur={() => {
-                  if (!newText.trim()) setAdding(false);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.preventDefault();
-                    setNewText('');
-                    setAdding(false);
-                  }
-                }}
-                placeholder="New subitem"
-                autoFocus
-                className="flex-1 font-body focus:outline-none"
-                style={{
-                  fontSize: 13,
-                  padding: '4px 6px',
-                  background: 'var(--color-bg-surface, #FFFFFF)',
-                  border: '1px solid var(--color-border-strong)',
-                  borderRadius: 'var(--radius-sm)',
-                  color: 'var(--color-text-primary)',
-                }}
-              />
+            <td colSpan={colSpan} style={{ padding: '6px 16px 8px 80px' }}>
               <button
-                type="submit"
-                disabled={!newText.trim()}
-                className="inline-flex items-center justify-center font-body disabled:opacity-40 disabled:cursor-not-allowed"
+                type="button"
+                onClick={() => setAdding(true)}
+                className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:text-[color:var(--color-accent)]"
                 style={{
-                  height: 26,
-                  padding: '0 10px',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  background: 'var(--color-accent)',
-                  color: '#FFFFFF',
+                  padding: '4px 0',
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: 'var(--color-text-muted)',
+                  background: 'transparent',
                   border: 'none',
-                  borderRadius: 'var(--radius-sm)',
-                  cursor: newText.trim() ? 'pointer' : 'not-allowed',
+                  cursor: 'pointer',
                 }}
               >
-                Add
+                <Plus size={13} aria-hidden="true" />
+                Add subtask
               </button>
-            </form>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setAdding(true)}
-              className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:text-[color:var(--color-accent)]"
-              style={{
-                marginTop: 6,
-                padding: '4px 0',
-                fontSize: 12,
-                fontWeight: 500,
-                color: 'var(--color-text-muted)',
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-              }}
+            </td>
+          </tr>
+        )
+      ) : items.length === 0 && !loading ? (
+        <tr
+          style={{
+            background: 'var(--color-bg-subtle)',
+            borderBottom: isLast ? 'none' : '1px solid var(--color-border)',
+          }}
+        >
+          <td colSpan={colSpan} style={{ padding: '8px 16px 8px 80px' }}>
+            <p
+              className="font-body"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
             >
-              <Plus size={12} aria-hidden="true" />
-              Add subitem
-            </button>
-          )
-        ) : null}
-      </td>
-    </tr>
+              No subtasks yet.
+            </p>
+          </td>
+        </tr>
+      ) : null}
+    </>
   );
 };
 
