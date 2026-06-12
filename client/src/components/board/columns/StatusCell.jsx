@@ -58,6 +58,7 @@ const StatusCell = ({ value, column, readOnly, onChange }) => {
             top: '100%',
             left: 0,
             minWidth: 180,
+            maxWidth: 'calc(100vw - 24px)',
             zIndex: 40,
             background: 'var(--color-bg-elevated)',
             border: '1px solid var(--color-border)',

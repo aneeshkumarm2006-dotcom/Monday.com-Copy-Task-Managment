@@ -96,7 +96,9 @@ const DataGrid = ({ board, tasks = [], readOnly = false }) => {
   }
 
   return (
-    <div style={{ width: '100%', overflowX: 'auto' }}>
+    <>
+    {/* Desktop / tablet (≥768px): the scrollable spreadsheet grid (unchanged). */}
+    <div className="hidden md:block" style={{ width: '100%', overflowX: 'auto' }}>
       <div
         style={{
           display: 'grid',
@@ -275,8 +277,111 @@ const DataGrid = ({ board, tasks = [], readOnly = false }) => {
         )}
       </div>
     </div>
+
+    {/* Mobile (<768px): the spreadsheet grid can't fit, so each task becomes a
+        stacked card with one "column name → cell" row per column. Reuses the
+        exact same cell renderers as the grid. */}
+    <div className="md:hidden flex flex-col gap-3">
+      {tasks.length === 0 ? (
+        <div
+          style={{
+            padding: '24px 12px',
+            color: 'var(--color-text-muted)',
+            fontSize: 13,
+            textAlign: 'center',
+          }}
+        >
+          No tasks yet.
+        </div>
+      ) : (
+        tasks.map((task) => (
+          <MobileCard
+            key={task._id}
+            columns={columns}
+            task={task}
+            valueFor={valueFor}
+            onChange={onCellChange}
+            readOnly={readOnly}
+          />
+        ))
+      )}
+      {!readOnly && (
+        <div className="flex items-center gap-2 pt-1">
+          <AddColumnButton boardId={board._id} board={board} />
+          <span className="font-body" style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+            Add column
+          </span>
+        </div>
+      )}
+    </div>
+    </>
   );
 };
+
+/**
+ * MobileCard — a single task rendered as a vertical "field list" for the
+ * <768px breakpoint. Each column becomes a label + cell row; the cell is the
+ * same component used in the desktop grid so editing behaves identically.
+ */
+const MobileCard = ({ columns, task, valueFor, onChange, readOnly }) => (
+  <div
+    style={{
+      background: 'var(--color-bg-surface)',
+      border: '1px solid var(--color-border)',
+      borderRadius: 'var(--radius-md)',
+      boxShadow: 'var(--shadow-card)',
+      padding: '4px 14px',
+    }}
+  >
+    {columns.map((col, idx) => {
+      const Cell = cellComponentFor(col.type);
+      const value =
+        col.key === 'lead_name'
+          ? (task.name || valueFor(task, col._id))
+          : valueFor(task, col._id);
+      return (
+        <div
+          key={col._id}
+          className="flex items-center gap-3"
+          style={{
+            padding: '8px 0',
+            minHeight: 40,
+            borderBottom:
+              idx === columns.length - 1
+                ? 'none'
+                : '1px solid var(--color-border)',
+          }}
+        >
+          <span
+            className="font-body"
+            style={{
+              flex: '0 0 38%',
+              fontSize: 11,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+              color: 'var(--color-text-secondary)',
+            }}
+          >
+            {col.name}
+            {col.isPrimary && (
+              <span style={{ marginLeft: 4, opacity: 0.6 }} title="Primary column">*</span>
+            )}
+          </span>
+          <div className="min-w-0 flex-1 flex items-stretch">
+            <Cell
+              value={value}
+              column={col}
+              task={task}
+              readOnly={readOnly || col.type === 'formula'}
+              onChange={(v) => onChange(task, col, v)}
+            />
+          </div>
+        </div>
+      );
+    })}
+  </div>
+);
 
 const Row = ({ columns, task, ri, onChange, valueFor, readOnly }) => {
   const stripe = ri % 2 === 1 ? 'var(--color-bg-subtle)' : 'transparent';

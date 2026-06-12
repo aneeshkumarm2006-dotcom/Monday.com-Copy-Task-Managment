@@ -36,7 +36,11 @@ const TaskActionsMenu = ({ anchorEl, onEdit, onDelete, onClose }) => {
   const rect = anchorEl.getBoundingClientRect();
   const MENU_WIDTH = 160;
   const top = rect.bottom + 6;
-  const left = rect.right - MENU_WIDTH;
+  // Clamp horizontally so the menu never spills past the viewport edge on
+  // small screens. On desktop the anchored position is already in-bounds, so
+  // Math.min/Math.max return the original value — no visual change.
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1024;
+  const left = Math.max(8, Math.min(rect.right - MENU_WIDTH, vw - MENU_WIDTH - 8));
 
   return (
     <div

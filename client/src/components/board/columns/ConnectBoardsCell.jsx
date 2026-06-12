@@ -285,7 +285,7 @@ const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
             left: 0,
             marginTop: 4,
             zIndex: 50,
-            width: 280,
+            width: 'min(280px, calc(100vw - 24px))',
             maxHeight: 320,
             display: 'flex',
             flexDirection: 'column',

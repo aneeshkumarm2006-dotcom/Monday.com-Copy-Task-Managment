@@ -73,7 +73,13 @@ const StatusMenu = ({ anchorEl, board, value, onSelect, onEditChips, onClose }) 
       const spaceBelow = window.innerHeight - r.bottom;
       const openUpward = menuH > 0 && spaceBelow < menuH + VIEWPORT_MARGIN && r.top > spaceBelow;
       const top = openUpward ? Math.max(VIEWPORT_MARGIN, r.top - menuH - 6) : r.bottom + 6;
-      setPosition({ top, left: r.left, openUpward });
+      // Clamp left so the menu can't overflow the right edge on small screens
+      // (no-op on desktop where the anchored position already fits).
+      const left = Math.max(
+        VIEWPORT_MARGIN,
+        Math.min(r.left, window.innerWidth - 180 - VIEWPORT_MARGIN)
+      );
+      setPosition({ top, left, openUpward });
     };
     compute();
     window.addEventListener('scroll', compute, true);

@@ -72,12 +72,13 @@ const StatCard = ({
       className={[
         'relative overflow-hidden w-full',
         'transition-transform duration-150 ease-in-out',
+        // Slightly tighter padding on phones; desktop keeps 20px/24px.
+        'p-4 sm:px-6 sm:py-5',
         className,
       ].join(' ')}
       style={{
         background,
         borderRadius: 'var(--radius-lg)',
-        padding: '20px 24px',
         minHeight: 120,
         color: '#FFFFFF',
       }}
@@ -119,8 +120,8 @@ const StatCard = ({
           {label}
         </p>
         <p
-          className="font-display font-extrabold leading-none mt-2"
-          style={{ fontSize: 36, color: '#FFFFFF' }}
+          className="font-display font-extrabold leading-none mt-2 text-[28px] sm:text-[36px]"
+          style={{ color: '#FFFFFF' }}
         >
           {isNumeric ? animated : value}
           {suffix ? <span className="ml-0.5">{suffix}</span> : null}

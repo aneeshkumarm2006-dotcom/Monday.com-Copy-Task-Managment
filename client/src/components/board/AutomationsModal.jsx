@@ -658,7 +658,7 @@ const ActionRow = ({
           <X size={12} color="var(--color-text-secondary)" />
         </button>
       </div>
-      <div className={isSubitem ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-2 gap-2'}>
+      <div className={isSubitem ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-1 sm:grid-cols-2 gap-2'}>
         <input
           type="text"
           placeholder={isSubitem ? 'Subitem name' : 'Task name'}
@@ -928,7 +928,7 @@ const GroupCreatedTemplateRow = ({
         <X size={12} color="var(--color-text-secondary)" />
       </button>
     </div>
-    <div className="grid grid-cols-2 gap-2">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
       <select
         value={template.priority || 'medium'}
         disabled={disabled}
@@ -1787,7 +1787,7 @@ const AutomationsModal = ({
       )}
 
       {form.triggerType === 'SCHEDULE' && (
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <SelectField
           label="Time of day"
           value={form.hour}
@@ -1864,7 +1864,7 @@ const AutomationsModal = ({
       )}
 
       {form.triggerType === 'SCHEDULE' && (
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <SelectField
           label="Group"
           value={form.group}

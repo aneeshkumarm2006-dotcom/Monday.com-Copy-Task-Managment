@@ -76,6 +76,12 @@ const Button = forwardRef(function Button(
       ? { height: size === 'sm' ? 28 : 32, padding: '0 12px' }
       : {};
 
+  // Mobile tap target: bump non-compact buttons to ≥44px tall below md so they
+  // meet the 44px touch guideline. Desktop (md+) resets to the design's exact
+  // height. Compact `sm` and `ghost` buttons stay dense by design.
+  const tapTargetClass =
+    variant !== 'ghost' && size !== 'sm' ? 'min-h-[44px] md:min-h-0' : '';
+
   return (
     <button
       ref={ref}
@@ -88,6 +94,7 @@ const Button = forwardRef(function Button(
         'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]',
         'disabled:opacity-50 disabled:cursor-not-allowed',
         !disabled && hoverClass,
+        tapTargetClass,
         className,
       ]
         .filter(Boolean)

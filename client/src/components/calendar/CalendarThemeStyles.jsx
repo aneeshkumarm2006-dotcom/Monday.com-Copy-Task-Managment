@@ -110,6 +110,36 @@ const CalendarThemeStyles = () => (
     .macan-calendar-wrap .rbc-row-segment {
       padding: 0 2px;
     }
+
+    /* === RESPONSIVE (mobile ≤767px) ===
+       Shrinks the month grid so it fits a phone viewport: shorter rows,
+       tighter header/date padding, smaller event text. Desktop is untouched
+       — these rules only apply below the md breakpoint. */
+    @media (max-width: 767px) {
+      .macan-calendar-wrap .rbc-month-row {
+        min-height: 64px;
+      }
+      .macan-calendar-wrap .rbc-header {
+        padding: 8px 4px;
+        font-size: 10px;
+        letter-spacing: 0.03em;
+      }
+      .macan-calendar-wrap .rbc-date-cell {
+        padding: 4px 5px;
+        font-size: 11px;
+      }
+      .macan-calendar-wrap .rbc-event {
+        font-size: 11px;
+        padding: 1px 4px !important;
+      }
+      .macan-calendar-wrap .rbc-show-more {
+        font-size: 10px;
+        padding: 2px 4px;
+      }
+      .macan-calendar-wrap .rbc-time-view .rbc-label {
+        font-size: 10px;
+      }
+    }
   `}</style>
 );
 

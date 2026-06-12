@@ -46,20 +46,18 @@ const GreetingBanner = ({ name = 'there', pendingCount = 0 }) => {
 
   return (
     <div
-      className="w-full bg-surface"
+      className="w-full bg-surface px-5 py-5 sm:px-8 sm:py-6"
       style={{
         borderRadius: 'var(--radius-lg)',
         boxShadow: 'var(--shadow-card)',
-        padding: '24px 32px',
       }}
     >
       <div className="flex items-start gap-4">
         <MacanIcon />
         <div className="min-w-0 flex-1">
           <h1
-            className="font-display font-bold leading-tight"
+            className="font-display font-bold leading-tight text-[22px] md:text-[28px]"
             style={{
-              fontSize: 28,
               color: 'var(--color-text-primary)',
               letterSpacing: 'var(--tracking-tight)',
             }}

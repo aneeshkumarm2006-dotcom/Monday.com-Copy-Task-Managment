@@ -813,8 +813,8 @@ const SettingsPage = () => {
         {/* Page header */}
         <header className="mb-6">
           <h1
-            className="font-display font-bold text-[color:var(--color-text-primary)]"
-            style={{ fontSize: 28, letterSpacing: '-0.01em' }}
+            className="font-display font-bold text-[color:var(--color-text-primary)] text-[22px] md:text-[28px]"
+            style={{ letterSpacing: '-0.01em' }}
           >
             Settings
           </h1>
@@ -841,7 +841,7 @@ const SettingsPage = () => {
             onTabChange={setActiveTab}
             showAdminTabs={isAdmin}
           />
-          <div className="flex-1" style={{ padding: 32 }}>
+          <div className="flex-1 p-5 md:p-8">
             {renderTab()}
           </div>
         </div>

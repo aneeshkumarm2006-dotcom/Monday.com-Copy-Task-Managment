@@ -602,6 +602,17 @@ const PersonalTab = ({
 const CalendarTab = ({ events, onSelect }) => {
   const [view, setView] = useState('month');
   const [date, setDate] = useState(() => new Date());
+  // Track viewport so the fixed-height grid can shrink on phones.
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handler = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
 
   const handleNavigate = (action) => {
     setDate((prev) => {
@@ -728,7 +739,12 @@ const CalendarTab = ({ events, onSelect }) => {
           views={['month', 'week']}
           popup
           toolbar={false}
-          style={{ height: view === 'week' ? 640 : 720 }}
+          // Shorter grid on mobile; desktop keeps its 640/720 heights.
+          style={{
+            height: isMobile
+              ? (view === 'week' ? 480 : 520)
+              : (view === 'week' ? 640 : 720),
+          }}
         />
       </div>
 

@@ -88,6 +88,7 @@ const PersonCell = ({ value, readOnly, onChange }) => {
             top: '100%',
             left: 0,
             minWidth: 220,
+            maxWidth: 'calc(100vw - 24px)',
             maxHeight: 280,
             overflowY: 'auto',
             zIndex: 40,

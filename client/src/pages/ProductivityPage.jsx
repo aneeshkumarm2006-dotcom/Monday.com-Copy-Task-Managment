@@ -493,9 +493,8 @@ const ProductivityPage = () => {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <h1
-            className="font-display font-bold"
+            className="font-display font-bold text-[22px] md:text-[28px]"
             style={{
-              fontSize: 28,
               color: 'var(--color-text-primary)',
               lineHeight: 1.2,
             }}
@@ -510,8 +509,8 @@ const ProductivityPage = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-3 flex-wrap">
-          <div style={{ width: 180 }}>
+        <div className="flex items-center gap-3 flex-wrap w-full sm:w-auto">
+          <div className="w-full sm:w-[180px]">
             <Dropdown
               options={SORT_OPTIONS}
               value={sortBy}
@@ -520,7 +519,7 @@ const ProductivityPage = () => {
               size="sm"
             />
           </div>
-          <div style={{ width: 160 }}>
+          <div className="w-full sm:w-[160px]">
             <Dropdown
               options={RANGE_OPTIONS}
               value={range}
@@ -596,7 +595,7 @@ const ProductivityPage = () => {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search members…"
-            className="font-body text-[13px] text-[color:var(--color-text-primary)] bg-[color:var(--color-bg-input)] focus:outline-none focus:border-[color:var(--color-accent)]"
+            className="w-full sm:w-auto font-body text-[13px] text-[color:var(--color-text-primary)] bg-[color:var(--color-bg-input)] focus:outline-none focus:border-[color:var(--color-accent)]"
             style={{
               height: 32,
               padding: '0 12px',

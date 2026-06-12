@@ -82,7 +82,9 @@ const Dropdown = ({
           'bg-[color:var(--color-bg-input)] transition-[border-color,box-shadow,background-color] duration-150 ease-in-out',
           'focus:outline-none focus:bg-white',
           'disabled:opacity-60 disabled:cursor-not-allowed',
-        ].join(' ')}
+          // Mobile tap target for non-compact dropdowns; desktop unchanged.
+          size !== 'sm' ? 'min-h-[44px] md:min-h-0' : '',
+        ].filter(Boolean).join(' ')}
         style={{
           height: triggerHeight,
           border: open

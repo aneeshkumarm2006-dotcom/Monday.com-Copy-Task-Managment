@@ -379,7 +379,7 @@ const FilterPopover = ({ label, icon: Icon, activeCount = 0, children }) => {
             left: 0,
             zIndex: 50,
             minWidth: 220,
-            maxWidth: 280,
+            maxWidth: 'min(280px, calc(100vw - 24px))',
             maxHeight: 320,
             overflowY: 'auto',
             padding: 6,

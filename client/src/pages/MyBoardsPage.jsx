@@ -205,8 +205,7 @@ const MyBoardsPage = () => {
       <div className="mt-6 flex items-center gap-3 flex-wrap">
         {/* Search input */}
         <div
-          className="relative flex items-center"
-          style={{ width: 320, maxWidth: '100%' }}
+          className="relative flex items-center w-full sm:w-[320px]"
         >
           <Search
             size={16}

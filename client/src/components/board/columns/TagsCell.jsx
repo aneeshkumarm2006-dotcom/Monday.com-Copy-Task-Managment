@@ -73,6 +73,7 @@ const TagsCell = ({ value, column, readOnly, onChange }) => {
             top: '100%',
             left: 0,
             minWidth: 200,
+            maxWidth: 'calc(100vw - 24px)',
             maxHeight: 280,
             overflowY: 'auto',
             zIndex: 40,

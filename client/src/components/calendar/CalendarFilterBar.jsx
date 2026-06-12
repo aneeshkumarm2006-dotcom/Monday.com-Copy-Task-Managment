@@ -68,7 +68,7 @@ const CalendarFilterBar = ({
         onChange={onBoardFilterChange}
       />
 
-      <div style={{ width: 200 }}>
+      <div className="w-full sm:w-[200px]">
         <AssigneePicker
           members={membersWithUnassigned}
           value={assigneeFilter}
@@ -150,7 +150,7 @@ const BoardMultiSelect = ({ boards = [], value = [], onChange }) => {
   })();
 
   return (
-    <div ref={wrapperRef} className="relative" style={{ width: 200 }}>
+    <div ref={wrapperRef} className="relative w-full sm:w-[200px]">
       <button
         ref={triggerRef}
         type="button"

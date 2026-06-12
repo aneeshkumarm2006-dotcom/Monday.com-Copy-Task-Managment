@@ -17,7 +17,7 @@ const EmptyState = ({
   return (
     <div
       className={[
-        'flex flex-col items-center justify-center text-center px-6 py-12',
+        'flex flex-col items-center justify-center text-center px-6 py-8 sm:py-12',
         className,
       ]
         .filter(Boolean)

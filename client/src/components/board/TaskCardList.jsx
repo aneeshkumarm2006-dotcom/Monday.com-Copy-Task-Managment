@@ -170,7 +170,7 @@ const TaskCard = ({ task, board, onOpen, onStatusClick, onPriorityClick, onLabel
             onClick={(e) => onActionsClick(task, e)}
             aria-label="Task actions"
             className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] shrink-0"
-            style={{ width: 28, height: 28 }}
+            style={{ width: 36, height: 36 }}
           >
             <MoreHorizontal
               size={16}

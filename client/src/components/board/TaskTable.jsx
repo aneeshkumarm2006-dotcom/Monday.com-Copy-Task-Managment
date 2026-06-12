@@ -233,7 +233,11 @@ const TaskTable = ({
       <div
         className={[
           'w-full',
-          isInlineEditing ? 'overflow-visible' : 'overflow-x-auto hidden md:block',
+          // During inline editing on mobile, contain the wide table in its own
+          // horizontal scroll so it can't push the whole page sideways. On
+          // desktop (md+) keep overflow visible — unchanged. Row dropdowns are
+          // portaled to <body>, so contained scroll never clips them.
+          isInlineEditing ? 'overflow-x-auto md:overflow-visible' : 'overflow-x-auto hidden md:block',
         ].join(' ')}
       >
       <table
