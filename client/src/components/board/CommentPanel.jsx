@@ -7,6 +7,8 @@ import {
   Plus,
   Settings as SettingsIcon,
   ChevronLeft,
+  ChevronDown,
+  Check,
   Pencil,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
@@ -16,7 +18,11 @@ import * as commentService from '../../services/commentService';
 import useAuthStore from '../../store/authStore';
 import useNotificationStore from '../../store/notificationStore';
 import useOrgStore from '../../store/orgStore';
-import { getColorPair } from '../../utils/priorityColors';
+import {
+  getColorPair,
+  PRIORITY_COLORS,
+  STATUS_COLORS,
+} from '../../utils/priorityColors';
 import ChecklistEditor from './ChecklistEditor';
 import UpdatesTab from './UpdatesTab';
 import FilesTab from './FilesTab';
@@ -66,6 +72,11 @@ const CommentPanel = ({
   onBack,
   canGoBack = false,
   onCommentCountChange,
+  // When true, the priority + status badges become inline dropdowns even for
+  // non-admins. Used by the "My Work" view so users can re-triage their own
+  // tasks straight from the detail panel. Board context leaves this off so
+  // its existing admin-gated permission model is unchanged.
+  editableStatusPriority = false,
 }) => {
   const [comments, setComments] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -648,12 +659,25 @@ const CommentPanel = ({
             className="mt-3 flex flex-wrap items-center gap-2"
             aria-label="Task badges"
           >
-            {task.priority && <Chip type="priority" value={task.priority} />}
-            <Chip
-              type="status"
-              value={task.status || 'not_started'}
-              board={board}
-            />
+            {editableStatusPriority && onUpdateTask ? (
+              <>
+                <PriorityEditor task={task} onUpdateTask={onUpdateTask} />
+                <StatusEditor
+                  task={task}
+                  board={board || task.board}
+                  onUpdateTask={onUpdateTask}
+                />
+              </>
+            ) : (
+              <>
+                {task.priority && <Chip type="priority" value={task.priority} />}
+                <Chip
+                  type="status"
+                  value={task.status || 'not_started'}
+                  board={board}
+                />
+              </>
+            )}
           </div>
 
           <dl className="mt-4 flex flex-col gap-2">
@@ -1860,6 +1884,233 @@ const LabelsEditor = ({ task, board, isAdmin, onUpdateTask, onEditLabels }) => {
         </div>
       )}
     </div>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/* Inline status / priority editors                                    */
+/* ------------------------------------------------------------------ */
+
+// Priority options in severity order.
+const PRIORITY_OPTIONS = ['critical', 'high', 'medium', 'low'];
+
+// Legacy enum statuses — used for personal tasks (no board) and as a fallback
+// for board tasks whose `status` is still the pre-migration enum string.
+const LEGACY_STATUS_OPTIONS = ['not_started', 'working_on_it', 'done', 'stuck'];
+
+/**
+ * A Chip-styled trigger that opens a dropdown of colored option pills.
+ * `value` is compared against each option's `value` to mark the current
+ * selection; `onSelect` receives the chosen value and may return a promise
+ * (the chip shows a brief saving state while it resolves).
+ */
+const InlineSelectChip = ({ value, current, options, onSelect, ariaLabel }) => {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const handlePick = async (opt) => {
+    setOpen(false);
+    if (opt.value === value) return;
+    setSaving(true);
+    try {
+      await onSelect(opt.value);
+    } catch {
+      // Parent surfaces a toast and rolls the value back.
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        disabled={saving}
+        className="inline-flex items-center gap-1 font-body font-medium text-[12px] leading-none whitespace-nowrap transition-opacity duration-150 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+        style={{
+          backgroundColor: current.bg,
+          color: current.text,
+          borderRadius: 'var(--radius-full)',
+          padding: '3px 8px 3px 10px',
+          border: 'none',
+          cursor: saving ? 'wait' : 'pointer',
+          opacity: saving ? 0.6 : 1,
+        }}
+      >
+        {current.label}
+        <ChevronDown
+          size={12}
+          aria-hidden="true"
+          style={{
+            transition: 'transform 150ms ease-in-out',
+            transform: open ? 'rotate(180deg)' : 'rotate(0)',
+          }}
+        />
+      </button>
+
+      {open && (
+        <ul
+          role="listbox"
+          aria-label={ariaLabel}
+          className="overflow-auto"
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 4px)',
+            left: 0,
+            zIndex: 120,
+            minWidth: 200,
+            maxHeight: 280,
+            listStyle: 'none',
+            margin: 0,
+            padding: 4,
+            background: '#FFFFFF',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            boxShadow: 'var(--shadow-lg)',
+          }}
+        >
+          {options.map((opt) => {
+            const selected = opt.value === value;
+            return (
+              <li key={opt.value} role="option" aria-selected={selected}>
+                <button
+                  type="button"
+                  onClick={() => handlePick(opt)}
+                  className="w-full flex items-center gap-2 text-left transition-colors duration-100 hover:bg-[color:var(--color-bg-subtle)] focus:outline-none focus-visible:bg-[color:var(--color-bg-subtle)]"
+                  style={{
+                    padding: '6px 8px',
+                    background: 'transparent',
+                    border: 'none',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span
+                    className="inline-flex items-center font-body font-medium text-[12px] leading-none"
+                    style={{
+                      backgroundColor: opt.bg,
+                      color: opt.text,
+                      borderRadius: 'var(--radius-full)',
+                      padding: '3px 10px',
+                    }}
+                  >
+                    {opt.label}
+                  </span>
+                  {selected && (
+                    <Check
+                      size={14}
+                      strokeWidth={3}
+                      aria-hidden="true"
+                      style={{ marginLeft: 'auto', color: 'var(--color-accent)' }}
+                    />
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Priority dropdown — the four fixed severity levels.
+ */
+const PriorityEditor = ({ task, onUpdateTask }) => {
+  const value = task.priority || 'low';
+  const cur = PRIORITY_COLORS[value] || PRIORITY_COLORS.low;
+  const options = PRIORITY_OPTIONS.map((p) => {
+    const c = PRIORITY_COLORS[p];
+    return { value: p, label: c.label, bg: c.bg, text: c.text };
+  });
+  return (
+    <InlineSelectChip
+      value={value}
+      current={{ label: cur.label, bg: cur.bg, text: cur.text }}
+      options={options}
+      ariaLabel="Change priority"
+      onSelect={(v) => onUpdateTask(task._id, { priority: v })}
+    />
+  );
+};
+
+/**
+ * Status dropdown. Resolves its options from the board's custom statuses when
+ * available (board tasks), otherwise falls back to the legacy enum (personal
+ * tasks). `board` may come from the prop or `task.board`.
+ */
+const StatusEditor = ({ task, board, onUpdateTask }) => {
+  const boardStatuses =
+    board && Array.isArray(board.statuses) && board.statuses.length
+      ? board.statuses
+      : null;
+
+  let options;
+  let current;
+
+  if (boardStatuses) {
+    options = [...boardStatuses]
+      .sort((a, b) => (a.order || 0) - (b.order || 0))
+      .map((s) => {
+        const pair = getColorPair(s.color);
+        return { value: s._id.toString(), label: s.name, bg: pair.bg, text: pair.text };
+      });
+    const valStr = task.status != null ? task.status.toString() : null;
+    current =
+      options.find((o) => o.value === valStr) || {
+        label: 'Not Started',
+        bg: STATUS_COLORS.not_started.bg,
+        text: STATUS_COLORS.not_started.text,
+      };
+    return (
+      <InlineSelectChip
+        value={current.value ?? null}
+        current={current}
+        options={options}
+        ariaLabel="Change status"
+        onSelect={(v) => onUpdateTask(task._id, { status: v })}
+      />
+    );
+  }
+
+  // Legacy enum (personal tasks).
+  options = LEGACY_STATUS_OPTIONS.map((s) => {
+    const c = STATUS_COLORS[s];
+    return { value: s, label: c.label, bg: c.bg, text: c.text };
+  });
+  const val = task.status || 'not_started';
+  const c = STATUS_COLORS[val] || STATUS_COLORS.not_started;
+  current = { label: c.label, bg: c.bg, text: c.text };
+  return (
+    <InlineSelectChip
+      value={val}
+      current={current}
+      options={options}
+      ariaLabel="Change status"
+      onSelect={(v) => onUpdateTask(task._id, { status: v })}
+    />
   );
 };
 

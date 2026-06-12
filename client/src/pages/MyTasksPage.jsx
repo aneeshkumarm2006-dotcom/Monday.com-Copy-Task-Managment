@@ -1034,6 +1034,35 @@ const MyWorkPage = () => {
     await deleteTask(taskId);
   };
 
+  // Generic patch used by the detail panel (status / priority edits). Updates
+  // the task in `allTasks` and the open panel optimistically, then persists —
+  // rolling both back if the request fails so the UI never lies.
+  const handlePanelUpdate = useCallback(
+    async (taskId, payload) => {
+      let snapshot = null;
+      setAllTasks((prev) => {
+        snapshot = prev;
+        return prev.map((t) => (t._id === taskId ? { ...t, ...payload } : t));
+      });
+      setSelectedTask((prev) =>
+        prev && prev._id === taskId ? { ...prev, ...payload } : prev
+      );
+      try {
+        await updateTask(taskId, payload);
+      } catch (err) {
+        if (snapshot) {
+          setAllTasks(snapshot);
+          const original = snapshot.find((t) => t._id === taskId) || null;
+          setSelectedTask((prev) =>
+            prev && prev._id === taskId ? original : prev
+          );
+        }
+        throw err;
+      }
+    },
+    []
+  );
+
   const handleCreated = (task) => {
     setAllTasks((prev) => [task, ...prev]);
   };
@@ -1135,6 +1164,8 @@ const MyWorkPage = () => {
         task={selectedTask}
         isOpen={!!selectedTask}
         onClose={() => setSelectedTask(null)}
+        onUpdateTask={handlePanelUpdate}
+        editableStatusPriority
       />
     </PageWrapper>
   );
