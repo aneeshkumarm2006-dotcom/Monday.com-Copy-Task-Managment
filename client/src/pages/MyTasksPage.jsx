@@ -12,6 +12,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Briefcase,
+  Filter,
+  X,
 } from 'lucide-react';
 import PageWrapper from '../components/layout/PageWrapper';
 import PersonalTaskModal from '../components/board/PersonalTaskModal';
@@ -23,6 +25,7 @@ import useOrgStore from '../store/orgStore';
 import { getMyTasks, updateTask, deleteTask } from '../services/taskService';
 import { isStatusDone } from '../utils/statusUtils';
 import { taskToEvent, eventPropGetter } from '../utils/calendarEvents';
+import { PRIORITY_COLORS } from '../utils/priorityColors';
 
 const localizer = momentLocalizer(moment);
 
@@ -599,9 +602,79 @@ const PersonalTab = ({
 /* Calendar tab — board work + personal tasks of the current user      */
 /* ------------------------------------------------------------------ */
 
+// Priority filters render in severity order; each lights up in its own
+// palette (from priorityColors) when active so the chip reads at a glance.
+const PRIORITY_FILTERS = [
+  { value: 'critical', label: 'Critical' },
+  { value: 'high', label: 'High' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'low', label: 'Low' },
+];
+
+const TYPE_FILTERS = [
+  { value: 'board', label: 'Board work' },
+  { value: 'personal', label: 'Personal' },
+];
+
+/**
+ * A single toggleable filter pill. When `activeColor` is supplied the active
+ * state uses that palette (used for priority chips); otherwise it falls back
+ * to the accent colour.
+ */
+const FilterChip = ({ label, active, onClick, activeColor }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    aria-pressed={active}
+    className="inline-flex items-center gap-1.5 font-body font-medium transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+    style={{
+      fontSize: 12,
+      height: 28,
+      padding: '0 12px',
+      borderRadius: 'var(--radius-full)',
+      border: '1.5px solid',
+      borderColor: active
+        ? activeColor
+          ? activeColor.text
+          : 'var(--color-accent)'
+        : 'var(--color-border)',
+      background: active
+        ? activeColor
+          ? activeColor.bg
+          : 'var(--color-accent-light)'
+        : 'transparent',
+      color: active
+        ? activeColor
+          ? activeColor.text
+          : 'var(--color-accent)'
+        : 'var(--color-text-secondary)',
+      cursor: 'pointer',
+    }}
+  >
+    {activeColor && (
+      <span
+        aria-hidden="true"
+        className="shrink-0"
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: 'var(--radius-full)',
+          background: activeColor.solid,
+        }}
+      />
+    )}
+    {label}
+  </button>
+);
+
 const CalendarTab = ({ events, onSelect }) => {
   const [view, setView] = useState('month');
   const [date, setDate] = useState(() => new Date());
+  // Filters — empty arrays mean "no constraint". Categories compose with AND;
+  // values within a category are OR'd. `hideDone` strips completed tasks.
+  const [priorityFilter, setPriorityFilter] = useState([]);
+  const [typeFilter, setTypeFilter] = useState([]);
+  const [hideDone, setHideDone] = useState(false);
   // Track viewport so the fixed-height grid can shrink on phones.
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth < 768 : false
@@ -635,9 +708,119 @@ const CalendarTab = ({ events, onSelect }) => {
           .format('MMM D, YYYY')}`
       : `${MONTH_NAMES[date.getMonth()]} ${date.getFullYear()}`;
 
+  const toggleValue = (setter) => (value) =>
+    setter((prev) =>
+      prev.includes(value)
+        ? prev.filter((v) => v !== value)
+        : [...prev, value]
+    );
+
+  const togglePriority = toggleValue(setPriorityFilter);
+  const toggleType = toggleValue(setTypeFilter);
+
+  const filtersActive =
+    priorityFilter.length > 0 || typeFilter.length > 0 || hideDone;
+
+  const clearFilters = () => {
+    setPriorityFilter([]);
+    setTypeFilter([]);
+    setHideDone(false);
+  };
+
+  // Apply filters to the events' underlying tasks (event.resource). Each
+  // category is an OR set; categories AND together. (React Compiler memoizes
+  // this automatically — no manual useMemo needed.)
+  const visibleEvents = !filtersActive
+    ? events
+    : events.filter((e) => {
+        const task = e.resource || {};
+        if (priorityFilter.length && !priorityFilter.includes(task.priority)) {
+          return false;
+        }
+        if (typeFilter.length) {
+          const type = task.isPersonal ? 'personal' : 'board';
+          if (!typeFilter.includes(type)) return false;
+        }
+        if (hideDone && isStatusDone(task.board, task.status)) return false;
+        return true;
+      });
+
   return (
     <div className="mt-6">
-      <div className="flex flex-wrap items-center justify-end gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-1.5" role="region" aria-label="Calendar filters">
+          <span
+            className="inline-flex items-center gap-1.5 font-body font-medium"
+            style={{
+              fontSize: 12,
+              color: 'var(--color-text-secondary)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              marginRight: 2,
+            }}
+          >
+            <Filter size={13} aria-hidden="true" />
+            Filter
+          </span>
+
+          {PRIORITY_FILTERS.map((p) => (
+            <FilterChip
+              key={p.value}
+              label={p.label}
+              active={priorityFilter.includes(p.value)}
+              onClick={() => togglePriority(p.value)}
+              activeColor={PRIORITY_COLORS[p.value]}
+            />
+          ))}
+
+          <span
+            aria-hidden="true"
+            style={{
+              width: 1,
+              height: 18,
+              background: 'var(--color-border)',
+              margin: '0 4px',
+            }}
+          />
+
+          {TYPE_FILTERS.map((t) => (
+            <FilterChip
+              key={t.value}
+              label={t.label}
+              active={typeFilter.includes(t.value)}
+              onClick={() => toggleType(t.value)}
+            />
+          ))}
+
+          <FilterChip
+            label="Hide completed"
+            active={hideDone}
+            onClick={() => setHideDone((v) => !v)}
+          />
+
+          {filtersActive && (
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:text-[color:var(--color-accent)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+              style={{
+                fontSize: 12,
+                color: 'var(--color-text-secondary)',
+                background: 'transparent',
+                border: 'none',
+                padding: '4px 8px',
+                cursor: 'pointer',
+                borderRadius: 'var(--radius-full)',
+              }}
+            >
+              <X size={12} aria-hidden="true" />
+              Clear
+            </button>
+          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
         {/* Month/Week toggle */}
         <div
           className="flex items-center bg-surface"
@@ -716,6 +899,7 @@ const CalendarTab = ({ events, onSelect }) => {
             <ChevronRight size={16} color="var(--color-text-secondary)" />
           </button>
         </div>
+        </div>
       </div>
 
       <div
@@ -727,9 +911,22 @@ const CalendarTab = ({ events, onSelect }) => {
           position: 'relative',
         }}
       >
+        {filtersActive && visibleEvents.length === 0 && (
+          <div
+            className="absolute inset-0 z-10 flex flex-col items-center justify-center text-center"
+            style={{ padding: '24px', pointerEvents: 'none' }}
+          >
+            <p
+              className="font-body font-medium"
+              style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}
+            >
+              No tasks match these filters
+            </p>
+          </div>
+        )}
         <Calendar
           localizer={localizer}
-          events={events}
+          events={visibleEvents}
           date={date}
           view={view}
           onNavigate={setDate}
