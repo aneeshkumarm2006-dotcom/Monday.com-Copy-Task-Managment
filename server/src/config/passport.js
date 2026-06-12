@@ -1,6 +1,29 @@
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const User = require('../models/User');
+const { cloudinary } = require('./cloudinary');
+
+/**
+ * Pull a Google-hosted avatar URL into our own Cloudinary folder so we control
+ * the asset (Google links can expire). Applies the same face-crop 200x200 webp
+ * transform used for manual uploads. Falls back to the original Google URL if
+ * the upload fails, and to null if there is no source image.
+ */
+const hostAvatar = async (googleUrl) => {
+  if (!googleUrl) return null;
+  try {
+    const res = await cloudinary.uploader.upload(googleUrl, {
+      folder: 'macan/avatars',
+      transformation: [
+        { width: 200, height: 200, crop: 'fill', gravity: 'face', format: 'webp' },
+      ],
+    });
+    return res.secure_url;
+  } catch (err) {
+    console.error('hostAvatar error:', err);
+    return googleUrl;
+  }
+};
 
 passport.use(
   new GoogleStrategy(
@@ -25,7 +48,9 @@ passport.use(
           user = await User.findOne({ email });
           if (user) {
             user.googleId = googleId;
-            if (!user.profilePic && profilePic) user.profilePic = profilePic;
+            if (!user.profilePic && profilePic) {
+              user.profilePic = await hostAvatar(profilePic);
+            }
             if (!user.name && name) user.name = name;
             await user.save();
           } else {
@@ -33,7 +58,7 @@ passport.use(
               googleId,
               email,
               name,
-              profilePic,
+              profilePic: await hostAvatar(profilePic),
             });
           }
         }
