@@ -65,6 +65,7 @@ passport.use(
 
         return done(null, user);
       } catch (err) {
+        console.error('Google strategy verify error:', err);
         return done(err, null);
       }
     }

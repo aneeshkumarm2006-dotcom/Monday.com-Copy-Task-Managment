@@ -42,4 +42,18 @@ app.use('/api/profile', require('./routes/profile'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/proxy', require('./routes/proxy'));
 
+// Centralised error handler — surfaces the real cause in logs and, for the
+// OAuth flow specifically, redirects the browser back to the login page with
+// an error flag instead of dumping a raw Express 500.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error(`Unhandled error on ${req.method} ${req.originalUrl}:`, err);
+
+  if (req.path.startsWith('/auth/google')) {
+    return res.redirect(`${process.env.CLIENT_URL}/login?error=auth_failed`);
+  }
+
+  return res.status(500).json({ error: 'Server error' });
+});
+
 module.exports = app;
