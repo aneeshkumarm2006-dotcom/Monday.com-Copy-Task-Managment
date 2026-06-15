@@ -435,20 +435,14 @@ const SubitemCountBadge = ({ count }) => {
         position: 'absolute',
         top: -6,
         right: -6,
-        minWidth: 14,
-        height: 14,
-        padding: '0 3px',
-        boxSizing: 'border-box',
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        borderRadius: 9999,
-        background: 'var(--color-accent)',
-        color: '#FFFFFF',
+        background: 'transparent',
+        color: 'var(--color-text-secondary)',
         fontSize: 9,
         fontWeight: 700,
         lineHeight: 1,
-        border: '1.5px solid var(--color-bg-surface, #FFFFFF)',
       }}
     >
       {count > 9 ? '9+' : count}
