@@ -177,21 +177,30 @@ const populateTask = (query) =>
     .populate('createdBy', 'name profilePic email');
 
 /**
- * Annotate a list of POJO tasks with `hasSubitems: bool` so the board view
- * can show an expand chevron next to rows that own children. One follow-up
- * `distinct` query — cheaper than per-row counts.
+ * Annotate a list of POJO tasks with `hasSubitems: bool` and
+ * `subitemCount: number` so the board view can show an expand chevron and a
+ * count badge next to rows that own children. One aggregation groups children
+ * by parent — cheaper than per-row counts.
  */
 const annotateHasSubitems = async (tasks) => {
   if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
   const ids = tasks.map((t) => t._id).filter(Boolean);
   if (ids.length === 0) {
-    for (const t of tasks) t.hasSubitems = false;
+    for (const t of tasks) {
+      t.hasSubitems = false;
+      t.subitemCount = 0;
+    }
     return tasks;
   }
-  const parentIds = await Task.find({ parent: { $in: ids } }).distinct('parent');
-  const hasChildren = new Set(parentIds.map((id) => id.toString()));
+  const counts = await Task.aggregate([
+    { $match: { parent: { $in: ids } } },
+    { $group: { _id: '$parent', count: { $sum: 1 } } },
+  ]);
+  const byParent = new Map(counts.map((c) => [c._id.toString(), c.count]));
   for (const t of tasks) {
-    t.hasSubitems = t?._id ? hasChildren.has(t._id.toString()) : false;
+    const count = t?._id ? byParent.get(t._id.toString()) || 0 : 0;
+    t.subitemCount = count;
+    t.hasSubitems = count > 0;
   }
   return tasks;
 };

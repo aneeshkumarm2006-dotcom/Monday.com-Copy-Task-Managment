@@ -68,6 +68,8 @@ const TaskRow = ({
   const labels = Array.isArray(task.labels) ? task.labels : [];
   const commentCount =
     typeof task.commentCount === 'number' ? task.commentCount : 0;
+  const subitemCount =
+    typeof task.subitemCount === 'number' ? task.subitemCount : 0;
 
   // Merge sortable ref with the internal rowRef used for highlight scrolling.
   const setRowRefs = (el) => {
@@ -212,11 +214,18 @@ const TaskRow = ({
               <button
                 type="button"
                 onClick={() => onToggleExpand(task._id)}
-                aria-label={expanded ? 'Hide subtasks' : 'Show subtasks'}
+                aria-label={
+                  subitemCount > 0
+                    ? `${expanded ? 'Hide' : 'Show'} subtasks (${subitemCount})`
+                    : expanded
+                      ? 'Hide subtasks'
+                      : 'Show subtasks'
+                }
                 aria-expanded={expanded}
                 title={expanded ? 'Hide subtasks' : 'Show subtasks'}
                 className="flex items-center justify-center rounded transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
                 style={{
+                  position: 'relative',
                   background: 'transparent',
                   border: 'none',
                   padding: 0,
@@ -226,13 +235,21 @@ const TaskRow = ({
                 }}
               >
                 <ListTree size={14} aria-hidden="true" />
+                <SubitemCountBadge count={subitemCount} />
               </button>
             ) : (
-              <ListTree
-                size={14}
-                aria-label="Has subtasks"
-                style={{ color: 'var(--color-text-secondary)', flexShrink: 0 }}
-              />
+              <span
+                aria-label={
+                  subitemCount > 0
+                    ? `Has ${subitemCount} subtasks`
+                    : 'Has subtasks'
+                }
+                className="inline-flex items-center justify-center"
+                style={{ position: 'relative', color: 'var(--color-text-secondary)', flexShrink: 0 }}
+              >
+                <ListTree size={14} aria-hidden="true" />
+                <SubitemCountBadge count={subitemCount} />
+              </span>
             )
           ) : null}
           <ChecklistBadge checklist={task.checklist} />
@@ -401,6 +418,41 @@ const TaskRow = ({
         ) : null}
       </td>
     </tr>
+  );
+};
+
+/**
+ * Tiny count bubble pinned to the top-right of the subtask (ListTree) icon,
+ * mirroring the comment-count badge so the two read as the same affordance.
+ * Hidden when there are no subitems.
+ */
+const SubitemCountBadge = ({ count }) => {
+  if (!count || count < 1) return null;
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        position: 'absolute',
+        top: -6,
+        right: -6,
+        minWidth: 14,
+        height: 14,
+        padding: '0 3px',
+        boxSizing: 'border-box',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 9999,
+        background: 'var(--color-accent)',
+        color: '#FFFFFF',
+        fontSize: 9,
+        fontWeight: 700,
+        lineHeight: 1,
+        border: '1.5px solid var(--color-bg-surface, #FFFFFF)',
+      }}
+    >
+      {count > 9 ? '9+' : count}
+    </span>
   );
 };
 
