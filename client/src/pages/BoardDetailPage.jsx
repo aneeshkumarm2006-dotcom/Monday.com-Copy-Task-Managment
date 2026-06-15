@@ -321,10 +321,10 @@ const BoardDetailPage = () => {
     const now = new Date();
     const out = {};
     for (const [gid, list] of Object.entries(tasksByGroup)) {
-      out[gid] = (list || []).filter((t) => taskMatchesFilters(t, filters, now));
+      out[gid] = (list || []).filter((t) => taskMatchesFilters(t, filters, now, board));
     }
     return out;
-  }, [tasksByGroup, filters, filtersActive]);
+  }, [tasksByGroup, filters, filtersActive, board]);
 
   const matchedTaskCount = useMemo(
     () =>

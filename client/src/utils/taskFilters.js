@@ -11,6 +11,8 @@
  * imposes no constraint.
  */
 
+import { isStatusDone } from './statusUtils';
+
 export const EMPTY_FILTERS = {
   search: '',
   statuses: [],   // status _id strings (or legacy enum keys)
@@ -35,7 +37,7 @@ const MS_IN_DAY = 24 * 60 * 60 * 1000;
 
 const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
-const matchesDueBucket = (dueInput, bucket, now) => {
+const matchesDueBucket = (dueInput, bucket, now, isDone = false) => {
   if (bucket === 'none') return !dueInput;
   if (!dueInput) return false;
   const due = new Date(dueInput);
@@ -44,7 +46,8 @@ const matchesDueBucket = (dueInput, bucket, now) => {
   const today = startOfDay(now).getTime();
   switch (bucket) {
     case 'overdue':
-      return dueDay < today;
+      // A completed task is never "overdue", even if its due date has passed.
+      return !isDone && dueDay < today;
     case 'today':
       return dueDay === today;
     case 'week':
@@ -89,7 +92,7 @@ export const hasActiveFilters = (filters) => countActiveFilters(filters) > 0;
  * Does a single task satisfy the active filters?
  * `now` defaults to the current time; injectable for deterministic tests.
  */
-export const taskMatchesFilters = (task, filters, now = new Date()) => {
+export const taskMatchesFilters = (task, filters, now = new Date(), board = null) => {
   if (!filters || !task) return true;
 
   // Name search
@@ -113,9 +116,12 @@ export const taskMatchesFilters = (task, filters, now = new Date()) => {
     if (!filters.labels.some((id) => taskLabels.includes(id))) return false;
   }
 
-  // Due date — match ANY selected bucket
+  // Due date — match ANY selected bucket. Done tasks are excluded from the
+  // "Overdue" bucket so completed work drops out of an overdue view.
   if (filters.due?.length) {
-    if (!filters.due.some((b) => matchesDueBucket(task.dueDate, b, now))) return false;
+    const done = isStatusDone(board, task.status);
+    if (!filters.due.some((b) => matchesDueBucket(task.dueDate, b, now, done)))
+      return false;
   }
 
   // Assignees — match ANY selected member, plus the synthetic "unassigned"
