@@ -487,6 +487,7 @@ const getMyTasks = async (req, res) => {
       .populate('assignedTo', 'name profilePic email')
       .populate('createdBy', 'name profilePic email')
       .populate('board', 'name visibility statuses labels')
+      .populate('group', 'name')
       .populate('parent', 'name')
       .sort({ dueDate: 1, createdAt: -1 })
       .lean();

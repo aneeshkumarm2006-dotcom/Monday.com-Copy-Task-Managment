@@ -26,6 +26,8 @@ import { timeAgo, formatDate } from '../../utils/dateUtils';
 
 const COMMON_EMOJIS = ['👍', '🎉', '🙌', '🔥', '❤️', '✅', '🚀', '😄', '👀', '💡', '🤔', '😅'];
 
+const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB — matches server limit
+
 /**
  * UpdatesTab — full Updates panel mounted inside CommentPanel.
  *
@@ -183,12 +185,18 @@ const UpdatesTab = ({ task, onCountChange }) => {
       const files = Array.from(e.target.files || []);
       if (!files.length || !taskId) return;
       for (const f of files) {
+        if (f.size > MAX_FILE_SIZE) {
+          toast.error(`${f.name} is too big. Please attach a file under 25MB.`);
+          continue;
+        }
         try {
           const attachment = await updateService.uploadAttachment(taskId, f);
           setAttachments((prev) => [...prev, attachment]);
         } catch (err) {
           console.error('Upload failed:', err);
-          toast.error(`Failed to upload ${f.name}`);
+          toast.error(
+            err?.response?.data?.error || `Couldn't attach ${f.name}. Please try again.`
+          );
         }
       }
       if (fileInputRef.current) fileInputRef.current.value = '';

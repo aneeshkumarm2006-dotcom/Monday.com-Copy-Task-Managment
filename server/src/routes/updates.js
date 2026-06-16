@@ -1,6 +1,6 @@
 const express = require('express');
 const authMiddleware = require('../middleware/auth');
-const { updateUpload } = require('../config/cloudinary');
+const { updateUpload, handleUploadError } = require('../config/cloudinary');
 const {
   getUpdates,
   addUpdate,
@@ -26,6 +26,7 @@ router.delete('/tasks/:taskId/updates/:id', deleteUpdate);
 router.post(
   '/tasks/:taskId/updates/attachments',
   updateUpload.single('file'),
+  handleUploadError,
   uploadAttachment
 );
 

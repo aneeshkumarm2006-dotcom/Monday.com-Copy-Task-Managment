@@ -12,9 +12,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Briefcase,
+  FolderOpen,
+  Link2,
   Filter,
   X,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import PageWrapper from '../components/layout/PageWrapper';
 import PersonalTaskModal from '../components/board/PersonalTaskModal';
 import CommentPanel from '../components/board/CommentPanel';
@@ -132,7 +135,18 @@ const SubTabs = ({ active, onChange, counts }) => (
 /* My Work tab — board tasks (not done) assigned to the user           */
 /* ------------------------------------------------------------------ */
 
-const WorkTaskCard = ({ task, onSelect }) => (
+const WorkTaskCard = ({ task, onSelect }) => {
+  const navigate = useNavigate();
+  const boardId = task.board?._id || task.board;
+
+  const handleOpenInBoard = (e) => {
+    e.stopPropagation();
+    if (boardId) {
+      navigate(`/boards/${boardId}?highlightTask=${task._id}`);
+    }
+  };
+
+  return (
   <button
     type="button"
     onClick={() => onSelect(task)}
@@ -147,12 +161,30 @@ const WorkTaskCard = ({ task, onSelect }) => (
   >
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
-        <p
-          className="font-body font-semibold truncate"
-          style={{ fontSize: 15, color: 'var(--color-text-primary)' }}
-        >
-          {task.name}
-        </p>
+        <div className="flex items-center gap-1.5">
+          <p
+            className="font-body font-semibold truncate"
+            style={{ fontSize: 15, color: 'var(--color-text-primary)' }}
+          >
+            {task.name}
+          </p>
+          {boardId && (
+            <span
+              role="button"
+              tabIndex={0}
+              title="Open in board"
+              aria-label="Open in board"
+              onClick={handleOpenInBoard}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') handleOpenInBoard(e);
+              }}
+              className="shrink-0 inline-flex items-center justify-center rounded transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent)]"
+              style={{ padding: 4, cursor: 'pointer', color: 'var(--color-text-muted)' }}
+            >
+              <Link2 size={14} />
+            </span>
+          )}
+        </div>
         {task.board?.name && (
           <div className="flex items-center gap-1.5 mt-1.5">
             <Briefcase size={13} color="var(--color-text-muted)" />
@@ -161,6 +193,17 @@ const WorkTaskCard = ({ task, onSelect }) => (
               style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
             >
               {task.board.name}
+            </span>
+          </div>
+        )}
+        {task.group?.name && (
+          <div className="flex items-center gap-1.5 mt-1.5">
+            <FolderOpen size={13} color="var(--color-text-muted)" />
+            <span
+              className="font-body truncate"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+            >
+              {task.group.name}
             </span>
           </div>
         )}
@@ -183,7 +226,8 @@ const WorkTaskCard = ({ task, onSelect }) => (
       <Chip type="priority" value={task.priority} />
     </div>
   </button>
-);
+  );
+};
 
 const WorkTab = ({ tasks, loading, onSelect }) => {
   if (loading) {

@@ -111,10 +111,28 @@ const taskAttachmentUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB per file
 });
 
+// Error-handling middleware for the attachment upload routes. Turns multer's
+// file-size error (and any other upload failure) into a clear, friendly
+// message instead of letting it fall through to the generic 500 handler.
+// eslint-disable-next-line no-unused-vars
+const handleUploadError = (err, req, res, next) => {
+  if (!err) return next();
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return res
+      .status(400)
+      .json({ error: 'That file is too big. Please attach a file under 25MB.' });
+  }
+  console.error('Attachment upload error:', err);
+  return res
+    .status(400)
+    .json({ error: "Sorry, that file couldn't be attached. Please try again." });
+};
+
 module.exports = {
   cloudinary,
   avatarUpload,
   updateUpload,
   taskAttachmentUpload,
   destroyCloudinaryAssets,
+  handleUploadError,
 };

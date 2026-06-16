@@ -1,6 +1,6 @@
 const express = require('express');
 const authMiddleware = require('../middleware/auth');
-const { taskAttachmentUpload } = require('../config/cloudinary');
+const { taskAttachmentUpload, handleUploadError } = require('../config/cloudinary');
 const {
   getTasks,
   getMyTasks,
@@ -71,6 +71,7 @@ router.get('/:id/attachments', getTaskAttachments);
 router.post(
   '/:id/attachments',
   taskAttachmentUpload.single('file'),
+  handleUploadError,
   uploadTaskAttachment
 );
 router.delete('/:id/attachments/:attachmentId', deleteTaskAttachment);
