@@ -13,7 +13,7 @@ import {
   ChevronRight,
   Briefcase,
   FolderOpen,
-  Link2,
+  ExternalLink,
   Filter,
   X,
 } from 'lucide-react';
@@ -181,7 +181,7 @@ const WorkTaskCard = ({ task, onSelect }) => {
               className="shrink-0 inline-flex items-center justify-center rounded transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent)]"
               style={{ padding: 4, cursor: 'pointer', color: 'var(--color-text-muted)' }}
             >
-              <Link2 size={14} />
+              <ExternalLink size={14} />
             </span>
           )}
         </div>
