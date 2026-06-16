@@ -51,6 +51,7 @@ const getUpdates = async (req, res) => {
     const updates = await Update.find({ task: taskId })
       .populate('author', 'name profilePic email')
       .populate('mentions', 'name profilePic email')
+      .populate({ path: 'replyTo', select: 'author bodyText', populate: { path: 'author', select: 'name' } })
       .sort({ createdAt: -1 });
 
     return res.json({ updates });
@@ -74,7 +75,7 @@ const addUpdate = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { taskId } = req.params;
-    const { body, bodyText, mentions, attachments } = req.body || {};
+    const { body, bodyText, mentions, attachments, replyTo } = req.body || {};
 
     const hasBody =
       (body && typeof body === 'object' && Object.keys(body).length > 0) ||
@@ -119,6 +120,17 @@ const addUpdate = async (req, res) => {
           }))
       : [];
 
+    // Validate replyTo — must reference an update on the same task.
+    let replyToId = null;
+    let parentAuthorId = null;
+    if (replyTo) {
+      const parentUpdate = await Update.findOne({ _id: replyTo, task: taskId });
+      if (parentUpdate) {
+        replyToId = parentUpdate._id;
+        parentAuthorId = parentUpdate.author || null;
+      }
+    }
+
     const update = await Update.create({
       task: taskId,
       author: userId,
@@ -126,6 +138,7 @@ const addUpdate = async (req, res) => {
       bodyText: (bodyText || '').toString().slice(0, 4000),
       mentions: validMentions,
       attachments: cleanAttachments,
+      replyTo: replyToId,
     });
 
     logActivity({
@@ -141,7 +154,8 @@ const addUpdate = async (req, res) => {
 
     const populated = await Update.findById(update._id)
       .populate('author', 'name profilePic email')
-      .populate('mentions', 'name profilePic email');
+      .populate('mentions', 'name profilePic email')
+      .populate({ path: 'replyTo', select: 'author bodyText', populate: { path: 'author', select: 'name' } });
 
     // Resolve org id from the board (board tasks only) so notifications are
     // scoped to the right organisation.
@@ -163,6 +177,22 @@ const addUpdate = async (req, res) => {
         taskId: task._id,
         orgId: notifOrgId,
         excludeUserId: userId,
+      });
+    }
+
+    // Notify the author of the update being replied to (skips self-replies via
+    // excludeUserId). Carries a 'updates' tab hint so clicking the notification
+    // opens the task's Updates tab.
+    if (parentAuthorId) {
+      const authorName = populated.author?.name || 'Someone';
+      await createNotificationsForUsers({
+        userIds: [parentAuthorId],
+        type: 'replied',
+        message: `${authorName} replied to your update on "${task.name}"`,
+        taskId: task._id,
+        orgId: notifOrgId,
+        excludeUserId: userId,
+        tab: 'updates',
       });
     }
 
@@ -291,7 +321,8 @@ const editUpdate = async (req, res) => {
 
     const populated = await Update.findById(update._id)
       .populate('author', 'name profilePic email')
-      .populate('mentions', 'name profilePic email');
+      .populate('mentions', 'name profilePic email')
+      .populate({ path: 'replyTo', select: 'author bodyText', populate: { path: 'author', select: 'name' } });
 
     return res.json({ update: populated });
   } catch (err) {
@@ -387,10 +418,66 @@ const uploadAttachment = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /api/tasks/:taskId/updates/:id/read
+ *
+ * Toggle the current user's per-user "read" marker on an update they were
+ * mentioned in. Only users present in the update's `mentions` may do this.
+ * Body: { read: boolean } (defaults to true).
+ */
+const setUpdateMentionRead = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { taskId, id } = req.params;
+    const read = req.body?.read !== false; // default → mark read
+
+    const update = await Update.findOne({ _id: id, task: taskId });
+    if (!update) return res.status(404).json({ error: 'Update not found' });
+
+    const task = await Task.findById(taskId);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    const access = await checkTaskAccess(task, userId);
+    if (!access.ok) {
+      return res.status(access.status).json({ error: access.error });
+    }
+
+    // Only a mentioned user can mark this update read for themselves.
+    const isMentioned = Array.isArray(update.mentions)
+      ? update.mentions.some((m) => m.toString() === userId)
+      : false;
+    if (!isMentioned) {
+      return res.status(403).json({ error: 'Not mentioned in this update' });
+    }
+
+    const already = update.mentionReads.some((u) => u.toString() === userId);
+    if (read && !already) {
+      update.mentionReads.push(userId);
+      await update.save();
+    } else if (!read && already) {
+      update.mentionReads = update.mentionReads.filter(
+        (u) => u.toString() !== userId
+      );
+      await update.save();
+    }
+
+    const populated = await Update.findById(update._id)
+      .populate('author', 'name profilePic email')
+      .populate('mentions', 'name profilePic email')
+      .populate({ path: 'replyTo', select: 'author bodyText', populate: { path: 'author', select: 'name' } });
+
+    return res.json({ update: populated });
+  } catch (err) {
+    console.error('setUpdateMentionRead error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   getUpdates,
   addUpdate,
   editUpdate,
   deleteUpdate,
   uploadAttachment,
+  setUpdateMentionRead,
 };

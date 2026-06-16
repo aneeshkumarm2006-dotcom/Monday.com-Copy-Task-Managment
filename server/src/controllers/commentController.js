@@ -115,9 +115,13 @@ const addComment = async (req, res) => {
 
     // Validate replyTo — must belong to the same task
     let replyToId = null;
+    let parentAuthorId = null;
     if (replyTo) {
       const parentComment = await Comment.findOne({ _id: replyTo, task: taskId });
-      if (parentComment) replyToId = parentComment._id;
+      if (parentComment) {
+        replyToId = parentComment._id;
+        parentAuthorId = parentComment.author || null;
+      }
     }
 
     const comment = await Comment.create({
@@ -162,6 +166,21 @@ const addComment = async (req, res) => {
         taskId: task._id,
         orgId: notifOrgId,
         excludeUserId: userId,
+      });
+    }
+
+    // Notify the author of the comment being replied to (skips self-replies).
+    // Carries a 'comments' tab hint so clicking opens the task's Comments tab.
+    if (parentAuthorId) {
+      const authorName = populated.author?.name || 'Someone';
+      await createNotificationsForUsers({
+        userIds: [parentAuthorId],
+        type: 'replied',
+        message: `${authorName} replied to your comment on "${task.name}"`,
+        taskId: task._id,
+        orgId: notifOrgId,
+        excludeUserId: userId,
+        tab: 'comments',
       });
     }
 
@@ -263,8 +282,64 @@ const editComment = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /api/tasks/:taskId/comments/:id/read
+ *
+ * Toggle the current user's per-user "read" marker on a comment they were
+ * mentioned in. Only users present in the comment's `mentions` may do this —
+ * the affordance is theirs alone. Body: { read: boolean } (defaults to true).
+ */
+const setCommentMentionRead = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { taskId, id } = req.params;
+    const read = req.body?.read !== false; // default → mark read
+
+    const comment = await Comment.findOne({ _id: id, task: taskId });
+    if (!comment) return res.status(404).json({ error: 'Comment not found' });
+
+    const task = await Task.findById(taskId);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    const access = await checkTaskAccess(task, userId);
+    if (!access.ok) {
+      return res.status(access.status).json({ error: access.error });
+    }
+
+    // Only a mentioned user can mark this comment read for themselves.
+    const isMentioned = Array.isArray(comment.mentions)
+      ? comment.mentions.some((m) => m.toString() === userId)
+      : false;
+    if (!isMentioned) {
+      return res.status(403).json({ error: 'Not mentioned in this comment' });
+    }
+
+    const already = comment.mentionReads.some((u) => u.toString() === userId);
+    if (read && !already) {
+      comment.mentionReads.push(userId);
+      await comment.save();
+    } else if (!read && already) {
+      comment.mentionReads = comment.mentionReads.filter(
+        (u) => u.toString() !== userId
+      );
+      await comment.save();
+    }
+
+    const populated = await Comment.findById(comment._id)
+      .populate('author', 'name profilePic email')
+      .populate('mentions', 'name profilePic email')
+      .populate({ path: 'replyTo', select: 'author text', populate: { path: 'author', select: 'name' } });
+
+    return res.json({ comment: populated });
+  } catch (err) {
+    console.error('setCommentMentionRead error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   getComments,
   addComment,
   editComment,
+  setCommentMentionRead,
 };

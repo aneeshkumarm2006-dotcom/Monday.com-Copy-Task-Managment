@@ -24,6 +24,14 @@ const commentSchema = new mongoose.Schema({
     ref: 'Comment',
     default: null,
   },
+  // Mentioned users who have marked this comment as read. Per-user read state —
+  // the "Mark as read" affordance is only shown to users in `mentions`.
+  mentionReads: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+  ],
   createdAt: {
     type: Date,
     default: Date.now,

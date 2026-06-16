@@ -494,6 +494,7 @@ const IconButton = ({ icon: Icon, label, badge, onClick, active }) => (
 const NOTIF_TYPE_COLOR = {
   assigned: 'var(--color-accent)',
   commented: 'var(--color-status-working)',
+  replied: 'var(--color-status-working)',
   statusChanged: 'var(--color-status-done)',
   dueSoon: 'var(--color-status-stuck)',
 };
@@ -596,7 +597,10 @@ const NotificationBell = () => {
     const boardId = notif.task?.board;
     if (boardId && taskId) {
       setOpen(false);
-      navigate(`/boards/${boardId}?highlightTask=${taskId}`);
+      // A `tab` hint (set on reply notifications) opens the task detail panel
+      // on that tab; otherwise we just highlight/glow the task row.
+      const tabParam = notif.tab ? `&openTab=${notif.tab}` : '';
+      navigate(`/boards/${boardId}?highlightTask=${taskId}${tabParam}`);
     }
   };
 

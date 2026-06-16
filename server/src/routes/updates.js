@@ -7,6 +7,7 @@ const {
   editUpdate,
   deleteUpdate,
   uploadAttachment,
+  setUpdateMentionRead,
 } = require('../controllers/updateController');
 
 const router = express.Router();
@@ -21,6 +22,8 @@ router.get('/tasks/:taskId/updates', getUpdates);
 router.post('/tasks/:taskId/updates', addUpdate);
 router.patch('/tasks/:taskId/updates/:id', editUpdate);
 router.delete('/tasks/:taskId/updates/:id', deleteUpdate);
+// PATCH /api/tasks/:taskId/updates/:id/read — mentioned user toggles read
+router.patch('/tasks/:taskId/updates/:id/read', setUpdateMentionRead);
 
 // POST /api/tasks/:taskId/updates/attachments — upload file → Cloudinary
 router.post(

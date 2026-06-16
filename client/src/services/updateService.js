@@ -17,16 +17,18 @@ export const getUpdates = async (taskId) => {
  * @param {string} payload.bodyText     — plain-text fallback (used in emails)
  * @param {string[]} payload.mentions   — array of mentioned user ids
  * @param {object[]} payload.attachments — [{ url, name, mime, size }]
+ * @param {string|null} payload.replyTo — id of the update being replied to
  */
 export const addUpdate = async (
   taskId,
-  { body, bodyText = '', mentions = [], attachments = [] }
+  { body, bodyText = '', mentions = [], attachments = [], replyTo = null }
 ) => {
   const { data } = await api.post(`/api/tasks/${taskId}/updates`, {
     body,
     bodyText,
     mentions,
     attachments,
+    replyTo,
   });
   return data.update;
 };
@@ -56,6 +58,21 @@ export const editUpdate = async (
 export const deleteUpdate = async (taskId, updateId) => {
   const { data } = await api.delete(`/api/tasks/${taskId}/updates/${updateId}`);
   return data;
+};
+
+/**
+ * PATCH /api/tasks/:taskId/updates/:id/read
+ *
+ * Toggle the current user's per-user read marker on an update they were
+ * mentioned in. Only mentioned users are authorised server-side. Returns the
+ * populated update.
+ */
+export const setMentionRead = async (taskId, updateId, read = true) => {
+  const { data } = await api.patch(
+    `/api/tasks/${taskId}/updates/${updateId}/read`,
+    { read }
+  );
+  return data.update;
 };
 
 /**

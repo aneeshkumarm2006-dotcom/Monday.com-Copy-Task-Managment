@@ -197,6 +197,10 @@ const BoardDetailPage = () => {
 
   // --- Notification highlight (scroll-to + glow) --------------------------
   const [highlightedTaskId, setHighlightedTaskId] = useState(null);
+  // Tab the task detail panel should open on when arriving from a notification
+  // that carries a tab hint (e.g. reply → 'updates' / 'comments'). null → the
+  // panel uses its default tab.
+  const [initialPanelTab, setInitialPanelTab] = useState(null);
 
   const board = getBoardById(boardId) || null;
   const orgId = currentOrg?._id || null;
@@ -251,10 +255,16 @@ const BoardDetailPage = () => {
     const taskId = searchParams.get('highlightTask');
     if (!taskId || loading || groups.length === 0) return;
 
+    // Optional tab hint (from a reply notification) — opens the task detail
+    // panel on that tab once we confirm the task lives on this board.
+    const openTab = searchParams.get('openTab');
+    let found = false;
+
     // Find which group contains the task and ensure it's expanded
     for (const group of groups) {
       const groupTasks = tasksByGroup[group._id] || [];
       if (groupTasks.some((t) => t._id === taskId)) {
+        found = true;
         // Expand the group if collapsed
         setCollapsed((prev) => {
           const next = new Set(prev);
@@ -265,15 +275,22 @@ const BoardDetailPage = () => {
       }
     }
 
-    // Clear the query param so refreshing doesn't re-trigger
+    // Clear the query params so refreshing doesn't re-trigger
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.delete('highlightTask');
+      next.delete('openTab');
       return next;
     }, { replace: true });
 
     // Set highlight — scroll + auto-remove are handled by separate effects below
     setHighlightedTaskId(taskId);
+
+    // Open the detail panel on the requested tab (if the task is on this board)
+    if (found && openTab) {
+      setInitialPanelTab(openTab);
+      setSelectedTaskStack([taskId]);
+    }
   }, [searchParams, loading, groups, tasksByGroup, setSearchParams]);
 
   // --- Auto-remove highlight after animation completes -------------------
@@ -399,7 +416,10 @@ const BoardDetailPage = () => {
     setSelectedTaskStack([task._id]);
   };
 
-  const handleCloseTask = () => setSelectedTaskStack([]);
+  const handleCloseTask = () => {
+    setSelectedTaskStack([]);
+    setInitialPanelTab(null);
+  };
 
   const handleOpenSubitem = useCallback((subitem) => {
     if (!subitem?._id) return;
@@ -1518,6 +1538,7 @@ const BoardDetailPage = () => {
         task={selectedTask}
         board={board}
         isOpen={!!selectedTask}
+        initialTab={initialPanelTab}
         onClose={handleCloseTask}
         isAdmin={canEdit}
         onUpdateTask={async (taskId, payload) => {

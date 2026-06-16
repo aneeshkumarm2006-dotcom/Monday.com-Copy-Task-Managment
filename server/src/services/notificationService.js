@@ -14,7 +14,7 @@ const Notification = require('../models/Notification');
  * Failures are swallowed (logged only) — notifications are best-effort and
  * should never block the triggering action (task assign, comment add, etc.).
  */
-const createNotification = async ({ userId, type, message, taskId, orgId }) => {
+const createNotification = async ({ userId, type, message, taskId, orgId, tab }) => {
   try {
     if (!userId || !type || !message) return null;
     const doc = await Notification.create({
@@ -23,6 +23,7 @@ const createNotification = async ({ userId, type, message, taskId, orgId }) => {
       type,
       message,
       task: taskId || undefined,
+      tab: tab || null,
       isRead: false,
     });
     return doc;
@@ -45,6 +46,7 @@ const createNotificationsForUsers = async ({
   taskId,
   orgId,
   excludeUserId,
+  tab,
 }) => {
   if (!Array.isArray(userIds) || userIds.length === 0) return [];
   const exclude = excludeUserId ? excludeUserId.toString() : null;
@@ -60,7 +62,7 @@ const createNotificationsForUsers = async ({
   }
   const results = await Promise.all(
     targets.map((uid) =>
-      createNotification({ userId: uid, type, message, taskId, orgId })
+      createNotification({ userId: uid, type, message, taskId, orgId, tab })
     )
   );
   return results.filter(Boolean);

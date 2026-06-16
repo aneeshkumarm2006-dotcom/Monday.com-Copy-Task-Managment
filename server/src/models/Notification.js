@@ -16,7 +16,7 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['assigned', 'commented', 'mentioned', 'statusChanged', 'dueSoon'],
+    enum: ['assigned', 'commented', 'mentioned', 'statusChanged', 'dueSoon', 'replied'],
   },
   message: {
     type: String,
@@ -24,6 +24,14 @@ const notificationSchema = new mongoose.Schema({
   task: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Task',
+  },
+  // Optional hint telling the client which tab of the task detail panel to open
+  // when the notification is clicked (e.g. 'updates' for an update reply,
+  // 'comments' for a comment reply). Null → just highlight the task row.
+  tab: {
+    type: String,
+    enum: ['updates', 'comments', 'files', 'activity', null],
+    default: null,
   },
   isRead: {
     type: Boolean,

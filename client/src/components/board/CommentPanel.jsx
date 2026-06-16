@@ -72,6 +72,9 @@ const CommentPanel = ({
   onBack,
   canGoBack = false,
   onCommentCountChange,
+  // Tab to pre-select when the panel opens (e.g. arriving from a reply
+  // notification). Null/undefined → keep the default ('updates').
+  initialTab = null,
   // When true, the priority + status badges become inline dropdowns even for
   // non-admins. Used by the "My Work" view so users can re-triage their own
   // tasks straight from the detail panel. Board context leaves this off so
@@ -194,6 +197,13 @@ const CommentPanel = ({
     };
   }, [isOpen, taskId]);
 
+  // When the panel opens with a tab hint (e.g. a reply notification pointing at
+  // the Updates or Comments tab), switch to it. No-op for normal opens, so the
+  // default tab and tab-persistence-across-task-switches behaviour is unchanged.
+  useEffect(() => {
+    if (isOpen && initialTab) setActiveTab(initialTab);
+  }, [isOpen, initialTab, taskId]);
+
   // Scroll the comment thread to the bottom after loading or appending
   useEffect(() => {
     if (!threadRef.current) return;
@@ -284,6 +294,26 @@ const CommentPanel = ({
           err?.response?.data?.error || 'Failed to edit comment. Please try again.'
         );
         throw err;
+      }
+    },
+    [taskId]
+  );
+
+  // Toggle the current user's read marker on a comment they're mentioned in.
+  // Patches the returned (populated) comment back into the thread in-place.
+  const handleToggleCommentRead = useCallback(
+    async (commentId, read) => {
+      if (!taskId) return;
+      try {
+        const updated = await commentService.setMentionRead(taskId, commentId, read);
+        setComments((prev) =>
+          prev.map((c) => (c._id === commentId ? updated : c))
+        );
+      } catch (err) {
+        console.error('Failed to update read state:', err);
+        setError(
+          err?.response?.data?.error || 'Failed to update read state. Please try again.'
+        );
       }
     },
     [taskId]
@@ -901,6 +931,7 @@ const CommentPanel = ({
                     currentUserId={currentUserId}
                     onReply={setReplyingTo}
                     onEdit={(newText) => handleEditComment(c._id, newText)}
+                    onToggleMentionRead={(read) => handleToggleCommentRead(c._id, read)}
                   />
                 </li>
               ))}
@@ -1367,10 +1398,19 @@ const RenderCommentText = ({ text, mentions }) => {
  * edit mode that swaps the rendered text for a textarea. Mentions and the
  * reply target are immutable on edit — only the text body changes.
  */
-const CommentItem = ({ comment, currentUserId, onReply, onEdit }) => {
+const CommentItem = ({ comment, currentUserId, onReply, onEdit, onToggleMentionRead }) => {
   const author = comment.author || {};
   const isAuthor =
     author._id && currentUserId && author._id === currentUserId;
+  // The "Mark as read" affordance belongs only to a user who was mentioned.
+  const idOf = (u) => (u && typeof u === 'object' ? u._id : u);
+  const isMentioned =
+    !!currentUserId &&
+    Array.isArray(comment.mentions) &&
+    comment.mentions.some((m) => idOf(m) === currentUserId);
+  const isRead =
+    Array.isArray(comment.mentionReads) &&
+    comment.mentionReads.some((u) => idOf(u) === currentUserId);
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(comment.text || '');
@@ -1536,6 +1576,31 @@ const CommentItem = ({ comment, currentUserId, onReply, onEdit }) => {
                 </button>
               )}
             </div>
+          )}
+          {/* Mention read marker — only the mentioned user sees this */}
+          {isMentioned && (
+            <button
+              type="button"
+              onClick={() => onToggleMentionRead?.(!isRead)}
+              aria-pressed={isRead}
+              title={isRead ? 'Marked as read — click to undo' : 'Mark this mention as read'}
+              className="ml-auto inline-flex items-center gap-1 font-body transition-colors"
+              style={{
+                fontSize: 11,
+                fontWeight: 500,
+                color: isRead ? 'var(--color-status-done)' : 'var(--color-accent)',
+                background: 'transparent',
+                border: `1px solid ${isRead ? 'var(--color-status-done)' : 'var(--color-border)'}`,
+                borderRadius: 9999,
+                cursor: 'pointer',
+                padding: '1px 8px',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+              }}
+            >
+              <Check size={11} aria-hidden="true" />
+              {isRead ? 'Read' : 'Mark as read'}
+            </button>
           )}
         </div>
         {editing ? (

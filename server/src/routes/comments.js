@@ -4,6 +4,7 @@ const {
   getComments,
   addComment,
   editComment,
+  setCommentMentionRead,
 } = require('../controllers/commentController');
 
 const router = express.Router();
@@ -17,5 +18,7 @@ router.use(authMiddleware);
 router.get('/tasks/:taskId/comments', getComments);
 router.post('/tasks/:taskId/comments', addComment);
 router.patch('/tasks/:taskId/comments/:id', editComment);
+// PATCH /api/tasks/:taskId/comments/:id/read — mentioned user toggles read
+router.patch('/tasks/:taskId/comments/:id/read', setCommentMentionRead);
 
 module.exports = router;

@@ -10,6 +10,9 @@ import {
   Trash2,
   Download,
   Pencil,
+  CornerDownLeft,
+  X,
+  Check,
 } from 'lucide-react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -55,6 +58,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
   const [attachments, setAttachments] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
+  const [replyingTo, setReplyingTo] = useState(null);
 
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -114,6 +118,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
         bodyText,
         mentions: mentionIds,
         attachments,
+        replyTo: replyingTo?._id || null,
       });
       setUpdates((prev) => [created, ...prev]);
       // Reset composer
@@ -123,6 +128,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
       setBodyMentions([]);
       setBodyEmpty(true);
       setAttachments([]);
+      setReplyingTo(null);
       refreshNotifications(currentOrgId || undefined);
     } catch (err) {
       console.error('Failed to post update:', err);
@@ -141,6 +147,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
     bodyMentions,
     attachments,
     submitting,
+    replyingTo,
     refreshNotifications,
   ]);
 
@@ -175,6 +182,29 @@ const UpdatesTab = ({ task, onCountChange }) => {
           err?.response?.data?.error || 'Failed to edit update.'
         );
         throw err;
+      }
+    },
+    [taskId, toast]
+  );
+
+  const handleReply = useCallback((update) => {
+    setReplyingTo(update);
+    // Bring the composer into focus so the reply can be typed immediately.
+    editorRef.current?.commands?.focus?.();
+  }, []);
+
+  // Toggle the current user's read marker on an update they're mentioned in.
+  const handleToggleRead = useCallback(
+    async (updateId, read) => {
+      if (!taskId) return;
+      try {
+        const updated = await updateService.setMentionRead(taskId, updateId, read);
+        setUpdates((prev) => prev.map((u) => (u._id === updateId ? updated : u)));
+      } catch (err) {
+        console.error('Failed to update read state:', err);
+        toast.error(
+          err?.response?.data?.error || 'Failed to update read state.'
+        );
       }
     },
     [taskId, toast]
@@ -267,6 +297,8 @@ const UpdatesTab = ({ task, onCountChange }) => {
                   currentUserId={currentUser?._id}
                   onDelete={() => handleDelete(u._id)}
                   onEdit={(payload) => handleEdit(u._id, payload)}
+                  onReply={() => handleReply(u)}
+                  onToggleMentionRead={(read) => handleToggleRead(u._id, read)}
                 />
               </li>
             ))}
@@ -348,6 +380,38 @@ const UpdatesTab = ({ task, onCountChange }) => {
             {error}
           </p>
         ) : null}
+
+        {/* Replying-to banner */}
+        {replyingTo && (
+          <div
+            className="flex items-center gap-2 font-body"
+            style={{
+              fontSize: 12,
+              color: 'var(--color-text-secondary)',
+              background: 'var(--color-bg-subtle, #F3F4F6)',
+              borderRadius: 'var(--radius-md)',
+              padding: '5px 10px',
+              marginBottom: 8,
+            }}
+          >
+            <CornerDownLeft size={12} style={{ color: 'var(--color-accent)', flexShrink: 0 }} aria-hidden="true" />
+            <span>
+              Replying to{' '}
+              <strong style={{ color: 'var(--color-text-primary)' }}>
+                {replyingTo.author?.name || 'Unknown'}
+              </strong>
+            </span>
+            <button
+              type="button"
+              onClick={() => setReplyingTo(null)}
+              aria-label="Cancel reply"
+              className="ml-auto flex items-center justify-center rounded transition-colors hover:bg-[color:var(--color-border)]"
+              style={{ width: 18, height: 18, border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
+            >
+              <X size={11} style={{ color: 'var(--color-text-muted)' }} aria-hidden="true" />
+            </button>
+          </div>
+        )}
 
         <RichEditor
           placeholder="Write an update and mention others with @"
@@ -505,9 +569,18 @@ const UpdatesTab = ({ task, onCountChange }) => {
  * pre-loaded with the existing TipTap document. Attachments aren't editable
  * here — they were uploaded once and stay attached.
  */
-const UpdateCard = ({ update, currentUserId, onDelete, onEdit }) => {
+const UpdateCard = ({ update, currentUserId, onDelete, onEdit, onReply, onToggleMentionRead }) => {
   const author = update.author || {};
   const isAuthor = author._id && currentUserId && author._id === currentUserId;
+  // The "Mark as read" affordance belongs only to a user who was mentioned.
+  const idOf = (u) => (u && typeof u === 'object' ? u._id : u);
+  const isMentioned =
+    !!currentUserId &&
+    Array.isArray(update.mentions) &&
+    update.mentions.some((m) => idOf(m) === currentUserId);
+  const isRead =
+    Array.isArray(update.mentionReads) &&
+    update.mentionReads.some((u) => idOf(u) === currentUserId);
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editBodyJson, setEditBodyJson] = useState(update.body || null);
@@ -576,6 +649,35 @@ const UpdateCard = ({ update, currentUserId, onDelete, onEdit }) => {
         position: 'relative',
       }}
     >
+      {/* "Replying to" reference block */}
+      {update.replyTo && (() => {
+        const parentText = update.replyTo.bodyText || '';
+        const truncated = parentText.length > 60 ? parentText.slice(0, 60).trimEnd() + '…' : parentText;
+        const parentAuthor = update.replyTo.author?.name || 'Unknown';
+        return (
+          <div
+            className="flex items-center gap-1 font-body"
+            style={{
+              fontSize: 11,
+              color: 'var(--color-text-muted)',
+              marginBottom: 8,
+            }}
+          >
+            <CornerDownLeft size={11} style={{ color: 'var(--color-accent)', flexShrink: 0 }} aria-hidden="true" />
+            <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)', flexShrink: 0 }}>
+              {parentAuthor}
+            </span>
+            {truncated ? (
+              <>
+                <span style={{ color: 'var(--color-border-strong)', flexShrink: 0 }}>|</span>
+                <span style={{ color: 'var(--color-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {truncated}
+                </span>
+              </>
+            ) : null}
+          </div>
+        );
+      })()}
       <header className="flex items-center gap-2">
         <Avatar user={author} size={28} />
         <div className="min-w-0 flex-1">
@@ -608,42 +710,88 @@ const UpdateCard = ({ update, currentUserId, onDelete, onEdit }) => {
             ) : null}
           </div>
         </div>
-        {isAuthor && hovered && !editing ? (
+        {/* Mention read marker — only the mentioned user sees this */}
+        {isMentioned && (
+          <button
+            type="button"
+            onClick={() => onToggleMentionRead?.(!isRead)}
+            aria-pressed={isRead}
+            title={isRead ? 'Marked as read — click to undo' : 'Mark this mention as read'}
+            className="inline-flex items-center gap-1 font-body transition-colors"
+            style={{
+              fontSize: 11,
+              fontWeight: 500,
+              color: isRead ? 'var(--color-status-done)' : 'var(--color-accent)',
+              background: 'transparent',
+              border: `1px solid ${isRead ? 'var(--color-status-done)' : 'var(--color-border)'}`,
+              borderRadius: 9999,
+              cursor: 'pointer',
+              padding: '1px 8px',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            <Check size={11} aria-hidden="true" />
+            {isRead ? 'Read' : 'Mark as read'}
+          </button>
+        )}
+        {hovered && !editing ? (
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={startEdit}
-              aria-label="Edit update"
+              onClick={onReply}
+              aria-label={`Reply to ${author.name || 'this update'}`}
               className="inline-flex items-center justify-center rounded transition-colors hover:bg-[color:var(--color-bg-subtle)]"
               style={{
                 width: 24,
                 height: 24,
                 background: 'transparent',
                 border: 'none',
-                color: 'var(--color-text-muted)',
+                color: 'var(--color-accent)',
                 cursor: 'pointer',
                 padding: 0,
               }}
             >
-              <Pencil size={13} aria-hidden="true" />
+              <CornerDownLeft size={13} aria-hidden="true" />
             </button>
-            <button
-              type="button"
-              onClick={onDelete}
-              aria-label="Delete update"
-              className="inline-flex items-center justify-center rounded transition-colors hover:bg-[color:var(--color-bg-subtle)]"
-              style={{
-                width: 24,
-                height: 24,
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--color-text-muted)',
-                cursor: 'pointer',
-                padding: 0,
-              }}
-            >
-              <Trash2 size={13} aria-hidden="true" />
-            </button>
+            {isAuthor ? (
+              <>
+                <button
+                  type="button"
+                  onClick={startEdit}
+                  aria-label="Edit update"
+                  className="inline-flex items-center justify-center rounded transition-colors hover:bg-[color:var(--color-bg-subtle)]"
+                  style={{
+                    width: 24,
+                    height: 24,
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--color-text-muted)',
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                >
+                  <Pencil size={13} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  onClick={onDelete}
+                  aria-label="Delete update"
+                  className="inline-flex items-center justify-center rounded transition-colors hover:bg-[color:var(--color-bg-subtle)]"
+                  style={{
+                    width: 24,
+                    height: 24,
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--color-text-muted)',
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                >
+                  <Trash2 size={13} aria-hidden="true" />
+                </button>
+              </>
+            ) : null}
           </div>
         ) : null}
       </header>

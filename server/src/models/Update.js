@@ -55,6 +55,21 @@ const updateSchema = new mongoose.Schema(
         ref: 'User',
       },
     ],
+    // Threaded reply — references the parent Update this one replies to.
+    // null for top-level updates. One level deep (mirrors Comment.replyTo).
+    replyTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Update',
+      default: null,
+    },
+    // Mentioned users who have marked this update as read. Per-user read state —
+    // the "Mark as read" affordance is only shown to users in `mentions`.
+    mentionReads: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
     editedAt: {
       type: Date,
       default: null,
