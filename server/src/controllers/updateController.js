@@ -51,7 +51,7 @@ const getUpdates = async (req, res) => {
     const updates = await Update.find({ task: taskId })
       .populate('author', 'name profilePic email')
       .populate('mentions', 'name profilePic email')
-      .populate({ path: 'replyTo', select: 'author bodyText', populate: { path: 'author', select: 'name' } })
+      .populate({ path: 'replyTo', select: 'author bodyText attachments', populate: { path: 'author', select: 'name' } })
       .sort({ createdAt: -1 });
 
     return res.json({ updates });
@@ -155,7 +155,7 @@ const addUpdate = async (req, res) => {
     const populated = await Update.findById(update._id)
       .populate('author', 'name profilePic email')
       .populate('mentions', 'name profilePic email')
-      .populate({ path: 'replyTo', select: 'author bodyText', populate: { path: 'author', select: 'name' } });
+      .populate({ path: 'replyTo', select: 'author bodyText attachments', populate: { path: 'author', select: 'name' } });
 
     // Resolve org id from the board (board tasks only) so notifications are
     // scoped to the right organisation.
@@ -322,7 +322,7 @@ const editUpdate = async (req, res) => {
     const populated = await Update.findById(update._id)
       .populate('author', 'name profilePic email')
       .populate('mentions', 'name profilePic email')
-      .populate({ path: 'replyTo', select: 'author bodyText', populate: { path: 'author', select: 'name' } });
+      .populate({ path: 'replyTo', select: 'author bodyText attachments', populate: { path: 'author', select: 'name' } });
 
     return res.json({ update: populated });
   } catch (err) {
@@ -464,7 +464,7 @@ const setUpdateMentionRead = async (req, res) => {
     const populated = await Update.findById(update._id)
       .populate('author', 'name profilePic email')
       .populate('mentions', 'name profilePic email')
-      .populate({ path: 'replyTo', select: 'author bodyText', populate: { path: 'author', select: 'name' } });
+      .populate({ path: 'replyTo', select: 'author bodyText attachments', populate: { path: 'author', select: 'name' } });
 
     return res.json({ update: populated });
   } catch (err) {

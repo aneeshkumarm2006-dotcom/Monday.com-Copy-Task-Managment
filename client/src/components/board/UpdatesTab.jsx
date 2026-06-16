@@ -32,6 +32,30 @@ const COMMON_EMOJIS = ['👍', '🎉', '🙌', '🔥', '❤️', '✅', '🚀', 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB — matches server limit
 
 /**
+ * Build a short preview of the update being replied to, so a reply shows *which*
+ * message it answers — not just who wrote it. Prefers the text body; when the
+ * parent has no text (e.g. a file-only update) it falls back to the attachment
+ * name so attachment-only messages are still identifiable.
+ *
+ * Returns { kind: 'text' | 'file' | 'empty', label }.
+ */
+const replyPreview = (parent) => {
+  const text = (parent?.bodyText || '').trim();
+  if (text) {
+    return {
+      kind: 'text',
+      label: text.length > 60 ? text.slice(0, 60).trimEnd() + '…' : text,
+    };
+  }
+  const attachments = Array.isArray(parent?.attachments) ? parent.attachments : [];
+  if (attachments.length > 0) {
+    const extra = attachments.length > 1 ? ` +${attachments.length - 1}` : '';
+    return { kind: 'file', label: (attachments[0].name || 'attachment') + extra };
+  }
+  return { kind: 'empty', label: '' };
+};
+
+/**
  * UpdatesTab — full Updates panel mounted inside CommentPanel.
  *
  * Props:
@@ -59,6 +83,9 @@ const UpdatesTab = ({ task, onCountChange }) => {
   const [submitting, setSubmitting] = useState(false);
   const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   const [replyingTo, setReplyingTo] = useState(null);
+  const [highlightId, setHighlightId] = useState(null);
+
+  const highlightTimer = useRef(null);
 
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -193,6 +220,26 @@ const UpdatesTab = ({ task, onCountChange }) => {
     editorRef.current?.commands?.focus?.();
   }, []);
 
+  // Jump from a "Replying to" reference back to the original update, scrolling
+  // it into view and briefly highlighting it so you can see *which* message a
+  // reply answers. No-op if the parent has since been deleted from the list.
+  const handleJumpToParent = useCallback((parentId) => {
+    if (!parentId) return;
+    const el = document.getElementById(`update-${parentId}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightId(parentId);
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlightId(null), 1600);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    },
+    []
+  );
+
   // Toggle the current user's read marker on an update they're mentioned in.
   const handleToggleRead = useCallback(
     async (updateId, read) => {
@@ -291,13 +338,15 @@ const UpdatesTab = ({ task, onCountChange }) => {
             style={{ padding: 0, margin: 0, listStyle: 'none', gap: 12 }}
           >
             {updates.map((u) => (
-              <li key={u._id}>
+              <li key={u._id} id={`update-${u._id}`}>
                 <UpdateCard
                   update={u}
                   currentUserId={currentUser?._id}
+                  highlighted={highlightId === u._id}
                   onDelete={() => handleDelete(u._id)}
                   onEdit={(payload) => handleEdit(u._id, payload)}
                   onReply={() => handleReply(u)}
+                  onJumpToParent={handleJumpToParent}
                   onToggleMentionRead={(read) => handleToggleRead(u._id, read)}
                 />
               </li>
@@ -395,11 +444,31 @@ const UpdatesTab = ({ task, onCountChange }) => {
             }}
           >
             <CornerDownLeft size={12} style={{ color: 'var(--color-accent)', flexShrink: 0 }} aria-hidden="true" />
-            <span>
-              Replying to{' '}
-              <strong style={{ color: 'var(--color-text-primary)' }}>
-                {replyingTo.author?.name || 'Unknown'}
-              </strong>
+            <span
+              className="min-w-0 flex items-center gap-1"
+              style={{ overflow: 'hidden' }}
+            >
+              <span style={{ flexShrink: 0 }}>
+                Replying to{' '}
+                <strong style={{ color: 'var(--color-text-primary)' }}>
+                  {replyingTo.author?.name || 'Unknown'}
+                </strong>
+              </span>
+              {(() => {
+                const preview = replyPreview(replyingTo);
+                if (!preview.label) return null;
+                return (
+                  <>
+                    <span style={{ color: 'var(--color-border-strong)', flexShrink: 0 }}>|</span>
+                    {preview.kind === 'file' ? (
+                      <Paperclip size={11} style={{ flexShrink: 0 }} aria-hidden="true" />
+                    ) : null}
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {preview.label}
+                    </span>
+                  </>
+                );
+              })()}
             </span>
             <button
               type="button"
@@ -569,7 +638,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
  * pre-loaded with the existing TipTap document. Attachments aren't editable
  * here — they were uploaded once and stay attached.
  */
-const UpdateCard = ({ update, currentUserId, onDelete, onEdit, onReply, onToggleMentionRead }) => {
+const UpdateCard = ({ update, currentUserId, highlighted, onDelete, onEdit, onReply, onJumpToParent, onToggleMentionRead }) => {
   const author = update.author || {};
   const isAuthor = author._id && currentUserId && author._id === currentUserId;
   // The "Mark as read" affordance belongs only to a user who was mentioned.
@@ -642,40 +711,57 @@ const UpdateCard = ({ update, currentUserId, onDelete, onEdit, onReply, onToggle
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        background: 'var(--color-bg-surface, #FFFFFF)',
-        border: '1px solid var(--color-border)',
+        background: highlighted
+          ? 'var(--color-accent-light, rgba(37,99,235,0.1))'
+          : 'var(--color-bg-surface, #FFFFFF)',
+        border: `1px solid ${highlighted ? 'var(--color-accent)' : 'var(--color-border)'}`,
         borderRadius: 'var(--radius-md)',
         padding: 12,
         position: 'relative',
+        transition: 'background 0.3s ease, border-color 0.3s ease',
       }}
     >
-      {/* "Replying to" reference block */}
+      {/* "Replying to" reference block — click to jump back to the original
+          message so you can see exactly which one this reply answers. */}
       {update.replyTo && (() => {
-        const parentText = update.replyTo.bodyText || '';
-        const truncated = parentText.length > 60 ? parentText.slice(0, 60).trimEnd() + '…' : parentText;
+        const preview = replyPreview(update.replyTo);
         const parentAuthor = update.replyTo.author?.name || 'Unknown';
         return (
-          <div
-            className="flex items-center gap-1 font-body"
+          <button
+            type="button"
+            onClick={() => onJumpToParent?.(update.replyTo._id)}
+            title="Go to the message this replies to"
+            className="flex items-center gap-1 font-body transition-colors hover:bg-[color:var(--color-bg-subtle)]"
             style={{
               fontSize: 11,
               color: 'var(--color-text-muted)',
               marginBottom: 8,
+              maxWidth: '100%',
+              background: 'transparent',
+              border: 'none',
+              borderRadius: 'var(--radius-sm, 4px)',
+              padding: '2px 4px',
+              margin: '-2px -4px 6px -4px',
+              cursor: 'pointer',
+              textAlign: 'left',
             }}
           >
             <CornerDownLeft size={11} style={{ color: 'var(--color-accent)', flexShrink: 0 }} aria-hidden="true" />
             <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)', flexShrink: 0 }}>
               {parentAuthor}
             </span>
-            {truncated ? (
+            {preview.label ? (
               <>
                 <span style={{ color: 'var(--color-border-strong)', flexShrink: 0 }}>|</span>
+                {preview.kind === 'file' ? (
+                  <Paperclip size={10} style={{ flexShrink: 0 }} aria-hidden="true" />
+                ) : null}
                 <span style={{ color: 'var(--color-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {truncated}
+                  {preview.label}
                 </span>
               </>
             ) : null}
-          </div>
+          </button>
         );
       })()}
       <header className="flex items-center gap-2">
