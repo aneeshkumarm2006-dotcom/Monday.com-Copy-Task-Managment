@@ -20,6 +20,16 @@ const rangeToSince = (range) => {
   return null;
 };
 
+// Day-level comparison, matching the client's dateUtils.isOverdue and the
+// board's due-date buckets. A task due *today* is NOT overdue — only a due
+// date on an earlier calendar day is. Comparing raw timestamps (dueDate is
+// stored at midnight) would wrongly flag every "due today" task as overdue
+// here while the rest of the app treats it as on-time.
+const startOfDay = (input) => {
+  const d = new Date(input);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+};
+
 /**
  * GET /api/productivity?org=:orgId&range=:range
  *
@@ -74,11 +84,21 @@ const getProductivity = async (req, res) => {
     const baseFilter = {
       board: { $in: orgBoardIds },
       isPersonal: { $ne: true },
+      // Top-level tasks only. Subitems (parent set) are nested children that the
+      // board never lists as standalone rows (getTasks filters parent: null), so
+      // counting them here inflated members' totals/overdue with items they
+      // couldn't see or manage from the board. `parent: null` also matches docs
+      // where the field is absent, matching the getTasks convention.
+      parent: null,
     };
 
     const now = new Date();
     const dueSoonCutoff = new Date(now);
     dueSoonCutoff.setDate(dueSoonCutoff.getDate() + 3);
+    // Day-level anchors so "due today" is treated as on-time, consistent with
+    // the client (dateUtils.isOverdue) and the board's due-date buckets.
+    const todayStart = startOfDay(now).getTime();
+    const dueSoonCutoffStart = startOfDay(dueSoonCutoff).getTime();
 
     const openMatch = {
       ...baseFilter,
@@ -141,12 +161,15 @@ const getProductivity = async (req, res) => {
     for (const task of openTasks) {
       const key = task.status ? statusKeyById.get(task.status.toString()) : null;
       const assignees = Array.isArray(task.assignedTo) ? task.assignedTo : [];
-      const overdueHit =
-        task.dueDate && new Date(task.dueDate) < now;
-      const dueSoonHit =
-        task.dueDate &&
-        new Date(task.dueDate) >= now &&
-        new Date(task.dueDate) <= dueSoonCutoff;
+      let overdueHit = false;
+      let dueSoonHit = false;
+      if (task.dueDate) {
+        const dueDay = startOfDay(task.dueDate).getTime();
+        // Overdue: due on an earlier calendar day than today.
+        overdueHit = dueDay < todayStart;
+        // Due soon: due today through the cutoff day (inclusive), not overdue.
+        dueSoonHit = dueDay >= todayStart && dueDay <= dueSoonCutoffStart;
+      }
       for (const u of assignees) {
         const uid = u.toString();
         const cur = openByUser.get(uid) || {

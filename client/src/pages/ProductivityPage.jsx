@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Users,
@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   TrendingUp,
   ChevronRight,
+  RefreshCw,
   User as UserIcon,
 } from 'lucide-react';
 import PageWrapper from '../components/layout/PageWrapper';
@@ -378,7 +379,14 @@ const ProductivityPage = () => {
 
   const [data, setData] = useState({ summary: null, members: [] });
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  // Bumping this re-runs the fetch effect — used by the manual refresh button
+  // and the on-focus refetch below.
+  const [refreshTick, setRefreshTick] = useState(0);
+  // After the first successful load we keep the existing data on screen during
+  // refetches and show a subtle spinner instead of the full-page skeleton.
+  const hasLoadedRef = useRef(false);
 
   const orgId = currentOrg?._id || null;
 
@@ -388,7 +396,8 @@ const ProductivityPage = () => {
 
     Promise.resolve().then(() => {
       if (cancelled) return;
-      setLoading(true);
+      if (hasLoadedRef.current) setRefreshing(true);
+      else setLoading(true);
       setError(null);
     });
 
@@ -396,6 +405,7 @@ const ProductivityPage = () => {
       .then((res) => {
         if (cancelled) return;
         setData({ summary: res.summary, members: res.members || [] });
+        hasLoadedRef.current = true;
       })
       .catch((err) => {
         console.error('Failed to load productivity:', err);
@@ -403,13 +413,34 @@ const ProductivityPage = () => {
         setError('Could not load productivity data.');
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (cancelled) return;
+        setLoading(false);
+        setRefreshing(false);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [orgId, isAdmin, range]);
+  }, [orgId, isAdmin, range, refreshTick]);
+
+  // Productivity reads live task data, but this page only fetched on mount.
+  // If a task is deleted on a board while this page sits open in another tab,
+  // its now-gone task would otherwise keep showing here as overdue. Refetch
+  // whenever the tab/window regains focus so the view can't go stale.
+  useEffect(() => {
+    if (!orgId || !isAdmin) return undefined;
+    const refetchIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        setRefreshTick((n) => n + 1);
+      }
+    };
+    window.addEventListener('focus', refetchIfVisible);
+    document.addEventListener('visibilitychange', refetchIfVisible);
+    return () => {
+      window.removeEventListener('focus', refetchIfVisible);
+      document.removeEventListener('visibilitychange', refetchIfVisible);
+    };
+  }, [orgId, isAdmin]);
 
   const filteredSorted = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -528,6 +559,21 @@ const ProductivityPage = () => {
               size="sm"
             />
           </div>
+          <button
+            type="button"
+            onClick={() => setRefreshTick((n) => n + 1)}
+            disabled={loading || refreshing}
+            title="Refresh"
+            aria-label="Refresh productivity data"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-60"
+            style={{
+              borderColor: 'var(--color-border)',
+              background: 'var(--color-bg-subtle)',
+              color: 'var(--color-text-secondary)',
+            }}
+          >
+            <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
+          </button>
         </div>
       </div>
 

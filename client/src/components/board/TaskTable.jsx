@@ -233,11 +233,13 @@ const TaskTable = ({
       <div
         className={[
           'w-full',
-          // During inline editing on mobile, contain the wide table in its own
-          // horizontal scroll so it can't push the whole page sideways. On
-          // desktop (md+) keep overflow visible — unchanged. Row dropdowns are
-          // portaled to <body>, so contained scroll never clips them.
-          isInlineEditing ? 'overflow-x-auto md:overflow-visible' : 'overflow-x-auto hidden md:block',
+          // The table has a fixed min-width (1170px), so on any viewport narrower
+          // than that — including short/narrow desktop windows — it must scroll
+          // horizontally rather than spill its trailing columns (comments, the
+          // ⋯ menu, and the edit row's save/cancel buttons) off-screen.
+          // overflow-x-auto gives that scrollbar in every mode. Row dropdowns are
+          // portaled to <body>, so the scroll container never clips them.
+          isInlineEditing ? 'overflow-x-auto' : 'overflow-x-auto hidden md:block',
         ].join(' ')}
       >
       <table
