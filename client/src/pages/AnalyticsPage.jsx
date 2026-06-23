@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ListChecks,
   TrendingUp,
@@ -19,6 +20,7 @@ import Dropdown from '../components/ui/Dropdown';
 import BarChart from '../components/analytics/BarChart';
 import BoardPerformance from '../components/analytics/BoardPerformance';
 import OverdueAssignees from '../components/analytics/OverdueAssignees';
+import OverdueTasksModal from '../components/analytics/OverdueTasksModal';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import { getAnalytics } from '../services/analyticsService';
@@ -69,6 +71,7 @@ const INITIAL_OVERDUE = {
   avgDaysOverdue: 0,
   byPriority: [],
   topAssignees: [],
+  byAssignee: [],
 };
 
 /**
@@ -92,11 +95,13 @@ const useIsCurrentOrgAdmin = () => {
 };
 
 const AnalyticsPage = () => {
+  const navigate = useNavigate();
   const isAdmin = useIsCurrentOrgAdmin();
   const currentOrg = useOrgStore((s) => s.currentOrg);
 
   const [boardFilter, setBoardFilter] = useState('all');
   const [range, setRange] = useState('30d');
+  const [overdueModalOpen, setOverdueModalOpen] = useState(false);
 
   const [summary, setSummary] = useState(INITIAL_SUMMARY);
   const [statusDistribution, setStatusDistribution] = useState([]);
@@ -152,6 +157,16 @@ const AnalyticsPage = () => {
       ...orgBoards.map((b) => ({ value: b._id, label: b.name })),
     ],
     [orgBoards]
+  );
+
+  // Jump from an overdue task in the popup to that task on its board.
+  const handleSelectOverdueTask = useCallback(
+    (task) => {
+      if (!task?.boardId) return;
+      setOverdueModalOpen(false);
+      navigate(`/boards/${task.boardId}?highlightTask=${task._id}`);
+    },
+    [navigate]
   );
 
   const statusData = useMemo(
@@ -212,6 +227,8 @@ const AnalyticsPage = () => {
               overdue.avgDaysOverdue === 1 ? '' : 's'
             } overdue`
           : 'No overdue tasks',
+      onClick:
+        overdue.count > 0 ? () => setOverdueModalOpen(true) : undefined,
     },
     {
       icon: Folder,
@@ -296,6 +313,7 @@ const AnalyticsPage = () => {
                 color={card.color}
                 suffix={card.suffix}
                 subLabel={card.subLabel}
+                onClick={card.onClick}
               />
             ))}
       </div>
@@ -350,6 +368,15 @@ const AnalyticsPage = () => {
           <BoardPerformance boards={boardPerformance} />
         )}
       </div>
+
+      {/* Full-screen overdue breakdown (opens from the Overdue stat card) */}
+      <OverdueTasksModal
+        isOpen={overdueModalOpen}
+        onClose={() => setOverdueModalOpen(false)}
+        assignees={overdue.byAssignee || []}
+        totalCount={overdue.count}
+        onSelectTask={handleSelectOverdueTask}
+      />
     </PageWrapper>
   );
 };

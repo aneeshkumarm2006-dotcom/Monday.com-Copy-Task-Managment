@@ -21,6 +21,7 @@ import { useNavigate } from 'react-router-dom';
 import PageWrapper from '../components/layout/PageWrapper';
 import PersonalTaskModal from '../components/board/PersonalTaskModal';
 import CommentPanel from '../components/board/CommentPanel';
+import MyWorkFilterBar from '../components/board/MyWorkFilterBar';
 import CalendarThemeStyles from '../components/calendar/CalendarThemeStyles';
 import Chip from '../components/ui/Chip';
 import Button from '../components/ui/Button';
@@ -29,6 +30,11 @@ import { getMyTasks, updateTask, deleteTask } from '../services/taskService';
 import { isStatusDone } from '../utils/statusUtils';
 import { taskToEvent, eventPropGetter } from '../utils/calendarEvents';
 import { PRIORITY_COLORS } from '../utils/priorityColors';
+import {
+  EMPTY_WORK_FILTERS,
+  workTaskMatchesFilters,
+  countActiveWorkFilters,
+} from '../utils/myWorkFilters';
 
 const localizer = momentLocalizer(moment);
 
@@ -229,7 +235,7 @@ const WorkTaskCard = ({ task, onSelect }) => {
   );
 };
 
-const WorkTab = ({ tasks, loading, onSelect }) => {
+const WorkTab = ({ tasks, loading, onSelect, hasFilters, onClearFilters }) => {
   if (loading) {
     return (
       <div className="flex flex-col gap-3 mt-6">
@@ -244,6 +250,48 @@ const WorkTab = ({ tasks, loading, onSelect }) => {
             }}
           />
         ))}
+      </div>
+    );
+  }
+
+  // No tasks match the active filters — distinct from "all caught up" so the
+  // user knows work exists, just not in this slice.
+  if (tasks.length === 0 && hasFilters) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center"
+        style={{ padding: '64px 20px' }}
+      >
+        <p
+          className="font-body font-medium"
+          style={{ fontSize: 15, color: 'var(--color-text-primary)' }}
+        >
+          No tasks match these filters
+        </p>
+        <p
+          className="font-body mt-1.5"
+          style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}
+        >
+          Try removing a filter to see more of your work.
+        </p>
+        <button
+          type="button"
+          onClick={onClearFilters}
+          className="mt-4 inline-flex items-center gap-1 font-body font-semibold transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{
+            height: 34,
+            padding: '0 14px',
+            fontSize: 13,
+            color: 'var(--color-accent)',
+            background: 'transparent',
+            border: '1.5px solid var(--color-border-strong)',
+            borderRadius: 'var(--radius-md)',
+            cursor: 'pointer',
+          }}
+        >
+          <X size={14} aria-hidden="true" />
+          Clear all filters
+        </button>
       </div>
     );
   }
@@ -1008,6 +1056,7 @@ const MyWorkPage = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
   const [filter, setFilter] = useState('all');
+  const [workFilters, setWorkFilters] = useState(EMPTY_WORK_FILTERS);
   const [selectedTask, setSelectedTask] = useState(null);
 
   const fetchTasks = useCallback(async () => {
@@ -1038,6 +1087,17 @@ const MyWorkPage = () => {
         (t) => !t.isPersonal && !t.parent && !isStatusDone(t.board, t.status)
       ),
     [allTasks]
+  );
+
+  const workFiltersActive = countActiveWorkFilters(workFilters) > 0;
+
+  // Apply the My Work filter bar to the assigned-task list.
+  const filteredWorkTasks = useMemo(
+    () =>
+      workFiltersActive
+        ? workTasks.filter((t) => workTaskMatchesFilters(t, workFilters))
+        : workTasks,
+    [workTasks, workFilters, workFiltersActive]
   );
 
   const personalTasks = useMemo(
@@ -1166,11 +1226,24 @@ const MyWorkPage = () => {
 
       {/* Tab content */}
       {activeTab === 'work' && (
-        <WorkTab
-          tasks={workTasks}
-          loading={loading}
-          onSelect={setSelectedTask}
-        />
+        <>
+          {!loading && workTasks.length > 0 && (
+            <MyWorkFilterBar
+              tasks={workTasks}
+              filters={workFilters}
+              onChange={setWorkFilters}
+              matchedCount={filteredWorkTasks.length}
+              totalCount={workTasks.length}
+            />
+          )}
+          <WorkTab
+            tasks={filteredWorkTasks}
+            loading={loading}
+            onSelect={setSelectedTask}
+            hasFilters={workFiltersActive && workTasks.length > 0}
+            onClearFilters={() => setWorkFilters(EMPTY_WORK_FILTERS)}
+          />
+        </>
       )}
 
       {activeTab === 'personal' && (

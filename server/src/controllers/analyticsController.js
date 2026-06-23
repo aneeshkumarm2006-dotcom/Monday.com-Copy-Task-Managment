@@ -103,12 +103,16 @@ const getAnalytics = async (req, res) => {
     // Also pluck the "done" ObjectIds per board for the overdue + per-board
     // completion counts.
     const statusKeyById = new Map();
+    const statusMetaById = new Map(); // statusId → { name, color } (for overdue detail chips)
+    const boardNameById = new Map(); // boardId → name (for overdue task rows)
     const doneIdsByBoard = new Map(); // boardId → Set<doneStatusId>
     const allDoneIds = [];
     for (const b of orgBoards) {
+      boardNameById.set(b._id.toString(), b.name);
       const doneSet = new Set();
       for (const s of b.statuses || []) {
         statusKeyById.set(s._id.toString(), s.key || null);
+        statusMetaById.set(s._id.toString(), { name: s.name, color: s.color });
         if (s.key === 'done') {
           doneSet.add(s._id.toString());
           allDoneIds.push(s._id);
@@ -129,7 +133,7 @@ const getAnalytics = async (req, res) => {
           status: { $nin: allDoneIds.length ? allDoneIds : ['done'] },
           dueDate: { $ne: null, $lt: new Date() },
         })
-          .select('priority assignedTo dueDate')
+          .select('name priority assignedTo dueDate board status')
           .lean(),
         Task.aggregate([
           { $match: taskFilter },
@@ -148,23 +152,43 @@ const getAnalytics = async (req, res) => {
     const MS_PER_DAY = 86400000;
     const overdueByPriority = Object.fromEntries(PRIORITIES.map((p) => [p, 0]));
     const overdueByAssignee = new Map();
+    // Detailed per-assignee task lists power the full-screen "Overdue Tasks"
+    // breakdown that opens when an admin clicks the overdue stat card.
+    const overdueTasksByAssignee = new Map(); // uid → [taskDetail]
+    const unassignedTaskDetails = [];
     let unassignedOverdue = 0;
     let daysOverdueSum = 0;
     for (const t of overdueTasks) {
       if (t.priority && overdueByPriority[t.priority] !== undefined) {
         overdueByPriority[t.priority] += 1;
       }
-      const dayDiff = Math.floor(
-        (nowMs - new Date(t.dueDate).getTime()) / MS_PER_DAY
+      const dayDiff = Math.max(
+        0,
+        Math.floor((nowMs - new Date(t.dueDate).getTime()) / MS_PER_DAY)
       );
-      daysOverdueSum += Math.max(0, dayDiff);
+      daysOverdueSum += dayDiff;
+      const statusMeta = t.status ? statusMetaById.get(t.status.toString()) : null;
+      const detail = {
+        _id: t._id,
+        name: t.name,
+        boardId: t.board || null,
+        boardName: (t.board && boardNameById.get(t.board.toString())) || 'Board',
+        dueDate: t.dueDate,
+        daysOverdue: dayDiff,
+        priority: t.priority || null,
+        status: statusMeta ? { name: statusMeta.name, color: statusMeta.color } : null,
+      };
       const assignees = Array.isArray(t.assignedTo) ? t.assignedTo : [];
       if (assignees.length === 0) {
         unassignedOverdue += 1;
+        unassignedTaskDetails.push(detail);
       } else {
         for (const u of assignees) {
           const uid = u.toString();
           overdueByAssignee.set(uid, (overdueByAssignee.get(uid) || 0) + 1);
+          const arr = overdueTasksByAssignee.get(uid) || [];
+          arr.push(detail);
+          overdueTasksByAssignee.set(uid, arr);
         }
       }
     }
@@ -193,6 +217,34 @@ const getAnalytics = async (req, res) => {
     const topOverdueAssignees = assigneeBuckets
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
+
+    // Full per-person breakdown (every assignee, every overdue task) for the
+    // drill-down popup. Tasks are ordered most-overdue first; people by load.
+    const sortTasks = (tasks) =>
+      tasks.slice().sort((a, b) => b.daysOverdue - a.daysOverdue);
+    const overdueByAssigneeDetail = [...overdueTasksByAssignee.entries()]
+      .map(([uid, tasks]) => {
+        const m = memberById.get(uid);
+        return {
+          _id: uid,
+          name: m?.name || 'Unknown',
+          profilePic: m?.profilePic || null,
+          unassigned: false,
+          count: tasks.length,
+          tasks: sortTasks(tasks),
+        };
+      })
+      .sort((a, b) => b.count - a.count);
+    if (unassignedTaskDetails.length > 0) {
+      overdueByAssigneeDetail.push({
+        _id: '__unassigned__',
+        name: 'Unassigned',
+        profilePic: null,
+        unassigned: true,
+        count: unassignedTaskDetails.length,
+        tasks: sortTasks(unassignedTaskDetails),
+      });
+    }
     const avgDaysOverdue =
       overdueTasks.length === 0
         ? 0
@@ -269,6 +321,7 @@ const getAnalytics = async (req, res) => {
           count: overdueByPriority[priority] || 0,
         })),
         topAssignees: topOverdueAssignees,
+        byAssignee: overdueByAssigneeDetail,
       },
       boards: orgBoards.map((b) => ({ _id: b._id, name: b.name })),
       filters: {

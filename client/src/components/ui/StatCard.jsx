@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 
 /**
  * StatCard — solid-colored dashboard card with an animated count-up number.
@@ -61,11 +62,21 @@ const StatCard = ({
   color = 'blue',
   suffix,
   className = '',
+  onClick,
 }) => {
   const background = COLOR_VARS[color] || color;
   const numeric = typeof value === 'number' ? value : Number(value);
   const isNumeric = Number.isFinite(numeric);
   const animated = useCountUp(isNumeric ? numeric : 0);
+
+  const clickable = typeof onClick === 'function';
+  const handleKeyDown = (e) => {
+    if (!clickable) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onClick(e);
+    }
+  };
 
   return (
     <div
@@ -74,6 +85,9 @@ const StatCard = ({
         'transition-transform duration-150 ease-in-out',
         // Slightly tighter padding on phones; desktop keeps 20px/24px.
         'p-4 sm:px-6 sm:py-5',
+        clickable
+          ? 'cursor-pointer hover:-translate-y-0.5 hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/70'
+          : '',
         className,
       ].join(' ')}
       style={{
@@ -82,6 +96,11 @@ const StatCard = ({
         minHeight: 120,
         color: '#FFFFFF',
       }}
+      onClick={clickable ? onClick : undefined}
+      onKeyDown={clickable ? handleKeyDown : undefined}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      aria-label={clickable ? `${label}: ${value}. View details` : undefined}
     >
       {/* Decorative circle — 150px, 12% white opacity, top-right */}
       <div
@@ -105,6 +124,16 @@ const StatCard = ({
             strokeWidth={2}
             aria-hidden="true"
           />
+        )}
+        {clickable && (
+          <span
+            className="font-body font-medium inline-flex items-center gap-1"
+            style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }}
+            aria-hidden="true"
+          >
+            View
+            <ChevronRight size={13} strokeWidth={2.5} />
+          </span>
         )}
       </div>
 
