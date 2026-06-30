@@ -9,7 +9,7 @@ const FilterTabs = ({ active, unreadCount, onChange }) => (
   <div
     role="tablist"
     aria-label="Filter notifications"
-    className="flex items-center gap-1 px-2 overflow-x-auto"
+    className="flex items-center gap-1 px-2 overflow-x-auto overflow-y-hidden"
     style={{ borderBottom: '1px solid var(--color-border)' }}
   >
     {FILTER_TABS.map((tab) => {

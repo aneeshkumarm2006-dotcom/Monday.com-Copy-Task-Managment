@@ -539,21 +539,40 @@ const NotificationBell = () => {
         active={open}
       />
       {open && (
-        <div
-          role="dialog"
-          aria-label="Notifications"
-          aria-live="polite"
-          className="absolute right-0 mt-2 bg-white overflow-hidden flex flex-col"
-          style={{
-            width: 360,
-            maxHeight: 480,
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-lg)',
-            boxShadow: 'var(--shadow-lg)',
-            animation: 'macan-dropdown-enter 150ms ease-out',
-            zIndex: 50,
-          }}
-        >
+        <>
+          {/* Backdrop — clicking it closes the drawer */}
+          <div
+            aria-hidden="true"
+            onClick={() => setOpen(false)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0, 0, 0, 0.15)',
+              zIndex: 99,
+              animation: 'macan-notif-backdrop 200ms ease-out',
+            }}
+          />
+
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Notifications"
+            aria-live="polite"
+            className="bg-white overflow-hidden flex flex-col"
+            style={{
+              position: 'fixed',
+              top: 0,
+              right: 0,
+              bottom: 0,
+              width: 'min(50vw, 720px)',
+              minWidth: 380,
+              maxWidth: '100vw',
+              zIndex: 100,
+              borderLeft: '1px solid var(--color-border)',
+              boxShadow: 'var(--shadow-lg)',
+              animation: 'macan-notif-slide 300ms cubic-bezier(0.4, 0, 0.2, 1)',
+            }}
+          >
           {/* Header */}
           <div
             className="flex items-center justify-between px-4 py-3 shrink-0"
@@ -561,33 +580,44 @@ const NotificationBell = () => {
           >
             <span
               className="font-display text-[color:var(--color-text-primary)]"
-              style={{ fontWeight: 700, fontSize: 16 }}
+              style={{ fontWeight: 700, fontSize: 18 }}
             >
               Notifications
             </span>
-            <button
-              type="button"
-              onClick={() => markAllRead(currentOrgId || undefined)}
-              disabled={unreadCount === 0}
-              className="font-body text-[12px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
-              style={{
-                color:
-                  unreadCount === 0
-                    ? 'var(--color-text-muted)'
-                    : 'var(--color-accent)',
-                fontWeight: 500,
-                cursor: unreadCount === 0 ? 'default' : 'pointer',
-              }}
-            >
-              Mark all read
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => markAllRead(currentOrgId || undefined)}
+                disabled={unreadCount === 0}
+                className="font-body text-[12px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
+                style={{
+                  color:
+                    unreadCount === 0
+                      ? 'var(--color-text-muted)'
+                      : 'var(--color-accent)',
+                  fontWeight: 500,
+                  cursor: unreadCount === 0 ? 'default' : 'pointer',
+                }}
+              >
+                Mark all read
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-label="Close notifications"
+                className="inline-flex items-center justify-center rounded-md transition-colors hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+                style={{ width: 28, height: 28 }}
+              >
+                <XIcon size={18} className="text-[color:var(--color-text-muted)]" />
+              </button>
+            </div>
           </div>
 
           {/* Tabs + list */}
           <NotificationFeed
             orgId={currentOrgId || undefined}
             onActivate={handleActivate}
-            variant="panel"
+            variant="page"
           />
 
           {/* Footer */}
@@ -614,7 +644,19 @@ const NotificationBell = () => {
               See all
             </button>
           </div>
-        </div>
+          </aside>
+
+          <style>{`
+            @keyframes macan-notif-slide {
+              from { transform: translateX(100%); }
+              to   { transform: translateX(0); }
+            }
+            @keyframes macan-notif-backdrop {
+              from { opacity: 0; }
+              to   { opacity: 1; }
+            }
+          `}</style>
+        </>
       )}
     </div>
   );
