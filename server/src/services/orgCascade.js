@@ -2,9 +2,9 @@ const Organisation = require('../models/Organisation');
 const Board = require('../models/Board');
 const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
-const Comment = require('../models/Comment');
 const Update = require('../models/Update');
 const Notification = require('../models/Notification');
+const ItemFollow = require('../models/ItemFollow');
 const Automation = require('../models/Automation');
 const User = require('../models/User');
 const ActivityLog = require('../models/ActivityLog');
@@ -15,7 +15,7 @@ const { destroyCloudinaryAssets } = require('../config/cloudinary');
  * Permanently delete an organisation and everything that lives under it.
  *
  * Cascade order (children first to avoid dangling refs if anything fails):
- *   1. Updates, Comments, Notifications — scoped by task IDs in the org's boards
+ *   1. Updates, Notifications — scoped by task IDs in the org's boards
  *   2. Notifications — scoped directly by organisation (covers non-task notifs)
  *   3. Tasks → TaskGroups → Automations → Boards
  *   4. Pull org ID from every member/admin's User.organisations array
@@ -41,13 +41,14 @@ const cascadeDeleteOrg = async (orgId) => {
     await destroyCloudinaryAssets(allAttachments);
 
     await Update.deleteMany({ task: { $in: taskIds } });
-    await Comment.deleteMany({ task: { $in: taskIds } });
     await Notification.deleteMany({ task: { $in: taskIds } });
+    await ItemFollow.deleteMany({ task: { $in: taskIds } });
     await ActivityLog.deleteMany({ task: { $in: taskIds } });
     await Task.deleteMany({ _id: { $in: taskIds } });
   }
 
   await Notification.deleteMany({ organisation: orgId });
+  await ItemFollow.deleteMany({ organisation: orgId });
 
   if (boardIds.length) {
     await TaskGroup.deleteMany({ board: { $in: boardIds } });

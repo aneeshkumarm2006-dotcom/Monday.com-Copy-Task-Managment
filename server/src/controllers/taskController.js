@@ -2,16 +2,18 @@ const mongoose = require('mongoose');
 const Board = require('../models/Board');
 const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
-const Comment = require('../models/Comment');
 const Update = require('../models/Update');
 const ActivityLog = require('../models/ActivityLog');
 const Organisation = require('../models/Organisation');
 const User = require('../models/User');
 const {
   createNotificationsForUsers,
+  notifyTaskAudience,
+  filterByEmailPreference,
 } = require('../services/notificationService');
 const { sendTaskAssignmentEmail } = require('../services/emailService');
 const Notification = require('../models/Notification');
+const ItemFollow = require('../models/ItemFollow');
 const eventBus = require('../services/eventBus');
 const { logActivity } = require('../services/activityService');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
@@ -206,24 +208,24 @@ const annotateHasSubitems = async (tasks) => {
 };
 
 /**
- * Annotate a list of POJO tasks with `commentCount: number` so the board view
- * can show a comment-count badge on each row's comment icon. One aggregation
- * groups comments by task — cheaper than a per-row count query.
+ * Annotate a list of POJO tasks with `updatesCount: number` so the board view
+ * can show a discussion-count badge on each row's updates icon. One aggregation
+ * groups updates by task — cheaper than a per-row count query.
  */
-const annotateCommentCounts = async (tasks) => {
+const annotateUpdateCounts = async (tasks) => {
   if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
   const ids = tasks.map((t) => t._id).filter(Boolean);
   if (ids.length === 0) {
-    for (const t of tasks) t.commentCount = 0;
+    for (const t of tasks) t.updatesCount = 0;
     return tasks;
   }
-  const counts = await Comment.aggregate([
+  const counts = await Update.aggregate([
     { $match: { task: { $in: ids } } },
     { $group: { _id: '$task', count: { $sum: 1 } } },
   ]);
   const byTask = new Map(counts.map((c) => [c._id.toString(), c.count]));
   for (const t of tasks) {
-    t.commentCount = t?._id ? byTask.get(t._id.toString()) || 0 : 0;
+    t.updatesCount = t?._id ? byTask.get(t._id.toString()) || 0 : 0;
   }
   return tasks;
 };
@@ -388,7 +390,7 @@ const getTasks = async (req, res) => {
       .sort({ order: 1, createdAt: 1 })
       .lean();
     await annotateHasSubitems(tasks);
-    await annotateCommentCounts(tasks);
+    await annotateUpdateCounts(tasks);
     // F2: replace any mirror column cache wrappers with their bare computed
     // value so the DataGrid renders a plain value (no-op when the board has no
     // mirror columns).
@@ -492,7 +494,7 @@ const getMyTasks = async (req, res) => {
       .sort({ dueDate: 1, createdAt: -1 })
       .lean();
     await annotateHasSubitems(tasks);
-    await annotateCommentCounts(tasks);
+    await annotateUpdateCounts(tasks);
 
     return res.json({ tasks });
   } catch (err) {
@@ -564,7 +566,7 @@ const getCalendarTasks = async (req, res) => {
       .sort({ dueDate: 1, createdAt: 1 })
       .lean();
     await annotateHasSubitems(tasks);
-    await annotateCommentCounts(tasks);
+    await annotateUpdateCounts(tasks);
 
     return res.json({ tasks, month, year });
   } catch (err) {
@@ -755,15 +757,18 @@ const createTask = async (req, res) => {
         taskId: task._id,
         orgId: ctx.board.organisation,
         excludeUserId: userId,
+        actorId: userId,
+        boardId,
       });
     }
 
     if (assigneeIds.length > 0) {
       const taskLink = `${process.env.CLIENT_URL}/boards/${boardId}`;
       const assigneeUsers = await User.find({ _id: { $in: assigneeIds } }).select('email').lean();
+      const emailAllowed = await filterByEmailPreference(assigneeIds, 'assigned');
       const emailResults = await Promise.allSettled(
         assigneeUsers
-          .filter((u) => u.email)
+          .filter((u) => u.email && emailAllowed.has(u._id.toString()))
           .map((u) =>
             sendTaskAssignmentEmail({
               to: u.email,
@@ -896,13 +901,13 @@ const updateTask = async (req, res) => {
       eventBus.emit('task.updated', { taskId: task._id, boardId: task.board });
 
       if (prevStatus !== match._id.toString()) {
-        await createNotificationsForUsers({
-          userIds: task.assignedTo,
+        await notifyTaskAudience(task, {
           type: 'statusChanged',
           message: `Status of "${task.name}" changed to ${match.name}`,
-          taskId: task._id,
           orgId: ctx.board.organisation,
           excludeUserId: userId,
+          actorId: userId,
+          boardId: task.board,
         });
         logActivity({
           task,
@@ -930,6 +935,7 @@ const updateTask = async (req, res) => {
     const prevGroup = task.group ? task.group.toString() : null;
     let statusChanged = false;
     let newAssigneeIds = null;
+    let removedAssigneeIds = null;
     let statusName = null;
     let columnChanges = [];
     const activityChanges = [];
@@ -1002,6 +1008,7 @@ const updateTask = async (req, res) => {
       const prevSet = new Set(prevAssigneeIds);
       newAssigneeIds = ids.filter((id) => !prevSet.has(id));
       const nextSet = new Set(ids);
+      removedAssigneeIds = prevAssigneeIds.filter((id) => !nextSet.has(id));
       const assigneesChanged =
         prevSet.size !== nextSet.size ||
         [...prevSet].some((id) => !nextSet.has(id));
@@ -1067,25 +1074,60 @@ const updateTask = async (req, res) => {
         taskId: task._id,
         orgId: ctx.board.organisation,
         excludeUserId: userId,
+        actorId: userId,
+        boardId: task.board,
       });
     }
-    if (statusChanged) {
+    if (removedAssigneeIds && removedAssigneeIds.length > 0) {
       await createNotificationsForUsers({
-        userIds: task.assignedTo,
-        type: 'statusChanged',
-        message: `Status of "${task.name}" changed to ${statusName || describeStatus(ctx.board, task.status)}`,
+        userIds: removedAssigneeIds,
+        type: 'unassigned',
+        message: `You were removed from "${task.name}"`,
         taskId: task._id,
         orgId: ctx.board.organisation,
         excludeUserId: userId,
+        actorId: userId,
+        boardId: task.board,
+      });
+    }
+    if (statusChanged) {
+      await notifyTaskAudience(task, {
+        type: 'statusChanged',
+        message: `Status of "${task.name}" changed to ${statusName || describeStatus(ctx.board, task.status)}`,
+        orgId: ctx.board.organisation,
+        excludeUserId: userId,
+        actorId: userId,
+        boardId: task.board,
+      });
+    }
+    if (activityChanges.some((c) => c.field === 'group')) {
+      await notifyTaskAudience(task, {
+        type: 'taskMoved',
+        message: `"${task.name}" was moved to a new group`,
+        orgId: ctx.board.organisation,
+        excludeUserId: userId,
+        actorId: userId,
+        boardId: task.board,
+      });
+    }
+    if (activityChanges.some((c) => c.field === 'dueDate')) {
+      await notifyTaskAudience(task, {
+        type: 'dueDateChanged',
+        message: `Due date for "${task.name}" was updated`,
+        orgId: ctx.board.organisation,
+        excludeUserId: userId,
+        actorId: userId,
+        boardId: task.board,
       });
     }
 
     if (newAssigneeIds && newAssigneeIds.length > 0) {
       const taskLink = `${process.env.CLIENT_URL}/boards/${task.board}`;
       const assigneeUsers = await User.find({ _id: { $in: newAssigneeIds } }).select('email').lean();
+      const emailAllowed = await filterByEmailPreference(newAssigneeIds, 'assigned');
       const emailResults = await Promise.allSettled(
         assigneeUsers
-          .filter((u) => u.email)
+          .filter((u) => u.email && emailAllowed.has(u._id.toString()))
           .map((u) =>
             sendTaskAssignmentEmail({
               to: u.email,
@@ -1367,7 +1409,7 @@ const reorderTasks = async (req, res) => {
       .sort({ order: 1, createdAt: 1 })
       .lean();
     await annotateHasSubitems(updated);
-    await annotateCommentCounts(updated);
+    await annotateUpdateCounts(updated);
 
     return res.json({ tasks: updated, groupId: targetGroupId });
   } catch (err) {
@@ -1399,7 +1441,7 @@ const deleteTask = async (req, res) => {
       }
     }
 
-    // Cascade subitems first — fetch their ids so their comments and
+    // Cascade subitems first — fetch their ids so their updates and
     // notifications are also cleaned up.
     const subitems = await Task.find({ parent: id }).select('_id attachments').lean();
     const subitemIds = subitems.map((s) => s._id);
@@ -1422,9 +1464,9 @@ const deleteTask = async (req, res) => {
       metadata: { taskName: task.name, deletedSubitems: subitemIds.length },
     });
 
-    await Comment.deleteMany({ task: { $in: idsToDelete } });
     await Update.deleteMany({ task: { $in: idsToDelete } });
     await Notification.deleteMany({ task: { $in: idsToDelete } });
+    await ItemFollow.deleteMany({ task: { $in: idsToDelete } });
     await ActivityLog.deleteMany({ task: { $in: idsToDelete } });
     if (subitemIds.length > 0) {
       await Task.deleteMany({ _id: { $in: subitemIds } });

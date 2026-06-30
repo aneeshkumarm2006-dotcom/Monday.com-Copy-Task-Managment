@@ -2,21 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   X,
-  Send,
-  CornerDownLeft,
   Plus,
   Settings as SettingsIcon,
   ChevronLeft,
   ChevronDown,
   Check,
-  Pencil,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
-import { formatDate, timeAgo } from '../../utils/dateUtils';
-import * as commentService from '../../services/commentService';
-import useAuthStore from '../../store/authStore';
-import useNotificationStore from '../../store/notificationStore';
+import { formatDate } from '../../utils/dateUtils';
 import useOrgStore from '../../store/orgStore';
 import {
   getColorPair,
@@ -29,6 +23,7 @@ import FilesTab from './FilesTab';
 import ActivityLogTab from './ActivityLogTab';
 import SubitemsList from './SubitemsList';
 import AssigneePicker from './AssigneePicker';
+import FollowButton from './FollowButton';
 
 // Mirror of TaskEditRow's toDateInputValue so the date input round-trips
 // the same ISO/YYYY-MM-DD shape used elsewhere in the app.
@@ -43,7 +38,7 @@ const toDateInputValue = (d) => {
 };
 
 /**
- * CommentPanel — right-edge slide-out panel showing task detail + comments.
+ * CommentPanel — right-edge slide-out panel showing task detail + updates.
  *
  * See Macan_Design.md Section 6.9.
  *
@@ -51,7 +46,7 @@ const toDateInputValue = (d) => {
  *   - 420px width (desktop), full-width (mobile <768px)
  *   - Background: white, left border, shadow-lg, z-index 100
  *   - Animation: translateX(100%) → 0, 300ms cubic-bezier(0.4, 0, 0.2, 1)
- *   - Sections: close button, task header, comments thread, sticky composer
+ *   - Sections: close button, task header, tabbed body (updates, files, activity)
  *   - Subtle 40% dark backdrop (overlay). Click outside or ESC to close.
  *
  * Props:
@@ -71,7 +66,7 @@ const CommentPanel = ({
   onOpenSubitem,
   onBack,
   canGoBack = false,
-  onCommentCountChange,
+  onUpdatesCountChange,
   // Tab to pre-select when the panel opens (e.g. arriving from a reply
   // notification). Null/undefined → keep the default ('updates').
   initialTab = null,
@@ -81,45 +76,7 @@ const CommentPanel = ({
   // its existing admin-gated permission model is unchanged.
   editableStatusPriority = false,
 }) => {
-  const [comments, setComments] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [text, setText] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-  const threadRef = useRef(null);
-  const textareaRef = useRef(null);
-
-  // Auto-grow the textarea to fit its content (up to a max, then scroll)
-  // so long comments are fully visible instead of being clipped behind a
-  // tiny fixed-height scroll area.
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    const maxHeight = 200;
-    el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
-    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
-  }, [text]);
-  // Tracks which task the currently-held `comments` belong to, so the
-  // count-report effect never attributes one task's count to another while a
-  // new task's comments are still loading.
-  const loadedTaskIdRef = useRef(null);
-  const refreshNotifications = useNotificationStore((s) => s.fetchNotifications);
-  const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
-  const currentUserId = useAuthStore((s) => s.user?._id);
-
-  // @mention state
-  const [mentionQuery, setMentionQuery] = useState('');
-  const [showMentionDropdown, setShowMentionDropdown] = useState(false);
-  const [mentionStartIndex, setMentionStartIndex] = useState(-1);
-  const [mentionedUsers, setMentionedUsers] = useState([]); // [{_id, name}]
-  const [mentionHighlight, setMentionHighlight] = useState(0);
-  const mentionDropdownRef = useRef(null);
-
-  // Reply state — which comment the user is replying to
-  const [replyingTo, setReplyingTo] = useState(null);
-
-  // Tabs (Updates / Comments / Files / Activity Log)
+  // Tabs (Updates / Files / Activity Log)
   const [activeTab, setActiveTab] = useState('updates');
   const [updatesCount, setUpdatesCount] = useState(0);
   const [filesCount, setFilesCount] = useState(0);
@@ -138,87 +95,34 @@ const CommentPanel = ({
     }
   }, [isOpen, currentOrg?._id, orgMembers.length, fetchMembers]);
 
-  // Filter members based on mention query
-  const filteredMembers = useMemo(() => {
-    if (!showMentionDropdown) return [];
-    const q = mentionQuery.toLowerCase();
-    return orgMembers.filter(
-      (m) =>
-        m.name?.toLowerCase().includes(q) &&
-        !mentionedUsers.some((mu) => mu._id === m._id)
-    );
-  }, [orgMembers, mentionQuery, showMentionDropdown, mentionedUsers]);
-
-  // Reset state when the panel is opened for a new task
+  // Reset the per-task tab counts whenever the task changes so a previous
+  // task's count is never shown against a newly-opened one (UpdatesTab and
+  // FilesTab re-report their live counts as soon as they load).
   useEffect(() => {
-    if (!isOpen || !taskId) {
-      setComments([]);
-      setText('');
-      setError('');
-      setMentionedUsers([]);
-      setShowMentionDropdown(false);
-      setReplyingTo(null);
-      setActiveTab('updates');
-      setUpdatesCount(0);
-      setFilesCount(0);
-      loadedTaskIdRef.current = null;
-      return;
-    }
+    setUpdatesCount(0);
+    setFilesCount(0);
+  }, [taskId]);
 
-    let cancelled = false;
-    // Invalidate the previous task's loaded marker until this task's
-    // comments land.
-    loadedTaskIdRef.current = null;
-    setLoading(true);
-    setError('');
-    commentService
-      .getComments(taskId)
-      .then((list) => {
-        if (!cancelled) {
-          setComments(list || []);
-          loadedTaskIdRef.current = taskId;
-        }
-      })
-      .catch((err) => {
-        console.error('Failed to load comments:', err);
-        if (!cancelled) {
-          setError(
-            err?.response?.data?.error ||
-              'Failed to load comments. Please try again.'
-          );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
+  // Return to the default tab when the panel fully closes. activeTab is
+  // intentionally preserved across task switches while the panel stays open.
+  useEffect(() => {
+    if (!isOpen || !taskId) setActiveTab('updates');
   }, [isOpen, taskId]);
 
   // When the panel opens with a tab hint (e.g. a reply notification pointing at
-  // the Updates or Comments tab), switch to it. No-op for normal opens, so the
-  // default tab and tab-persistence-across-task-switches behaviour is unchanged.
+  // the Updates tab), switch to it. Legacy 'comments' hints (from before the
+  // Comments tab was merged into Updates) fall back to the Updates tab.
   useEffect(() => {
-    if (isOpen && initialTab) setActiveTab(initialTab);
+    if (!isOpen || !initialTab) return;
+    setActiveTab(initialTab === 'comments' ? 'updates' : initialTab);
   }, [isOpen, initialTab, taskId]);
 
-  // Scroll the comment thread to the bottom after loading or appending
+  // Keep the board row's discussion-count badge in sync with the live updates
+  // count reported by UpdatesTab while the panel is open.
   useEffect(() => {
-    if (!threadRef.current) return;
-    threadRef.current.scrollTop = threadRef.current.scrollHeight;
-  }, [comments, loading]);
-
-  // Keep the board row's comment-count badge in sync. Reports the loaded
-  // count (which also self-corrects any drift) and every subsequent add.
-  // Only fires once this task's comments have actually loaded, so a stale
-  // count is never attributed to a different task.
-  useEffect(() => {
-    if (!isOpen || !taskId || loading) return;
-    if (loadedTaskIdRef.current !== taskId) return;
-    onCommentCountChange?.(taskId, comments.length);
-  }, [isOpen, taskId, loading, comments.length, onCommentCountChange]);
+    if (!isOpen || !taskId) return;
+    onUpdatesCountChange?.(taskId, updatesCount);
+  }, [isOpen, taskId, updatesCount, onUpdatesCountChange]);
 
   // ESC closes the panel + scroll lock on <body>
   useEffect(() => {
@@ -240,175 +144,6 @@ const CommentPanel = ({
       document.body.style.overflow = previousOverflow;
     };
   }, [isOpen, onClose]);
-
-  const handleSubmit = useCallback(
-    async (e) => {
-      e?.preventDefault?.();
-      const trimmed = text.trim();
-      if (!trimmed || submitting || !taskId) return;
-      setSubmitting(true);
-      setError('');
-      try {
-        const mentionIds = mentionedUsers.map((u) => u._id);
-        // Prepend @mentions to the text so the stored comment shows them
-        const mentionPrefix = mentionedUsers.map((u) => `@${u.name}`).join(' ');
-        const fullText = mentionPrefix ? `${mentionPrefix} ${trimmed}` : trimmed;
-        const created = await commentService.addComment(taskId, fullText, mentionIds, replyingTo?._id || null);
-        setComments((prev) => [...prev, created]);
-        setText('');
-        setMentionedUsers([]);
-        setReplyingTo(null);
-        // Return focus to the textarea for rapid posting
-        textareaRef.current?.focus();
-        // Repoll notifications — the comment may have created one for the
-        // current user on other tasks they're assigned to
-        refreshNotifications(currentOrgId || undefined);
-      } catch (err) {
-        console.error('Failed to add comment:', err);
-        setError(
-          err?.response?.data?.error ||
-            'Failed to add comment. Please try again.'
-        );
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [text, submitting, taskId, refreshNotifications, mentionedUsers, replyingTo]
-  );
-
-  // Edit an existing comment's text. Author-only; the server enforces
-  // authorisation. The replaced comment is patched back into the thread
-  // in-place so the order doesn't change.
-  const handleEditComment = useCallback(
-    async (commentId, newText) => {
-      if (!taskId) return null;
-      try {
-        const updated = await commentService.editComment(taskId, commentId, newText);
-        setComments((prev) =>
-          prev.map((c) => (c._id === commentId ? updated : c))
-        );
-        return updated;
-      } catch (err) {
-        console.error('Failed to edit comment:', err);
-        setError(
-          err?.response?.data?.error || 'Failed to edit comment. Please try again.'
-        );
-        throw err;
-      }
-    },
-    [taskId]
-  );
-
-  // Toggle the current user's read marker on a comment they're mentioned in.
-  // Patches the returned (populated) comment back into the thread in-place.
-  const handleToggleCommentRead = useCallback(
-    async (commentId, read) => {
-      if (!taskId) return;
-      try {
-        const updated = await commentService.setMentionRead(taskId, commentId, read);
-        setComments((prev) =>
-          prev.map((c) => (c._id === commentId ? updated : c))
-        );
-      } catch (err) {
-        console.error('Failed to update read state:', err);
-        setError(
-          err?.response?.data?.error || 'Failed to update read state. Please try again.'
-        );
-      }
-    },
-    [taskId]
-  );
-
-  // Insert a selected mention — replace the @query with a chip
-  const insertMention = useCallback(
-    (member) => {
-      // Remove the @query from the current text
-      const before = text.slice(0, mentionStartIndex);
-      const after = text.slice(mentionStartIndex + mentionQuery.length + 1);
-      setText(before + after);
-      setMentionedUsers((prev) => {
-        if (prev.some((u) => u._id === member._id)) return prev;
-        // Store with insertIndex so chips render at the right spot
-        return [...prev, { _id: member._id, name: member.name, index: mentionStartIndex }];
-      });
-      setShowMentionDropdown(false);
-      setMentionQuery('');
-      setMentionStartIndex(-1);
-      setMentionHighlight(0);
-      setTimeout(() => textareaRef.current?.focus(), 0);
-    },
-    [text, mentionStartIndex, mentionQuery]
-  );
-
-  // Remove a mention chip
-  const removeMention = useCallback((userId) => {
-    setMentionedUsers((prev) => prev.filter((u) => u._id !== userId));
-    setTimeout(() => textareaRef.current?.focus(), 0);
-  }, []);
-
-  // Detect @ in textarea input
-  const handleTextChange = useCallback(
-    (e) => {
-      const val = e.target.value;
-      setText(val);
-
-      const cursorPos = e.target.selectionStart;
-      const textBeforeCursor = val.slice(0, cursorPos);
-      const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-
-      if (lastAtIndex >= 0) {
-        const charBefore = lastAtIndex > 0 ? textBeforeCursor[lastAtIndex - 1] : ' ';
-        if (charBefore === ' ' || charBefore === '\n' || lastAtIndex === 0) {
-          const query = textBeforeCursor.slice(lastAtIndex + 1);
-          if (!query.includes(' ')) {
-            setMentionStartIndex(lastAtIndex);
-            setMentionQuery(query);
-            setShowMentionDropdown(true);
-            setMentionHighlight(0);
-            return;
-          }
-        }
-      }
-      setShowMentionDropdown(false);
-      setMentionQuery('');
-    },
-    []
-  );
-
-  const handleKeyDown = (e) => {
-    // Mention dropdown keyboard navigation
-    if (showMentionDropdown && filteredMembers.length > 0) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        setMentionHighlight((prev) =>
-          prev < filteredMembers.length - 1 ? prev + 1 : 0
-        );
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        setMentionHighlight((prev) =>
-          prev > 0 ? prev - 1 : filteredMembers.length - 1
-        );
-        return;
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault();
-        insertMention(filteredMembers[mentionHighlight]);
-        return;
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        setShowMentionDropdown(false);
-        return;
-      }
-    }
-    // Cmd/Ctrl + Enter to submit from the textarea
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      handleSubmit();
-    }
-  };
 
   const assignees = useMemo(
     () => (Array.isArray(task?.assignedTo) ? task.assignedTo : []),
@@ -591,15 +326,20 @@ const CommentPanel = ({
           ) : (
             <span />
           )}
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close panel"
-            className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
-            style={{ width: 32, height: 32 }}
-          >
-            <X size={18} color="var(--color-text-secondary)" aria-hidden="true" />
-          </button>
+          <div className="flex items-center gap-2">
+            {taskId && !task.isPersonal && (
+              <FollowButton taskId={taskId} isOpen={isOpen} />
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close panel"
+              className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+              style={{ width: 32, height: 32 }}
+            >
+              <X size={18} color="var(--color-text-secondary)" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         {/* Task detail header */}
@@ -835,7 +575,6 @@ const CommentPanel = ({
               onChange={setActiveTab}
               tabs={[
                 { key: 'updates', label: 'Updates', count: updatesCount },
-                { key: 'comments', label: 'Comments', count: comments.length },
                 { key: 'files', label: 'Files', count: filesCount },
                 { key: 'activity', label: 'Activity Log' },
               ]}
@@ -880,273 +619,6 @@ const CommentPanel = ({
               </div>
             )}
 
-            {/* Comment thread + composer (only rendered under the Comments tab) */}
-            {activeTab === 'comments' && (
-              <>
-        <div
-          ref={threadRef}
-          className="flex-1 overflow-y-auto"
-          style={{ padding: '0 24px', minHeight: 0 }}
-        >
-          {loading ? (
-            <p
-              className="font-body text-center"
-              style={{
-                fontSize: 13,
-                color: 'var(--color-text-muted)',
-                padding: '24px 0',
-              }}
-            >
-              Loading comments…
-            </p>
-          ) : comments.length === 0 ? (
-            <p
-              className="font-body text-center"
-              style={{
-                fontSize: 13,
-                color: 'var(--color-text-muted)',
-                padding: '32px 0',
-              }}
-            >
-              No comments yet. Start the conversation.
-            </p>
-          ) : (
-            <ul
-              className="flex flex-col"
-              style={{ padding: 0, margin: 0, listStyle: 'none' }}
-            >
-              {comments.map((c, i) => (
-                <li
-                  key={c._id}
-                  style={{
-                    padding: '12px 0',
-                    borderBottom:
-                      i === comments.length - 1
-                        ? 'none'
-                        : '1px solid var(--color-border)',
-                  }}
-                >
-                  <CommentItem
-                    comment={c}
-                    currentUserId={currentUserId}
-                    onReply={setReplyingTo}
-                    onEdit={(newText) => handleEditComment(c._id, newText)}
-                    onToggleMentionRead={(read) => handleToggleCommentRead(c._id, read)}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Sticky composer footer */}
-        <form
-          onSubmit={handleSubmit}
-          style={{
-            borderTop: '1px solid var(--color-border)',
-            padding: '12px 16px 16px 16px',
-            background: '#FFFFFF',
-          }}
-        >
-          {error ? (
-            <p
-              className="font-body"
-              role="alert"
-              style={{
-                fontSize: 12,
-                color: 'var(--color-status-stuck)',
-                marginBottom: 8,
-              }}
-            >
-              {error}
-            </p>
-          ) : null}
-          {/* Replying-to banner */}
-          {replyingTo && (
-            <div
-              className="flex items-center gap-2 font-body"
-              style={{
-                fontSize: 12,
-                color: 'var(--color-text-secondary)',
-                background: 'var(--color-bg-subtle, #F3F4F6)',
-                borderRadius: 'var(--radius-md)',
-                padding: '5px 10px',
-                marginBottom: 8,
-              }}
-            >
-              <CornerDownLeft size={12} style={{ color: 'var(--color-accent)', flexShrink: 0 }} aria-hidden="true" />
-              <span>
-                Replying to{' '}
-                <strong style={{ color: 'var(--color-text-primary)' }}>
-                  {replyingTo.author?.name || 'Unknown'}
-                </strong>
-              </span>
-              <button
-                type="button"
-                onClick={() => setReplyingTo(null)}
-                aria-label="Cancel reply"
-                className="ml-auto flex items-center justify-center rounded transition-colors hover:bg-[color:var(--color-border)]"
-                style={{ width: 18, height: 18, border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
-              >
-                <X size={11} style={{ color: 'var(--color-text-muted)' }} aria-hidden="true" />
-              </button>
-            </div>
-          )}
-          <div style={{ position: 'relative' }}>
-            {/* Mention chips + textarea wrapper */}
-            <div
-              className="font-body transition-colors duration-150 focus-within:border-[color:var(--color-accent)] focus-within:shadow-[0_0_0_3px_var(--color-accent-light)]"
-              style={{
-                border: '1.5px solid var(--color-border-strong)',
-                borderRadius: 'var(--radius-md)',
-                background: 'var(--color-bg-surface, #FFFFFF)',
-                padding: '8px 10px',
-                cursor: 'text',
-              }}
-              onClick={() => textareaRef.current?.focus()}
-            >
-              {/* Mention chips rendered above the input */}
-              {mentionedUsers.length > 0 && (
-                <div className="flex flex-wrap gap-1" style={{ marginBottom: 6 }}>
-                  {mentionedUsers.map((u) => (
-                    <span
-                      key={u._id}
-                      className="inline-flex items-center gap-1 font-body"
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: 'var(--color-accent, #2563EB)',
-                        background: 'var(--color-accent-light, rgba(37,99,235,0.1))',
-                        borderRadius: 9999,
-                        padding: '2px 8px 2px 10px',
-                        cursor: 'pointer',
-                        transition: 'background 150ms',
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeMention(u._id);
-                      }}
-                      title="Click to remove"
-                    >
-                      @{u.name}
-                      <X size={12} style={{ opacity: 0.6 }} />
-                    </span>
-                  ))}
-                </div>
-              )}
-              <textarea
-                ref={textareaRef}
-                value={text}
-                onChange={handleTextChange}
-                onKeyDown={handleKeyDown}
-                placeholder={mentionedUsers.length > 0 ? 'Continue typing...' : 'Add a comment... (type @ to mention)'}
-                rows={2}
-                disabled={submitting}
-                className="w-full font-body focus:outline-none"
-                style={{
-                  resize: 'none',
-                  fontSize: 14,
-                  padding: 0,
-                  color: 'var(--color-text-primary)',
-                  background: 'transparent',
-                  border: 'none',
-                  lineHeight: 1.5,
-                  minHeight: 42,
-                  display: 'block',
-                  boxSizing: 'border-box',
-                }}
-              />
-            </div>
-            {/* @mention dropdown */}
-            {showMentionDropdown && filteredMembers.length > 0 && (
-              <ul
-                ref={mentionDropdownRef}
-                style={{
-                  position: 'absolute',
-                  bottom: '100%',
-                  left: 0,
-                  right: 0,
-                  maxHeight: 200,
-                  overflowY: 'auto',
-                  background: '#FFFFFF',
-                  border: '1.5px solid var(--color-border-strong)',
-                  borderRadius: 'var(--radius-md)',
-                  boxShadow: 'var(--shadow-lg)',
-                  margin: '0 0 4px 0',
-                  padding: '4px 0',
-                  listStyle: 'none',
-                  zIndex: 110,
-                }}
-              >
-                {filteredMembers.map((member, idx) => (
-                  <li
-                    key={member._id}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      insertMention(member);
-                    }}
-                    onMouseEnter={() => setMentionHighlight(idx)}
-                    className="flex items-center gap-2 cursor-pointer"
-                    style={{
-                      padding: '8px 12px',
-                      fontSize: 13,
-                      fontWeight: 500,
-                      color: 'var(--color-text-primary)',
-                      background:
-                        idx === mentionHighlight
-                          ? 'var(--color-bg-subtle, #F3F4F6)'
-                          : 'transparent',
-                      transition: 'background 100ms',
-                    }}
-                  >
-                    <Avatar user={member} size={22} />
-                    <span>{member.name}</span>
-                    {member.email && (
-                      <span
-                        style={{
-                          fontSize: 11,
-                          color: 'var(--color-text-muted)',
-                          marginLeft: 'auto',
-                        }}
-                      >
-                        {member.email}
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <div className="mt-2 flex items-center justify-between gap-3">
-            <span
-              className="font-body"
-              style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
-            >
-              {submitting ? 'Sending…' : 'Cmd/Ctrl + Enter to send'}
-            </span>
-            <button
-              type="submit"
-              disabled={!text.trim() || submitting}
-              className="inline-flex items-center justify-center gap-2 font-body whitespace-nowrap transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
-              style={{
-                height: 36,
-                padding: '0 16px',
-                background: 'var(--color-accent)',
-                color: '#FFFFFF',
-                fontWeight: 600,
-                fontSize: 13,
-                border: 'none',
-                borderRadius: 'var(--radius-md)',
-                cursor: text.trim() && !submitting ? 'pointer' : 'not-allowed',
-              }}
-            >
-              <Send size={14} aria-hidden="true" />
-              Send
-            </button>
-          </div>
-        </form>
-              </>
-            )}
           </div>
 
           <div className="macan-cp-right" role="complementary" aria-label="Task details sidebar">
@@ -1341,357 +813,6 @@ const Tabs = ({ tabs, active, onChange }) => (
     })}
   </div>
 );
-
-/**
- * Render comment text with @mentions highlighted.
- * Matches @Name patterns against the comment's populated mentions array.
- */
-const RenderCommentText = ({ text, mentions }) => {
-  if (!mentions || mentions.length === 0) {
-    return <>{text}</>;
-  }
-
-  // Build a regex that matches any mentioned name prefixed by @
-  const mentionNames = mentions
-    .map((m) => m.name)
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length); // longest first to avoid partial matches
-
-  if (mentionNames.length === 0) return <>{text}</>;
-
-  const escaped = mentionNames.map((n) =>
-    n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  );
-  const regex = new RegExp(`(@(?:${escaped.join('|')}))`, 'g');
-
-  const parts = text.split(regex);
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (regex.test(part)) {
-          // Reset lastIndex since we reuse the regex
-          regex.lastIndex = 0;
-          return (
-            <span
-              key={i}
-              style={{
-                color: 'var(--color-accent)',
-                fontWeight: 600,
-                background: 'var(--color-accent-light, rgba(37,99,235,0.08))',
-                borderRadius: 3,
-                padding: '0 2px',
-              }}
-            >
-              {part}
-            </span>
-          );
-        }
-        regex.lastIndex = 0;
-        return <span key={i}>{part}</span>;
-      })}
-    </>
-  );
-};
-
-/**
- * One comment entry inside the thread. Authors can switch into an inline
- * edit mode that swaps the rendered text for a textarea. Mentions and the
- * reply target are immutable on edit — only the text body changes.
- */
-const CommentItem = ({ comment, currentUserId, onReply, onEdit, onToggleMentionRead }) => {
-  const author = comment.author || {};
-  const isAuthor =
-    author._id && currentUserId && author._id === currentUserId;
-  // The "Mark as read" affordance belongs only to a user who was mentioned.
-  const idOf = (u) => (u && typeof u === 'object' ? u._id : u);
-  const isMentioned =
-    !!currentUserId &&
-    Array.isArray(comment.mentions) &&
-    comment.mentions.some((m) => idOf(m) === currentUserId);
-  const isRead =
-    Array.isArray(comment.mentionReads) &&
-    comment.mentionReads.some((u) => idOf(u) === currentUserId);
-  const [hovered, setHovered] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(comment.text || '');
-  const [savingEdit, setSavingEdit] = useState(false);
-  const editTextareaRef = useRef(null);
-
-  // Reset edit-mode state if the underlying comment text changes (e.g.
-  // after a successful save).
-  useEffect(() => {
-    if (!editing) setDraft(comment.text || '');
-  }, [comment.text, editing]);
-
-  useEffect(() => {
-    if (editing && editTextareaRef.current) {
-      editTextareaRef.current.focus();
-      const len = editTextareaRef.current.value.length;
-      editTextareaRef.current.setSelectionRange(len, len);
-    }
-  }, [editing]);
-
-  const startEdit = () => {
-    setDraft(comment.text || '');
-    setEditing(true);
-  };
-
-  const cancelEdit = () => {
-    setEditing(false);
-    setDraft(comment.text || '');
-  };
-
-  const saveEdit = async () => {
-    const next = draft.trim();
-    if (!next || next === (comment.text || '').trim()) {
-      cancelEdit();
-      return;
-    }
-    setSavingEdit(true);
-    try {
-      await onEdit?.(next);
-      setEditing(false);
-    } catch {
-      // Toast is surfaced by the parent.
-    } finally {
-      setSavingEdit(false);
-    }
-  };
-
-  const handleEditKeyDown = (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      saveEdit();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      cancelEdit();
-    }
-  };
-
-  return (
-    <div
-      className="flex items-start gap-3"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      <Avatar user={author} size={28} />
-      <div className="min-w-0 flex-1">
-        {/* "Replying to" reference block */}
-        {comment.replyTo && (() => {
-          const parentText = comment.replyTo.text || '';
-          const truncated = parentText.length > 60 ? parentText.slice(0, 60).trimEnd() + '…' : parentText;
-          const parentAuthor = comment.replyTo.author?.name || 'Unknown';
-          return (
-            <div
-              className="flex items-center gap-1 font-body"
-              style={{
-                fontSize: 11,
-                color: 'var(--color-text-muted)',
-                marginBottom: 4,
-              }}
-            >
-              <CornerDownLeft size={11} style={{ color: 'var(--color-accent)', flexShrink: 0 }} aria-hidden="true" />
-              <span style={{ fontWeight: 600, color: 'var(--color-text-secondary)', flexShrink: 0 }}>
-                {parentAuthor}
-              </span>
-              <span style={{ color: 'var(--color-border-strong)', flexShrink: 0 }}>|</span>
-              <span style={{ color: 'var(--color-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {truncated}
-              </span>
-            </div>
-          );
-        })()}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span
-            className="font-body"
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: 'var(--color-text-primary)',
-            }}
-          >
-            {author.name || 'Unknown'}
-          </span>
-          <span
-            className="font-body"
-            style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
-            title={formatDate(comment.createdAt)}
-          >
-            {timeAgo(comment.createdAt)}
-          </span>
-          {comment.editedAt ? (
-            <span
-              className="font-body"
-              style={{ fontSize: 11, color: 'var(--color-text-muted)', fontStyle: 'italic' }}
-              title={`Edited ${formatDate(comment.editedAt)}`}
-            >
-              (edited)
-            </span>
-          ) : null}
-          {!editing && (
-            <div
-              className="flex items-center gap-1"
-              style={{
-                opacity: hovered ? 1 : 0,
-                pointerEvents: hovered ? 'auto' : 'none',
-                transition: 'opacity 150ms',
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => onReply?.(comment)}
-                aria-label={`Reply to ${author.name || 'this comment'}`}
-                className="inline-flex items-center gap-1 font-body"
-                style={{
-                  fontSize: 11,
-                  color: 'var(--color-accent)',
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: '1px 4px',
-                  borderRadius: 4,
-                }}
-              >
-                <CornerDownLeft size={12} aria-hidden="true" />
-                Reply
-              </button>
-              {isAuthor && (
-                <button
-                  type="button"
-                  onClick={startEdit}
-                  aria-label="Edit comment"
-                  className="inline-flex items-center gap-1 font-body"
-                  style={{
-                    fontSize: 11,
-                    color: 'var(--color-text-secondary)',
-                    background: 'transparent',
-                    border: 'none',
-                    cursor: 'pointer',
-                    padding: '1px 4px',
-                    borderRadius: 4,
-                  }}
-                >
-                  <Pencil size={11} aria-hidden="true" />
-                  Edit
-                </button>
-              )}
-            </div>
-          )}
-          {/* Mention read marker — only the mentioned user sees this */}
-          {isMentioned && (
-            <button
-              type="button"
-              onClick={() => onToggleMentionRead?.(!isRead)}
-              aria-pressed={isRead}
-              title={isRead ? 'Marked as read — click to undo' : 'Mark this mention as read'}
-              className="ml-auto inline-flex items-center gap-1 font-body transition-colors"
-              style={{
-                fontSize: 11,
-                fontWeight: 500,
-                color: isRead ? 'var(--color-status-done)' : 'var(--color-accent)',
-                background: 'transparent',
-                border: `1px solid ${isRead ? 'var(--color-status-done)' : 'var(--color-border)'}`,
-                borderRadius: 9999,
-                cursor: 'pointer',
-                padding: '1px 8px',
-                whiteSpace: 'nowrap',
-                flexShrink: 0,
-              }}
-            >
-              <Check size={11} aria-hidden="true" />
-              {isRead ? 'Read' : 'Mark as read'}
-            </button>
-          )}
-        </div>
-        {editing ? (
-          <div style={{ marginTop: 4 }}>
-            <textarea
-              ref={editTextareaRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={handleEditKeyDown}
-              disabled={savingEdit}
-              rows={Math.min(8, Math.max(2, draft.split('\n').length))}
-              aria-label="Edit comment"
-              className="w-full font-body focus:outline-none"
-              style={{
-                resize: 'vertical',
-                fontSize: 14,
-                lineHeight: 1.55,
-                color: 'var(--color-text-primary)',
-                background: 'var(--color-bg-surface, #FFFFFF)',
-                border: '1.5px solid var(--color-accent)',
-                borderRadius: 'var(--radius-md)',
-                padding: '6px 8px',
-                boxShadow: '0 0 0 3px var(--color-accent-light, rgba(37,99,235,0.12))',
-              }}
-            />
-            <div className="mt-2 flex items-center justify-end gap-2">
-              <span
-                className="font-body mr-auto"
-                style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
-              >
-                {savingEdit ? 'Saving…' : 'Cmd/Ctrl + Enter to save, Esc to cancel'}
-              </span>
-              <button
-                type="button"
-                onClick={cancelEdit}
-                disabled={savingEdit}
-                className="font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
-                style={{
-                  height: 28,
-                  padding: '0 10px',
-                  background: 'transparent',
-                  color: 'var(--color-text-secondary)',
-                  fontWeight: 500,
-                  fontSize: 12,
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 'var(--radius-md)',
-                  cursor: savingEdit ? 'not-allowed' : 'pointer',
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={saveEdit}
-                disabled={savingEdit || !draft.trim()}
-                className="font-body transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-accent-hover"
-                style={{
-                  height: 28,
-                  padding: '0 12px',
-                  background: 'var(--color-accent)',
-                  color: '#FFFFFF',
-                  fontWeight: 600,
-                  fontSize: 12,
-                  border: 'none',
-                  borderRadius: 'var(--radius-md)',
-                  cursor: savingEdit || !draft.trim() ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {savingEdit ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <p
-            className="font-body"
-            style={{
-              fontSize: 14,
-              lineHeight: 1.55,
-              color: 'var(--color-text-primary)',
-              marginTop: 2,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}
-          >
-            <RenderCommentText text={comment.text} mentions={comment.mentions} />
-          </p>
-        )}
-      </div>
-    </div>
-  );
-};
 
 /**
  * Avatar bubble — profile pic if available, otherwise an initial fallback.

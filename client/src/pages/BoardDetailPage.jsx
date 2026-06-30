@@ -115,7 +115,7 @@ const BoardDetailPage = () => {
   const clearTasks = useTaskStore((s) => s.clear);
   const addTaskLocal = useTaskStore((s) => s.addTask);
   const updateTaskLocal = useTaskStore((s) => s.updateTask);
-  const setCommentCount = useTaskStore((s) => s.setCommentCount);
+  const setUpdatesCount = useTaskStore((s) => s.setUpdatesCount);
   const deleteTaskLocal = useTaskStore((s) => s.deleteTask);
   const addGroupLocal = useTaskStore((s) => s.addGroup);
   const removeGroupLocal = useTaskStore((s) => s.removeGroup);
@@ -198,8 +198,8 @@ const BoardDetailPage = () => {
   // --- Notification highlight (scroll-to + glow) --------------------------
   const [highlightedTaskId, setHighlightedTaskId] = useState(null);
   // Tab the task detail panel should open on when arriving from a notification
-  // that carries a tab hint (e.g. reply → 'updates' / 'comments'). null → the
-  // panel uses its default tab.
+  // that carries a tab hint (e.g. reply → 'updates'). null → the panel uses
+  // its default tab.
   const [initialPanelTab, setInitialPanelTab] = useState(null);
 
   const board = getBoardById(boardId) || null;
@@ -1390,7 +1390,7 @@ const BoardDetailPage = () => {
           <strong style={{ color: 'var(--color-text-primary)' }}>
             {taskPendingDelete?.name}
           </strong>
-          ? This will also remove any comments attached to it. This action
+          ? This will also remove any updates attached to it. This action
           cannot be undone.
         </p>
       </Modal>
@@ -1423,7 +1423,7 @@ const BoardDetailPage = () => {
           <strong style={{ color: 'var(--color-text-primary)' }}>
             {groupPendingDelete?.name}
           </strong>
-          ? This will permanently delete all tasks and comments inside it. This
+          ? This will permanently delete all tasks and updates inside it. This
           action cannot be undone.
         </p>
       </Modal>
@@ -1529,11 +1529,11 @@ const BoardDetailPage = () => {
             {selectedTaskIds.size}{' '}
             {selectedTaskIds.size === 1 ? 'task' : 'tasks'}
           </strong>{' '}
-          and any comments attached to them. This action cannot be undone.
+          and any updates attached to them. This action cannot be undone.
         </p>
       </Modal>
 
-      {/* Task comment panel */}
+      {/* Task detail panel */}
       <CommentPanel
         task={selectedTask}
         board={board}
@@ -1605,7 +1605,7 @@ const BoardDetailPage = () => {
         onOpenSubitem={handleOpenSubitem}
         onBack={handleBackInStack}
         canGoBack={selectedTaskStack.length > 1}
-        onCommentCountChange={setCommentCount}
+        onUpdatesCountChange={setUpdatesCount}
       />
 
       {/* Automations */}

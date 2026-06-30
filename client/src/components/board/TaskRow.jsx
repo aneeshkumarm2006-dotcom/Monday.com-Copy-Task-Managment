@@ -66,8 +66,8 @@ const TaskRow = ({
   const assignees = Array.isArray(task.assignedTo) ? task.assignedTo : [];
   const overdue = isOverdue(task.dueDate) && !isStatusDone(board, task.status);
   const labels = Array.isArray(task.labels) ? task.labels : [];
-  const commentCount =
-    typeof task.commentCount === 'number' ? task.commentCount : 0;
+  const updatesCount =
+    typeof task.updatesCount === 'number' ? task.updatesCount : 0;
   const subitemCount =
     typeof task.subitemCount === 'number' ? task.subitemCount : 0;
 
@@ -356,21 +356,21 @@ const TaskRow = ({
         />
       </td>
 
-      {/* Comments */}
+      {/* Updates */}
       <td style={{ width: 48, padding: '0 8px' }}>
         <button
           type="button"
           onClick={() => onOpen?.(task)}
           aria-label={
-            commentCount > 0
-              ? `Open comments (${commentCount})`
-              : 'Open comments'
+            updatesCount > 0
+              ? `Open updates (${updatesCount})`
+              : 'Open updates'
           }
           className="flex items-center justify-center rounded transition-colors duration-150 hover:bg-[color:var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
           style={{ position: 'relative', width: 28, height: 28, margin: '0 auto', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
         >
           <MessageSquare size={15} color="var(--color-text-secondary)" aria-hidden="true" />
-          {commentCount > 0 && (
+          {updatesCount > 0 && (
             <span
               aria-hidden="true"
               style={{
@@ -393,7 +393,7 @@ const TaskRow = ({
                 border: '1.5px solid var(--color-bg-surface, #FFFFFF)',
               }}
             >
-              {commentCount > 9 ? '9+' : commentCount}
+              {updatesCount > 9 ? '9+' : updatesCount}
             </span>
           )}
         </button>

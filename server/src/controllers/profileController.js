@@ -1,8 +1,10 @@
 const User = require('../models/User');
 const Organisation = require('../models/Organisation');
 const Task = require('../models/Task');
-const Comment = require('../models/Comment');
+const Update = require('../models/Update');
 const Notification = require('../models/Notification');
+const NotificationPreference = require('../models/NotificationPreference');
+const ItemFollow = require('../models/ItemFollow');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
 
 /**
@@ -99,19 +101,22 @@ const deleteAccount = async (req, res) => {
       createdBy: userId,
     });
     if (personalTaskIds.length) {
-      await Comment.deleteMany({ task: { $in: personalTaskIds } });
+      await Update.deleteMany({ task: { $in: personalTaskIds } });
       await Notification.deleteMany({ task: { $in: personalTaskIds } });
+      await ItemFollow.deleteMany({ task: { $in: personalTaskIds } });
       await Task.deleteMany({ _id: { $in: personalTaskIds } });
     }
 
     // ── 4. Remove user from assignedTo on any remaining tasks ────────────
     await Task.updateMany({ assignedTo: userId }, { $pull: { assignedTo: userId } });
 
-    // ── 5. Delete comments authored by the user ───────────────────────────
-    await Comment.deleteMany({ author: userId });
+    // ── 5. Delete updates authored by the user ────────────────────────────
+    await Update.deleteMany({ author: userId });
 
-    // ── 6. Delete all notifications sent to the user ─────────────────────
+    // ── 6. Delete all notifications sent to the user + their prefs/follows ─
     await Notification.deleteMany({ user: userId });
+    await NotificationPreference.deleteMany({ user: userId });
+    await ItemFollow.deleteMany({ user: userId });
 
     // ── 7. Delete the user document ───────────────────────────────────────
     await User.findByIdAndDelete(userId);

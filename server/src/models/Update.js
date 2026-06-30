@@ -1,14 +1,14 @@
 const mongoose = require('mongoose');
 
 /**
- * Update — a rich-text "post" on a task. Distinct from a Comment in that
- * Updates render the full TipTap document (bold, lists, task lists, headings,
- * mentions, attachments), while Comments are short plain-text chat-like
- * messages.
+ * Update — a rich-text "post" on a task; the task's discussion feed. Renders
+ * the full TipTap document (bold, lists, task lists, headings, mentions,
+ * attachments) with threaded one-level replies, @mentions, file attachments,
+ * and per-user mention read state.
  *
- * `body` stores the TipTap JSON document as-is. `bodyHtml` is an optional
- * pre-rendered HTML mirror used for read-only contexts (notifications,
- * digests) that don't have the editor on hand.
+ * `body` stores the TipTap JSON document as-is. `bodyText` is an optional
+ * plain-text mirror used for read-only contexts (notifications, digests,
+ * previews) that don't have the editor on hand.
  */
 const attachmentSchema = new mongoose.Schema(
   {
@@ -56,7 +56,7 @@ const updateSchema = new mongoose.Schema(
       },
     ],
     // Threaded reply — references the parent Update this one replies to.
-    // null for top-level updates. One level deep (mirrors Comment.replyTo).
+    // null for top-level updates. One level deep.
     replyTo: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Update',

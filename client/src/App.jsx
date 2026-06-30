@@ -21,9 +21,12 @@ import AnalyticsPage from './pages/AnalyticsPage';
 import ProductivityPage from './pages/ProductivityPage';
 import MyTasksPage from './pages/MyTasksPage';
 import SettingsPage from './pages/SettingsPage';
+import NotificationsPage from './pages/NotificationsPage';
 import MembersPage from './pages/MembersPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ToastContainer from './components/ui/Toast';
+import useNotificationPoll from './hooks/useNotificationPoll';
+import useNotificationStream from './hooks/useNotificationStream';
 
 /**
  * ProtectedRoute — redirects to /login when not authenticated.
@@ -131,6 +134,11 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?._id, currentOrgId]);
 
+  // Real-time delivery: SSE stream for instant pushes, with an always-on poll
+  // that keeps the unread badge fresh and covers any stream gaps.
+  useNotificationStream(token, currentOrgId || undefined, !!user);
+  useNotificationPoll(currentOrgId || undefined, !!user);
+
   return (
     <BrowserRouter>
       <Routes>
@@ -153,6 +161,7 @@ function App() {
             <Route path="/boards" element={<MyBoardsPage />} />
             <Route path="/boards/:id" element={<BoardDetailPage />} />
             <Route path="/my-tasks" element={<MyTasksPage />} />
+            <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/calendar" element={<CalendarPage />} />
             <Route element={<RequireAdmin />}>
               <Route path="/analytics" element={<AnalyticsPage />} />

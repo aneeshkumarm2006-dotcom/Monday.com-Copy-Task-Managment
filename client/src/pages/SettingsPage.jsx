@@ -6,6 +6,7 @@ import SettingsSidebar, { SettingsTabBar } from '../components/settings/Settings
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
 import Modal from '../components/ui/Modal';
+import NotificationPreferences from '../components/notifications/NotificationPreferences';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import * as orgService from '../services/orgService';
@@ -795,6 +796,24 @@ const SettingsPage = () => {
           onRegenerate={handleRegenerate}
           onDeleteOrg={handleDeleteOrg}
         />
+      );
+    }
+    if (activeTab === 'notifications') {
+      return (
+        <div>
+          <header className="mb-6">
+            <h2
+              className="font-display font-bold text-[color:var(--color-text-primary)]"
+              style={{ fontSize: 20 }}
+            >
+              Notifications
+            </h2>
+            <p className="mt-1 font-body text-sm text-[color:var(--color-text-secondary)]">
+              Control which notifications you receive and when
+            </p>
+          </header>
+          <NotificationPreferences />
+        </div>
       );
     }
     return (

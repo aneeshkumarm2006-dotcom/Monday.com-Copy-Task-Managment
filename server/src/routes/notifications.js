@@ -2,23 +2,46 @@ const express = require('express');
 const authMiddleware = require('../middleware/auth');
 const {
   getNotifications,
+  getUnreadCount,
+  streamNotifications,
   markAsRead,
+  markAsUnread,
+  toggleBookmark,
   markAllAsRead,
   deleteNotification,
+  clearRead,
+  getPreferences,
+  updatePreferences,
 } = require('../controllers/notificationController');
 
 const router = express.Router();
 
-// All notification routes require authentication
+// SSE stream — authenticates via a ?token= query param (EventSource cannot set
+// an Authorization header), so it must be registered BEFORE the bearer auth
+// middleware below.
+router.get('/stream', streamNotifications);
+
+// All other notification routes require a Bearer token.
 router.use(authMiddleware);
 
-// GET    /api/notifications               — list user notifications (latest 50)
-// PUT    /api/notifications/read-all      — mark all as read (must come before :id)
-// PUT    /api/notifications/:id/read      — mark a single notification as read
-// DELETE /api/notifications/:id           — delete a single notification
+// Static paths must be registered before the parameterised `/:id` routes.
+// GET    /api/notifications                 — list (filter, keyset pagination)
+// GET    /api/notifications/unread-count     — lightweight unread count (poll target)
+// PUT    /api/notifications/read-all         — mark all as read
+// DELETE /api/notifications/clear-read       — delete all read notifications
+// PUT    /api/notifications/:id/read         — mark a single notification as read
+// PUT    /api/notifications/:id/unread       — mark a single notification as unread
+// PUT    /api/notifications/:id/bookmark     — toggle bookmark on a notification
+// DELETE /api/notifications/:id              — delete a single notification
 router.get('/', getNotifications);
+router.get('/unread-count', getUnreadCount);
+router.get('/preferences', getPreferences);
+router.put('/preferences', updatePreferences);
 router.put('/read-all', markAllAsRead);
+router.delete('/clear-read', clearRead);
 router.put('/:id/read', markAsRead);
+router.put('/:id/unread', markAsUnread);
+router.put('/:id/bookmark', toggleBookmark);
 router.delete('/:id', deleteNotification);
 
 module.exports = router;

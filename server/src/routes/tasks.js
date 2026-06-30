@@ -23,6 +23,11 @@ const {
   unlinkTask,
   getMirror,
 } = require('../controllers/linkController');
+const {
+  getFollowState,
+  followTask,
+  unfollowTask,
+} = require('../controllers/followController');
 
 const router = express.Router();
 
@@ -53,6 +58,11 @@ router.delete('/:id', deleteTask);
 
 // GET /api/tasks/:id/subitems — fetch direct children of a task
 router.get('/:id/subitems', getSubitems);
+
+// Follow / watch a task — opt into its activity notifications.
+router.get('/:id/follow', getFollowState);
+router.post('/:id/follow', followTask);
+router.delete('/:id/follow', unfollowTask);
 
 // --- Cross-board links + mirrors (F2) -------------------------------------
 // Link / unlink rows on a connect_boards column; read a computed mirror value.

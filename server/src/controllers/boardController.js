@@ -2,10 +2,12 @@ const mongoose = require('mongoose');
 const Board = require('../models/Board');
 const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
-const Comment = require('../models/Comment');
+const Update = require('../models/Update');
 const Notification = require('../models/Notification');
+const ItemFollow = require('../models/ItemFollow');
 const Organisation = require('../models/Organisation');
 const { resolveBoardAccess, isBoardCreator } = require('../utils/boardAccess');
+const { createNotification } = require('../services/notificationService');
 
 const VALID_VISIBILITIES = ['public', 'private'];
 const VALID_ACCESS_LEVELS = ['read', 'edit'];
@@ -301,7 +303,7 @@ const updateBoard = async (req, res) => {
 /**
  * DELETE /api/boards/:id
  *
- * Admin-only. Cascade deletes all TaskGroups, Tasks and Comments belonging
+ * Admin-only. Cascade deletes all TaskGroups, Tasks and Updates belonging
  * to this board.
  */
 const deleteBoard = async (req, res) => {
@@ -320,9 +322,12 @@ const deleteBoard = async (req, res) => {
 
     const taskIds = await Task.distinct('_id', { board: id });
     if (taskIds.length > 0) {
-      await Comment.deleteMany({ task: { $in: taskIds } });
+      await Update.deleteMany({ task: { $in: taskIds } });
       await Notification.deleteMany({ task: { $in: taskIds } });
+      await ItemFollow.deleteMany({ task: { $in: taskIds } });
     }
+    // Board-scoped notifications (e.g. `invited`) carry no task ref.
+    await Notification.deleteMany({ board: id });
     await Task.deleteMany({ board: id });
     await TaskGroup.deleteMany({ board: id });
     await Board.deleteOne({ _id: id });
@@ -755,6 +760,12 @@ const setBoardAccess = async (req, res) => {
         .json({ error: 'User is not a member of this organisation' });
     }
 
+    // Was this user already granted access? Used to notify only on first grant
+    // (an upsert also fires on a read→edit level change for an existing grant).
+    const wasAlreadyGranted = (board.memberAccess || []).some(
+      (e) => e.user.toString() === targetUserId
+    );
+
     // Upsert: drop any existing grant for this user, then re-add unless 'none'.
     board.memberAccess = (board.memberAccess || []).filter(
       (e) => e.user.toString() !== targetUserId
@@ -763,6 +774,18 @@ const setBoardAccess = async (req, res) => {
       board.memberAccess.push({ user: targetUserId, level });
     }
     await board.save();
+
+    // Notify the user the first time they're given access to this board.
+    if (level !== 'none' && !wasAlreadyGranted) {
+      await createNotification({
+        userId: targetUserId,
+        type: 'invited',
+        message: `You were given access to the board "${board.name}"`,
+        orgId: board.organisation,
+        boardId: board._id,
+        actorId: userId,
+      });
+    }
 
     const populated = await Board.findById(board._id).populate(
       'memberAccess.user',

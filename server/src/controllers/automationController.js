@@ -343,6 +343,9 @@ const notifyAssignees = async (task, boardId, assigneeIds, orgId) => {
     message: `You were assigned to "${task.name}"`,
     taskId: task._id,
     orgId,
+    // Automation has no human actor — the UI falls back to the type icon.
+    actorId: null,
+    boardId,
   });
 
   const taskLink = `${process.env.CLIENT_URL}/boards/${boardId}`;

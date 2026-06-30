@@ -16,31 +16,17 @@ import {
 import useAuthStore from '../../store/authStore';
 import useOrgStore from '../../store/orgStore';
 import useNotificationStore from '../../store/notificationStore';
-import { timeAgo } from '../../utils/dateUtils';
 import api from '../../services/api';
 import Chip from '../ui/Chip';
+import Avatar from '../ui/Avatar';
+import NotificationFeed from '../notifications/NotificationFeed';
+import { resolveNotifLink } from '../notifications/notificationMeta';
 
 /**
  * Top navigation bar. Sticky, 56px tall, white, with:
  *   logo · nav links · search · bell/help/settings icons · avatar dropdown.
  * See Macan_Design.md Section 6.1.
  */
-
-const AVATAR_COLORS = ['#2563EB', '#16A34A', '#EA580C', '#7C3AED', '#D97706', '#DC2626'];
-
-const getInitial = (name) => {
-  if (!name) return '?';
-  return name.trim().charAt(0).toUpperCase();
-};
-
-const getAvatarColor = (seed = '') => {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i += 1) {
-    hash = (hash * 31 + seed.charCodeAt(i)) & 0xffffffff;
-  }
-  const idx = Math.abs(hash) % AVATAR_COLORS.length;
-  return AVATAR_COLORS[idx];
-};
 
 const Logo = () => (
   <div className="flex items-center gap-2.5 shrink-0">
@@ -472,97 +458,38 @@ const IconButton = ({ icon: Icon, label, badge, onClick, active }) => (
     {badge ? (
       <span
         aria-hidden="true"
-        className="absolute macan-badge-pulse"
+        className="absolute macan-badge-pulse flex items-center justify-center font-display"
         style={{
-          top: 8,
-          right: 8,
-          width: 8,
-          height: 8,
+          top: 4,
+          right: 4,
+          minWidth: 16,
+          height: 16,
+          padding: '0 4px',
           borderRadius: 9999,
           background: '#DC2626',
           border: '1.5px solid white',
+          color: 'white',
+          fontSize: 10,
+          fontWeight: 700,
+          lineHeight: 1,
         }}
-      />
+      >
+        {typeof badge === 'number' ? (badge > 9 ? '9+' : badge) : null}
+      </span>
     ) : null}
   </button>
 );
-
-/**
- * Type → color for the notification item's colored dot (12px).
- * Mirrors Design doc Section 6.12 "colored icon circle".
- */
-const NOTIF_TYPE_COLOR = {
-  assigned: 'var(--color-accent)',
-  commented: 'var(--color-status-working)',
-  replied: 'var(--color-status-working)',
-  statusChanged: 'var(--color-status-done)',
-  dueSoon: 'var(--color-status-stuck)',
-};
-
-const NotificationItem = ({ notif, onClick, onDelete }) => {
-  const unread = !notif.isRead;
-  const color = NOTIF_TYPE_COLOR[notif.type] || 'var(--color-accent)';
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onClick}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
-      className="w-full flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-[color:var(--color-bg-subtle)] focus:outline-none focus:bg-[color:var(--color-bg-subtle)] cursor-pointer"
-      style={{
-        background: unread ? 'var(--color-accent-light)' : 'white',
-        borderLeft: unread
-          ? '3px solid var(--color-accent)'
-          : '3px solid transparent',
-        minHeight: 56,
-      }}
-    >
-      <span
-        aria-hidden="true"
-        className="shrink-0 mt-1.5"
-        style={{
-          width: 12,
-          height: 12,
-          borderRadius: 9999,
-          background: color,
-        }}
-      />
-      <span className="min-w-0 flex-1">
-        <span
-          className="block font-body text-[13px] text-[color:var(--color-text-primary)]"
-          style={{ fontWeight: 500 }}
-        >
-          {notif.message}
-        </span>
-        <span className="block font-body text-[12px] text-[color:var(--color-text-muted)] mt-0.5">
-          {timeAgo(notif.createdAt)}
-        </span>
-      </span>
-      <button
-        type="button"
-        aria-label="Dismiss notification"
-        onClick={(e) => { e.stopPropagation(); onDelete(notif._id); }}
-        className="shrink-0 flex items-center justify-center rounded transition-colors hover:bg-[color:var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[color:var(--color-accent)]"
-        style={{ width: 20, height: 20, marginTop: 2 }}
-      >
-        <XIcon size={12} color="var(--color-text-muted)" aria-hidden="true" />
-      </button>
-    </div>
-  );
-};
 
 const NotificationBell = () => {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef(null);
   const navigate = useNavigate();
   const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
-  const notifications = useNotificationStore((s) => s.notifications);
   const unreadCount = useNotificationStore((s) => s.unreadCount);
-  const loading = useNotificationStore((s) => s.loading);
   const fetchNotifications = useNotificationStore((s) => s.fetchNotifications);
   const markRead = useNotificationStore((s) => s.markRead);
   const markAllRead = useNotificationStore((s) => s.markAllRead);
-  const deleteNotification = useNotificationStore((s) => s.deleteNotification);
+  const clearRead = useNotificationStore((s) => s.clearRead);
 
   // Close on outside click / Escape
   useEffect(() => {
@@ -586,22 +513,16 @@ const NotificationBell = () => {
   const handleToggle = () => {
     const next = !open;
     setOpen(next);
-    // Refresh on open so newly-triggered server-side notifications show up
+    // Refresh on open so newly-triggered server-side notifications show up.
+    // Passes no filter so the active tab is preserved.
     if (next) fetchNotifications(currentOrgId || undefined);
   };
 
-  const handleItemClick = (notif) => {
+  const handleActivate = (notif) => {
     if (!notif.isRead) markRead(notif._id);
-    // Navigate to the board and highlight the task
-    const taskId = notif.task?._id || notif.task;
-    const boardId = notif.task?.board;
-    if (boardId && taskId) {
-      setOpen(false);
-      // A `tab` hint (set on reply notifications) opens the task detail panel
-      // on that tab; otherwise we just highlight/glow the task row.
-      const tabParam = notif.tab ? `&openTab=${notif.tab}` : '';
-      navigate(`/boards/${boardId}?highlightTask=${taskId}${tabParam}`);
-    }
+    const link = resolveNotifLink(notif);
+    setOpen(false);
+    if (link) navigate(link);
   };
 
   return (
@@ -613,7 +534,7 @@ const NotificationBell = () => {
             ? `Notifications (${unreadCount} unread)`
             : 'Notifications'
         }
-        badge={unreadCount > 0}
+        badge={unreadCount}
         onClick={handleToggle}
         active={open}
       />
@@ -662,66 +583,39 @@ const NotificationBell = () => {
             </button>
           </div>
 
-          {/* List */}
-          <div className="overflow-y-auto flex-1">
-            {loading && notifications.length === 0 ? (
-              <div className="px-4 py-8 text-center font-body text-[13px] text-[color:var(--color-text-muted)]">
-                Loading…
-              </div>
-            ) : notifications.length === 0 ? (
-              <div className="px-4 py-10 text-center font-body text-[13px] text-[color:var(--color-text-muted)]">
-                You're all caught up.
-              </div>
-            ) : (
-              <div>
-                {notifications.map((n) => (
-                  <NotificationItem
-                    key={n._id}
-                    notif={n}
-                    onClick={() => handleItemClick(n)}
-                    onDelete={deleteNotification}
-                  />
-                ))}
-              </div>
-            )}
+          {/* Tabs + list */}
+          <NotificationFeed
+            orgId={currentOrgId || undefined}
+            onActivate={handleActivate}
+            variant="panel"
+          />
+
+          {/* Footer */}
+          <div
+            className="flex items-center justify-between px-4 py-2 shrink-0"
+            style={{ borderTop: '1px solid var(--color-border)' }}
+          >
+            <button
+              type="button"
+              onClick={() => clearRead(currentOrgId || undefined)}
+              className="font-body text-[12px] text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-primary)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
+            >
+              Clear read
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                navigate('/notifications');
+              }}
+              className="font-body text-[12px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
+              style={{ color: 'var(--color-accent)', fontWeight: 500 }}
+            >
+              See all
+            </button>
           </div>
         </div>
       )}
-    </div>
-  );
-};
-
-const Avatar = ({ user, size = 32 }) => {
-  const [imgError, setImgError] = useState(false);
-  if (user?.profilePic && !imgError) {
-    return (
-      <img
-        src={user.profilePic}
-        alt={user.name || 'User avatar'}
-        className="object-cover"
-        style={{
-          width: size,
-          height: size,
-          borderRadius: 9999,
-        }}
-        onError={() => setImgError(true)}
-      />
-    );
-  }
-  const seed = user?.email || user?.name || '';
-  return (
-    <div
-      className="flex items-center justify-center font-display font-semibold text-white"
-      style={{
-        width: size,
-        height: size,
-        borderRadius: 9999,
-        background: getAvatarColor(seed),
-        fontSize: size * 0.4,
-      }}
-      aria-hidden="true"
-    >
-      {getInitial(user?.name)}
     </div>
   );
 };

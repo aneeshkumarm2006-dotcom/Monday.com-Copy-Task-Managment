@@ -5,6 +5,8 @@ const User = require('../models/User');
 const Organisation = require('../models/Organisation');
 const {
   createNotificationsForUsers,
+  notifyTaskAudience,
+  filterByEmailPreference,
 } = require('../services/notificationService');
 const { sendMentionEmail } = require('../services/emailService');
 const { logActivity } = require('../services/activityService');
@@ -170,13 +172,13 @@ const addUpdate = async (req, res) => {
     // Notify assignees (board tasks only).
     if (!task.isPersonal && Array.isArray(task.assignedTo)) {
       const authorName = populated.author?.name || 'Someone';
-      await createNotificationsForUsers({
-        userIds: task.assignedTo,
+      await notifyTaskAudience(task, {
         type: 'commented',
         message: `${authorName} posted an update on "${task.name}"`,
-        taskId: task._id,
         orgId: notifOrgId,
         excludeUserId: userId,
+        actorId: userId,
+        boardId: task.board,
       });
     }
 
@@ -193,6 +195,8 @@ const addUpdate = async (req, res) => {
         orgId: notifOrgId,
         excludeUserId: userId,
         tab: 'updates',
+        actorId: userId,
+        boardId: task.board,
       });
     }
 
@@ -206,6 +210,8 @@ const addUpdate = async (req, res) => {
         taskId: task._id,
         orgId: notifOrgId,
         excludeUserId: userId,
+        actorId: userId,
+        boardId: task.board,
       });
 
       const mentionIds = validMentions.filter((id) => id.toString() !== userId);
@@ -213,12 +219,18 @@ const addUpdate = async (req, res) => {
         { _id: { $in: mentionIds } },
         'email name'
       );
+      const mentionEmailAllowed = await filterByEmailPreference(
+        mentionIds,
+        'mentioned'
+      );
       const boardId = task.board?.toString?.() || task.board;
       const taskLink = `${process.env.CLIENT_URL || 'http://localhost:5173'}/boards/${boardId}`;
       const previewText = (bodyText || '').toString().trim().slice(0, 280);
       const emailResults = await Promise.allSettled(
-        mentionedUsers.map((u) =>
-          sendMentionEmail({
+        mentionedUsers
+          .filter((u) => mentionEmailAllowed.has(u._id.toString()))
+          .map((u) =>
+            sendMentionEmail({
             to: u.email,
             mentionedByName: authorName,
             taskName: task.name,

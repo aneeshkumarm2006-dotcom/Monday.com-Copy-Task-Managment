@@ -3,6 +3,7 @@ const Organisation = require('../models/Organisation');
 const User = require('../models/User');
 const { sendInviteEmail } = require('../services/emailService');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
+const { createNotificationsForUsers } = require('../services/notificationService');
 
 /**
  * Generate a short, unique invite code.
@@ -91,6 +92,19 @@ const joinOrg = async (req, res) => {
       await org.save();
       await User.findByIdAndUpdate(userId, {
         $addToSet: { organisations: org._id },
+      });
+
+      // Notify the workspace admins that a new member joined. (The joiner
+      // redeemed an invite code, so there's no distinct inviter to notify.)
+      const adminIds = [org.admin, ...(org.admins || [])].filter(Boolean);
+      const joinerName = req.user.name || 'A new member';
+      await createNotificationsForUsers({
+        userIds: adminIds,
+        type: 'memberJoined',
+        message: `${joinerName} joined the workspace "${org.name}"`,
+        orgId: org._id,
+        excludeUserId: userId,
+        actorId: userId,
       });
     }
 

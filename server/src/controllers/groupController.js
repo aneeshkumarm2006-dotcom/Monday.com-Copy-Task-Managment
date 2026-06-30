@@ -1,8 +1,9 @@
 const Board = require('../models/Board');
 const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
-const Comment = require('../models/Comment');
+const Update = require('../models/Update');
 const Notification = require('../models/Notification');
+const ItemFollow = require('../models/ItemFollow');
 const Organisation = require('../models/Organisation');
 const eventBus = require('../services/eventBus');
 const { resolveBoardAccess } = require('../utils/boardAccess');
@@ -166,12 +167,13 @@ const deleteGroup = async (req, res) => {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    // Cascade: find tasks in this group, delete their comments, then tasks,
+    // Cascade: find tasks in this group, delete their updates, then tasks,
     // then the group itself.
     const taskIds = await Task.distinct('_id', { group: id });
     if (taskIds.length > 0) {
-      await Comment.deleteMany({ task: { $in: taskIds } });
+      await Update.deleteMany({ task: { $in: taskIds } });
       await Notification.deleteMany({ task: { $in: taskIds } });
+      await ItemFollow.deleteMany({ task: { $in: taskIds } });
     }
     await Task.deleteMany({ group: id });
     await TaskGroup.deleteOne({ _id: id });

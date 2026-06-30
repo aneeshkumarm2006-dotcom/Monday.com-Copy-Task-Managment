@@ -1,17 +1,35 @@
 import api from './api';
 
 /**
- * GET /api/notifications — latest 50 notifications for the current user.
- * Returns { notifications, unreadCount }.
+ * GET /api/notifications — a page of notifications for the current user.
+ * Returns { notifications, unreadCount, nextCursor }.
  *
- * When `orgId` is supplied, the server scopes the response to that org
- * (plus personal-task notifications). Omit to fall back to the legacy
- * unfiltered view.
+ * Options:
+ *   org    — scope to an organisation (plus personal-task notifications).
+ *   filter — tab: 'all' | 'unread' | 'mentioned' | 'assigned' | 'bookmarked'.
+ *   cursor — keyset cursor (the _id of the last item from the previous page).
+ *   limit  — page size (server clamps to a max).
  */
-export const getNotifications = async (orgId) => {
-  const params = orgId ? { org: orgId } : undefined;
-  const { data } = await api.get('/api/notifications', { params });
+export const getNotifications = async (orgId, { filter, cursor, limit } = {}) => {
+  const params = {};
+  if (orgId) params.org = orgId;
+  if (filter && filter !== 'all') params.filter = filter;
+  if (cursor) params.cursor = cursor;
+  if (limit) params.limit = limit;
+  const { data } = await api.get('/api/notifications', {
+    params: Object.keys(params).length ? params : undefined,
+  });
   return data;
+};
+
+/**
+ * GET /api/notifications/unread-count — lightweight unread count only.
+ * Used by the background poller. Returns { unreadCount }.
+ */
+export const getUnreadCount = async (orgId) => {
+  const params = orgId ? { org: orgId } : undefined;
+  const { data } = await api.get('/api/notifications/unread-count', { params });
+  return data.unreadCount || 0;
 };
 
 /**
@@ -19,6 +37,22 @@ export const getNotifications = async (orgId) => {
  */
 export const markAsRead = async (id) => {
   const { data } = await api.put(`/api/notifications/${id}/read`);
+  return data.notification;
+};
+
+/**
+ * PUT /api/notifications/:id/unread — mark a single notification as unread.
+ */
+export const markAsUnread = async (id) => {
+  const { data } = await api.put(`/api/notifications/${id}/unread`);
+  return data.notification;
+};
+
+/**
+ * PUT /api/notifications/:id/bookmark — set the bookmarked flag.
+ */
+export const toggleBookmark = async (id, value) => {
+  const { data } = await api.put(`/api/notifications/${id}/bookmark`, { value });
   return data.notification;
 };
 
@@ -39,4 +73,29 @@ export const markAllAsRead = async (orgId) => {
 export const deleteNotification = async (id) => {
   const { data } = await api.delete(`/api/notifications/${id}`);
   return data;
+};
+
+/**
+ * DELETE /api/notifications/clear-read — delete all already-read notifications.
+ */
+export const clearRead = async (orgId) => {
+  const params = orgId ? { org: orgId } : undefined;
+  const { data } = await api.delete('/api/notifications/clear-read', { params });
+  return data;
+};
+
+/**
+ * GET /api/notifications/preferences — the current user's notification prefs.
+ */
+export const getPreferences = async () => {
+  const { data } = await api.get('/api/notifications/preferences');
+  return data.preferences;
+};
+
+/**
+ * PUT /api/notifications/preferences — update (partial) notification prefs.
+ */
+export const updatePreferences = async (prefs) => {
+  const { data } = await api.put('/api/notifications/preferences', prefs);
+  return data.preferences;
 };

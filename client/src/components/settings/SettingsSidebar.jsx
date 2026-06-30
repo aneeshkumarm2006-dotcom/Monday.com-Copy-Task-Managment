@@ -1,4 +1,4 @@
-import { Building2, UserCircle2 } from 'lucide-react';
+import { Building2, UserCircle2, Bell } from 'lucide-react';
 
 /**
  * SettingsSidebar — left-rail tab nav used exclusively by the Settings page.
@@ -12,6 +12,7 @@ import { Building2, UserCircle2 } from 'lucide-react';
 const TABS = [
   { key: 'organisation', label: 'Organisation', icon: Building2, adminOnly: true },
   { key: 'profile', label: 'Profile', icon: UserCircle2, adminOnly: false },
+  { key: 'notifications', label: 'Notifications', icon: Bell, adminOnly: false },
 ];
 
 const SettingsSidebar = ({ activeTab, onTabChange, showAdminTabs = true }) => {
