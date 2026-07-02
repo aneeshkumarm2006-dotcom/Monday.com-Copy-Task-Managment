@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, StickyNote, Trash2 } from 'lucide-react';
 
 /**
  * TaskGroupHeader — collapsible header for a group within a board.
@@ -24,6 +24,8 @@ const TaskGroupHeader = ({
   collapsed = false,
   onToggle,
   onDeleteGroup,
+  onOpenNotes,
+  noteCount = 0,
   dragHandle = null,
 }) => {
   const Chevron = collapsed ? ChevronRight : ChevronDown;
@@ -136,6 +138,47 @@ const TaskGroupHeader = ({
 
       {/* Spacer pushes the add button to the right */}
       <div className="flex-1" />
+
+      {/* Group notes — opens the notes side panel. Shown to everyone with read
+          access; the create/edit affordances inside are gated by canEdit. */}
+      {onOpenNotes && (
+        <button
+          type="button"
+          onClick={onOpenNotes}
+          aria-label={`Notes for group ${name}`}
+          className="relative inline-flex items-center justify-center transition-colors duration-150 hover:bg-[color:var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 'var(--radius-sm)',
+          }}
+        >
+          <StickyNote size={14} color="var(--color-text-secondary)" aria-hidden="true" />
+          {noteCount > 0 && (
+            <span
+              aria-hidden="true"
+              className="font-body"
+              style={{
+                position: 'absolute',
+                top: -3,
+                right: -3,
+                minWidth: 15,
+                height: 15,
+                padding: '0 4px',
+                borderRadius: 'var(--radius-full)',
+                background: 'var(--color-accent)',
+                color: '#FFFFFF',
+                fontSize: 9,
+                fontWeight: 700,
+                lineHeight: '15px',
+                textAlign: 'center',
+              }}
+            >
+              {noteCount > 99 ? '99+' : noteCount}
+            </span>
+          )}
+        </button>
+      )}
 
       {/* Delete group (admin only) */}
       {onDeleteGroup && (

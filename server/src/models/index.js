@@ -6,6 +6,7 @@ require('./BoardConnection');
 require('./TaskGroup');
 require('./Task');
 require('./Update');
+require('./Note');
 require('./Notification');
 require('./NotificationPreference');
 require('./ItemFollow');

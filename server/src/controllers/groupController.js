@@ -2,6 +2,7 @@ const Board = require('../models/Board');
 const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
 const Update = require('../models/Update');
+const Note = require('../models/Note');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
 const Organisation = require('../models/Organisation');
@@ -175,6 +176,7 @@ const deleteGroup = async (req, res) => {
       await Notification.deleteMany({ task: { $in: taskIds } });
       await ItemFollow.deleteMany({ task: { $in: taskIds } });
     }
+    await Note.deleteMany({ group: id });
     await Task.deleteMany({ group: id });
     await TaskGroup.deleteOne({ _id: id });
 
@@ -233,6 +235,7 @@ const reorderGroups = async (req, res) => {
 };
 
 module.exports = {
+  loadBoardContext,
   getGroups,
   createGroup,
   updateGroup,

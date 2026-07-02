@@ -986,7 +986,7 @@ const UpdateCard = ({ update, currentUserId, highlighted, onDelete, onEdit, onRe
  * mode — that way mentions, task lists, and other custom nodes render with
  * the same plugins the composer uses, without pulling in @tiptap/html.
  */
-const ReadOnlyRichBody = ({ body, fallbackText }) => {
+export const ReadOnlyRichBody = ({ body, fallbackText }) => {
   const editor = useEditor(
     {
       editable: false,

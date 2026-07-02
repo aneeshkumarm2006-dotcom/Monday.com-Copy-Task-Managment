@@ -40,6 +40,7 @@ import StatusMenu from '../components/board/StatusMenu';
 import PriorityMenu from '../components/board/PriorityMenu';
 import TaskActionsMenu from '../components/board/TaskActionsMenu';
 import CommentPanel from '../components/board/CommentPanel';
+import GroupNotesPanel from '../components/board/GroupNotesPanel';
 import AutomationsModal from '../components/board/AutomationsModal';
 import LabelPicker from '../components/board/LabelPicker';
 import EditChipsModal from '../components/board/EditChipsModal';
@@ -110,6 +111,7 @@ const BoardDetailPage = () => {
 
   const groups = useTaskStore((s) => s.groups);
   const tasksByGroup = useTaskStore((s) => s.tasksByGroup);
+  const notesCountByGroup = useTaskStore((s) => s.notesCountByGroup);
   const loading = useTaskStore((s) => s.loading);
   const fetchBoardData = useTaskStore((s) => s.fetchBoardData);
   const clearTasks = useTaskStore((s) => s.clear);
@@ -167,6 +169,8 @@ const BoardDetailPage = () => {
   // pushed via "Open subitem" land on top. The visible task is always the
   // last entry. The whole stack clears when the panel closes.
   const [selectedTaskStack, setSelectedTaskStack] = useState([]);
+  // Group whose notes panel is open (group id), or null.
+  const [notesGroupId, setNotesGroupId] = useState(null);
   const subitemsByParent = useTaskStore((s) => s.subitemsByParent);
   // New-group modal state
   const [groupModalOpen, setGroupModalOpen] = useState(false);
@@ -847,6 +851,9 @@ const BoardDetailPage = () => {
     setGroupPendingDelete(group);
   };
 
+  const handleOpenNotes = (group) => setNotesGroupId(group._id);
+  const handleCloseNotes = () => setNotesGroupId(null);
+
   const handleConfirmDeleteGroup = async () => {
     if (!groupPendingDelete) return;
     const group = groupPendingDelete;
@@ -855,6 +862,8 @@ const BoardDetailPage = () => {
     try {
       await taskService.deleteGroup(group._id);
       removeGroupLocal(group._id);
+      // Don't let the notes drawer outlive its group.
+      if (notesGroupId === group._id) setNotesGroupId(null);
     } catch (err) {
       console.error('Failed to delete group:', err);
       toastError(
@@ -1208,6 +1217,8 @@ const BoardDetailPage = () => {
                           collapsed={isCollapsed}
                           onToggle={() => toggleGroup(group._id)}
                           onDeleteGroup={canEdit ? () => handleDeleteGroup(group) : undefined}
+                          onOpenNotes={() => handleOpenNotes(group)}
+                          noteCount={notesCountByGroup[group._id] ?? 0}
                           dragHandle={
                             !dndDisabledGlobal && (
                               <button
@@ -1606,6 +1617,14 @@ const BoardDetailPage = () => {
         onBack={handleBackInStack}
         canGoBack={selectedTaskStack.length > 1}
         onUpdatesCountChange={setUpdatesCount}
+      />
+
+      {/* Group notes panel */}
+      <GroupNotesPanel
+        isOpen={!!notesGroupId}
+        group={groups.find((g) => g._id === notesGroupId) || null}
+        canEdit={canEdit}
+        onClose={handleCloseNotes}
       />
 
       {/* Automations */}

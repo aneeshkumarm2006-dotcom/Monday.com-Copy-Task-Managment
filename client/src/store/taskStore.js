@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as taskService from '../services/taskService';
+import * as noteService from '../services/noteService';
 
 /**
  * Merge a single-task server response over the task we already have, keeping
@@ -28,6 +29,8 @@ const useTaskStore = create((set, get) => ({
   groups: [],
   tasksByGroup: {},   // { [groupId]: Task[] }
   subitemsByParent: {}, // { [parentTaskId]: Task[] }
+  notesByGroup: {},      // { [groupId]: Note[] }  — loaded lazily when a panel opens
+  notesCountByGroup: {}, // { [groupId]: number }  — loaded eagerly for header badges
   loading: false,
   error: null,
 
@@ -40,9 +43,12 @@ const useTaskStore = create((set, get) => ({
     if (!boardId) return;
     set({ loading: true, error: null });
     try {
-      const [groups, tasks] = await Promise.all([
+      const [groups, tasks, noteCounts] = await Promise.all([
         taskService.getGroups(boardId),
         taskService.getTasks(boardId),
+        // Cheap per-group note counts for the header badges. Non-essential —
+        // don't let a counts hiccup break the whole board load.
+        noteService.getNoteCounts(boardId).catch(() => ({})),
       ]);
 
       const tasksByGroup = {};
@@ -54,7 +60,7 @@ const useTaskStore = create((set, get) => ({
         tasksByGroup[gid].push(t);
       }
 
-      set({ groups, tasksByGroup, loading: false });
+      set({ groups, tasksByGroup, notesCountByGroup: noteCounts, loading: false });
     } catch (err) {
       set({ loading: false, error: err });
       throw err;
@@ -196,11 +202,78 @@ const useTaskStore = create((set, get) => ({
     set((s) => {
       const nextGroups = s.groups.filter((g) => g._id !== groupId);
       const { [groupId]: _removed, ...rest } = s.tasksByGroup;
-      return { groups: nextGroups, tasksByGroup: rest };
+      const { [groupId]: _notes, ...restNotes } = s.notesByGroup;
+      const { [groupId]: _count, ...restCounts } = s.notesCountByGroup;
+      return {
+        groups: nextGroups,
+        tasksByGroup: rest,
+        notesByGroup: restNotes,
+        notesCountByGroup: restCounts,
+      };
     }),
 
   clear: () =>
-    set({ groups: [], tasksByGroup: {}, subitemsByParent: {}, error: null }),
+    set({
+      groups: [],
+      tasksByGroup: {},
+      subitemsByParent: {},
+      notesByGroup: {},
+      notesCountByGroup: {},
+      error: null,
+    }),
+
+  // ---- Group notes ---------------------------------------------------------
+  // Notes are loaded lazily when a group's notes panel opens; only per-group
+  // counts are loaded eagerly (fetchBoardData) for the header badges.
+
+  fetchNotes: async (groupId) => {
+    const notes = await noteService.getNotes(groupId);
+    set((s) => ({
+      notesByGroup: { ...s.notesByGroup, [groupId]: notes },
+      notesCountByGroup: { ...s.notesCountByGroup, [groupId]: notes.length },
+    }));
+    return notes;
+  },
+
+  addNoteLocal: (groupId, note) =>
+    set((s) => {
+      const existing = s.notesByGroup[groupId] || [];
+      return {
+        notesByGroup: { ...s.notesByGroup, [groupId]: [note, ...existing] },
+        notesCountByGroup: {
+          ...s.notesCountByGroup,
+          [groupId]: (s.notesCountByGroup[groupId] || 0) + 1,
+        },
+      };
+    }),
+
+  updateNoteLocal: (groupId, note) =>
+    set((s) => {
+      const existing = s.notesByGroup[groupId] || [];
+      return {
+        notesByGroup: {
+          ...s.notesByGroup,
+          [groupId]: existing.map((n) => (n._id === note._id ? note : n)),
+        },
+      };
+    }),
+
+  removeNote: (groupId, noteId) =>
+    set((s) => {
+      const existing = s.notesByGroup[groupId] || [];
+      return {
+        notesByGroup: {
+          ...s.notesByGroup,
+          [groupId]: existing.filter((n) => n._id !== noteId),
+        },
+        notesCountByGroup: {
+          ...s.notesCountByGroup,
+          [groupId]: Math.max(0, (s.notesCountByGroup[groupId] || 0) - 1),
+        },
+      };
+    }),
+
+  setNoteCounts: (counts) => set({ notesCountByGroup: counts || {} }),
 
   /**
    * Add a checklist item. Optimistically refreshes the task by re-saving the
