@@ -10,6 +10,7 @@ import {
   GripVertical,
   SearchX,
   UserPlus,
+  ArrowDownUp,
 } from 'lucide-react';
 import {
   DndContext,
@@ -60,6 +61,7 @@ import {
   hasActiveFilters,
   taskMatchesFilters,
 } from '../utils/taskFilters';
+import { isStatusDone } from '../utils/statusUtils';
 
 /**
  * Group color cycle — reuses the stat-card palette so groups are visually
@@ -71,6 +73,12 @@ const GROUP_DOT_CYCLE = [
   'var(--color-card-orange)',
   'var(--color-card-purple)',
 ];
+
+/**
+ * localStorage key prefix for the per-board "completed groups last" view sort.
+ * The full board id is appended so each board remembers its own choice.
+ */
+const GROUP_SORT_KEY = 'board:groupSortCompletedLast:';
 
 /** Normalise an id that may be a populated object or a raw ObjectId string. */
 const refId = (v) => (typeof v === 'object' && v !== null ? v._id || v : v);
@@ -137,6 +145,28 @@ const BoardDetailPage = () => {
     initialCollapseApplied.current = false;
   }, [boardId]);
 
+  // Load the remembered "completed groups last" choice for this board.
+  useEffect(() => {
+    if (!boardId) return;
+    try {
+      setSortCompletedLast(localStorage.getItem(GROUP_SORT_KEY + boardId) === '1');
+    } catch {
+      setSortCompletedLast(false);
+    }
+  }, [boardId]);
+
+  // Flip the group sort and persist the new value for this board.
+  const toggleGroupSort = () =>
+    setSortCompletedLast((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(GROUP_SORT_KEY + boardId, next ? '1' : '0');
+      } catch {
+        /* ignore storage failures (private mode, quota) */
+      }
+      return next;
+    });
+
   // Collapse all groups on first load — gives the clean "categories only" view
   useEffect(() => {
     if (groups.length === 0 || initialCollapseApplied.current) return;
@@ -189,6 +219,13 @@ const BoardDetailPage = () => {
   // Filter bar at the top of the board narrows the visible tasks by name,
   // status, priority, label, due date, and assignee. See utils/taskFilters.js.
   const [filters, setFilters] = useState(EMPTY_FILTERS);
+
+  // --- Group sort ("completed last") -------------------------------------
+  // View-only toggle that pushes fully-done (green) groups to the bottom and
+  // floats groups with remaining work to the top. Never touches the persisted
+  // TaskGroup.order — it's applied only to the render order. Remembered per
+  // board in localStorage.
+  const [sortCompletedLast, setSortCompletedLast] = useState(false);
 
   // --- Bulk selection ----------------------------------------------------
   // Aggregated across every group on the board so the floating BulkActionBar
@@ -354,6 +391,40 @@ const BoardDetailPage = () => {
         0
       ),
     [filteredTasksByGroup]
+  );
+
+  // Render order for the groups. When "completed last" is off we return the
+  // original array untouched (server order). When on, fully-done groups (green
+  // progress bar) sink to the bottom and groups with remaining work rise to the
+  // top — sorted on the same filtered buckets the progress bars render from, so
+  // the ordering always matches the colored bar the user sees. This is purely a
+  // display transform; the persisted TaskGroup.order is never changed.
+  const orderedGroups = useMemo(() => {
+    if (!sortCompletedLast) return groups;
+    const meta = groups.map((group, idx) => {
+      const list = filteredTasksByGroup[group._id] || [];
+      const total = list.length;
+      const done = list.filter(
+        (t) => t.status != null && isStatusDone(board, t.status)
+      ).length;
+      return {
+        group,
+        idx,
+        complete: total > 0 && done === total, // green == 100% AND non-empty
+        pct: total === 0 ? 0 : done / total,
+      };
+    });
+    meta.sort((a, b) => {
+      if (a.complete !== b.complete) return a.complete ? 1 : -1; // done groups last
+      if (a.pct !== b.pct) return a.pct - b.pct; // least-done rises highest
+      return a.idx - b.idx; // stable: preserve manual order within a tier
+    });
+    return meta.map((m) => m.group);
+  }, [groups, sortCompletedLast, filteredTasksByGroup, board]);
+
+  const orderedGroupIds = useMemo(
+    () => orderedGroups.map((g) => g._id),
+    [orderedGroups]
   );
 
   const toggleGroup = (groupId) => {
@@ -887,13 +958,17 @@ const BoardDetailPage = () => {
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
-  const groupIds = useMemo(() => groups.map((g) => g._id), [groups]);
   // DnD is disabled while an inline edit/create row is open in any group so
   // the form controls don't fight with the drag sensors. It's also disabled
   // while filters are active — reordering a filtered subset would write a
   // bogus order back to the full list.
   const dndDisabledGlobal =
     creatingInGroup != null || editingTaskId != null || filtersActive;
+  // Group reordering additionally can't happen while the "completed last" sort
+  // is active: the displayed order no longer matches the persisted `groups`
+  // array, so a drop would write a scrambled order. Task drag within a group is
+  // unaffected and keeps using `dndDisabledGlobal`.
+  const groupDndDisabled = dndDisabledGlobal || sortCompletedLast;
 
   const handleBoardDragEnd = (event) => {
     const { active, over } = event;
@@ -1088,16 +1163,51 @@ const BoardDetailPage = () => {
         )}
       </header>
 
-      {/* Filter bar */}
+      {/* Filter bar + group sort toggle */}
       {hasGroups && board && (
-        <BoardFilterBar
-          board={board}
-          allTasks={allTasks}
-          filters={filters}
-          onChange={setFilters}
-          matchedCount={matchedTaskCount}
-          totalCount={totalTaskCount}
-        />
+        <div className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <BoardFilterBar
+              board={board}
+              allTasks={allTasks}
+              filters={filters}
+              onChange={setFilters}
+              matchedCount={matchedTaskCount}
+              totalCount={totalTaskCount}
+            />
+          </div>
+          {/* View-only sort: pushes fully-done (green) groups to the bottom.
+              Remembered per board; never writes the persisted group order. */}
+          <button
+            type="button"
+            onClick={toggleGroupSort}
+            aria-pressed={sortCompletedLast}
+            title="Move completed groups to the bottom"
+            className="mt-5 shrink-0 inline-flex items-center gap-1.5 font-body transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+            style={{
+              height: 34,
+              padding: '0 12px',
+              fontSize: 13,
+              fontWeight: 600,
+              color: sortCompletedLast
+                ? 'var(--color-accent)'
+                : 'var(--color-text-secondary)',
+              background: sortCompletedLast
+                ? 'var(--color-accent-light)'
+                : 'transparent',
+              border: `1.5px solid ${
+                sortCompletedLast
+                  ? 'var(--color-accent)'
+                  : 'var(--color-border-strong)'
+              }`,
+              borderRadius: 'var(--radius-md)',
+              cursor: 'pointer',
+            }}
+          >
+            <ArrowDownUp size={14} aria-hidden="true" />
+            Completed last
+          </button>
+        </div>
       )}
 
       {/* Task groups */}
@@ -1156,8 +1266,8 @@ const BoardDetailPage = () => {
             collisionDetection={closestCenter}
             onDragEnd={handleBoardDragEnd}
           >
-            <SortableContext items={groupIds} strategy={verticalListSortingStrategy}>
-              {groups.map((group, idx) => {
+            <SortableContext items={orderedGroupIds} strategy={verticalListSortingStrategy}>
+              {orderedGroups.map((group, idx) => {
                 const groupTasks = filteredTasksByGroup[group._id] || [];
                 // While filtering, groups with no surviving tasks drop out of
                 // the view entirely to cut noise.
@@ -1193,7 +1303,7 @@ const BoardDetailPage = () => {
                     key={group._id}
                     id={group._id}
                     data={{ type: 'group' }}
-                    disabled={dndDisabledGlobal}
+                    disabled={groupDndDisabled}
                   >
                     {({ ref, setActivatorNodeRef, style, attributes, listeners, isDragging }) => (
                       <div
@@ -1220,7 +1330,7 @@ const BoardDetailPage = () => {
                           onOpenNotes={() => handleOpenNotes(group)}
                           noteCount={notesCountByGroup[group._id] ?? 0}
                           dragHandle={
-                            !dndDisabledGlobal && (
+                            !groupDndDisabled && (
                               <button
                                 ref={setActivatorNodeRef}
                                 type="button"
