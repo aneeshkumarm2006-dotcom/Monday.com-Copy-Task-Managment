@@ -87,15 +87,29 @@ const joinOrg = async (req, res) => {
     }
 
     const alreadyMember = org.members.some((m) => m.toString() === userId);
-    if (!alreadyMember) {
-      org.members.push(userId);
-      await org.save();
-      await User.findByIdAndUpdate(userId, {
-        $addToSet: { organisations: org._id },
-      });
 
-      // Notify the workspace admins that a new member joined. (The joiner
-      // redeemed an invite code, so there's no distinct inviter to notify.)
+    // Reconcile BOTH sides of the membership on every join — the org's
+    // `members` array AND the user's `organisations` array. These are two
+    // separate writes with no transaction, so a user can end up in
+    // `org.members` without the org in their `user.organisations` (e.g. a prior
+    // join whose second write failed). The old code only updated
+    // `user.organisations` inside the `!alreadyMember` branch, so that desync
+    // could never heal: the re-join returned 200 but left the user without the
+    // org, and RequireOrg bounced them straight back to /onboarding every time.
+    // Using $addToSet on both sides makes join idempotent and self-healing, and
+    // fixes the read-modify-write race on `members` (IMPROVEMENTS.md B-L4).
+    await Organisation.updateOne(
+      { _id: org._id },
+      { $addToSet: { members: userId } }
+    );
+    await User.findByIdAndUpdate(userId, {
+      $addToSet: { organisations: org._id },
+    });
+
+    // Only announce a genuinely new member so self-repair re-joins don't spam
+    // admins. (The joiner redeemed an invite code, so there's no distinct
+    // inviter to notify.)
+    if (!alreadyMember) {
       const adminIds = [org.admin, ...(org.admins || [])].filter(Boolean);
       const joinerName = req.user.name || 'A new member';
       await createNotificationsForUsers({
@@ -106,6 +120,13 @@ const joinOrg = async (req, res) => {
         excludeUserId: userId,
         actorId: userId,
       });
+    }
+
+    // Reflect the membership in the returned doc so the response is consistent
+    // regardless of which branch ran (the client only reads _id/name, but keep
+    // it truthful).
+    if (!org.members.some((m) => m.toString() === userId)) {
+      org.members.push(userId);
     }
 
     return res.json({ org });
