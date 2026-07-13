@@ -107,6 +107,10 @@ const boardSchema = new mongoose.Schema(
     // Per-member access grants for private boards. Managed by the board's
     // creator; ignored for public boards (every member can already read those).
     memberAccess: { type: [boardAccessSchema], default: [] },
+    // When true, members granted 'edit' may also manage the board's access list
+    // (they still can't touch the owner's grant, their own, or this flag).
+    // Owner-controlled: only the creator can flip it. Off for legacy boards.
+    editorsCanManageAccess: { type: Boolean, default: false },
     order: { type: Number, default: 0, index: true },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,

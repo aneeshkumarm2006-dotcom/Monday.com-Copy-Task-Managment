@@ -8,7 +8,14 @@
  *   - 'read' — may view the board and its tasks, but cannot mutate anything
  *   - 'edit' — admin-equivalent power over board CONTENT (create/edit/delete
  *              tasks, groups, columns, statuses, labels) — i.e. everything
- *              except managing the board's own access list / lifecycle
+ *              except the board's own lifecycle
+ *
+ * Access to the access list itself is a separate axis:
+ *   - every 'edit' member may SEE who has access (canViewAccess), so the people
+ *     running the board know who's on it
+ *   - they may CHANGE it (canManageAccess) only if the owner opted in via the
+ *     board's `editorsCanManageAccess` flag — and even then never for the
+ *     owner's grant, their own grant, or the flag itself (owner-only)
  *
  * Org admins get NO automatic access to a private board — they must be granted
  * access by the creator like any other member (the creator may, of course,
@@ -39,12 +46,15 @@ const isBoardCreator = (board, userId) =>
 
 /**
  * Effective access for `userId` on `board` (within `org`):
- *   - orgAdmin: a true org admin
- *   - level:    the explicit grant ('read' | 'edit' | null)
- *   - canRead:  may load the board + its tasks
- *   - canEdit:  admin-equivalent power over board content
- *   - readOnly: explicitly view-only (so write paths can reject outright,
- *               distinct from a public-board member who may still set status)
+ *   - orgAdmin:      a true org admin
+ *   - creator:       owns the board (created it)
+ *   - level:         the explicit grant ('read' | 'edit' | null)
+ *   - canRead:       may load the board + its tasks
+ *   - canEdit:       admin-equivalent power over board content
+ *   - readOnly:      explicitly view-only (so write paths can reject outright,
+ *                    distinct from a public-board member who may still set status)
+ *   - canViewAccess: may open the share dialog and see who has access
+ *   - canManageAccess: may grant/revoke access for other members
  */
 const resolveBoardAccess = (board, org, userId) => {
   const orgAdmin = isOrgAdmin(org, userId);
@@ -57,7 +67,20 @@ const resolveBoardAccess = (board, org, userId) => {
   const canRead = creator || isPublic || level === 'read' || level === 'edit';
   const canEdit = creator || level === 'edit' || (isPublic && orgAdmin);
   const readOnly = !canEdit && level === 'read';
-  return { orgAdmin, level, canRead, canEdit, readOnly };
+  // Editors always see the roster; they only change it when the owner opted in.
+  const canViewAccess = creator || level === 'edit';
+  const canManageAccess =
+    creator || (level === 'edit' && board.editorsCanManageAccess === true);
+  return {
+    orgAdmin,
+    creator,
+    level,
+    canRead,
+    canEdit,
+    readOnly,
+    canViewAccess,
+    canManageAccess,
+  };
 };
 
 module.exports = {

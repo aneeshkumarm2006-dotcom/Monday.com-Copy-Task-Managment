@@ -250,8 +250,11 @@ const BoardDetailPage = () => {
   // A private board is the creator's alone until they grant members 'read' or
   // 'edit' access via the "Share" modal — org admins get no automatic access.
   // Public boards stay readable by everyone and editable by org admins.
-  // `canEdit` gates every edit/create affordance; `isBoardCreator` gates the
-  // access-management ("Share") control.
+  // `canEdit` gates every edit/create affordance. Sharing is a separate axis:
+  // `canViewAccess` opens the Share modal (owner + editors, so the people
+  // running the board can see who is on it) while `canManageAccess` allows
+  // changing it — owner always, editors only if the owner delegated it.
+  // Mirrors resolveBoardAccess on the server, which enforces the same rules.
   const currentUserId = currentUser?._id ? String(currentUser._id) : null;
   const myGrant = useMemo(() => {
     if (!board || !Array.isArray(board.memberAccess) || !currentUserId) return null;
@@ -268,6 +271,9 @@ const BoardDetailPage = () => {
     isBoardCreator ||
     myGrant === 'edit' ||
     (board?.visibility === 'public' && isAdmin);
+  const canViewAccess = isBoardCreator || myGrant === 'edit';
+  const canManageAccess =
+    isBoardCreator || (myGrant === 'edit' && !!board?.editorsCanManageAccess);
 
   // If we navigated directly and the boards list is empty, fetch it so the
   // header can resolve the board metadata.
@@ -1113,7 +1119,7 @@ const BoardDetailPage = () => {
 
         {(canEdit || isBoardCreator) && (
           <div className="flex items-center gap-2 shrink-0">
-            {isBoardCreator && !isPublic && (
+            {canViewAccess && !isPublic && (
               <Button
                 variant="secondary"
                 icon={UserPlus}
@@ -1750,12 +1756,14 @@ const BoardDetailPage = () => {
         />
       )}
 
-      {/* Share / access management (private boards, creator-only) */}
-      {isBoardCreator && (
+      {/* Share / access management (private boards: owner + editors) */}
+      {canViewAccess && (
         <BoardAccessModal
           board={board}
           isOpen={accessModalOpen}
           onClose={() => setAccessModalOpen(false)}
+          isOwner={isBoardCreator}
+          canManage={canManageAccess}
         />
       )}
     </PageWrapper>

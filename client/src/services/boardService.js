@@ -53,11 +53,13 @@ export const reorderBoards = async (organisation, orderedIds) => {
   return data.boards;
 };
 
-// --- Access grants (private boards, creator-only) --------------------------
+// --- Access grants (private boards) ----------------------------------------
 
 /**
  * GET /api/boards/:id/access — list a private board's per-member grants.
- * Returns { access: [{ user, level }], createdBy }.
+ * Open to the owner and to members with 'edit' access.
+ * Returns { access: [{ user, level }], createdBy, isOwner, canManageAccess,
+ *           editorsCanManageAccess }.
  */
 export const getBoardAccess = async (boardId) => {
   const { data } = await api.get(`/api/boards/${boardId}/access`);
@@ -73,6 +75,17 @@ export const setBoardAccess = async (boardId, userId, level) => {
   const { data } = await api.put(`/api/boards/${boardId}/access`, {
     userId,
     level,
+  });
+  return data;
+};
+
+/**
+ * PUT /api/boards/:id/access-settings — owner-only. Delegate (or revoke)
+ * sharing rights to members who have 'edit' access. Returns { board }.
+ */
+export const setBoardAccessSettings = async (boardId, editorsCanManageAccess) => {
+  const { data } = await api.put(`/api/boards/${boardId}/access-settings`, {
+    editorsCanManageAccess,
   });
   return data;
 };

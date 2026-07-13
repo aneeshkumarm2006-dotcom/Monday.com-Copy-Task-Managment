@@ -694,24 +694,43 @@ const getConnectableBoards = async (req, res) => {
 /**
  * GET /api/boards/:id/access
  *
- * List the board's per-member grants. Creator-only — the board's owner is the
- * one who manages who can see/edit a private board.
- * Returns: { access: [{ user: {…}, level }], createdBy }
+ * List the board's per-member grants. Open to the owner and to any member with
+ * 'edit' access, so the people running the board can see who is on it. Whether
+ * the caller may CHANGE it is reported back as `canManageAccess`.
+ * Returns: { access: [{ user: {…}, level }], createdBy, isOwner,
+ *            canManageAccess, editorsCanManageAccess }
  */
 const getBoardAccess = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const board = await Board.findById(req.params.id).populate(
+    const boardId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(boardId)) {
+      return res.status(400).json({ error: 'Invalid board id' });
+    }
+
+    const board = await Board.findById(boardId).populate(
       'memberAccess.user',
       'name email profilePic'
     );
     if (!board) return res.status(404).json({ error: 'Board not found' });
-    if (!isBoardCreator(board, userId)) {
+
+    const org = await Organisation.findById(board.organisation);
+    if (!org) return res.status(404).json({ error: 'Organisation not found' });
+
+    const access = resolveBoardAccess(board, org, userId);
+    if (!access.canViewAccess) {
       return res
         .status(403)
-        .json({ error: 'Only the board creator can manage access' });
+        .json({ error: "You don't have access to this board's sharing settings" });
     }
-    return res.json({ access: board.memberAccess, createdBy: board.createdBy });
+
+    return res.json({
+      access: board.memberAccess,
+      createdBy: board.createdBy,
+      isOwner: access.creator,
+      canManageAccess: access.canManageAccess,
+      editorsCanManageAccess: !!board.editorsCanManageAccess,
+    });
   } catch (err) {
     console.error('getBoardAccess error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -722,7 +741,13 @@ const getBoardAccess = async (req, res) => {
  * PUT /api/boards/:id/access
  *
  * Body: { userId, level: 'read' | 'edit' | 'none' }
- * Creator-only. Upserts a grant for the target org member; `'none'` removes it.
+ *
+ * Upserts a grant for the target org member; `'none'` removes it. Allowed for
+ * the owner, and for 'edit' members when the owner turned on
+ * `editorsCanManageAccess`. Guardrails for everyone: the owner's own grant is
+ * untouchable (they always have full access) and nobody can change their own
+ * level through here.
+ *
  * Returns the updated board (so the client can refresh its cache) plus the
  * populated access list for display.
  */
@@ -740,19 +765,31 @@ const setBoardAccess = async (req, res) => {
 
     const board = await Board.findById(req.params.id);
     if (!board) return res.status(404).json({ error: 'Board not found' });
-    if (!isBoardCreator(board, userId)) {
-      return res
-        .status(403)
-        .json({ error: 'Only the board creator can manage access' });
-    }
-    if (targetUserId === userId) {
-      return res
-        .status(400)
-        .json({ error: 'You already have full access as the board creator' });
-    }
 
     const org = await Organisation.findById(board.organisation);
     if (!org) return res.status(404).json({ error: 'Organisation not found' });
+
+    const access = resolveBoardAccess(board, org, userId);
+    if (!access.canManageAccess) {
+      return res.status(403).json({
+        error: access.canViewAccess
+          ? 'Only the board owner can change who has access'
+          : 'Only the board owner can manage access',
+      });
+    }
+    if (targetUserId === userId) {
+      return res.status(400).json({
+        error: access.creator
+          ? 'You already have full access as the board owner'
+          : "You can't change your own access",
+      });
+    }
+    if (isBoardCreator(board, targetUserId)) {
+      return res
+        .status(400)
+        .json({ error: 'The board owner always has full access' });
+    }
+
     const isMember = org.members.some((m) => m.toString() === targetUserId);
     if (!isMember) {
       return res
@@ -798,6 +835,48 @@ const setBoardAccess = async (req, res) => {
   }
 };
 
+/**
+ * PUT /api/boards/:id/access-settings
+ *
+ * Body: { editorsCanManageAccess: boolean }
+ *
+ * Owner-only, deliberately: the flag is what delegates sharing to editors, so
+ * letting a delegate flip it would defeat the point. Note this does NOT go
+ * through `updateBoard`, which is org-admin gated — a board owner need not be
+ * an org admin.
+ */
+const setBoardAccessSettings = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { editorsCanManageAccess } = req.body || {};
+
+    if (typeof editorsCanManageAccess !== 'boolean') {
+      return res
+        .status(400)
+        .json({ error: 'editorsCanManageAccess must be true or false' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid board id' });
+    }
+
+    const board = await Board.findById(req.params.id);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!isBoardCreator(board, userId)) {
+      return res
+        .status(403)
+        .json({ error: 'Only the board owner can change this setting' });
+    }
+
+    board.editorsCanManageAccess = editorsCanManageAccess;
+    await board.save();
+
+    return res.json({ board });
+  } catch (err) {
+    console.error('setBoardAccessSettings error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   getBoards,
   getDashboardStats,
@@ -808,6 +887,7 @@ module.exports = {
   getConnectableBoards,
   getBoardAccess,
   setBoardAccess,
+  setBoardAccessSettings,
   // labels
   listLabels,
   addLabel,

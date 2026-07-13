@@ -76,11 +76,26 @@ const useBoardStore = create((set, get) => ({
 
   /**
    * Set a member's access level on a private board ('read' | 'edit' | 'none').
-   * Creator-only on the server. Replaces the board in the cache with the
-   * updated copy so `memberAccess` (and derived permissions) stay in sync.
+   * Allowed for the owner, and for editors when the owner delegated sharing.
+   * Replaces the board in the cache with the updated copy so `memberAccess`
+   * (and derived permissions) stay in sync.
    */
   setBoardAccess: async (boardId, userId, level) => {
     const { board } = await boardService.setBoardAccess(boardId, userId, level);
+    set((s) => ({
+      boards: s.boards.map((b) => (b._id === boardId ? board : b)),
+    }));
+    return board;
+  },
+
+  /**
+   * Owner-only: let members with 'edit' access manage the board's sharing.
+   */
+  setBoardAccessSettings: async (boardId, editorsCanManageAccess) => {
+    const { board } = await boardService.setBoardAccessSettings(
+      boardId,
+      editorsCanManageAccess
+    );
     set((s) => ({
       boards: s.boards.map((b) => (b._id === boardId ? board : b)),
     }));
