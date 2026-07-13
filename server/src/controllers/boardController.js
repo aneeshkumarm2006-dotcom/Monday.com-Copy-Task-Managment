@@ -5,6 +5,7 @@ const TaskGroup = require('../models/TaskGroup');
 const Update = require('../models/Update');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
+const Automation = require('../models/Automation');
 const Organisation = require('../models/Organisation');
 const { resolveBoardAccess, isBoardCreator } = require('../utils/boardAccess');
 const { createNotification } = require('../services/notificationService');
@@ -328,6 +329,11 @@ const deleteBoard = async (req, res) => {
     }
     // Board-scoped notifications (e.g. `invited`) carry no task ref.
     await Notification.deleteMany({ board: id });
+    // Automations were NOT part of this cascade, so deleting a board orphaned
+    // them — and the scheduler keeps picking up orphaned SCHEDULE automations
+    // forever, spawning tasks against a board that no longer exists and emailing
+    // their assignees. (orgCascade already deletes these on org teardown.)
+    await Automation.deleteMany({ board: id });
     await Task.deleteMany({ board: id });
     await TaskGroup.deleteMany({ board: id });
     await Board.deleteOne({ _id: id });
@@ -834,6 +840,24 @@ const setBoardAccess = async (req, res) => {
       });
     }
     await board.save();
+
+    // Revoking the grant used to strip `memberAccess` and stop there, leaving the
+    // user's derived subscriptions behind: their ItemFollow rows survived, so the
+    // task-audience fan-out kept pinging them with task names from a board they
+    // could no longer open, indefinitely. Tear those down with the grant.
+    if (level === 'none' && existing) {
+      const boardTaskIds = await Task.distinct('_id', { board: board._id });
+      if (boardTaskIds.length > 0) {
+        await ItemFollow.deleteMany({
+          user: targetUserId,
+          task: { $in: boardTaskIds },
+        });
+      }
+      await Notification.deleteMany({
+        user: targetUserId,
+        board: board._id,
+      });
+    }
 
     const wasAlreadyGranted = !!existing;
 

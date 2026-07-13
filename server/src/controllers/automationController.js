@@ -7,23 +7,30 @@ const User = require('../models/User');
 const Automation = require('../models/Automation');
 const {
   createNotificationsForUsers,
+  filterByEmailPreference,
 } = require('../services/notificationService');
 const { sendTaskAssignmentEmail } = require('../services/emailService');
 const {
   computeNextRunAt,
   validateSchedule,
 } = require('../services/automationSchedule');
+const { resolveBoardAccess } = require('../utils/boardAccess');
+const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const isOrgAdmin = (org, userId) =>
-  !!org &&
-  (
-    (org.admin && org.admin.toString() === userId) ||
-    (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId))
-  );
-
+/**
+ * Automations are board CONTENT, not an org-wide admin power.
+ *
+ * This used to resolve permission with a bare `isOrgAdmin(org, userId)` and
+ * never consult the board at all — which got it exactly backwards in both
+ * directions: an org admin could manage automations on a private board they
+ * cannot even open, while a board's own creator could not manage automations on
+ * their own board unless they happened to be an admin. Routing through
+ * `resolveBoardAccess` puts automations behind the same gate as every other
+ * board mutation.
+ */
 const loadBoardContext = async (boardId, userId) => {
   const board = await Board.findById(boardId);
   if (!board) return { status: 404, error: 'Board not found' };
@@ -36,10 +43,24 @@ const loadBoardContext = async (boardId, userId) => {
     return { status: 403, error: 'Not a member of this organisation' };
   }
 
-  return { board, org, isAdmin: isOrgAdmin(org, userId) };
+  const access = resolveBoardAccess(board, org, userId);
+  if (!access.canRead) {
+    return { status: 403, error: 'Access denied' };
+  }
+
+  return { board, org, access, isAdmin: access.canEdit, readOnly: access.readOnly };
 };
 
-const validateAssignees = (assignedTo, org) => {
+/**
+ * Assignees must be able to READ the board, not merely belong to the org.
+ * Assigning someone spawns a notification and an email deep-linking the board,
+ * so an org-only check meant an automation on a private board could hand work to
+ * a person who then hits a 403 when they click through.
+ *
+ * `board` may be null for callers that only have an org (none today) — in that
+ * case we fall back to the org-membership check alone.
+ */
+const validateAssignees = async (assignedTo, org, board) => {
   if (!Array.isArray(assignedTo)) return { ids: [] };
   const memberIds = new Set(org.members.map((m) => m.toString()));
   const seen = new Set();
@@ -56,6 +77,15 @@ const validateAssignees = (assignedTo, org) => {
     if (seen.has(id)) continue;
     seen.add(id);
     ids.push(id);
+  }
+  if (!ids.length || !board) return { ids };
+
+  const readable = new Set(
+    ids.filter((id) => resolveBoardAccess(board, org, id).canRead)
+  );
+  const blocked = ids.filter((id) => !readable.has(id));
+  if (blocked.length) {
+    return { error: 'Assignee does not have access to this board' };
   }
   return { ids };
 };
@@ -149,7 +179,7 @@ const sanitizeConditions = async (
  * fires. Empty arrays are rejected — an automation that spawns nothing is
  * not useful.
  */
-const sanitizeGroupCreatedTemplates = (rawTemplates, org) => {
+const sanitizeGroupCreatedTemplates = async (rawTemplates, org, board) => {
   if (!Array.isArray(rawTemplates) || rawTemplates.length === 0) {
     return { error: 'At least one task template is required' };
   }
@@ -173,7 +203,7 @@ const sanitizeGroupCreatedTemplates = (rawTemplates, org) => {
     }
 
     if (raw.assignedTo !== undefined) {
-      const { ids, error } = validateAssignees(raw.assignedTo, org);
+      const { ids, error } = await validateAssignees(raw.assignedTo, org, board);
       if (error) return { error };
       out.assignedTo = ids;
     } else {
@@ -235,7 +265,7 @@ const sanitizeActionConfig = async (actionType, rawConfig, board, boardId, org) 
   }
 
   if (cfg.assignedTo !== undefined) {
-    const { ids, error } = validateAssignees(cfg.assignedTo, org);
+    const { ids, error } = await validateAssignees(cfg.assignedTo, org, board);
     if (error) return { error };
     out.assignedTo = ids;
   } else {
@@ -337,8 +367,16 @@ const resolveDefaultStatusId = (board) => {
  */
 const notifyAssignees = async (task, boardId, assigneeIds, orgId) => {
   if (!assigneeIds.length) return;
+
+  // An automation can outlive the access that created it: the board may have
+  // gone private, or an assignee's grant may have been revoked, long after the
+  // automation was saved. Re-check read access at FIRE time, not just save time.
+  const readable = await filterUsersWithBoardRead(boardId, assigneeIds);
+  const recipients = assigneeIds.filter((id) => readable.has(String(id)));
+  if (!recipients.length) return;
+
   await createNotificationsForUsers({
-    userIds: assigneeIds,
+    userIds: recipients,
     type: 'assigned',
     message: `You were assigned to "${task.name}"`,
     taskId: task._id,
@@ -348,8 +386,16 @@ const notifyAssignees = async (task, boardId, assigneeIds, orgId) => {
     boardId,
   });
 
+  // The manual assignment path (taskController) filters email recipients through
+  // notification preferences + DND; this one used to skip that entirely, so a user
+  // who had turned assignment emails off still got mailed by automations.
+  const emailAllowed = await filterByEmailPreference(recipients, 'assigned');
+  if (!emailAllowed.size) return;
+
   const taskLink = `${process.env.CLIENT_URL}/boards/${boardId}`;
-  const assigneeUsers = await User.find({ _id: { $in: assigneeIds } })
+  const assigneeUsers = await User.find({
+    _id: { $in: recipients.filter((id) => emailAllowed.has(String(id))) },
+  })
     .select('email')
     .lean();
   const emailResults = await Promise.allSettled(
@@ -675,9 +721,10 @@ const createAutomation = async (req, res) => {
         CONDITION_TYPES_BY_TRIGGER.GROUP_CREATED
       );
       if (cv.error) return res.status(400).json({ error: cv.error });
-      const tv = sanitizeGroupCreatedTemplates(
+      const tv = await sanitizeGroupCreatedTemplates(
         body.groupCreatedTaskTemplates,
-        ctx.org
+        ctx.org,
+        ctx.board
       );
       if (tv.error) return res.status(400).json({ error: tv.error });
       doc.conditions = cv.conditions;
@@ -702,9 +749,10 @@ const createAutomation = async (req, res) => {
       if (tpl.priority && !VALID_PRIORITIES.includes(tpl.priority)) {
         return res.status(400).json({ error: 'Invalid priority' });
       }
-      const { ids: assigneeIds, error: assigneeErr } = validateAssignees(
+      const { ids: assigneeIds, error: assigneeErr } = await validateAssignees(
         tpl.assignedTo,
-        ctx.org
+        ctx.org,
+        ctx.board
       );
       if (assigneeErr) return res.status(400).json({ error: assigneeErr });
 
@@ -801,9 +849,10 @@ const updateAutomation = async (req, res) => {
     }
 
     if (body.groupCreatedTaskTemplates !== undefined) {
-      const tv = sanitizeGroupCreatedTemplates(
+      const tv = await sanitizeGroupCreatedTemplates(
         body.groupCreatedTaskTemplates,
-        ctx.org
+        ctx.org,
+        ctx.board
       );
       if (tv.error) return res.status(400).json({ error: tv.error });
       automation.groupCreatedTaskTemplates = tv.templates;
@@ -832,9 +881,10 @@ const updateAutomation = async (req, res) => {
       if (tpl.priority && !VALID_PRIORITIES.includes(tpl.priority)) {
         return res.status(400).json({ error: 'Invalid priority' });
       }
-      const { ids: assigneeIds, error: assigneeErr } = validateAssignees(
+      const { ids: assigneeIds, error: assigneeErr } = await validateAssignees(
         tpl.assignedTo,
-        ctx.org
+        ctx.org,
+        ctx.board
       );
       if (assigneeErr) return res.status(400).json({ error: assigneeErr });
 

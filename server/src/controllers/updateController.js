@@ -11,11 +11,20 @@ const {
 const { sendMentionEmail } = require('../services/emailService');
 const { logActivity } = require('../services/activityService');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
+const { resolveBoardAccess } = require('../utils/boardAccess');
+const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 
 /**
- * Access rules (mirrors commentController):
+ * Access rules:
  *   - Personal task: only the creator can read / post.
- *   - Board task: any org member can read / post.
+ *   - Board task: the user must be able to READ the board the task lives on.
+ *
+ * Org membership alone is NOT sufficient. This used to check only
+ * `org.members`, which meant any member could read and post comments on any
+ * task on any private board they had never been granted — the board's own
+ * access control was simply not consulted on this path. Comments carry the task
+ * name, attachments and @mentions, so it was a full read-side hole around
+ * [boardAccess.js](../utils/boardAccess.js).
  */
 const checkTaskAccess = async (task, userId) => {
   if (task.isPersonal) {
@@ -32,7 +41,11 @@ const checkTaskAccess = async (task, userId) => {
   if (!isMember) {
     return { status: 403, error: 'Not a member of this organisation' };
   }
-  return { ok: true, board, org };
+  const access = resolveBoardAccess(board, org, userId);
+  if (!access.canRead) {
+    return { status: 403, error: 'Access denied' };
+  }
+  return { ok: true, board, org, access };
 };
 
 /**
@@ -95,18 +108,14 @@ const addUpdate = async (req, res) => {
       return res.status(access.status).json({ error: access.error });
     }
 
-    // Validate mention IDs against the task's org members.
+    // Validate mention IDs against the people who can actually READ this board —
+    // not merely against org members. Mentioning someone fires a notification and
+    // an email naming the task, so an org-only check let you pull a colleague into
+    // a private board they have no grant on.
     let validMentions = [];
     if (Array.isArray(mentions) && mentions.length > 0 && !task.isPersonal) {
-      const board = access.board || (await Board.findById(task.board));
-      if (board) {
-        const org =
-          access.org || (await Organisation.findById(board.organisation));
-        if (org) {
-          const memberSet = new Set(org.members.map((m) => m.toString()));
-          validMentions = mentions.filter((id) => memberSet.has(id.toString()));
-        }
-      }
+      const allowed = await filterUsersWithBoardRead(task.board, mentions);
+      validMentions = mentions.filter((id) => allowed.has(id.toString()));
     }
 
     // Sanitize attachments — drop any without a url.
@@ -294,15 +303,8 @@ const editUpdate = async (req, res) => {
 
     let validMentions = [];
     if (Array.isArray(mentions) && mentions.length > 0 && !task.isPersonal) {
-      const board = access.board || (await Board.findById(task.board));
-      if (board) {
-        const org =
-          access.org || (await Organisation.findById(board.organisation));
-        if (org) {
-          const memberSet = new Set(org.members.map((m) => m.toString()));
-          validMentions = mentions.filter((id) => memberSet.has(id.toString()));
-        }
-      }
+      const allowed = await filterUsersWithBoardRead(task.board, mentions);
+      validMentions = mentions.filter((id) => allowed.has(id.toString()));
     }
 
     const cleanAttachments = Array.isArray(attachments)

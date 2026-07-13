@@ -2,6 +2,7 @@ const Notification = require('../models/Notification');
 const NotificationPreference = require('../models/NotificationPreference');
 const ItemFollow = require('../models/ItemFollow');
 const eventBus = require('./eventBus');
+const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 
 /**
  * Map a notification `type` to its preference category. Types with no mapping
@@ -63,6 +64,13 @@ const isInDnd = (pref, now = new Date()) => {
  * fan-out); otherwise it is looked up here. Failures are swallowed — best-effort
  * so a notification never blocks the triggering action.
  *
+ * A notification carrying a `boardId` is only created if the recipient can READ
+ * that board. The message and the populated `board.name` / `task.name` on the
+ * SSE frame would otherwise leak the contents of a private board to someone who
+ * was never granted access — via assignment, an @mention, a stale follow row, or
+ * an automation. `boardAccessChecked` lets a batch caller that already filtered
+ * its recipients skip the per-user re-query.
+ *
  * @param {Object} args
  * @param {string|ObjectId} args.userId  - recipient user id
  * @param {string}          args.type    - notification type (see Notification enum)
@@ -71,6 +79,7 @@ const isInDnd = (pref, now = new Date()) => {
  * @param {string|ObjectId} [args.orgId]
  * @param {string|ObjectId} [args.actorId] - who triggered it (null for system)
  * @param {string|ObjectId} [args.boardId]
+ * @param {boolean}         [args.boardAccessChecked] - recipient's board read access already verified
  */
 const createNotification = async ({
   userId,
@@ -82,9 +91,16 @@ const createNotification = async ({
   actorId,
   boardId,
   pref,
+  boardAccessChecked = false,
 }) => {
   try {
     if (!userId || !type || !message) return null;
+
+    if (boardId && !boardAccessChecked) {
+      const allowed = await filterUsersWithBoardRead(boardId, [userId]);
+      if (!allowed.has(String(userId))) return null;
+    }
+
     const preference =
       pref !== undefined
         ? pref
@@ -127,6 +143,9 @@ const createNotification = async ({
  * Create multiple notifications at once. De-duplicates user ids, skips a single
  * `excludeUserId` (the actor), and batch-loads recipient preferences once so the
  * per-recipient gating in createNotification doesn't issue N queries.
+ *
+ * When `boardId` is set, recipients are filtered down to those who can read that
+ * board — once, for the whole batch — before any preference work happens.
  */
 const createNotificationsForUsers = async ({
   userIds,
@@ -142,7 +161,7 @@ const createNotificationsForUsers = async ({
   if (!Array.isArray(userIds) || userIds.length === 0) return [];
   const exclude = excludeUserId ? excludeUserId.toString() : null;
   const seen = new Set();
-  const targets = [];
+  let targets = [];
   for (const raw of userIds) {
     if (!raw) continue;
     const id = raw.toString();
@@ -152,6 +171,14 @@ const createNotificationsForUsers = async ({
     targets.push(id);
   }
   if (!targets.length) return [];
+
+  // Drop anyone who cannot read the board this notification is about. One query
+  // for the batch; createNotification then trusts the result.
+  if (boardId) {
+    const allowed = await filterUsersWithBoardRead(boardId, targets);
+    targets = targets.filter((id) => allowed.has(id));
+    if (!targets.length) return [];
+  }
 
   const prefs = await NotificationPreference.find({ user: { $in: targets } });
   const prefMap = new Map(prefs.map((p) => [p.user.toString(), p]));
@@ -168,6 +195,7 @@ const createNotificationsForUsers = async ({
         actorId,
         boardId,
         pref: prefMap.get(uid) || null,
+        boardAccessChecked: true,
       })
     )
   );
@@ -178,6 +206,11 @@ const createNotificationsForUsers = async ({
  * Notify a task's full audience — its assignees plus anyone following (watching)
  * the task — for activity-style events (updates, status changes, moves, due-date
  * changes). De-dup and preference gating are handled by createNotificationsForUsers.
+ *
+ * `boardId` defaults to the task's own board rather than trusting the caller to
+ * pass it: both halves of the audience can outlive board access (an assignment or
+ * a follow row survives a revoked grant), so this is exactly the fan-out that must
+ * not skip the read-access filter. Personal tasks have no board and stay ungated.
  */
 const notifyTaskAudience = async (task, args) => {
   if (!task) return [];
@@ -189,7 +222,12 @@ const notifyTaskAudience = async (task, args) => {
     console.error('notifyTaskAudience follow lookup error:', err);
   }
   const userIds = [...(task.assignedTo || []), ...followerIds];
-  return createNotificationsForUsers({ ...args, userIds, taskId: task._id });
+  return createNotificationsForUsers({
+    boardId: task.isPersonal ? null : task.board || null,
+    ...args,
+    userIds,
+    taskId: task._id,
+  });
 };
 
 /**
