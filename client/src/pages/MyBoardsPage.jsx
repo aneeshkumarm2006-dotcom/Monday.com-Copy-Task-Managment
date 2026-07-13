@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -40,9 +40,9 @@ import BoardCard from '../components/board/BoardCard';
 import BoardFormModal from '../components/board/BoardFormModal';
 import DeleteBoardModal from '../components/board/DeleteBoardModal';
 import SortableItem from '../components/dnd/SortableItem';
-import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
+import usePermissions from '../hooks/usePermissions';
 import { timeAgo } from '../utils/dateUtils';
 
 /**
@@ -56,26 +56,6 @@ const ACCENT_CYCLE = [
   'var(--color-card-purple)',
 ];
 
-/**
- * Determine whether the signed-in user is the admin of the current org.
- */
-const useIsCurrentOrgAdmin = () => {
-  const user = useAuthStore((s) => s.user);
-  const currentOrg = useOrgStore((s) => s.currentOrg);
-  if (!user || !currentOrg) return false;
-  const adminId =
-    typeof currentOrg.admin === 'object' && currentOrg.admin !== null
-      ? currentOrg.admin._id || currentOrg.admin
-      : currentOrg.admin;
-  const isMainAdmin = !!adminId && String(adminId) === String(user._id);
-  const isExtraAdmin = Array.isArray(currentOrg.admins) &&
-    currentOrg.admins.some((a) => {
-      const id = typeof a === 'object' && a !== null ? a._id || a : a;
-      return String(id) === String(user._id);
-    });
-  return isMainAdmin || isExtraAdmin;
-};
-
 const MyBoardsPage = () => {
   const navigate = useNavigate();
   const currentOrg = useOrgStore((s) => s.currentOrg);
@@ -87,7 +67,23 @@ const MyBoardsPage = () => {
   const deleteBoardAction = useBoardStore((s) => s.deleteBoard);
   const reorderBoardsAction = useBoardStore((s) => s.reorderBoards);
 
-  const isAdmin = useIsCurrentOrgAdmin();
+  const { can } = usePermissions();
+  const canCreateBoard = can('board.create');
+
+  /**
+   * Whether the ⋯ menu (Edit / Delete) shows for a board.
+   *
+   * `GET /api/boards` ships each board's RESOLVED permissions — the two-layer AND
+   * already applied — so this just reads the answer. It used to reconstruct the
+   * board half locally ("did I make it, or is it public and do I manage public
+   * boards"), which quietly missed a member holding an explicit edit grant on
+   * someone else's private board: they could rename it, but the menu never
+   * appeared. That is exactly the drift a second implementation invites.
+   */
+  const canManageBoard = useCallback(
+    (board) => (board?.permissions?.capabilities || []).includes('board.rename'),
+    []
+  );
 
   const [view, setView] = useState('grid'); // "grid" | "list"
   const [search, setSearch] = useState('');
@@ -190,7 +186,7 @@ const MyBoardsPage = () => {
             Manage your projects and workflows
           </p>
         </div>
-        {isAdmin && (
+        {canCreateBoard && (
           <Button
             variant="primary"
             icon={Plus}
@@ -331,8 +327,8 @@ const MyBoardsPage = () => {
               icon={FolderOpen}
               title="No boards yet"
               description="Create your first board to get started"
-              actionLabel={isAdmin ? 'Create your first board' : undefined}
-              onAction={isAdmin ? () => setCreateOpen(true) : undefined}
+              actionLabel={canCreateBoard ? 'Create your first board' : undefined}
+              onAction={canCreateBoard ? () => setCreateOpen(true) : undefined}
             />
           </div>
         ) : !hasResults && searching ? (
@@ -364,7 +360,7 @@ const MyBoardsPage = () => {
                     board={board}
                     accentColor={ACCENT_CYCLE[i % ACCENT_CYCLE.length]}
                     onOpen={openBoard}
-                    canManage={isAdmin}
+                    canManage={canManageBoard(board)}
                     onEdit={(b) => setEditTarget(b)}
                     onDelete={(b) => setDeleteTarget(b)}
                     dndDisabled={dndDisabled}
@@ -384,7 +380,7 @@ const MyBoardsPage = () => {
                 boards={filteredBoards}
                 accents={ACCENT_CYCLE}
                 onOpen={openBoard}
-                canManage={isAdmin}
+                canManageBoard={canManageBoard}
                 onEdit={(b) => setEditTarget(b)}
                 onDelete={(b) => setDeleteTarget(b)}
                 dndDisabled={dndDisabled}
@@ -430,7 +426,7 @@ const BoardListView = ({
   boards,
   accents,
   onOpen,
-  canManage,
+  canManageBoard,
   onEdit,
   onDelete,
   dndDisabled = false,
@@ -455,7 +451,7 @@ const BoardListView = ({
             isPublic={isPublic}
             PrivacyIcon={PrivacyIcon}
             onOpen={onOpen}
-            canManage={canManage}
+            canManage={canManageBoard(b)}
             onEdit={onEdit}
             onDelete={onDelete}
             dndDisabled={dndDisabled}

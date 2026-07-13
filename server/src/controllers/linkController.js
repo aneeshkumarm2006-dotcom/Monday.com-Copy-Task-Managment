@@ -6,15 +6,17 @@
  *   DELETE /api/tasks/:id/links/:columnId/:targetTaskId
  *   GET    /api/tasks/:id/mirror/:columnId
  *
- * Writing a connect link is a column-value write, so it follows the same
- * permission model as PUT /api/tasks/:id columnValues — admin on the source
- * board. Until F3, the target board must be in the same workspace (org).
+ * A connect link is a structural, cross-board reference rather than an ordinary
+ * cell edit — it is the wiring a mirror column reads through — so writing one
+ * takes `column.manage` on the SOURCE board, and (for linkTask) read access on
+ * the TARGET board: a link you may not open would otherwise become a read
+ * channel around that board's privacy. Until F3, the target board must be in the
+ * same workspace (org).
  */
 
 const mongoose = require('mongoose');
 const Board = require('../models/Board');
 const Task = require('../models/Task');
-const Organisation = require('../models/Organisation');
 const { getColumnType } = require('../utils/columnTypes');
 const {
   getMirrorValue,
@@ -22,29 +24,8 @@ const {
   readLinks,
 } = require('../services/mirrorRefresh');
 const { logActivity } = require('../services/activityService');
-const { resolveBoardAccess } = require('../utils/boardAccess');
-
-/**
- * Load a board + org and confirm membership. `isAdmin` means "may edit board
- * content" — true org admins and members granted edit access both qualify.
- * Returns { board, org, isAdmin } or { status, error }.
- */
-const loadBoardContext = async (boardId, userId) => {
-  if (!boardId || !mongoose.Types.ObjectId.isValid(boardId)) {
-    return { status: 400, error: 'Invalid board id' };
-  }
-  const board = await Board.findById(boardId);
-  if (!board) return { status: 404, error: 'Board not found' };
-  const org = await Organisation.findById(board.organisation);
-  if (!org) return { status: 404, error: 'Organisation not found' };
-  const isMember = org.members.some((m) => m.toString() === userId);
-  if (!isMember) return { status: 403, error: 'Not a member of this organisation' };
-  const access = resolveBoardAccess(board, org, userId);
-  if (!access.canRead) {
-    return { status: 403, error: 'Access denied' };
-  }
-  return { board, org, isAdmin: access.canEdit };
-};
+const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const { resolveAccess } = require('../utils/permissions');
 
 /**
  * POST /api/tasks/:id/links/:columnId
@@ -68,7 +49,12 @@ const linkTask = async (req, res) => {
 
     const ctx = await loadBoardContext(task.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) return res.status(403).json({ error: 'Admin access required' });
+    const denied = requireCapability(
+      ctx,
+      'column.manage',
+      'You do not have permission to link tasks on this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const column = ctx.board.columns.id(columnId);
     if (!column || column.type !== 'connect_boards') {
@@ -98,13 +84,24 @@ const linkTask = async (req, res) => {
       return res.status(400).json({ error: 'Target task does not belong to the target board' });
     }
 
-    const targetBoard = await Board.findById(targetBoardId).select('organisation columns');
+    // Loaded whole rather than projected: resolving access reads `createdBy`,
+    // `visibility` and `memberAccess`, not just the columns.
+    const targetBoard = await Board.findById(targetBoardId);
     if (!targetBoard) return res.status(400).json({ error: 'Target board not found' });
-    // Write on both boards — pre-F3 that means same workspace (org).
+    // Both boards must sit in one workspace — pre-F3 there is no cross-org grant.
     if (targetBoard.organisation.toString() !== ctx.board.organisation.toString()) {
       return res
         .status(403)
         .json({ error: 'Cross-workspace links require a grant (arrives with F3)' });
+    }
+    // Same org, so ctx.org IS the target board's org. Read standing on the target
+    // is required in its own right: linking a row you cannot open would surface
+    // its values through a mirror on a board you can, routing around board privacy.
+    const targetAccess = resolveAccess(targetBoard, ctx.org, userId);
+    if (!targetAccess.canRead) {
+      return res
+        .status(403)
+        .json({ error: 'You do not have access to the target board' });
     }
 
     // restrictTo filter: enforce only when the referenced column still exists
@@ -183,9 +180,17 @@ const unlinkTask = async (req, res) => {
       return res.status(400).json({ error: 'Connect links are only available on board tasks' });
     }
 
+    // Source board only, by design: dropping a reference exposes nothing on the
+    // target, and a link into a board you have since lost access to must still be
+    // removable.
     const ctx = await loadBoardContext(task.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) return res.status(403).json({ error: 'Admin access required' });
+    const denied = requireCapability(
+      ctx,
+      'column.manage',
+      'You do not have permission to unlink tasks on this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const column = ctx.board.columns.id(columnId);
     if (!column || column.type !== 'connect_boards') {
@@ -222,7 +227,14 @@ const unlinkTask = async (req, res) => {
 
 /**
  * GET /api/tasks/:id/mirror/:columnId — the computed mirror value.
- * Member-gated (read). Computes lazily, write-throughs the TTL cache.
+ *
+ * Read standing on the board holding the mirror is the whole gate — no
+ * capability beyond it, since reading a cell you can already see on the board
+ * list is not a separate power. The target board is NOT re-checked here: the
+ * value is derived from links whose creation already required read access to the
+ * target (see linkTask), and the board task-list embeds these same values via
+ * `embedMirrorValues` without a per-target check, so gating only this endpoint
+ * would close nothing. Computes lazily, write-throughs the TTL cache.
  */
 const getMirror = async (req, res) => {
   try {

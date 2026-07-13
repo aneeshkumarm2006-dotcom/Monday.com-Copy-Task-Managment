@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Users,
+  Activity,
   CheckCircle2,
   AlertTriangle,
   TrendingUp,
@@ -14,8 +15,8 @@ import StatCard from '../components/ui/StatCard';
 import Dropdown from '../components/ui/Dropdown';
 import Chip from '../components/ui/Chip';
 import { SkeletonStatCard, SkeletonBlock, SkeletonCircle } from '../components/ui/Skeleton';
-import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
+import usePermissions from '../hooks/usePermissions';
 import { getProductivity } from '../services/productivityService';
 import { formatShortDate, isOverdue } from '../utils/dateUtils';
 
@@ -350,25 +351,8 @@ const MemberRow = ({ member, expanded, onToggle, onOpenTask }) => {
   );
 };
 
-const useIsCurrentOrgAdmin = () => {
-  const user = useAuthStore((s) => s.user);
-  const currentOrg = useOrgStore((s) => s.currentOrg);
-  if (!user || !currentOrg) return false;
-  const adminId =
-    typeof currentOrg.admin === 'object' && currentOrg.admin !== null
-      ? currentOrg.admin._id || currentOrg.admin
-      : currentOrg.admin;
-  const isMainAdmin = !!adminId && String(adminId) === String(user._id);
-  const isExtraAdmin = Array.isArray(currentOrg.admins) &&
-    currentOrg.admins.some((a) => {
-      const id = typeof a === 'object' && a !== null ? a._id || a : a;
-      return String(id) === String(user._id);
-    });
-  return isMainAdmin || isExtraAdmin;
-};
-
 const ProductivityPage = () => {
-  const isAdmin = useIsCurrentOrgAdmin();
+  const { can } = usePermissions();
   const currentOrg = useOrgStore((s) => s.currentOrg);
   const navigate = useNavigate();
 
@@ -377,7 +361,7 @@ const ProductivityPage = () => {
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState(null);
 
-  const [data, setData] = useState({ summary: null, members: [] });
+  const [data, setData] = useState({ summary: null, members: [], scope: null });
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -390,8 +374,18 @@ const ProductivityPage = () => {
 
   const orgId = currentOrg?._id || null;
 
+  // The server decides how much of the org it will report on: with
+  // `productivity.view_others` you get every member, without it you get a
+  // one-row report of yourself — not a 403. So the fetch is never gated here;
+  // `filters.scope` on the response says which of the two came back.
+  const canViewOthers = can('productivity.view_others');
+  // Until the first response lands, assume the scope our capabilities imply so
+  // the heading doesn't flip from "Team" to "Your" mid-load.
+  const scope = data.scope || (canViewOthers ? 'org' : 'self');
+  const isSelfScope = scope === 'self';
+
   useEffect(() => {
-    if (!orgId || !isAdmin) return undefined;
+    if (!orgId) return undefined;
     let cancelled = false;
 
     Promise.resolve().then(() => {
@@ -404,7 +398,11 @@ const ProductivityPage = () => {
     getProductivity({ orgId, range })
       .then((res) => {
         if (cancelled) return;
-        setData({ summary: res.summary, members: res.members || [] });
+        setData({
+          summary: res.summary,
+          members: res.members || [],
+          scope: res.filters?.scope || null,
+        });
         hasLoadedRef.current = true;
       })
       .catch((err) => {
@@ -421,14 +419,14 @@ const ProductivityPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [orgId, isAdmin, range, refreshTick]);
+  }, [orgId, range, refreshTick]);
 
   // Productivity reads live task data, but this page only fetched on mount.
   // If a task is deleted on a board while this page sits open in another tab,
   // its now-gone task would otherwise keep showing here as overdue. Refetch
   // whenever the tab/window regains focus so the view can't go stale.
   useEffect(() => {
-    if (!orgId || !isAdmin) return undefined;
+    if (!orgId) return undefined;
     const refetchIfVisible = () => {
       if (document.visibilityState === 'visible') {
         setRefreshTick((n) => n + 1);
@@ -440,7 +438,7 @@ const ProductivityPage = () => {
       window.removeEventListener('focus', refetchIfVisible);
       document.removeEventListener('visibilitychange', refetchIfVisible);
     };
-  }, [orgId, isAdmin]);
+  }, [orgId]);
 
   const filteredSorted = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -481,16 +479,26 @@ const ProductivityPage = () => {
     totalAssignments: 0,
     totalDone: 0,
     totalOverdue: 0,
+    totalInProgress: 0,
     avgCompletionRate: 0,
   };
 
   const statCards = [
-    {
-      icon: Users,
-      label: 'Members',
-      value: summary.memberCount,
-      color: 'blue',
-    },
+    // A "Members: 1" tile is a leftover of the team framing when the report is
+    // just you, so the slot carries a stat that means something at that scope.
+    isSelfScope
+      ? {
+          icon: Activity,
+          label: 'In Progress',
+          value: summary.totalInProgress,
+          color: 'blue',
+        }
+      : {
+          icon: Users,
+          label: 'Members',
+          value: summary.memberCount,
+          color: 'blue',
+        },
     {
       icon: CheckCircle2,
       label: 'Tasks Completed',
@@ -530,26 +538,30 @@ const ProductivityPage = () => {
               lineHeight: 1.2,
             }}
           >
-            Team Productivity
+            {isSelfScope ? 'Your Productivity' : 'Team Productivity'}
           </h1>
           <p
             className="font-body mt-1"
             style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}
           >
-            See what every member is working on and how the team is performing.
+            {isSelfScope
+              ? 'See what you are working on and how you are performing.'
+              : 'See what every member is working on and how the team is performing.'}
           </p>
         </div>
 
         <div className="flex items-center gap-3 flex-wrap w-full sm:w-auto">
-          <div className="w-full sm:w-[180px]">
-            <Dropdown
-              options={SORT_OPTIONS}
-              value={sortBy}
-              onChange={setSortBy}
-              placeholder="Sort by"
-              size="sm"
-            />
-          </div>
+          {!isSelfScope && (
+            <div className="w-full sm:w-[180px]">
+              <Dropdown
+                options={SORT_OPTIONS}
+                value={sortBy}
+                onChange={setSortBy}
+                placeholder="Sort by"
+                size="sm"
+              />
+            </div>
+          )}
           <div className="w-full sm:w-[160px]">
             <Dropdown
               options={RANGE_OPTIONS}
@@ -627,29 +639,34 @@ const ProductivityPage = () => {
               className="font-display font-semibold"
               style={{ fontSize: 15, color: 'var(--color-text-primary)' }}
             >
-              Members
+              {isSelfScope ? 'Your Breakdown' : 'Members'}
             </h2>
-            <span
-              className="font-body text-[12px]"
-              style={{ color: 'var(--color-text-muted)' }}
-            >
-              {filteredSorted.length} of {data.members.length}
-            </span>
+            {!isSelfScope && (
+              <span
+                className="font-body text-[12px]"
+                style={{ color: 'var(--color-text-muted)' }}
+              >
+                {filteredSorted.length} of {data.members.length}
+              </span>
+            )}
           </div>
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search members…"
-            className="w-full sm:w-auto font-body text-[13px] text-[color:var(--color-text-primary)] bg-[color:var(--color-bg-input)] focus:outline-none focus:border-[color:var(--color-accent)]"
-            style={{
-              height: 32,
-              padding: '0 12px',
-              border: '1px solid var(--color-border)',
-              borderRadius: 'var(--radius-full)',
-              minWidth: 200,
-            }}
-          />
+          {/* Searching a one-row report of yourself is noise, not a gate. */}
+          {!isSelfScope && (
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search members…"
+              className="w-full sm:w-auto font-body text-[13px] text-[color:var(--color-text-primary)] bg-[color:var(--color-bg-input)] focus:outline-none focus:border-[color:var(--color-accent)]"
+              style={{
+                height: 32,
+                padding: '0 12px',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-full)',
+                minWidth: 200,
+              }}
+            />
+          )}
         </div>
 
         {/* Header (desktop) */}
@@ -698,7 +715,7 @@ const ProductivityPage = () => {
         ) : filteredSorted.length === 0 ? (
           <div className="px-4 py-12 text-center font-body text-[13px] text-[color:var(--color-text-muted)]">
             {data.members.length === 0
-              ? 'No members yet.'
+              ? (isSelfScope ? 'No tasks assigned to you yet.' : 'No members yet.')
               : 'No members match your search.'}
           </div>
         ) : (

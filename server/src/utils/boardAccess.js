@@ -1,98 +1,157 @@
+const { normaliseLevel, levelAtLeast } = require('./capabilities');
+
 /**
- * Board-level access resolution.
+ * Coerce a ref that may be a raw ObjectId OR a populated Document to its id
+ * string. A populated Document's toString() is its inspect string, not the hex
+ * id, so a naive ref.toString() comparison silently fails the moment a caller
+ * adds a .populate(). Mirrors idOf in permissions.js.
+ */
+const idOf = (ref) => String(ref?._id || ref || '');
+
+/**
+ * Board-level access resolution — the PURE standing primitive.
  *
- * Layered on top of the org admin/member model. A private board is visible
- * ONLY to its creator until the creator explicitly grants individual org
- * members one of two access levels via `board.memberAccess`:
+ * This answers one narrow question: what is this user's standing ON this board?
+ * Are they its creator, what rung were they granted, may they read it at all. It
+ * knows nothing about org roles or the capability catalog.
  *
- *   - 'read' — may view the board and its tasks, but cannot mutate anything
- *   - 'edit' — admin-equivalent power over board CONTENT (create/edit/delete
- *              tasks, groups, columns, statuses, labels) — i.e. everything
- *              except the board's own lifecycle
+ * [permissions.js](./permissions.js) is the layer above: it expands this standing
+ * into a capability set and ANDs it with the user's ORG ROLE. That is the
+ * contract controllers should use — `resolveAccess`, not this. This file remains
+ * because the expansion needs a primitive to expand, and because plain `canRead`
+ * is wanted on paths (board listing, notification fan-out) that have no
+ * capability question to ask.
  *
- * Sharing is a separate axis from content:
- *   - every 'edit' member may SEE who has access (canViewAccess), so the people
- *     running the board know who is on it
- *   - they may CHANGE it (canManageAccess) only if the owner gave that member
- *     FULL access — the per-member `canManage` flag on their grant
+ * THE ACCESS LADDER — see [capabilities.js](./capabilities.js) `BOARD_LEVELS`:
  *
- * Full access is owner-granted only, so it can't be chained: a full-access
- * member may hand out read/edit, but cannot mint another full-access member,
- * nor demote an existing one. The owner's own grant is always untouchable.
+ *   view       — read the board
+ *   comment    — + post updates and mention people
+ *   contribute — + create tasks, and edit/complete tasks assigned to them
+ *   edit       — + any task, groups, columns, statuses, notes, automations
  *
- * Org admins get NO automatic access to a private board — they must be granted
- * access by the creator like any other member (the creator may, of course,
- * grant other admins). Public boards stay readable by every org member, with
- * org admins able to edit them (unchanged behaviour).
+ * `read` is the legacy spelling of `view`; `normaliseLevel` folds it in, so
+ * grants written before the ladder existed keep working with no data migration.
+ *
+ * Sharing is a separate axis from content: every 'edit' member may SEE who has
+ * access (canViewAccess), but may CHANGE it (canManageAccess) only with the
+ * owner-granted `canManage` flag. Full access is owner-granted only, so it cannot
+ * be chained — a full-access member may hand out lower rungs but cannot mint
+ * another full-access member, nor demote an existing one. The owner's own
+ * standing is untouchable.
+ *
+ * Org admins get NO automatic access to a private board; they must be granted it
+ * like anyone else. The single deliberate exception is the
+ * `board.view_all_private` capability, which lives in the org role, is resolved
+ * in permissions.js, and is OFF for every role by default.
  */
 
-/** Whether `userId` is the primary or an additional admin of `org`. */
+/**
+ * Whether `userId` sits in the legacy `admin` / `admins[]` arrays.
+ *
+ * LEGACY, and no longer a permission decision in itself. Retained so that orgs
+ * whose roles have not been backfilled yet still resolve correctly (see
+ * `roleForUser` in permissions.js, which falls back to it). New code must not
+ * branch on this — ask `can(capability)` instead. "Admin" is now a role like any
+ * other, and what an admin may do is whatever its capability set says.
+ */
 const isOrgAdmin = (org, userId) =>
   !!org &&
   (
-    (org.admin && org.admin.toString() === userId) ||
-    (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId))
+    (org.admin && idOf(org.admin) === String(userId)) ||
+    (Array.isArray(org.admins) &&
+      org.admins.some((a) => idOf(a) === String(userId)))
   );
 
 /** The raw `memberAccess` entry for this user, or null. */
 const boardGrant = (board, userId) => {
   if (!board || !Array.isArray(board.memberAccess)) return null;
   return (
-    board.memberAccess.find((e) => e.user && e.user.toString() === userId) || null
+    board.memberAccess.find(
+      (e) => e.user && idOf(e.user) === String(userId)
+    ) || null
   );
 };
 
-/** 'read' | 'edit' | null — the explicit per-board grant level for this user. */
+/** The explicit per-board grant, normalised onto the ladder, or null. */
 const boardGrantLevel = (board, userId) => {
   const grant = boardGrant(board, userId);
-  return grant ? grant.level : null;
+  return grant ? normaliseLevel(grant.level) : null;
 };
 
-/** True when `userId` originally created the board. */
+/** True when `userId` created the board — its owner. */
 const isBoardCreator = (board, userId) =>
-  !!board && !!board.createdBy && board.createdBy.toString() === userId;
+  !!board &&
+  !!board.createdBy &&
+  idOf(board.createdBy) === String(userId);
 
 /**
  * True when `userId` holds a FULL-access grant: 'edit' plus the owner-granted
- * `canManage` flag. Meaningless without 'edit', so both are required.
+ * `canManage` flag. Meaningless below 'edit', so both are required.
  */
 const hasFullAccess = (board, userId) => {
   const grant = boardGrant(board, userId);
-  return !!grant && grant.level === 'edit' && grant.canManage === true;
+  return (
+    !!grant && normaliseLevel(grant.level) === 'edit' && grant.canManage === true
+  );
 };
 
 /**
- * Effective access for `userId` on `board` (within `org`):
- *   - orgAdmin:        a true org admin
- *   - creator:         owns the board (created it)
- *   - level:           the explicit grant ('read' | 'edit' | null)
- *   - fullAccess:      granted 'edit' + sharing rights (not the owner)
- *   - canRead:         may load the board + its tasks
- *   - canEdit:         admin-equivalent power over board content
- *   - readOnly:        explicitly view-only (so write paths can reject outright,
- *                      distinct from a public-board member who may still set status)
- *   - canViewAccess:   may open the share dialog and see who has access
- *   - canManageAccess: may grant/revoke access for other members
+ * The rung this user stands on, ignoring their org role:
+ *
+ *   creator        → 'edit'  (they own the board)
+ *   explicit grant → that rung
+ *   public board   → the board's own `publicDefaultLevel`
+ *   otherwise      → null    (no access)
+ *
+ * An explicit grant always beats the public default, so a public board can open
+ * at `view` for the org while still handing one person `edit`.
+ */
+const effectiveLevel = (board, userId) => {
+  if (!board) return null;
+  if (isBoardCreator(board, userId)) return 'edit';
+
+  const granted = boardGrantLevel(board, userId);
+  if (granted) return granted;
+
+  if (board.visibility === 'public') {
+    return normaliseLevel(board.publicDefaultLevel) || 'contribute';
+  }
+  return null;
+};
+
+/**
+ * Effective standing for `userId` on `board` (within `org`).
+ *
+ *   orgAdmin        legacy admins[] membership — informational only
+ *   creator         owns the board
+ *   level           the rung they stand on: view | comment | contribute | edit | null
+ *   grantLevel      the EXPLICIT grant only — distinct from a public default
+ *   fullAccess      granted 'edit' + sharing rights (and not the owner)
+ *   canRead         may load the board and its tasks
+ *   canEdit         may restructure board content
+ *   readOnly        cannot even change a status, so write paths can reject outright
+ *   canViewAccess   may open the share dialog and see who has access
+ *   canManageAccess may grant/revoke access for other members
  */
 const resolveBoardAccess = (board, org, userId) => {
   const orgAdmin = isOrgAdmin(org, userId);
   const creator = isBoardCreator(board, userId);
-  const level = boardGrantLevel(board, userId);
+  const grantLevel = boardGrantLevel(board, userId);
   const fullAccess = hasFullAccess(board, userId);
-  const isPublic = board.visibility === 'public';
-  // Private boards: only the creator and explicitly granted members get in —
-  // org admins have no automatic access. Public boards: every member reads,
-  // org admins edit.
-  const canRead = creator || isPublic || level === 'read' || level === 'edit';
-  const canEdit = creator || level === 'edit' || (isPublic && orgAdmin);
-  const readOnly = !canEdit && level === 'read';
-  // Editors always see the roster; only the owner and full-access members change it.
-  const canViewAccess = creator || level === 'edit';
+  const level = effectiveLevel(board, userId);
+
+  const canRead = !!level;
+  const canEdit = levelAtLeast(level, 'edit');
+  const readOnly = canRead && !levelAtLeast(level, 'contribute');
+
+  const canViewAccess = creator || canEdit;
   const canManageAccess = creator || fullAccess;
+
   return {
     orgAdmin,
     creator,
     level,
+    grantLevel,
     fullAccess,
     canRead,
     canEdit,
@@ -108,5 +167,6 @@ module.exports = {
   boardGrantLevel,
   isBoardCreator,
   hasFullAccess,
+  effectiveLevel,
   resolveBoardAccess,
 };

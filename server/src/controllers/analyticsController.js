@@ -3,6 +3,7 @@ const Board = require('../models/Board');
 const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
 const Organisation = require('../models/Organisation');
+const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
 
 const LEGACY_STATUS_KEYS = ['not_started', 'working_on_it', 'done', 'stuck'];
 const PRIORITIES = ['critical', 'high', 'medium', 'low'];
@@ -29,7 +30,9 @@ const rangeToSince = (range) => {
 /**
  * GET /api/analytics?org=:orgId&board=:boardId&range=:range
  *
- * Admin-only. Returns aggregated analytics for the org.
+ * Requires `analytics.view`, and reports ONLY over the boards the caller can
+ * read. Those are two separate questions: the capability buys you the report,
+ * it does not buy you the boards.
  *
  * Status distribution buckets each task by the `key` field on its board's
  * status subdoc (post Phase 2 migration). New user-defined statuses are
@@ -54,16 +57,42 @@ const getAnalytics = async (req, res) => {
     const org = await Organisation.findById(orgId)
       .populate('members', 'name email profilePic');
     if (!org) return res.status(404).json({ error: 'Organisation not found' });
-    const isAdmin =
-      (org.admin && org.admin.toString() === userId) ||
-      (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId));
-    if (!isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
+
+    // Membership was never checked here — the old admin gate implied it. Under
+    // the role model it does not: an unknown user resolves to the DEFAULT role,
+    // which holds `analytics.view`, so without this any authenticated user could
+    // read any org's analytics by passing its id. `members` is populated, so
+    // compare on `_id`.
+    const isMember = (org.members || []).some(
+      (m) => (m._id || m).toString() === userId
+    );
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
-    const orgBoards = await Board.find({ organisation: orgId })
-      .select('_id name statuses')
+    // Orgs created before the role system carry no `roles`, and the resolver
+    // fails closed with nothing to resolve against. Seed on first touch.
+    if (org.ensureSystemRoles()) await org.save();
+
+    const orgAccess = resolveOrgAccess(org, userId);
+    if (!orgAccess.can('analytics.view')) {
+      return res
+        .status(403)
+        .json({ error: 'You do not have permission to view analytics' });
+    }
+    const canSeeOthers = orgAccess.can('productivity.view_others');
+
+    // Every figure below aggregates ACROSS boards, so it must aggregate only
+    // across boards this caller may open. A private board they were never
+    // granted would otherwise surface here as its name in the board picker, its
+    // completion rate in Board Performance, and — worst — its overdue tasks by
+    // name and assignee. The numbers are the leak.
+    const allOrgBoards = await Board.find({ organisation: orgId })
+      .select('_id name statuses visibility publicDefaultLevel memberAccess createdBy')
       .sort({ createdAt: 1 });
+    const orgBoards = allOrgBoards.filter(
+      (b) => resolveAccess(b, org, userId).canRead
+    );
     const orgBoardIds = orgBoards.map((b) => b._id);
 
     let scopedBoardIds = orgBoardIds;
@@ -71,6 +100,9 @@ const getAnalytics = async (req, res) => {
       if (!mongoose.Types.ObjectId.isValid(boardFilter)) {
         return res.status(400).json({ error: 'Invalid board id' });
       }
+      // `orgBoardIds` is already narrowed to what the caller can read, so a board
+      // that exists but is closed to them 404s here rather than 403s. That is
+      // deliberate: a 403 would confirm the board exists.
       const match = orgBoardIds.find((id) => id.toString() === boardFilter);
       if (!match) {
         return res.status(404).json({ error: 'Board not found in organisation' });
@@ -153,7 +185,7 @@ const getAnalytics = async (req, res) => {
     const overdueByPriority = Object.fromEntries(PRIORITIES.map((p) => [p, 0]));
     const overdueByAssignee = new Map();
     // Detailed per-assignee task lists power the full-screen "Overdue Tasks"
-    // breakdown that opens when an admin clicks the overdue stat card.
+    // breakdown that opens when the viewer clicks the overdue stat card.
     const overdueTasksByAssignee = new Map(); // uid → [taskDetail]
     const unassignedTaskDetails = [];
     let unassignedOverdue = 0;
@@ -320,8 +352,16 @@ const getAnalytics = async (req, res) => {
           priority,
           count: overdueByPriority[priority] || 0,
         })),
-        topAssignees: topOverdueAssignees,
-        byAssignee: overdueByAssigneeDetail,
+        // Naming individuals and how much late work each is carrying is a
+        // different question from "may you open the dashboard", and it is the one
+        // `productivity.view_others` exists to answer. Withholding it in the UI
+        // alone would have been theatre — the names were still on the wire.
+        ...(canSeeOthers
+          ? {
+              topAssignees: topOverdueAssignees,
+              byAssignee: overdueByAssigneeDetail,
+            }
+          : { topAssignees: [], byAssignee: {} }),
       },
       boards: orgBoards.map((b) => ({ _id: b._id, name: b.name })),
       filters: {

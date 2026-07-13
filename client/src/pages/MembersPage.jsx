@@ -5,6 +5,8 @@ import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
+import usePermissions from '../hooks/usePermissions';
+import PermissionsMatrix from '../components/settings/PermissionsMatrix';
 import * as orgService from '../services/orgService';
 import { formatShortDate } from '../utils/dateUtils';
 
@@ -79,7 +81,13 @@ const Chip = ({ children, variant = 'grey' }) => {
   );
 };
 
-const RoleDropdown = ({ currentRole, onChange, disabled }) => {
+/**
+ * Pick any of the org's roles — including custom ones. This used to be a
+ * hardcoded two-option toggle between the strings 'admin' and 'member', which was
+ * the clearest symptom of roles not being data: there was no third option to
+ * offer, because there was nowhere to put one.
+ */
+const RoleDropdown = ({ roles, currentRoleId, onChange, disabled }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -91,7 +99,10 @@ const RoleDropdown = ({ currentRole, onChange, disabled }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const options = ['admin', 'member'];
+  // The owner role is not assignable — there is exactly one owner and ownership
+  // is not transferable, so offering it would be a dead end.
+  const options = (roles || []).filter((r) => r.key !== 'owner');
+  const current = options.find((r) => String(r.id) === String(currentRoleId));
 
   return (
     <div className="relative" ref={ref}>
@@ -106,42 +117,56 @@ const RoleDropdown = ({ currentRole, onChange, disabled }) => {
           border: '1px solid var(--color-border)',
           borderRadius: 'var(--radius-sm)',
           background: 'var(--color-bg-surface)',
-          color: 'var(--color-text-primary)',
+          color: current?.color || 'var(--color-text-primary)',
           cursor: disabled ? 'default' : 'pointer',
           opacity: disabled ? 0.6 : 1,
         }}
       >
-        {currentRole === 'admin' ? 'Admin' : 'Member'}
+        {current?.name || 'Member'}
         {!disabled && <ChevronDown size={12} aria-hidden="true" />}
       </button>
       {open && (
         <div
           className="absolute z-50 mt-1"
           style={{
-            minWidth: 100,
+            minWidth: 130,
             border: '1px solid var(--color-border)',
             borderRadius: 'var(--radius-md)',
             background: 'var(--color-bg-surface)',
             boxShadow: 'var(--shadow-card)',
+            padding: '4px 0',
           }}
         >
-          {options.map((opt) => (
-            <button
-              key={opt}
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                if (opt !== currentRole) onChange(opt);
-              }}
-              className="block w-full text-left font-body text-[12px] px-3 py-1.5 hover:bg-[color:var(--color-bg-subtle)]"
-              style={{
-                color: 'var(--color-text-primary)',
-                fontWeight: opt === currentRole ? 600 : 400,
-              }}
-            >
-              {opt === 'admin' ? 'Admin' : 'Member'}
-            </button>
-          ))}
+          {options.map((opt) => {
+            const isCurrent = String(opt.id) === String(currentRoleId);
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  if (!isCurrent) onChange(opt.id);
+                }}
+                className="flex w-full items-center gap-2 text-left font-body text-[12px] px-3 py-1.5 hover:bg-[color:var(--color-bg-subtle)]"
+                style={{
+                  color: 'var(--color-text-primary)',
+                  fontWeight: isCurrent ? 600 : 400,
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: 9999,
+                    background: opt.color,
+                    flexShrink: 0,
+                  }}
+                />
+                {opt.name}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -374,28 +399,22 @@ const MembersPage = () => {
   const currentOrg = useOrgStore((s) => s.currentOrg);
   const members = useOrgStore((s) => s.members);
   const adminId = useOrgStore((s) => s.adminId);
-  const adminIds = useOrgStore((s) => s.adminIds);
+  const memberRoles = useOrgStore((s) => s.memberRoles);
+  const roles = useOrgStore((s) => s.roles);
   const fetchMembers = useOrgStore((s) => s.fetchMembers);
+
+  // What the SERVER says this user may do — not a local re-derivation of it.
+  const { can } = usePermissions();
 
   const [confirmMember, setConfirmMember] = useState(null);
   const [removing, setRemoving] = useState(false);
   const [changingRole, setChangingRole] = useState(null);
+  const [roleError, setRoleError] = useState('');
 
-  // Resolve admin-ness
   const orgAdminId =
     typeof currentOrg?.admin === 'object' && currentOrg?.admin !== null
       ? currentOrg.admin._id || currentOrg.admin
       : currentOrg?.admin;
-  const isMainAdmin =
-    !!user && !!orgAdminId && String(orgAdminId) === String(user._id);
-  const orgAdminsArr = currentOrg?.admins || [];
-  const isExtraAdmin =
-    !!user &&
-    orgAdminsArr.some((a) => {
-      const id = typeof a === 'object' && a !== null ? a._id || a : a;
-      return String(id) === String(user._id);
-    });
-  const isAdmin = isMainAdmin || isExtraAdmin;
 
   useEffect(() => {
     if (currentOrg?._id) {
@@ -410,17 +429,22 @@ const MembersPage = () => {
       await orgService.removeMember(currentOrg._id, confirmMember._id);
       await fetchMembers(currentOrg._id);
       setConfirmMember(null);
+    } catch (err) {
+      setRoleError(err?.response?.data?.error || 'Could not remove that member');
     } finally {
       setRemoving(false);
     }
   };
 
-  const handleRoleChange = async (userId, newRole) => {
+  const handleRoleChange = async (userId, roleId) => {
     if (!currentOrg?._id) return;
     setChangingRole(userId);
+    setRoleError('');
     try {
-      await orgService.changeRole(currentOrg._id, userId, newRole);
+      await orgService.assignRole(currentOrg._id, userId, roleId);
       await fetchMembers(currentOrg._id);
+    } catch (err) {
+      setRoleError(err?.response?.data?.error || 'Could not change that role');
     } finally {
       setChangingRole(null);
     }
@@ -442,6 +466,22 @@ const MembersPage = () => {
             {members.length} {members.length === 1 ? 'person' : 'people'} in this workspace
           </p>
         </header>
+
+        {roleError && (
+          <div
+            role="alert"
+            className="mb-4 font-body"
+            style={{
+              fontSize: 13,
+              padding: '10px 12px',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--color-status-stuck-bg)',
+              color: 'var(--color-status-stuck)',
+            }}
+          >
+            {roleError}
+          </div>
+        )}
 
         <div
           className="bg-surface"
@@ -479,18 +519,20 @@ const MembersPage = () => {
             </div>
 
             {members.map((m) => {
-              const isTheMainAdmin = String(m._id) === String(resolvedAdminId);
-              const isAnAdmin = isTheMainAdmin || (adminIds || []).includes(String(m._id));
+              const isTheOwner = String(m._id) === String(resolvedAdminId);
               const isSelf = String(m._id) === String(user?._id);
-              const memberRole = isAnAdmin ? 'admin' : 'member';
+              // The role the SERVER resolved for this person (owner → explicit
+              // assignment → legacy admins[] → default). The client no longer
+              // re-implements that order.
+              const role = memberRoles?.[String(m._id)] || null;
 
+              // The owner's role is nobody's to change — there is exactly one, and
+              // ownership is not transferable. The server rejects it either way;
+              // this just keeps the UI honest.
               const canChangeRole =
-                isAdmin &&
-                !isTheMainAdmin &&
-                !isSelf &&
-                (isMainAdmin || !isAnAdmin);
-
-              const canRemove = isAdmin && !isTheMainAdmin && !isSelf;
+                can('org.assign_roles') && !isTheOwner && !isSelf;
+              const canRemove =
+                can('org.remove_members') && !isTheOwner && !isSelf;
 
               return (
                 <div
@@ -525,18 +567,19 @@ const MembersPage = () => {
 
                   {/* Role chip / dropdown */}
                   <div className="hidden md:block">
-                    {isTheMainAdmin ? (
+                    {isTheOwner ? (
                       <Chip variant="blue">Owner</Chip>
                     ) : canChangeRole ? (
                       <RoleDropdown
-                        currentRole={memberRole}
-                        onChange={(newRole) => handleRoleChange(m._id, newRole)}
+                        roles={roles}
+                        currentRoleId={role?.id}
+                        onChange={(roleId) => handleRoleChange(m._id, roleId)}
                         disabled={changingRole === m._id}
                       />
-                    ) : isAnAdmin ? (
-                      <Chip variant="blue">Admin</Chip>
                     ) : (
-                      <Chip variant="grey">Member</Chip>
+                      <Chip variant={role?.key === 'admin' ? 'blue' : 'grey'}>
+                        {role?.name || 'Member'}
+                      </Chip>
                     )}
                   </div>
 
@@ -561,9 +604,7 @@ const MembersPage = () => {
                       </button>
                     ) : (
                       <span className="md:block hidden">
-                        {isTheMainAdmin ? (
-                          <Chip variant="blue">Owner</Chip>
-                        ) : null}
+                        {isTheOwner ? <Chip variant="blue">Owner</Chip> : null}
                       </span>
                     )}
                   </div>
@@ -573,7 +614,23 @@ const MembersPage = () => {
           </div>
         </div>
 
-        {isAdmin && <div className="mt-6"><InviteSection currentOrg={currentOrg} /></div>}
+        {can('org.invite_members') && (
+          <div className="mt-6">
+            <InviteSection currentOrg={currentOrg} />
+          </div>
+        )}
+
+        {/* The permissions matrix. Any member may READ it — knowing who can do
+            what is not itself a privilege, and it makes the role chips above
+            legible. Only the owner can change it. */}
+        {currentOrg?._id && (
+          <div className="mt-8">
+            <PermissionsMatrix
+              orgId={currentOrg._id}
+              onRolesChanged={() => fetchMembers(currentOrg._id).catch(() => {})}
+            />
+          </div>
+        )}
 
         {/* Confirm remove modal */}
         <Modal

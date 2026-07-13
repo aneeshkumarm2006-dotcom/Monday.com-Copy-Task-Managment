@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Board = require('../models/Board');
 const Task = require('../models/Task');
 const Organisation = require('../models/Organisation');
+const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
 
 const VALID_RANGES = ['7d', '30d', 'all'];
 
@@ -33,7 +34,12 @@ const startOfDay = (input) => {
 /**
  * GET /api/productivity?org=:orgId&range=:range
  *
- * Admin-only. Per-member productivity breakdown.
+ * Per-member productivity breakdown, over the boards the caller can read.
+ *
+ * YOUR OWN numbers are always yours to see; everyone ELSE's needs
+ * `productivity.view_others`. So this is no longer admin-or-403 — a plain member
+ * gets a one-row report of themselves, and `filters.scope` tells the client which
+ * of the two it is looking at.
  *
  * Status filters previously matched the enum string `'done'`. After Phase 2,
  * `task.status` is an ObjectId pointing into the task's board.statuses
@@ -56,15 +62,32 @@ const getProductivity = async (req, res) => {
       .populate('members', 'name email profilePic');
     if (!org) return res.status(404).json({ error: 'Organisation not found' });
 
-    const isAdmin =
-      (org.admin && org.admin.toString() === userId) ||
-      (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId));
-    if (!isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
+    // Membership was never checked here — the old admin gate implied it. Under
+    // the role model it does not: an unknown user resolves to the DEFAULT role,
+    // so without this any authenticated user could pull any org's productivity
+    // by passing its id. `members` is populated, so compare on `_id`.
+    const isMember = (org.members || []).some(
+      (m) => (m._id || m).toString() === userId
+    );
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
-    const orgBoards = await Board.find({ organisation: orgId })
-      .select('_id name statuses');
+    // Orgs created before the role system carry no `roles`, and the resolver
+    // fails closed with nothing to resolve against. Seed on first touch.
+    if (org.ensureSystemRoles()) await org.save();
+
+    const orgAccess = resolveOrgAccess(org, userId);
+    const canViewOthers = orgAccess.can('productivity.view_others');
+
+    // Counts are computed across boards, so they must be computed across the
+    // boards this caller may open. Otherwise a private board they were never
+    // granted shows up as somebody's task name and board name under
+    // `currentTasks` — and inflates every total besides.
+    const orgBoards = (
+      await Board.find({ organisation: orgId })
+        .select('_id name statuses visibility publicDefaultLevel memberAccess createdBy')
+    ).filter((b) => resolveAccess(b, org, userId).canRead);
     const orgBoardIds = orgBoards.map((b) => b._id);
     const boardNameById = new Map(
       orgBoards.map((b) => [b._id.toString(), b.name])
@@ -207,7 +230,14 @@ const getProductivity = async (req, res) => {
     );
     const ownerId = org.admin ? org.admin.toString() : null;
 
-    const members = (org.members || []).map((m) => {
+    // Your own row is always yours to read. Without `productivity.view_others`
+    // the report narrows to exactly one person — you — instead of 403ing, which
+    // is what "a user may always see their own stats" means in practice.
+    const visibleMembers = canViewOthers
+      ? org.members || []
+      : (org.members || []).filter((m) => m._id.toString() === userId);
+
+    const members = visibleMembers.map((m) => {
       const id = m._id.toString();
       const open = openByUser.get(id) || {};
       const done = doneByUser.get(id) || 0;
@@ -283,7 +313,10 @@ const getProductivity = async (req, res) => {
     return res.json({
       summary,
       members,
-      filters: { range },
+      // `scope` lets the client tell "the whole team" apart from "just you" —
+      // a one-row team report and a personal report are otherwise identical on
+      // the wire, and it would render the former as a broken version of itself.
+      filters: { range, scope: canViewOthers ? 'org' : 'self' },
     });
   } catch (err) {
     console.error('getProductivity error:', err);

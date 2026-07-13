@@ -21,8 +21,8 @@ import BarChart from '../components/analytics/BarChart';
 import BoardPerformance from '../components/analytics/BoardPerformance';
 import OverdueAssignees from '../components/analytics/OverdueAssignees';
 import OverdueTasksModal from '../components/analytics/OverdueTasksModal';
-import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
+import usePermissions from '../hooks/usePermissions';
 import { getAnalytics } from '../services/analyticsService';
 
 const STATUS_LABELS = {
@@ -74,30 +74,15 @@ const INITIAL_OVERDUE = {
   byAssignee: [],
 };
 
-/**
- * Determine whether the signed-in user is the admin of the current org.
- */
-const useIsCurrentOrgAdmin = () => {
-  const user = useAuthStore((s) => s.user);
-  const currentOrg = useOrgStore((s) => s.currentOrg);
-  if (!user || !currentOrg) return false;
-  const adminId =
-    typeof currentOrg.admin === 'object' && currentOrg.admin !== null
-      ? currentOrg.admin._id || currentOrg.admin
-      : currentOrg.admin;
-  const isMainAdmin = !!adminId && String(adminId) === String(user._id);
-  const isExtraAdmin = Array.isArray(currentOrg.admins) &&
-    currentOrg.admins.some((a) => {
-      const id = typeof a === 'object' && a !== null ? a._id || a : a;
-      return String(id) === String(user._id);
-    });
-  return isMainAdmin || isExtraAdmin;
-};
-
 const AnalyticsPage = () => {
   const navigate = useNavigate();
-  const isAdmin = useIsCurrentOrgAdmin();
+  const { can } = usePermissions();
   const currentOrg = useOrgStore((s) => s.currentOrg);
+
+  const canViewAnalytics = can('analytics.view');
+  // The overdue breakdowns name individual people and how much work they are
+  // late on, which is a different question from "may you see the dashboard".
+  const canViewOthers = can('productivity.view_others');
 
   const [boardFilter, setBoardFilter] = useState('all');
   const [range, setRange] = useState('30d');
@@ -116,7 +101,7 @@ const AnalyticsPage = () => {
 
   // Fetch analytics whenever filters change
   useEffect(() => {
-    if (!orgId || !isAdmin) return undefined;
+    if (!orgId || !canViewAnalytics) return undefined;
     let cancelled = false;
 
     // Defer the loading/error resets to a microtask so the setState doesn't
@@ -149,7 +134,7 @@ const AnalyticsPage = () => {
     return () => {
       cancelled = true;
     };
-  }, [orgId, isAdmin, boardFilter, range]);
+  }, [orgId, canViewAnalytics, boardFilter, range]);
 
   const boardOptions = useMemo(
     () => [
@@ -228,7 +213,9 @@ const AnalyticsPage = () => {
             } overdue`
           : 'No overdue tasks',
       onClick:
-        overdue.count > 0 ? () => setOverdueModalOpen(true) : undefined,
+        overdue.count > 0 && canViewOthers
+          ? () => setOverdueModalOpen(true)
+          : undefined,
     },
     {
       icon: Folder,
@@ -341,12 +328,20 @@ const AnalyticsPage = () => {
         )}
       </div>
 
-      {/* Overdue insights — by priority + top assignees */}
-      <div className="mt-5 grid gap-5 grid-cols-1 lg:grid-cols-2">
+      {/* Overdue insights — by priority, plus top assignees for those who may
+          see other people's workload. Without them the priority chart takes the
+          whole row rather than leaving half of it empty. */}
+      <div
+        className={
+          canViewOthers
+            ? 'mt-5 grid gap-5 grid-cols-1 lg:grid-cols-2'
+            : 'mt-5 grid gap-5 grid-cols-1'
+        }
+      >
         {loading && overduePriorityData.length === 0 ? (
           <>
             <SkeletonBarChart rows={4} />
-            <SkeletonOverdueAssignees rows={5} />
+            {canViewOthers && <SkeletonOverdueAssignees rows={5} />}
           </>
         ) : (
           <>
@@ -355,7 +350,9 @@ const AnalyticsPage = () => {
               icon={AlertTriangle}
               data={overduePriorityData}
             />
-            <OverdueAssignees assignees={overdue.topAssignees} />
+            {canViewOthers && (
+              <OverdueAssignees assignees={overdue.topAssignees} />
+            )}
           </>
         )}
       </div>
@@ -370,13 +367,15 @@ const AnalyticsPage = () => {
       </div>
 
       {/* Full-screen overdue breakdown (opens from the Overdue stat card) */}
-      <OverdueTasksModal
-        isOpen={overdueModalOpen}
-        onClose={() => setOverdueModalOpen(false)}
-        assignees={overdue.byAssignee || []}
-        totalCount={overdue.count}
-        onSelectTask={handleSelectOverdueTask}
-      />
+      {canViewOthers && (
+        <OverdueTasksModal
+          isOpen={overdueModalOpen}
+          onClose={() => setOverdueModalOpen(false)}
+          assignees={overdue.byAssignee || []}
+          totalCount={overdue.count}
+          onSelectTask={handleSelectOverdueTask}
+        />
+      )}
     </PageWrapper>
   );
 };

@@ -1,6 +1,6 @@
 const Board = require('../models/Board');
 const Organisation = require('../models/Organisation');
-const { resolveBoardAccess } = require('./boardAccess');
+const { resolveAccess } = require('./permissions');
 
 /**
  * Async companion to [boardAccess.js](./boardAccess.js), which stays pure.
@@ -28,18 +28,21 @@ const filterUsersWithBoardRead = async (boardId, userIds) => {
   if (!boardId) return new Set(ids); // not board-scoped — nothing to gate on
 
   const board = await Board.findById(boardId).select(
-    'visibility memberAccess createdBy organisation'
+    'visibility publicDefaultLevel memberAccess createdBy organisation'
   );
   if (!board) return new Set();
 
+  // `roles` + `memberRoles` are required, not optional: read access now depends
+  // on the ORG ROLE too — a Guest cannot read public boards at all — so a query
+  // that omitted them would silently over-report who may see a board.
   const org = await Organisation.findById(board.organisation).select(
-    'admin admins members'
+    'admin admins members roles memberRoles'
   );
   if (!org) return new Set();
 
   const allowed = new Set();
   for (const id of ids) {
-    if (resolveBoardAccess(board, org, id).canRead) allowed.add(id);
+    if (resolveAccess(board, org, id).canRead) allowed.add(id);
   }
   return allowed;
 };

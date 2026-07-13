@@ -1,12 +1,13 @@
 const TaskGroup = require('../models/TaskGroup');
 const Note = require('../models/Note');
-const { loadBoardContext } = require('./groupController');
+const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 
 /**
- * Note controller — rich-text docs attached to a board group. Access mirrors
- * groups: any org member with read access on the board may list notes; only
- * members with edit access (`ctx.isAdmin` from loadBoardContext) may create,
- * edit, or delete them.
+ * Note controller — rich-text docs attached to a board group. Reading a note
+ * needs nothing beyond board read access, which `loadBoardContext` already
+ * enforces. Every mutation is gated on the `note.manage` capability: writing a
+ * group's notes is restructuring the board's content, not doing work on it, so
+ * it sits on the `edit` rung alongside groups and columns.
  */
 
 const POPULATE = [
@@ -50,8 +51,9 @@ const getNotes = async (req, res) => {
 };
 
 /**
- * POST /api/groups/:groupId/notes — create a note. Editor only. Rejects a
- * fully-empty note as a backstop (the client only POSTs on first real content).
+ * POST /api/groups/:groupId/notes — create a note. Requires `note.manage`.
+ * Rejects a fully-empty note as a backstop (the client only POSTs on first real
+ * content).
  */
 const createNote = async (req, res) => {
   try {
@@ -68,9 +70,13 @@ const createNote = async (req, res) => {
 
     const ctx = await loadBoardContext(group.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Edit access required' });
-    }
+
+    const denied = requireCapability(
+      ctx,
+      'note.manage',
+      'You do not have permission to write notes on this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const note = await Note.create({
       group: groupId,
@@ -90,7 +96,8 @@ const createNote = async (req, res) => {
 };
 
 /**
- * PATCH /api/notes/:id — partial update of title/body/bodyText. Editor only.
+ * PATCH /api/notes/:id — partial update of title/body/bodyText. Requires
+ * `note.manage`.
  */
 const updateNote = async (req, res) => {
   try {
@@ -103,9 +110,13 @@ const updateNote = async (req, res) => {
 
     const ctx = await loadBoardContext(note.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Edit access required' });
-    }
+
+    const denied = requireCapability(
+      ctx,
+      'note.manage',
+      'You do not have permission to edit notes on this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     if (typeof title === 'string') note.title = title;
     if (body !== undefined) note.body = body;
@@ -123,7 +134,7 @@ const updateNote = async (req, res) => {
 };
 
 /**
- * DELETE /api/notes/:id — remove a note. Editor only.
+ * DELETE /api/notes/:id — remove a note. Requires `note.manage`.
  */
 const deleteNote = async (req, res) => {
   try {
@@ -135,9 +146,13 @@ const deleteNote = async (req, res) => {
 
     const ctx = await loadBoardContext(note.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Edit access required' });
-    }
+
+    const denied = requireCapability(
+      ctx,
+      'note.manage',
+      'You do not have permission to delete notes on this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     await Note.deleteOne({ _id: id });
     return res.json({ ok: true });

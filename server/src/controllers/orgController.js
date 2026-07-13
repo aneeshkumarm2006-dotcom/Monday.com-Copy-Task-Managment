@@ -4,6 +4,8 @@ const User = require('../models/User');
 const { sendInviteEmail } = require('../services/emailService');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
 const { createNotificationsForUsers } = require('../services/notificationService');
+const { resolveOrgAccess, isOrgOwner } = require('../utils/permissions');
+const { DEFAULT_ROLE_KEY } = require('../utils/capabilities');
 
 /**
  * Generate a short, unique invite code.
@@ -26,12 +28,18 @@ const createOrg = async (req, res) => {
 
     const userId = req.user.userId;
 
-    const org = await Organisation.create({
+    const org = new Organisation({
       name: name.trim(),
       admin: userId,
       members: [userId],
       inviteCode: generateInviteCode(),
     });
+
+    // Seed the permissions matrix. Every org gets the five presets
+    // (owner/admin/member/viewer/guest) up front, so the matrix is never empty
+    // and the creator lands on `owner` without any assignment being written.
+    org.ensureSystemRoles();
+    await org.save();
 
     // Attach org to user's organisations list
     await User.findByIdAndUpdate(userId, {
@@ -66,7 +74,23 @@ const getOrg = async (req, res) => {
       return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
-    return res.json({ org });
+    if (org.ensureSystemRoles()) await org.save();
+    const access = resolveOrgAccess(org, req.user.userId);
+
+    // Ship the caller's RESOLVED permissions with the org.
+    //
+    // The client used to re-derive `isAdmin` itself, from org.admin + org.admins,
+    // in eight separate copy-pasted places. Every one of them was a chance for a
+    // UI gate to drift from what the server actually enforces. Now the server
+    // answers the question once and the client just reads the answer.
+    return res.json({
+      org,
+      permissions: {
+        role: access.role,
+        isOwner: access.isOwner,
+        capabilities: [...access.capabilities],
+      },
+    });
   } catch (err) {
     console.error('getOrg error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -105,6 +129,24 @@ const joinOrg = async (req, res) => {
     await User.findByIdAndUpdate(userId, {
       $addToSet: { organisations: org._id },
     });
+
+    // Give the joiner the default role. Written on the same $addToSet-style
+    // "reconcile, don't assume" principle as the membership above: an org that
+    // predates the role system gets its matrix seeded here, and a re-join never
+    // overwrites a role someone has already been given deliberately.
+    if (org.ensureSystemRoles()) await org.save();
+    const alreadyRoled = (org.memberRoles || []).some(
+      (m) => m.user.toString() === userId
+    );
+    if (!alreadyRoled && !isOrgOwner(org, userId)) {
+      const defaultRole = org.roleByKey(DEFAULT_ROLE_KEY);
+      if (defaultRole) {
+        await Organisation.updateOne(
+          { _id: org._id },
+          { $addToSet: { memberRoles: { user: userId, role: defaultRole._id } } }
+        );
+      }
+    }
 
     // Only announce a genuinely new member so self-repair re-joins don't spam
     // admins. (The joiner redeemed an invite code, so there's no distinct
@@ -156,14 +198,40 @@ const listMembers = async (req, res) => {
       return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
+    if (org.ensureSystemRoles()) await org.save();
+
     const adminIds = Array.isArray(org.admins)
       ? org.admins.map((a) => a.toString())
       : [];
+
+    // Each member's resolved role, so the members table can show a role chip
+    // without the client re-implementing the resolution order (owner → explicit
+    // assignment → legacy admins[] → default).
+    const memberRoles = {};
+    for (const m of org.members) {
+      const role = resolveOrgAccess(org, m._id.toString()).role;
+      if (role) memberRoles[m._id.toString()] = role;
+    }
+
+    const access = resolveOrgAccess(org, req.user.userId);
 
     return res.json({
       members: org.members,
       adminId: org.admin.toString(),
       adminIds,
+      memberRoles,
+      roles: org.roles.map((r) => ({
+        id: r._id,
+        key: r.key,
+        name: r.name,
+        color: r.color,
+        isSystem: r.isSystem === true,
+      })),
+      permissions: {
+        role: access.role,
+        isOwner: access.isOwner,
+        capabilities: [...access.capabilities],
+      },
     });
   } catch (err) {
     console.error('listMembers error:', err);
@@ -183,14 +251,35 @@ const removeMember = async (req, res) => {
       return res.status(404).json({ error: 'Organisation not found' });
     }
 
-    // Main admin cannot be removed
+    // The owner cannot be removed
     if (org.admin.toString() === targetUserId) {
-      return res.status(400).json({ error: 'Main admin cannot be removed' });
+      return res.status(400).json({ error: 'The workspace owner cannot be removed' });
     }
 
-    // Also remove from admins array if they were an admin
+    // You cannot remove someone who outranks you. Without this, the old rule
+    // "only the owner may demote another admin" was trivially bypassable: an
+    // admin who could not DEMOTE a peer could simply REMOVE them instead, which
+    // stripped them from admins[] all the same.
+    const requester = resolveOrgAccess(org, req.user.userId);
+    if (!requester.isOwner) {
+      const target = resolveOrgAccess(org, targetUserId);
+      const outranks = [...target.capabilities].some(
+        (c) => !requester.capabilities.has(c)
+      );
+      if (outranks) {
+        return res
+          .status(403)
+          .json({ error: 'You cannot remove someone who outranks you' });
+      }
+    }
+
     org.admins = (org.admins || []).filter((a) => a.toString() !== targetUserId);
     org.members = org.members.filter((m) => m.toString() !== targetUserId);
+    // Drop their role assignment too, or a re-join would silently restore the
+    // role they held before they were removed.
+    org.memberRoles = (org.memberRoles || []).filter(
+      (m) => m.user.toString() !== targetUserId
+    );
     await org.save();
 
     await User.findByIdAndUpdate(targetUserId, {
@@ -256,67 +345,11 @@ const sendInvite = async (req, res) => {
   }
 };
 
-/**
- * PUT /api/orgs/:id/members/:userId/role — Change a member's role (admin only).
- * Body: { role: 'admin' | 'member' }
- *
- * Rules:
- *  - Only admins can change roles.
- *  - Only the main admin can change another admin's role.
- *  - The main admin's own role cannot be changed by anyone.
- */
-const changeRole = async (req, res) => {
-  try {
-    const { id: orgId, userId: targetUserId } = req.params;
-    const { role } = req.body;
-
-    if (!['admin', 'member'].includes(role)) {
-      return res.status(400).json({ error: 'Role must be "admin" or "member"' });
-    }
-
-    const org = await Organisation.findById(orgId);
-    if (!org) {
-      return res.status(404).json({ error: 'Organisation not found' });
-    }
-
-    const requesterId = req.user.userId;
-    const isMainAdmin = org.admin.toString() === requesterId;
-
-    // No one can change the main admin's role
-    if (org.admin.toString() === targetUserId) {
-      return res.status(400).json({ error: 'Cannot change the main admin\'s role' });
-    }
-
-    // Non-main admins cannot change another admin's role
-    const targetIsAdmin = (org.admins || []).some(
-      (a) => a.toString() === targetUserId
-    );
-    if (targetIsAdmin && !isMainAdmin) {
-      return res.status(403).json({ error: 'Only the main admin can change another admin\'s role' });
-    }
-
-    if (role === 'admin') {
-      // Promote to admin
-      if (!targetIsAdmin) {
-        org.admins = org.admins || [];
-        org.admins.push(targetUserId);
-      }
-    } else {
-      // Demote to member
-      org.admins = (org.admins || []).filter(
-        (a) => a.toString() !== targetUserId
-      );
-    }
-
-    await org.save();
-
-    const adminIds = org.admins.map((a) => a.toString());
-    return res.json({ message: 'Role updated', adminIds });
-  } catch (err) {
-    console.error('changeRole error:', err);
-    return res.status(500).json({ error: 'Server error' });
-  }
-};
+// Role assignment moved to roleController.assignRole. The old `changeRole` could
+// only toggle between two hardcoded strings, pushing and pulling the user's id on
+// `org.admins[]` — it was the clearest symptom of roles not being data. It is
+// superseded, not merely renamed: the new endpoint assigns any role, including
+// custom ones, and enforces the no-escalation rules.
 
 /**
  * DELETE /api/orgs/:id — Permanently delete an organisation (owner only).
@@ -343,7 +376,6 @@ module.exports = {
   joinOrg,
   listMembers,
   removeMember,
-  changeRole,
   regenerateInvite,
   sendInvite,
   deleteOrg,

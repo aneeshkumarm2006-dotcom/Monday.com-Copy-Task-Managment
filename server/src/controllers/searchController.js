@@ -1,13 +1,22 @@
 const Board = require('../models/Board');
 const Task = require('../models/Task');
 const Organisation = require('../models/Organisation');
+const { resolveAccess } = require('../utils/permissions');
 
 /**
  * GET /api/search?q=:query&org=:orgId
  *
- * Searches boards by name and tasks by name within the given org.
- * - Admin: sees all boards (public + private) and all board tasks.
- * - Regular user: sees only public boards and tasks assigned to them.
+ * Searches boards by name and tasks by name, across the boards THIS caller may
+ * READ — and nothing else.
+ *
+ * The old gate was `isAdmin ? {} : { visibility: 'public' }`, and it was wrong in
+ * both directions. It handed org admins every PRIVATE board in the workspace,
+ * including boards nobody had granted them, so search was a back door straight
+ * around board access — the board itself would refuse them, its tasks came back
+ * in the search results anyway. And it hid the private boards that HAD been
+ * shared with the caller, so the boards they were entitled to were the ones
+ * search would not find. Read access now decides both, exactly as it does on the
+ * board itself.
  *
  * Returns: { boards: [...], tasks: [...] }
  */
@@ -28,23 +37,34 @@ const search = async (req, res) => {
       return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
+    // Orgs created before the role system carry no `roles`, and the resolver
+    // fails closed with nothing to resolve against — which would silently return
+    // zero results rather than the caller's boards. Seed on first touch.
+    if (org.ensureSystemRoles()) await org.save();
+
     // Escape special regex characters to prevent ReDoS
     const escaped = q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const queryRegex = new RegExp(escaped, 'i');
 
-    const isAdmin =
-      (org.admin && org.admin.toString() === userId) ||
-      (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId));
-    const visibilityFilter = isAdmin ? {} : { visibility: 'public' };
-
-    const boards = await Board.find({ organisation: orgId, name: queryRegex, ...visibilityFilter })
-      .select('name visibility')
-      .limit(10)
+    // Resolve access per board rather than filtering on `visibility` in Mongo. A
+    // private board shared with the caller IS readable; a public board is NOT
+    // readable by a Guest, whose role withholds `board.view_public`. Only the
+    // resolver knows the difference, so the boards come back unfiltered and the
+    // resolver picks.
+    const orgBoards = await Board.find({ organisation: orgId })
+      .select('name visibility publicDefaultLevel memberAccess createdBy')
       .lean();
+    const readableBoards = orgBoards.filter(
+      (b) => resolveAccess(b, org, userId).canRead
+    );
 
-    const orgBoardIds = await Board.distinct('_id', { organisation: orgId, ...visibilityFilter });
+    const boards = readableBoards
+      .filter((b) => queryRegex.test(b.name))
+      .slice(0, 10)
+      .map((b) => ({ _id: b._id, name: b.name, visibility: b.visibility }));
+
     const tasks = await Task.find({
-      board: { $in: orgBoardIds },
+      board: { $in: readableBoards.map((b) => b._id) },
       name: queryRegex,
       isPersonal: { $ne: true },
     })

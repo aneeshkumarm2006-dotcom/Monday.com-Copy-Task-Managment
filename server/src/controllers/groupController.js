@@ -1,45 +1,24 @@
-const Board = require('../models/Board');
 const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
 const Update = require('../models/Update');
 const Note = require('../models/Note');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
-const Organisation = require('../models/Organisation');
 const eventBus = require('../services/eventBus');
-const { resolveBoardAccess } = require('../utils/boardAccess');
+const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 
 /**
- * Load the board + its org, validating the current user is a member.
- * `isAdmin` means "may edit board content" — true org admins and members
- * granted edit access on a private board both qualify.
- * Returns { board, org, isAdmin } on success, or { status, error } on failure.
+ * Every group mutation on this board — create, rename, reorder, delete — is one
+ * capability: `group.manage`. Restructuring a board's groups is a single power,
+ * so it is a single gate.
  */
-const loadBoardContext = async (boardId, userId) => {
-  const board = await Board.findById(boardId);
-  if (!board) return { status: 404, error: 'Board not found' };
-
-  const org = await Organisation.findById(board.organisation);
-  if (!org) return { status: 404, error: 'Organisation not found' };
-
-  const isMember = org.members.some((m) => m.toString() === userId);
-  if (!isMember) {
-    return { status: 403, error: 'Not a member of this organisation' };
-  }
-
-  const access = resolveBoardAccess(board, org, userId);
-  if (!access.canRead) {
-    return { status: 403, error: 'Access denied' };
-  }
-  return { board, org, isAdmin: access.canEdit };
-};
 
 /**
  * GET /api/boards/:boardId/groups
  *
  * List groups for a board, sorted by order asc then createdAt asc.
- * Any org member can list groups. Regular users can only list groups from
- * public boards.
+ * Anyone who can read the board can list its groups — `loadBoardContext` already
+ * rejects users who cannot, so there is no further gate here.
  */
 const getGroups = async (req, res) => {
   try {
@@ -64,8 +43,8 @@ const getGroups = async (req, res) => {
 /**
  * POST /api/boards/:boardId/groups
  *
- * Admin only. Creates a new group. If `order` is not provided, it is set to
- * the next available order number (count of existing groups).
+ * Requires `group.manage`. Creates a new group. If `order` is not provided, it
+ * is set to the next available order number (count of existing groups).
  */
 const createGroup = async (req, res) => {
   try {
@@ -79,9 +58,12 @@ const createGroup = async (req, res) => {
 
     const ctx = await loadBoardContext(boardId, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    const denied = requireCapability(
+      ctx,
+      'group.manage',
+      'You do not have permission to create groups'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     let resolvedOrder = order;
     if (typeof resolvedOrder !== 'number') {
@@ -114,7 +96,7 @@ const createGroup = async (req, res) => {
 /**
  * PUT /api/groups/:id
  *
- * Admin only. Updates name or order.
+ * Requires `group.manage`. Updates name or order.
  */
 const updateGroup = async (req, res) => {
   try {
@@ -127,9 +109,12 @@ const updateGroup = async (req, res) => {
 
     const ctx = await loadBoardContext(group.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    const denied = requireCapability(
+      ctx,
+      'group.manage',
+      'You do not have permission to edit groups'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     if (typeof name === 'string') {
       if (!name.trim()) {
@@ -152,7 +137,7 @@ const updateGroup = async (req, res) => {
 /**
  * DELETE /api/groups/:id
  *
- * Admin only. Cascade deletes the group's tasks and their comments.
+ * Requires `group.manage`. Cascade deletes the group's tasks and their comments.
  */
 const deleteGroup = async (req, res) => {
   try {
@@ -164,9 +149,12 @@ const deleteGroup = async (req, res) => {
 
     const ctx = await loadBoardContext(group.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    const denied = requireCapability(
+      ctx,
+      'group.manage',
+      'You do not have permission to delete groups'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     // Cascade: find tasks in this group, delete their updates, then tasks,
     // then the group itself.
@@ -191,8 +179,10 @@ const deleteGroup = async (req, res) => {
  * PUT /api/boards/:boardId/groups/reorder
  *
  * Body: { orderedIds: [groupId,...] }
- * Reorders all groups on the board in a single bulk write. Any org member
- * may reorder groups (no admin-only gate — mirrors task reordering UX).
+ * Reorders all groups on the board in a single bulk write. Requires
+ * `group.manage`: reordering rewrites the board's structure for everyone who
+ * opens it, so it is the same power as renaming or deleting a group — not a
+ * personal view preference.
  */
 const reorderGroups = async (req, res) => {
   try {
@@ -205,12 +195,25 @@ const reorderGroups = async (req, res) => {
 
     const ctx = await loadBoardContext(boardId, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const denied = requireCapability(
+      ctx,
+      'group.manage',
+      'You do not have permission to reorder groups'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const currentIds = await TaskGroup.distinct('_id', { board: boardId });
     const currentSet = new Set(currentIds.map((id) => id.toString()));
     const orderedSet = new Set(orderedIds.map((id) => String(id)));
+    // The de-duped size must equal the raw length. Comparing only the raw length
+    // against the board's group count while membership-checking the SET lets a
+    // payload like ['a','a'] through on a two-group board: it is the right length
+    // and every distinct id exists, so the bulk write reorders 'a' twice and
+    // strands the omitted group at its old `order`. Duplicates are corruption,
+    // not a permutation.
     if (
       orderedIds.length !== currentIds.length ||
+      orderedSet.size !== orderedIds.length ||
       ![...orderedSet].every((id) => currentSet.has(id))
     ) {
       return res
@@ -235,7 +238,6 @@ const reorderGroups = async (req, res) => {
 };
 
 module.exports = {
-  loadBoardContext,
   getGroups,
   createGroup,
   updateGroup,

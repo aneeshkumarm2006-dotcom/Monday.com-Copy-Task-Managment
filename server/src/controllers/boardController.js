@@ -7,21 +7,20 @@ const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
 const Automation = require('../models/Automation');
 const Organisation = require('../models/Organisation');
-const { resolveBoardAccess, isBoardCreator } = require('../utils/boardAccess');
+const { isBoardCreator } = require('../utils/boardAccess');
+const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
+const { BOARD_LEVELS } = require('../utils/capabilities');
 const { createNotification } = require('../services/notificationService');
 
 const VALID_VISIBILITIES = ['public', 'private'];
-const VALID_ACCESS_LEVELS = ['read', 'edit'];
-
 /**
- * Resolve whether the current user is the admin of the given org.
+ * The rungs a per-board grant may name: the ladder itself, plus `none` to revoke
+ * and the legacy `read` spelling of `view`, which grants written before the
+ * ladder existed still carry (`normaliseLevel` folds it in, so they keep working
+ * with no data migration).
  */
-const isOrgAdmin = (org, userId) =>
-  !!org &&
-  (
-    (org.admin && org.admin.toString() === userId) ||
-    (Array.isArray(org.admins) && org.admins.some((a) => a.toString() === userId))
-  );
+const VALID_ACCESS_LEVELS = [...BOARD_LEVELS, 'read'];
 
 /**
  * Confirm the user is a member of the org. Returns the org doc or null.
@@ -29,41 +28,72 @@ const isOrgAdmin = (org, userId) =>
 const loadOrgForMember = async (orgId, userId) => {
   const org = await Organisation.findById(orgId);
   if (!org) return { org: null, isMember: false };
+  // An org created before the role system carries no `roles`, so every
+  // capability would resolve to false and its members would open an empty
+  // workspace. Seed on first touch — the same lazy heal requireCapability does.
+  if (org.ensureSystemRoles()) await org.save();
   const isMember = org.members.some((m) => m.toString() === userId);
   return { org, isMember };
 };
 
 /**
- * Load a board + its org, validating that the current user is a member.
- * Returns { board, org, isAdmin } or { status, error } on failure.
+ * The shared board context (../utils/boardContext), behind the id-shape check
+ * these routes rely on to answer 400 rather than letting Mongoose's cast blow up
+ * into a 500. Every permission decision lives in the context it returns.
  */
-const loadBoardContext = async (boardId, userId) => {
+const loadBoard = async (boardId, userId) => {
   if (!boardId || !mongoose.Types.ObjectId.isValid(boardId)) {
     return { status: 400, error: 'Invalid board id' };
   }
-  const board = await Board.findById(boardId);
-  if (!board) return { status: 404, error: 'Board not found' };
+  return loadBoardContext(boardId, userId);
+};
 
-  const org = await Organisation.findById(board.organisation);
-  if (!org) return { status: 404, error: 'Organisation not found' };
+/**
+ * Which of the org's boards this user may see at all.
+ *
+ * `board.view_all_private` is the override that opens every private board to a
+ * role. Without `board.view_public` — a Guest — public boards are not visible
+ * either, so only authorship or an explicit grant lets them in.
+ */
+const boardVisibilityFilter = (access, userId) => {
+  const clauses = [{ createdBy: userId }, { 'memberAccess.user': userId }];
+  if (access.can('board.view_public')) {
+    clauses.unshift({ visibility: 'public' });
+  }
+  // The private override is ADDITIVE, not a wildcard. Returning `{}` here would
+  // also hand back every PUBLIC board — including to a role that lacks
+  // `board.view_public` and which `resolveAccess` therefore refuses to let into a
+  // public board at all. This filter and resolveAccess have to agree: whatever the
+  // list shows must be openable, or a Guest with the override ticked on sees
+  // boards in their sidebar that 403 the moment they click.
+  if (access.can('board.view_all_private')) {
+    clauses.push({ visibility: 'private' });
+  }
+  return { $or: clauses };
+};
 
-  const isMember = org.members.some((m) => m.toString() === userId);
-  if (!isMember) {
-    return { status: 403, error: 'Not a member of this organisation' };
-  }
-  const access = resolveBoardAccess(board, org, userId);
-  if (!access.canRead) {
-    return { status: 403, error: 'Access denied' };
-  }
-  // `isAdmin` stays "true org admin" here (it gates org-wide concerns like the
-  // connectable-board list). `canEdit` is the board-content write gate, which
-  // members granted edit access also satisfy.
+/**
+ * Attach this user's resolved capability set to a board, for the client.
+ *
+ * The client renders affordances from this rather than reconstructing permission
+ * from `memberAccess` + a local guess at admin-ness. Hiding a button is a
+ * courtesy, never a control — every capability here is enforced independently on
+ * the write path — but a courtesy that disagrees with the server is worse than
+ * none, because the user clicks and gets a 403.
+ */
+const withPermissions = (board, org, userId) => {
+  const access = resolveAccess(board, org, userId);
   return {
-    board,
-    org,
-    isAdmin: access.orgAdmin,
-    canEdit: access.canEdit,
-    readOnly: access.readOnly,
+    ...board.toObject(),
+    permissions: {
+      capabilities: [...access.capabilities],
+      level: access.level,
+      canRead: access.canRead,
+      readOnly: access.readOnly,
+      isBoardOwner: access.board.creator,
+      canViewAccess: access.canViewAccess,
+      canManageAccess: access.canManageAccess,
+    },
   };
 };
 
@@ -77,7 +107,8 @@ const DEFAULT_STATUSES = [
 /**
  * GET /api/boards?org=:orgId
  *
- * All org members can see all boards. Sorted by updatedAt desc.
+ * The boards this member's ROLE reaches — see `boardVisibilityFilter`. Sorted by
+ * order, then updatedAt desc.
  */
 const getBoards = async (req, res) => {
   try {
@@ -93,18 +124,16 @@ const getBoards = async (req, res) => {
       return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
-    // Everyone — admins included — sees public boards plus any private board
-    // they created or have been granted access to. Org admins no longer see
-    // every private board automatically.
-    const visibilityFilter = {
-      $or: [
-        { visibility: 'public' },
-        { createdBy: userId },
-        { 'memberAccess.user': userId },
-      ],
-    };
-    const boards = await Board.find({ organisation: orgId, ...visibilityFilter })
-      .sort({ order: 1, updatedAt: -1 });
+    // What you see is your ROLE's reach, not your position in an admins array:
+    // public boards only if the role holds `board.view_public` (a Guest does
+    // not), every private board only if it holds `board.view_all_private` (off by
+    // default, admins included) — plus, always, the boards you created or were
+    // granted.
+    const orgAccess = resolveOrgAccess(org, userId);
+    const boards = await Board.find({
+      organisation: orgId,
+      ...boardVisibilityFilter(orgAccess, userId),
+    }).sort({ order: 1, updatedAt: -1 });
 
     // Lazy heal: pre-migration boards may have an empty `statuses` array,
     // which causes the client's status picker to fall back to legacy enum
@@ -117,7 +146,14 @@ const getBoards = async (req, res) => {
       }
     }
 
-    return res.json({ boards });
+    // Ship each board's RESOLVED permissions with it — the two-layer AND already
+    // applied, for this user, on this board.
+    //
+    // Without this the client has no way to know what it may do on a given board
+    // except to re-derive it from `memberAccess` + its own idea of what an admin
+    // is, which is precisely the drift this whole system exists to remove. The
+    // resolver is pure, so this costs nothing beyond the boards already loaded.
+    return res.json({ boards: boards.map((b) => withPermissions(b, org, userId)) });
   } catch (err) {
     console.error('getBoards error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -146,8 +182,14 @@ const findDoneStatusIdsForOrg = async (orgId) => {
  * GET /api/dashboard/stats?org=:orgId
  *
  * Returns: { totalBoards, completedTasks, pendingTasks, completionRate }
- * Admins see org-wide stats. Regular users see stats scoped to tasks they
- * are assigned to within the org's public boards.
+ *
+ * This is the HOME dashboard, not the analytics page: it was open to every
+ * member before the capability model existed and stays that way, so it carries
+ * no `analytics.view` gate. What it must not do is roll up boards the caller
+ * cannot open — the counts were org-wide, which leaked the shape of private
+ * boards (how many, how much work in them) to anyone who could load the home
+ * page. So the aggregation is scoped per board by the same resolver that decides
+ * whether they may open it: everyone gets a dashboard, of their own boards only.
  */
 const getDashboardStats = async (req, res) => {
   try {
@@ -163,12 +205,22 @@ const getDashboardStats = async (req, res) => {
       return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
-    const orgBoardIds = await Board.distinct('_id', { organisation: orgId });
-    const taskFilter = { board: { $in: orgBoardIds }, isPersonal: { $ne: true } };
+    // Only the fields `resolveAccess` reads — a query that omitted any of them
+    // would resolve every board to no access and hand back an empty dashboard.
+    const orgBoards = await Board.find({ organisation: orgId }).select(
+      'visibility publicDefaultLevel memberAccess createdBy organisation'
+    );
+    const readableBoardIds = orgBoards
+      .filter((board) => resolveAccess(board, org, userId).canRead)
+      .map((board) => board._id);
+    const taskFilter = {
+      board: { $in: readableBoardIds },
+      isPersonal: { $ne: true },
+    };
 
     const doneStatusIds = await findDoneStatusIdsForOrg(orgId);
 
-    const [completedTasks, pendingTasks, totalBoards] = await Promise.all([
+    const [completedTasks, pendingTasks] = await Promise.all([
       Task.countDocuments({
         ...taskFilter,
         status: { $in: doneStatusIds.length ? doneStatusIds : ['done'] },
@@ -177,8 +229,8 @@ const getDashboardStats = async (req, res) => {
         ...taskFilter,
         status: { $nin: doneStatusIds.length ? doneStatusIds : ['done'] },
       }),
-      Board.countDocuments({ organisation: orgId }),
     ]);
+    const totalBoards = readableBoardIds.length;
 
     const totalTasks = completedTasks + pendingTasks;
     const completionRate =
@@ -200,9 +252,10 @@ const getDashboardStats = async (req, res) => {
  * POST /api/boards
  *
  * Body: { name, visibility, organisation }
- * Admin-only. Validates input, attaches orgId and createdBy. New boards
- * are seeded with the four default statuses so the existing UI flow
- * (StatusMenu / Chip) keeps working.
+ * Requires `board.create`. ORG-scoped, and the one board capability that has to
+ * be: there is no board yet to resolve access against. Validates input, attaches
+ * orgId and createdBy. New boards are seeded with the four default statuses so
+ * the existing UI flow (StatusMenu / Chip) keeps working.
  */
 const createBoard = async (req, res) => {
   try {
@@ -224,10 +277,18 @@ const createBoard = async (req, res) => {
       return res.status(400).json({ error: 'Invalid visibility value' });
     }
 
-    const org = await Organisation.findById(organisation);
+    const { org, isMember } = await loadOrgForMember(organisation, userId);
     if (!org) return res.status(404).json({ error: 'Organisation not found' });
-    if (!isOrgAdmin(org, userId)) {
-      return res.status(403).json({ error: 'Admin access required' });
+    // Membership was never checked here: the old gate was `isOrgAdmin`, which
+    // failed closed for outsiders by accident. Capabilities resolve to the
+    // default role for anyone, so the check has to be explicit.
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this organisation' });
+    }
+    if (!resolveOrgAccess(org, userId).can('board.create')) {
+      return res
+        .status(403)
+        .json({ error: 'You do not have permission to create boards' });
     }
 
     const lastBoard = await Board.findOne({ organisation })
@@ -259,22 +320,48 @@ const createBoard = async (req, res) => {
 /**
  * PUT /api/boards/:id
  *
- * Body: { name?, visibility? }
- * Admin-only for the owning org.
+ * Body: { name?, visibility?, description?, publicDefaultLevel? }
+ *
+ * Gated PER FIELD, because a custom role is free to hold one of these and not the
+ * other and the matrix is a first-class feature:
+ *
+ *   name, description                 → `board.rename`
+ *   visibility, publicDefaultLevel    → `board.change_visibility`
+ *
+ * `publicDefaultLevel` is the rung a public board opens to the org, so it is the
+ * same lifecycle decision as flipping the board public in the first place. Neither
+ * is conferred by any rung on the ladder: only the board's owner, and roles that
+ * manage public boards, hold `board.change_visibility`. A capability is demanded
+ * only for the fields the request actually carries — gating the whole handler on
+ * `board.rename` rejected a visibility-only PUT from someone entitled to make it.
  */
 const updateBoard = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { id } = req.params;
-    const { name, visibility, description } = req.body;
+    const { name, visibility, description, publicDefaultLevel } = req.body;
 
-    const board = await Board.findById(id);
-    if (!board) return res.status(404).json({ error: 'Board not found' });
+    const ctx = await loadBoard(id, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const { board } = ctx;
 
-    const org = await Organisation.findById(board.organisation);
-    if (!org) return res.status(404).json({ error: 'Organisation not found' });
-    if (!isOrgAdmin(org, userId)) {
-      return res.status(403).json({ error: 'Admin access required' });
+    const changesNaming =
+      typeof name === 'string' || typeof description === 'string';
+    if (changesNaming) {
+      const denied = requireCapability(
+        ctx,
+        'board.rename',
+        'You do not have permission to edit this board'
+      );
+      if (denied) return res.status(denied.status).json({ error: denied.error });
+    }
+
+    const changesVisibility =
+      typeof visibility === 'string' || typeof publicDefaultLevel === 'string';
+    if (changesVisibility && !ctx.can('board.change_visibility')) {
+      return res.status(403).json({
+        error: "You do not have permission to change this board's visibility",
+      });
     }
 
     if (typeof name === 'string') {
@@ -288,6 +375,14 @@ const updateBoard = async (req, res) => {
         return res.status(400).json({ error: 'Invalid visibility value' });
       }
       board.visibility = visibility;
+    }
+    if (typeof publicDefaultLevel === 'string') {
+      // The ladder only — `read` is accepted on a member's GRANT for backwards
+      // compatibility, but there is no legacy `publicDefaultLevel` to honour.
+      if (!BOARD_LEVELS.includes(publicDefaultLevel)) {
+        return res.status(400).json({ error: 'Invalid public access level' });
+      }
+      board.publicDefaultLevel = publicDefaultLevel;
     }
     if (typeof description === 'string') {
       board.description = description.trim();
@@ -304,22 +399,25 @@ const updateBoard = async (req, res) => {
 /**
  * DELETE /api/boards/:id
  *
- * Admin-only. Cascade deletes all TaskGroups, Tasks and Updates belonging
- * to this board.
+ * Requires `board.delete`, which is resolved against the board itself — so an
+ * admin can no longer delete a private board they cannot even open, and the
+ * board's own creator no longer needs to be an org admin to delete it.
+ * Cascade deletes all TaskGroups, Tasks and Updates belonging to this board.
  */
 const deleteBoard = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { id } = req.params;
 
-    const board = await Board.findById(id);
-    if (!board) return res.status(404).json({ error: 'Board not found' });
+    const ctx = await loadBoard(id, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
-    const org = await Organisation.findById(board.organisation);
-    if (!org) return res.status(404).json({ error: 'Organisation not found' });
-    if (!isOrgAdmin(org, userId)) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    const denied = requireCapability(
+      ctx,
+      'board.delete',
+      'You do not have permission to delete this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const taskIds = await Task.distinct('_id', { board: id });
     if (taskIds.length > 0) {
@@ -346,21 +444,27 @@ const deleteBoard = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
-// Labels + Statuses CRUD (admin-only)
+// Labels + Statuses CRUD (column.manage)
 // ---------------------------------------------------------------------------
 
 /**
- * Shared write guard for any /labels or /statuses sub-route. Satisfied by org
- * admins and by members granted edit access to the board.
+ * Shared write guard for any /labels or /statuses sub-route. Labels and statuses
+ * are board STRUCTURE — the vocabulary every task is filed under — so they ride
+ * on `column.manage`, the same capability that gates the columns they configure.
  */
-const requireBoardAdmin = async (req, res) => {
-  const ctx = await loadBoardContext(req.params.id, req.user.userId);
+const requireChipManage = async (req, res) => {
+  const ctx = await loadBoard(req.params.id, req.user.userId);
   if (ctx.error) {
     res.status(ctx.status).json({ error: ctx.error });
     return null;
   }
-  if (!ctx.canEdit) {
-    res.status(403).json({ error: 'Admin access required' });
+  const denied = requireCapability(
+    ctx,
+    'column.manage',
+    "You do not have permission to manage this board's labels and statuses"
+  );
+  if (denied) {
+    res.status(denied.status).json({ error: denied.error });
     return null;
   }
   return ctx;
@@ -392,7 +496,7 @@ const serializeBoardChips = (board) => ({
 
 const listLabels = async (req, res) => {
   try {
-    const ctx = await loadBoardContext(req.params.id, req.user.userId);
+    const ctx = await loadBoard(req.params.id, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
     return res.json({ labels: serializeBoardChips(ctx.board).labels });
   } catch (err) {
@@ -403,7 +507,7 @@ const listLabels = async (req, res) => {
 
 const addLabel = async (req, res) => {
   try {
-    const ctx = await requireBoardAdmin(req, res);
+    const ctx = await requireChipManage(req, res);
     if (!ctx) return;
     const { board } = ctx;
     const name = sanitizeName(req.body?.name);
@@ -420,7 +524,7 @@ const addLabel = async (req, res) => {
 
 const updateLabel = async (req, res) => {
   try {
-    const ctx = await requireBoardAdmin(req, res);
+    const ctx = await requireChipManage(req, res);
     if (!ctx) return;
     const { board } = ctx;
     const { lid } = req.params;
@@ -444,7 +548,7 @@ const updateLabel = async (req, res) => {
 
 const deleteLabel = async (req, res) => {
   try {
-    const ctx = await requireBoardAdmin(req, res);
+    const ctx = await requireChipManage(req, res);
     if (!ctx) return;
     const { board } = ctx;
     const { lid } = req.params;
@@ -466,7 +570,7 @@ const deleteLabel = async (req, res) => {
 
 const reorderLabels = async (req, res) => {
   try {
-    const ctx = await requireBoardAdmin(req, res);
+    const ctx = await requireChipManage(req, res);
     if (!ctx) return;
     const { board } = ctx;
     const orderedIds = Array.isArray(req.body?.orderedIds) ? req.body.orderedIds : [];
@@ -487,7 +591,7 @@ const reorderLabels = async (req, res) => {
 
 const listStatuses = async (req, res) => {
   try {
-    const ctx = await loadBoardContext(req.params.id, req.user.userId);
+    const ctx = await loadBoard(req.params.id, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
     return res.json({ statuses: serializeBoardChips(ctx.board).statuses });
   } catch (err) {
@@ -498,7 +602,7 @@ const listStatuses = async (req, res) => {
 
 const addStatus = async (req, res) => {
   try {
-    const ctx = await requireBoardAdmin(req, res);
+    const ctx = await requireChipManage(req, res);
     if (!ctx) return;
     const { board } = ctx;
     const name = sanitizeName(req.body?.name);
@@ -521,7 +625,7 @@ const addStatus = async (req, res) => {
 
 const updateStatus = async (req, res) => {
   try {
-    const ctx = await requireBoardAdmin(req, res);
+    const ctx = await requireChipManage(req, res);
     if (!ctx) return;
     const { board } = ctx;
     const { sid } = req.params;
@@ -550,7 +654,7 @@ const updateStatus = async (req, res) => {
 
 const deleteStatus = async (req, res) => {
   try {
-    const ctx = await requireBoardAdmin(req, res);
+    const ctx = await requireChipManage(req, res);
     if (!ctx) return;
     const { board } = ctx;
     const { sid } = req.params;
@@ -580,7 +684,7 @@ const deleteStatus = async (req, res) => {
 
 const reorderStatuses = async (req, res) => {
   try {
-    const ctx = await requireBoardAdmin(req, res);
+    const ctx = await requireChipManage(req, res);
     if (!ctx) return;
     const { board } = ctx;
     const orderedIds = Array.isArray(req.body?.orderedIds) ? req.body.orderedIds : [];
@@ -603,6 +707,12 @@ const reorderStatuses = async (req, res) => {
  * Body: { organisation, orderedIds: [boardId,...] }
  * Reorders boards within an organisation. Any user who is a member of the
  * organisation can reorder boards (mirrors the read permission for getBoards).
+ *
+ * The visible set MUST be resolved with the same `boardVisibilityFilter` getBoards
+ * lists from, on both the guard and the response. A second, hardcoded filter here
+ * disagreed with it the moment roles arrived — a Guest (no `board.view_public`)
+ * was handed a payload the guard then rejected as incomplete — and the reply
+ * returned every board in the org, private ones included.
  */
 const reorderBoards = async (req, res) => {
   try {
@@ -621,18 +731,19 @@ const reorderBoards = async (req, res) => {
       return res.status(403).json({ error: 'Not a member of this organisation' });
     }
 
-    const visibilityFilter = {
-      $or: [
-        { visibility: 'public' },
-        { createdBy: userId },
-        { 'memberAccess.user': userId },
-      ],
-    };
+    const orgAccess = resolveOrgAccess(org, userId);
+    const visibilityFilter = boardVisibilityFilter(orgAccess, userId);
     const currentIds = await Board.distinct('_id', { organisation, ...visibilityFilter });
     const currentSet = new Set(currentIds.map((id) => id.toString()));
     const orderedSet = new Set(orderedIds.map((id) => String(id)));
+    // The `orderedSet.size` check is what rejects DUPLICATES. Comparing the raw
+    // array's length against `currentIds` while membership-checking a de-duped Set
+    // let `[a, a]` through for a two-board org: the bulk write then set a.order
+    // twice and left b stranded at its old value, so two boards collided on the
+    // same order. A true permutation needs all three conditions.
     if (
       orderedIds.length !== currentIds.length ||
+      orderedSet.size !== orderedIds.length ||
       ![...orderedSet].every((id) => currentSet.has(id))
     ) {
       return res
@@ -648,7 +759,10 @@ const reorderBoards = async (req, res) => {
     }));
     if (ops.length > 0) await Board.bulkWrite(ops);
 
-    const boards = await Board.find({ organisation }).sort({ order: 1, updatedAt: -1 });
+    const boards = await Board.find({
+      organisation,
+      ...visibilityFilter,
+    }).sort({ order: 1, updatedAt: -1 });
     return res.json({ boards });
   } catch (err) {
     console.error('reorderBoards error:', err);
@@ -659,23 +773,34 @@ const reorderBoards = async (req, res) => {
 /**
  * GET /api/boards/:id/connectable
  *
- * Boards a `connect_boards` column on this board may target. Pre-F3 that's
- * every OTHER board in the same workspace; F3 adds boards reachable through an
- * active WorkspaceGrant. Member-gated. The column list is included so the
- * client can offer source-column choices when building a mirror.
+ * Boards a `connect_boards` column on this board may target: every OTHER board
+ * in the same workspace the caller can actually REACH. F3 adds boards reachable
+ * through an active WorkspaceGrant. The column list is included so the client
+ * can offer source-column choices when building a mirror.
+ *
+ * The old filter widened to the whole org for `isAdmin`, which under the
+ * capability model means "may restructure this board" — it would have handed
+ * every board editor the name and columns of every private board in the org. The
+ * connectable set is now exactly the set they may see, as in getBoards.
  *
  * Returns: { connectable: [{ board, workspace }] }
  */
 const getConnectableBoards = async (req, res) => {
   try {
-    const ctx = await loadBoardContext(req.params.id, req.user.userId);
+    const userId = req.user.userId;
+    const ctx = await loadBoard(req.params.id, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
-    const visibilityFilter = ctx.isAdmin ? {} : { visibility: 'public' };
+    // The ORG access object, as in getBoards: `boardVisibilityFilter` asks which
+    // boards a ROLE reaches, which is an org-level question. Passing the board
+    // context worked only because it happens to expose a `can` too — one whose
+    // board-scoped capabilities are AND'd against THIS board, not the ones being
+    // listed.
+    const orgAccess = resolveOrgAccess(ctx.org, userId);
     const boards = await Board.find({
       organisation: ctx.board.organisation,
       _id: { $ne: ctx.board._id },
-      ...visibilityFilter,
+      ...boardVisibilityFilter(orgAccess, userId),
     })
       .select('name visibility columns organisation')
       .sort({ order: 1, updatedAt: -1 })
@@ -709,31 +834,25 @@ const getConnectableBoards = async (req, res) => {
 const getBoardAccess = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const boardId = req.params.id;
-    if (!mongoose.Types.ObjectId.isValid(boardId)) {
-      return res.status(400).json({ error: 'Invalid board id' });
-    }
+    const ctx = await loadBoard(req.params.id, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
-    const board = await Board.findById(boardId).populate(
-      'memberAccess.user',
-      'name email profilePic'
-    );
-    if (!board) return res.status(404).json({ error: 'Board not found' });
-
-    const org = await Organisation.findById(board.organisation);
-    if (!org) return res.status(404).json({ error: 'Organisation not found' });
-
-    const access = resolveBoardAccess(board, org, userId);
+    const { access } = ctx;
     if (!access.canViewAccess) {
       return res
         .status(403)
         .json({ error: "You don't have access to this board's sharing settings" });
     }
 
+    const populated = await Board.findById(ctx.board._id).populate(
+      'memberAccess.user',
+      'name email profilePic'
+    );
+
     return res.json({
-      access: board.memberAccess,
-      createdBy: board.createdBy,
-      isOwner: access.creator,
+      access: populated.memberAccess,
+      createdBy: populated.createdBy,
+      isOwner: access.board.creator,
       canManageAccess: access.canManageAccess,
     });
   } catch (err) {
@@ -745,12 +864,15 @@ const getBoardAccess = async (req, res) => {
 /**
  * PUT /api/boards/:id/access
  *
- * Body: { userId, level: 'read' | 'edit' | 'none', canManage?: boolean }
+ * Body: { userId, level: 'view'|'comment'|'contribute'|'edit'|'none',
+ *         canManage?: boolean }
  *
- * Upserts a grant for the target org member; `'none'` removes it. `canManage`
- * upgrades an 'edit' grant to FULL access (they can manage sharing too); omit
- * it to leave the existing flag alone. It is meaningless below 'edit', so any
- * drop to 'read'/'none' clears it.
+ * Upserts a grant for the target org member; `'none'` removes it. The level is a
+ * rung on the board ladder — see [capabilities.js](../utils/capabilities.js)
+ * `BOARD_LEVELS`. (`'read'` is still accepted as the legacy spelling of
+ * `'view'`.) `canManage` upgrades an 'edit' grant to FULL access (they can manage
+ * sharing too); omit it to leave the existing flag alone. It is meaningless below
+ * 'edit', so any drop to a lower rung — or to 'none' — clears it.
  *
  * Allowed for the owner and for full-access members. Guardrails:
  *   - the owner's grant is untouchable (they always have full access)
@@ -776,13 +898,13 @@ const setBoardAccess = async (req, res) => {
       return res.status(400).json({ error: 'canManage must be true or false' });
     }
 
-    const board = await Board.findById(req.params.id);
-    if (!board) return res.status(404).json({ error: 'Board not found' });
+    const ctx = await loadBoard(req.params.id, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
-    const org = await Organisation.findById(board.organisation);
-    if (!org) return res.status(404).json({ error: 'Organisation not found' });
+    const { board, org, access } = ctx;
+    // The BOARD's owner (createdBy) — not the org's, which `access.isOwner` means.
+    const isBoardOwner = access.board.creator;
 
-    const access = resolveBoardAccess(board, org, userId);
     if (!access.canManageAccess) {
       return res.status(403).json({
         error: access.canViewAccess
@@ -792,7 +914,7 @@ const setBoardAccess = async (req, res) => {
     }
     if (targetUserId === userId) {
       return res.status(400).json({
-        error: access.creator
+        error: isBoardOwner
           ? 'You already have full access as the board owner'
           : "You can't change your own access",
       });
@@ -822,7 +944,7 @@ const setBoardAccess = async (req, res) => {
 
     // Full access is the owner's to give and take back — otherwise a delegate
     // could promote allies or strip the owner's other delegates.
-    if (!access.creator && (nextManage || hadManage)) {
+    if (!isBoardOwner && (nextManage || hadManage)) {
       return res.status(403).json({
         error: 'Only the board owner can give or remove full access',
       });

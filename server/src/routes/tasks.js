@@ -43,7 +43,9 @@ router.get('/calendar', getCalendarTasks);
 // GET /api/tasks?board=:id&group=:id — list tasks for a board/group
 router.get('/', getTasks);
 
-// POST /api/tasks — create task (board task: admin only; personal: any user)
+// POST /api/tasks — create task. Board task: requires `task.create` (the
+// `contribute` rung and up). Naming assignees additionally requires
+// `task.assign`. Personal task: any user, no board permissions consulted.
 router.post('/', createTask);
 
 // PUT /api/tasks/reorder — batch reorder tasks within a target group
@@ -53,7 +55,8 @@ router.put('/reorder', reorderTasks);
 // PUT /api/tasks/:id — update task (perms enforced in controller)
 router.put('/:id', updateTask);
 
-// DELETE /api/tasks/:id — delete task (admin only for board tasks)
+// DELETE /api/tasks/:id — delete task. Board task: requires `task.delete`
+// (the `edit` rung). Personal task: its creator only.
 router.delete('/:id', deleteTask);
 
 // GET /api/tasks/:id/subitems — fetch direct children of a task
@@ -70,7 +73,10 @@ router.post('/:id/links/:columnId', linkTask);
 router.delete('/:id/links/:columnId/:targetTaskId', unlinkTask);
 router.get('/:id/mirror/:columnId', getMirror);
 
-// Checklist routes — any task member can mutate
+// Checklist routes — checklist items are task CONTENT, so they answer to the
+// same rule as editing the task itself: `task.edit_any`, or `task.edit_assigned`
+// on a task you are assigned to or created. Board read access alone is not
+// enough (see `requireTaskEdit` in taskController).
 router.post('/:id/checklist', addChecklistItem);
 router.put('/:id/checklist/reorder', reorderChecklist);
 router.put('/:id/checklist/:itemId', updateChecklistItem);

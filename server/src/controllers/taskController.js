@@ -19,7 +19,8 @@ const { logActivity } = require('../services/activityService');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const { getColumnType } = require('../utils/columnTypes');
 const { embedMirrorValues } = require('../services/mirrorRefresh');
-const { resolveBoardAccess } = require('../utils/boardAccess');
+const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const { resolveAccess } = require('../utils/permissions');
 
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 // Legacy enum keys — accepted for personal tasks (which don't have a board).
@@ -59,31 +60,50 @@ const ensureBoardStatuses = async (board) => {
 };
 
 /**
- * Load the board + its org, validating that the current user is a member of
- * the org. `isAdmin` here means "may edit board content" — true org admins and
- * members granted edit access on a private board both qualify. `readOnly`
- * flags a member granted view-only access so write paths can reject them.
- * Returns { board, org, isAdmin, readOnly } or { status, error } on failure.
+ * The shared board context, plus the status backfill the task API alone needs.
+ *
+ * Authorization is entirely `loadBoardContext`'s job — ask `ctx.can(capability)`.
+ * This wrapper exists only because the task API is the one path that can reach a
+ * pre-migration board whose `statuses` were never seeded, and every status read
+ * and write below resolves against them. The seed now runs AFTER the shared read
+ * gate rather than before it, so a caller who cannot open the board can no longer
+ * provoke a write to it.
  */
-const loadBoardContext = async (boardId, userId) => {
-  const board = await Board.findById(boardId);
-  if (!board) return { status: 404, error: 'Board not found' };
+const loadTaskBoardContext = async (boardId, userId) => {
+  const ctx = await loadBoardContext(boardId, userId);
+  if (ctx.error) return ctx;
+  await ensureBoardStatuses(ctx.board);
+  return ctx;
+};
 
-  await ensureBoardStatuses(board);
-
-  const org = await Organisation.findById(board.organisation);
-  if (!org) return { status: 404, error: 'Organisation not found' };
-
-  const isMember = org.members.some((m) => m.toString() === userId);
-  if (!isMember) {
-    return { status: 403, error: 'Not a member of this organisation' };
-  }
-
-  const access = resolveBoardAccess(board, org, userId);
-  if (!access.canRead) {
-    return { status: 403, error: 'Access denied' };
-  }
-  return { board, org, isAdmin: access.canEdit, readOnly: access.readOnly };
+/**
+ * THE 'only my own tasks' rule, in one place.
+ *
+ * `task.edit_assigned` is what makes the `contribute` rung worth having: you may
+ * edit the work that is yours without being handed power over everyone else's.
+ * `task.edit_any` is the unrestricted form.
+ *
+ * Every path that mutates an EXISTING task — its fields, its checklist, its
+ * attachments — routes through here so the three cannot drift apart. Callers must
+ * consult it BEFORE applying a patch, while `task.assignedTo` still holds the
+ * pre-patch list; otherwise a user could assign themselves into their own
+ * permission.
+ *
+ * The `createdBy` arm reads wider than the capability it is keyed to
+ * ('task.edit_assigned' — "Edit tasks assigned to them"), and that is deliberate,
+ * not an oversight: a `contribute` member may create a task, and a task you can
+ * add but never touch again is not a contribution. The rung's own purpose — do
+ * your own work — covers the work you entered as much as the work handed to you.
+ * It confers nothing over anyone else's rows.
+ */
+const canEditTask = (ctx, task, userId) => {
+  if (ctx.can('task.edit_any')) return true;
+  if (!ctx.can('task.edit_assigned')) return false;
+  const uid = String(userId);
+  return (
+    (task.assignedTo || []).some((u) => u && u.toString() === uid) ||
+    (!!task.createdBy && task.createdBy.toString() === uid)
+  );
 };
 
 /**
@@ -151,8 +171,15 @@ const sanitizeLabelsForBoard = (board, input) => {
  * Validate a list of assignee user ids against an org's members. Returns a
  * de-duplicated list of string ids that are actually members, or an error
  * message if any id is invalid.
+ *
+ * Assignees must be able to READ the board, not merely belong to the org.
+ * Assigning someone spawns a notification and an email that deep-link the board,
+ * so an org-only check meant work could be handed to a person who then hits a 403
+ * when they click through. Mirrors the same rule in automationController.
+ *
+ * `board` is null on paths with no board to gate on.
  */
-const validateAssignees = (assignedTo, org) => {
+const validateAssignees = async (assignedTo, org, board) => {
   if (!Array.isArray(assignedTo)) return { ids: [] };
   const memberIds = new Set(org.members.map((m) => m.toString()));
   const seen = new Set();
@@ -170,7 +197,37 @@ const validateAssignees = (assignedTo, org) => {
     seen.add(id);
     ids.push(id);
   }
+  if (!ids.length || !board) return { ids };
+
+  // `resolveAccess`, not the bare board standing: whether a user may open a board
+  // depends on their ORG ROLE too — a Guest cannot reach a public board at all.
+  const blocked = ids.filter((id) => !resolveAccess(board, org, id).canRead);
+  if (blocked.length) {
+    return { error: 'Assignee does not have access to this board' };
+  }
   return { ids };
+};
+
+/**
+ * The ids of the boards in `org` that `userId` may actually READ.
+ *
+ * The cross-board views (My Work, the calendar) scoped their board query on
+ * `organisation` alone, which is not a permission: it handed every org member the
+ * task names, due dates and — through the populated `board` — the NAMES of private
+ * boards they cannot open. Org membership is not board membership, so resolve the
+ * board layer per board and keep only what the caller can read.
+ *
+ * Selects exactly the fields `resolveAccess` reads. `org` must be the full
+ * document: the org role is the other half of the AND, so `roles`/`memberRoles`
+ * have to be on it.
+ */
+const readableBoardIds = async (org, userId) => {
+  const boards = await Board.find({ organisation: org._id }).select(
+    'visibility publicDefaultLevel memberAccess createdBy organisation'
+  );
+  return boards
+    .filter((b) => resolveAccess(b, org, userId).canRead)
+    .map((b) => b._id);
 };
 
 const populateTask = (query) =>
@@ -319,6 +376,137 @@ const applyColumnValuePatch = (task, board, patch) => {
 };
 
 /**
+ * Gate a `columnValues` patch on the capabilities its COLUMN TYPES carry.
+ *
+ * A cell write is not always "just an edit" — two column types ARE the mechanism
+ * for a power that has its own capability elsewhere in this file, and reaching
+ * them through the generic patch bypassed both gates:
+ *
+ *   person         → assignment. This controller emits 'task.person_assigned' off
+ *                    a person column, so writing one hands the task to someone
+ *                    exactly as `body.assignedTo` does. `task.assign` guarded only
+ *                    the latter, which made the gate trivially avoidable by
+ *                    writing the column instead.
+ *   connect_boards → the cross-board wiring linkController guards with
+ *                    `column.manage` PLUS read standing on every target board. A
+ *                    link into a board you cannot open surfaces its rows through a
+ *                    mirror on a board you can, which routes around board privacy.
+ *
+ * Runs BEFORE the patch is applied, so a denied write never touches the task.
+ * Returns `{ status, error }` when denied, or null when allowed.
+ */
+const requireColumnPatchCapabilities = async (ctx, patch, userId) => {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
+
+  const columns = Array.isArray(ctx.board.columns) ? ctx.board.columns : [];
+  const columnsById = new Map(columns.map((c) => [c._id.toString(), c]));
+
+  let touchesPerson = false;
+  let touchesConnect = false;
+  const targetTaskIds = new Set();
+
+  for (const [cidRaw, rawValue] of Object.entries(patch)) {
+    const col = columnsById.get(cidRaw.toString());
+    // An unknown column id is `applyColumnValuePatch`'s 400 to raise, not ours —
+    // it writes nothing, so there is no power here to gate.
+    if (!col) continue;
+    if (col.type === 'person') touchesPerson = true;
+    if (col.type === 'connect_boards') {
+      touchesConnect = true;
+      const links =
+        rawValue && Array.isArray(rawValue.links) ? rawValue.links : [];
+      for (const link of links) {
+        // Collect the TASK id, never the caller's `boardId`. See below.
+        const tid = link && link.taskId != null ? link.taskId.toString() : '';
+        if (tid) targetTaskIds.add(tid);
+      }
+    }
+  }
+
+  if (touchesPerson) {
+    const denied = requireCapability(
+      ctx,
+      'task.assign',
+      'You do not have permission to assign people to tasks'
+    );
+    if (denied) return denied;
+  }
+
+  if (touchesConnect) {
+    const denied = requireCapability(
+      ctx,
+      'column.manage',
+      'You do not have permission to link tasks on this board'
+    );
+    if (denied) return denied;
+  }
+
+  // Clearing a connect cell names no target, so there is nothing further to
+  // check — dropping a reference exposes nothing (mirrors linkController.unlink).
+  if (targetTaskIds.size === 0) return null;
+
+  const ids = [...targetTaskIds].filter((tid) =>
+    mongoose.Types.ObjectId.isValid(tid)
+  );
+  if (ids.length !== targetTaskIds.size) {
+    return { status: 400, error: 'connect_boards link has an invalid taskId' };
+  }
+
+  // THE LINK'S `boardId` IS NOT TRUSTED, AND MUST NOT BE.
+  //
+  // A link is `{ boardId, taskId }`, but only `taskId` is load-bearing: the mirror
+  // renderer resolves the linked row purely by task id
+  // (mirrorRefresh.js — `Task.find({ _id: { $in: links.map(l => l.taskId) } })`)
+  // and reads its values against that task's OWN board. `boardId` is never
+  // consulted again after the write.
+  //
+  // So gating on the caller's `boardId` gates a field nobody reads. Forge
+  // `{ boardId: <a board I can read>, taskId: <a row on a board I cannot> }` and
+  // the check passes while the mirror happily renders the private row. Revoking
+  // someone's grant would not even help — they keep every task id they ever saw.
+  //
+  // Resolve the REAL board off each target task instead, and check that.
+  const targetTasks = await Task.find({ _id: { $in: ids } }).select(
+    'board isPersonal'
+  );
+  if (targetTasks.length !== ids.length) {
+    return { status: 400, error: 'Target task not found' };
+  }
+
+  const boardIds = new Set();
+  for (const t of targetTasks) {
+    // A personal task belongs to no board, so there is no board access to check
+    // and no legitimate reason to mirror one.
+    if (t.isPersonal || !t.board) {
+      return { status: 400, error: 'Cannot link to a personal task' };
+    }
+    boardIds.add(t.board.toString());
+  }
+
+  // Loaded whole rather than projected: resolving access reads `createdBy`,
+  // `visibility`, `publicDefaultLevel` and `memberAccess`, not just the columns.
+  const targets = await Board.find({ _id: { $in: [...boardIds] } });
+
+  for (const target of targets) {
+    // `ctx.org` is only the right org to resolve against for boards inside it.
+    // Pre-F3 there is no cross-workspace grant, so a foreign target is refused
+    // outright rather than resolved against the wrong org — the same rule
+    // linkTask enforces, and fail-closed if that ever changes.
+    if (target.organisation.toString() !== ctx.board.organisation.toString()) {
+      return {
+        status: 403,
+        error: 'Cross-workspace links require a grant (arrives with F3)',
+      };
+    }
+    if (!resolveAccess(target, ctx.org, userId).canRead) {
+      return { status: 403, error: 'You do not have access to the target board' };
+    }
+  }
+
+  return null;
+};
+
+/**
  * Emit the three F1 column events on eventBus for every successful column
  * change. Dormant in Phase 1 (no subscriber); F4 wires up triggers in Phase 2.
  *
@@ -375,7 +563,7 @@ const getTasks = async (req, res) => {
       return res.status(400).json({ error: 'Board ID required' });
     }
 
-    const ctx = await loadBoardContext(boardId, userId);
+    const ctx = await loadTaskBoardContext(boardId, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
     // Top-level tasks only — subitems are fetched on demand via /:id/subitems.
@@ -426,7 +614,7 @@ const getSubitems = async (req, res) => {
         return res.status(403).json({ error: 'Not authorised' });
       }
     } else {
-      const ctx = await loadBoardContext(parent.board, userId);
+      const ctx = await loadTaskBoardContext(parent.board, userId);
       if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
     }
 
@@ -461,8 +649,11 @@ const getMyTasks = async (req, res) => {
       if (org) {
         const isMember = org.members.some((m) => m.toString() === userId);
         if (isMember) {
-          const boards = await Board.find({ organisation: orgId }).select('_id');
-          const boardIds = boards.map((b) => b._id);
+          // An org predating the role system carries no `roles`, so every
+          // capability — board read included — resolves false and this view would
+          // come back empty. Same lazy heal `loadBoardContext` does on first touch.
+          if (org.ensureSystemRoles()) await org.save();
+          const boardIds = await readableBoardIds(org, userId);
           if (boardIds.length > 0) {
             boardTaskFilter = {
               board: { $in: boardIds },
@@ -534,8 +725,10 @@ const getCalendarTasks = async (req, res) => {
       if (org) {
         const isMember = org.members.some((m) => m.toString() === userId);
         if (isMember) {
-          const boards = await Board.find({ organisation: orgId }).select('_id');
-          const boardIds = boards.map((b) => b._id);
+          // See getMyTasks — an org with no `roles` yet must be healed before the
+          // resolver can answer, or the calendar silently empties.
+          if (org.ensureSystemRoles()) await org.save();
+          const boardIds = await readableBoardIds(org, userId);
           if (boardIds.length > 0) {
             boardTaskFilter = {
               board: { $in: boardIds },
@@ -579,11 +772,12 @@ const getCalendarTasks = async (req, res) => {
  * POST /api/tasks
  *
  * Create a task. Two modes:
- *   - Board task: requires `board` and `group`. Admin only. `status` must be
- *     an ObjectId in the target board's `statuses`; if omitted, falls back
+ *   - Board task: requires `board` and `group`, and `task.create`. `status` must
+ *     be an ObjectId in the target board's `statuses`; if omitted, falls back
  *     to the board's default status. `labels` must reference ids in
  *     board.labels.
- *   - Personal task: `isPersonal: true`. `status` accepts the legacy enum
+ *   - Personal task: `isPersonal: true`. Belongs to its creator alone, so it
+ *     bypasses board permissions entirely. `status` accepts the legacy enum
  *     strings.
  */
 const createTask = async (req, res) => {
@@ -636,18 +830,21 @@ const createTask = async (req, res) => {
       return res.status(201).json({ task: populated });
     }
 
-    // Board task path — requires board + group, admin only
+    // Board task path — requires board + group
     if (!boardId || !groupId) {
       return res
         .status(400)
         .json({ error: 'Board and group are required for board tasks' });
     }
 
-    const ctx = await loadBoardContext(boardId, userId);
+    const ctx = await loadTaskBoardContext(boardId, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    const denied = requireCapability(
+      ctx,
+      'task.create',
+      'You do not have permission to create tasks on this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const group = await TaskGroup.findById(groupId);
     if (!group || group.board.toString() !== boardId) {
@@ -694,11 +891,27 @@ const createTask = async (req, res) => {
       resolvedLabels = sanitized;
     }
 
-    const { ids: assigneeIds, error: assigneeErr } = validateAssignees(
+    const { ids: assigneeIds, error: assigneeErr } = await validateAssignees(
       assignedTo,
-      ctx.org
+      ctx.org,
+      ctx.board
     );
     if (assigneeErr) return res.status(400).json({ error: assigneeErr });
+
+    // Adding work to the board and putting it on another person are two
+    // different powers: `contribute` holds the first, only `edit` the second.
+    // Gated on the payload actually naming someone, so creating an unassigned
+    // task stays open to every contributor.
+    if (assigneeIds.length > 0) {
+      const assignDenied = requireCapability(
+        ctx,
+        'task.assign',
+        'You do not have permission to assign people to tasks'
+      );
+      if (assignDenied) {
+        return res.status(assignDenied.status).json({ error: assignDenied.error });
+      }
+    }
 
     // Assign the next order so new tasks land at the end of their group
     // (or end of their parent's subitem list).
@@ -871,22 +1084,21 @@ const updateTask = async (req, res) => {
     }
 
     // ----- Board task branch -----
-    const ctx = await loadBoardContext(task.board, userId);
+    const ctx = await loadTaskBoardContext(task.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
-    if (!ctx.isAdmin) {
-      // Members granted view-only access can't change anything, not even status.
-      if (ctx.readOnly) {
+    // THE 'only my own tasks' rule. Someone who may not edit THIS task can still
+    // get exactly one thing through: a status change. Dragging a card along the
+    // board is its own capability precisely because it is not the same power as
+    // rewriting what the card says.
+    if (!canEditTask(ctx, task, userId)) {
+      const touchedKeys = Object.keys(body).filter((k) => body[k] !== undefined);
+      const statusOnly =
+        touchedKeys.length === 1 && touchedKeys[0] === 'status';
+      if (!statusOnly || !ctx.can('task.change_status')) {
         return res
           .status(403)
-          .json({ error: 'You have read-only access to this board' });
-      }
-      // Regular members can only change status (on any board task they can see).
-      const allowedKeys = Object.keys(body).filter((k) => body[k] !== undefined);
-      if (allowedKeys.length !== 1 || allowedKeys[0] !== 'status') {
-        return res
-          .status(403)
-          .json({ error: 'Only status can be changed by members' });
+          .json({ error: 'You do not have permission to edit this task' });
       }
       const match = findBoardStatus(ctx.board, body.status);
       if (!match) {
@@ -924,7 +1136,11 @@ const updateTask = async (req, res) => {
       return res.json({ task: populated });
     }
 
-    // Admin path — any field is editable.
+    // Full-edit path. Every field is editable, save for the two that carry a
+    // capability of their own: handing the task to someone else (task.assign) and
+    // re-homing it in another group (task.move). The `edit` rung confers both, so
+    // this only bites a `contribute` member editing a task of their own, or a
+    // custom role that was deliberately denied them.
     const prevStatus = task.status ? task.status.toString() : null;
     const prevAssigneeIds = task.assignedTo.map((u) => u.toString());
     const prevLabelIds = (task.labels || []).map((l) => l.toString());
@@ -942,6 +1158,17 @@ const updateTask = async (req, res) => {
 
     // ----- columnValues patch (flexible-columns engine, F1) ---------------
     if (body.columnValues !== undefined) {
+      // `canEditTask` above says you may edit THIS task. It does not say you may
+      // assign it to someone or wire it to another board — those are separate
+      // capabilities, and a person / connect_boards cell is how you exercise them.
+      const colDenied = await requireColumnPatchCapabilities(
+        ctx,
+        body.columnValues,
+        userId
+      );
+      if (colDenied) {
+        return res.status(colDenied.status).json({ error: colDenied.error });
+      }
       const result = applyColumnValuePatch(task, ctx.board, body.columnValues);
       if (!result.ok) {
         return res.status(400).json({ errors: result.errors });
@@ -1003,7 +1230,11 @@ const updateTask = async (req, res) => {
       task.labels = sanitized;
     }
     if (body.assignedTo !== undefined) {
-      const { ids, error: assigneeErr } = validateAssignees(body.assignedTo, ctx.org);
+      const { ids, error: assigneeErr } = await validateAssignees(
+        body.assignedTo,
+        ctx.org,
+        ctx.board
+      );
       if (assigneeErr) return res.status(400).json({ error: assigneeErr });
       const prevSet = new Set(prevAssigneeIds);
       newAssigneeIds = ids.filter((id) => !prevSet.has(id));
@@ -1013,6 +1244,17 @@ const updateTask = async (req, res) => {
         prevSet.size !== nextSet.size ||
         [...prevSet].some((id) => !nextSet.has(id));
       if (assigneesChanged) {
+        // Only an actual change of the assignee set counts as assigning. A client
+        // that echoes the current list back while editing an unrelated field must
+        // not trip a gate it never meant to touch.
+        const assignDenied = requireCapability(
+          ctx,
+          'task.assign',
+          'You do not have permission to assign people to tasks'
+        );
+        if (assignDenied) {
+          return res.status(assignDenied.status).json({ error: assignDenied.error });
+        }
         activityChanges.push({ field: 'assignees', oldValue: prevAssigneeIds, newValue: ids });
       }
       task.assignedTo = ids;
@@ -1036,6 +1278,16 @@ const updateTask = async (req, res) => {
           .json({ error: 'Group does not belong to board' });
       }
       if (prevGroup !== body.group.toString()) {
+        // Same reasoning as assignees: only a real re-home is a move, so a client
+        // echoing the task's current group back does not need `task.move`.
+        const moveDenied = requireCapability(
+          ctx,
+          'task.move',
+          'You do not have permission to move tasks between groups'
+        );
+        if (moveDenied) {
+          return res.status(moveDenied.status).json({ error: moveDenied.error });
+        }
         activityChanges.push({ field: 'group', oldValue: prevGroup, newValue: body.group.toString() });
       }
       task.group = body.group;
@@ -1154,12 +1406,17 @@ const updateTask = async (req, res) => {
 };
 
 /**
- * Authorise a checklist mutation against a task. Personal tasks only allow
- * the creator; board tasks allow any org member (mirrors comment behaviour —
- * collaborative state should be editable by everyone who can see the task).
- * Returns { task } on success, or { status, error } on failure.
+ * Load a task and the caller's standing on its board, for the paths that mutate
+ * a task's CONTENT rather than its fields — checklist items and attachments.
+ *
+ * This is the READ gate only; the caller applies whatever capability its own
+ * mutation needs (see `requireTaskEdit`). Personal tasks have no board and belong
+ * to their creator alone, so they resolve here with `ctx: null` and never consult
+ * board permissions.
+ *
+ * Returns { task, ctx } on success, or { status, error } on failure.
  */
-const loadTaskForChecklist = async (taskId, userId) => {
+const loadTaskContext = async (taskId, userId) => {
   if (!mongoose.Types.ObjectId.isValid(taskId)) {
     return { status: 400, error: 'Invalid task id' };
   }
@@ -1170,12 +1427,30 @@ const loadTaskForChecklist = async (taskId, userId) => {
     if (!task.createdBy || task.createdBy.toString() !== userId) {
       return { status: 403, error: 'Not authorised' };
     }
-    return { task };
+    return { task, ctx: null };
   }
 
-  const ctx = await loadBoardContext(task.board, userId);
+  const ctx = await loadTaskBoardContext(task.board, userId);
   if (ctx.error) return { status: ctx.status, error: ctx.error };
-  return { task };
+  return { task, ctx };
+};
+
+/**
+ * Gate a mutation of an existing task's content. Returns `{ status, error }` when
+ * denied, or null when allowed.
+ *
+ * Checklist items and attachments were writable by anyone who could merely SEE
+ * the board — a view-only member could tick another team's checkboxes or delete
+ * their files. They are task content, so they now answer to exactly the same rule
+ * as editing the task itself.
+ *
+ * A personal task (`ctx === null`) was already authorised by ownership in
+ * `loadTaskContext` and has no board to consult.
+ */
+const requireTaskEdit = (ctx, task, userId) => {
+  if (!ctx) return null;
+  if (canEditTask(ctx, task, userId)) return null;
+  return { status: 403, error: 'You do not have permission to edit this task' };
 };
 
 /**
@@ -1191,20 +1466,23 @@ const addChecklistItem = async (req, res) => {
       return res.status(400).json({ error: 'Checklist item text is required' });
     }
 
-    const ctx = await loadTaskForChecklist(id, userId);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const result = await loadTaskContext(id, userId);
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    const task = result.task;
+    const denied = requireTaskEdit(result.ctx, task, userId);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
-    ctx.task.checklist.push({ text, done: false });
-    await ctx.task.save();
+    task.checklist.push({ text, done: false });
+    await task.save();
 
     logActivity({
-      task: ctx.task,
+      task,
       actor: userId,
       type: 'checklist.added',
-      metadata: { itemText: text, taskName: ctx.task.name },
+      metadata: { itemText: text, taskName: task.name },
     });
 
-    const populated = await populateTask(Task.findById(ctx.task._id));
+    const populated = await populateTask(Task.findById(task._id));
     return res.status(201).json({ task: populated });
   } catch (err) {
     console.error('addChecklistItem error:', err);
@@ -1221,10 +1499,13 @@ const updateChecklistItem = async (req, res) => {
     const { id, itemId } = req.params;
     const body = req.body || {};
 
-    const ctx = await loadTaskForChecklist(id, userId);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const result = await loadTaskContext(id, userId);
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    const task = result.task;
+    const denied = requireTaskEdit(result.ctx, task, userId);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
-    const item = ctx.task.checklist.id(itemId);
+    const item = task.checklist.id(itemId);
     if (!item) return res.status(404).json({ error: 'Checklist item not found' });
 
     const prevText = item.text;
@@ -1237,25 +1518,25 @@ const updateChecklistItem = async (req, res) => {
       }
       const next = body.text.trim();
       if (next !== prevText) {
-        events.push({ type: 'checklist.renamed', oldValue: prevText, newValue: next, metadata: { itemText: next, taskName: ctx.task.name } });
+        events.push({ type: 'checklist.renamed', oldValue: prevText, newValue: next, metadata: { itemText: next, taskName: task.name } });
       }
       item.text = next;
     }
     if (body.done !== undefined) {
       const next = !!body.done;
       if (next !== prevDone) {
-        events.push({ type: 'checklist.toggled', oldValue: prevDone, newValue: next, metadata: { itemText: item.text, taskName: ctx.task.name } });
+        events.push({ type: 'checklist.toggled', oldValue: prevDone, newValue: next, metadata: { itemText: item.text, taskName: task.name } });
       }
       item.done = next;
     }
 
-    await ctx.task.save();
+    await task.save();
 
     for (const e of events) {
-      logActivity({ task: ctx.task, actor: userId, ...e });
+      logActivity({ task, actor: userId, ...e });
     }
 
-    const populated = await populateTask(Task.findById(ctx.task._id));
+    const populated = await populateTask(Task.findById(task._id));
     return res.json({ task: populated });
   } catch (err) {
     console.error('updateChecklistItem error:', err);
@@ -1271,24 +1552,27 @@ const deleteChecklistItem = async (req, res) => {
     const userId = req.user.userId;
     const { id, itemId } = req.params;
 
-    const ctx = await loadTaskForChecklist(id, userId);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const result = await loadTaskContext(id, userId);
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    const task = result.task;
+    const denied = requireTaskEdit(result.ctx, task, userId);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
-    const item = ctx.task.checklist.id(itemId);
+    const item = task.checklist.id(itemId);
     if (!item) return res.status(404).json({ error: 'Checklist item not found' });
 
     const removedText = item.text;
-    ctx.task.checklist.pull(itemId);
-    await ctx.task.save();
+    task.checklist.pull(itemId);
+    await task.save();
 
     logActivity({
-      task: ctx.task,
+      task,
       actor: userId,
       type: 'checklist.deleted',
-      metadata: { itemText: removedText, taskName: ctx.task.name },
+      metadata: { itemText: removedText, taskName: task.name },
     });
 
-    const populated = await populateTask(Task.findById(ctx.task._id));
+    const populated = await populateTask(Task.findById(task._id));
     return res.json({ task: populated });
   } catch (err) {
     console.error('deleteChecklistItem error:', err);
@@ -1310,10 +1594,13 @@ const reorderChecklist = async (req, res) => {
       return res.status(400).json({ error: 'orderedIds[] is required' });
     }
 
-    const ctx = await loadTaskForChecklist(id, userId);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const result = await loadTaskContext(id, userId);
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    const task = result.task;
+    const denied = requireTaskEdit(result.ctx, task, userId);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
-    const currentIds = ctx.task.checklist.map((i) => i._id.toString());
+    const currentIds = task.checklist.map((i) => i._id.toString());
     if (
       orderedIds.length !== currentIds.length ||
       !orderedIds.every((oid) => currentIds.includes(oid.toString()))
@@ -1322,23 +1609,23 @@ const reorderChecklist = async (req, res) => {
     }
 
     const byId = new Map();
-    for (const item of ctx.task.checklist) byId.set(item._id.toString(), item);
+    for (const item of task.checklist) byId.set(item._id.toString(), item);
     const prevOrder = currentIds.slice();
     const nextOrder = orderedIds.map((oid) => oid.toString());
-    ctx.task.checklist = orderedIds.map((oid) => byId.get(oid.toString()));
-    await ctx.task.save();
+    task.checklist = orderedIds.map((oid) => byId.get(oid.toString()));
+    await task.save();
 
-    const moved = prevOrder.some((id, i) => id !== nextOrder[i]);
+    const moved = prevOrder.some((prevId, i) => prevId !== nextOrder[i]);
     if (moved) {
       logActivity({
-        task: ctx.task,
+        task,
         actor: userId,
         type: 'checklist.reordered',
-        metadata: { taskName: ctx.task.name, itemCount: nextOrder.length },
+        metadata: { taskName: task.name, itemCount: nextOrder.length },
       });
     }
 
-    const populated = await populateTask(Task.findById(ctx.task._id));
+    const populated = await populateTask(Task.findById(task._id));
     return res.json({ task: populated });
   } catch (err) {
     console.error('reorderChecklist error:', err);
@@ -1375,8 +1662,17 @@ const reorderTasks = async (req, res) => {
       return res.status(404).json({ error: 'Target group not found' });
     }
 
-    const ctx = await loadBoardContext(targetGroup.board, userId);
+    const ctx = await loadTaskBoardContext(targetGroup.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    // This endpoint had NO permission check: anyone who could open the board could
+    // re-order it and drag tasks between groups. It rewrites `order` and `group`
+    // on other people's rows, which is exactly `task.move`.
+    const denied = requireCapability(
+      ctx,
+      'task.move',
+      'You do not have permission to move tasks between groups'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     // Load every supplied task and validate same board, top-level, etc.
     const tasks = await Task.find({ _id: { $in: orderedIds } }).select('_id board parent');
@@ -1434,11 +1730,14 @@ const deleteTask = async (req, res) => {
         return res.status(403).json({ error: 'Not authorised' });
       }
     } else {
-      const ctx = await loadBoardContext(task.board, userId);
+      const ctx = await loadTaskBoardContext(task.board, userId);
       if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-      if (!ctx.isAdmin) {
-        return res.status(403).json({ error: 'Admin access required' });
-      }
+      const denied = requireCapability(
+        ctx,
+        'task.delete',
+        'You do not have permission to delete tasks'
+      );
+      if (denied) return res.status(denied.status).json({ error: denied.error });
     }
 
     // Cascade subitems first — fetch their ids so their updates and
@@ -1490,15 +1789,15 @@ const deleteTask = async (req, res) => {
 
 /**
  * GET /api/tasks/:id/attachments — list files attached to a task.
- * Access mirrors checklist/comment behaviour: personal tasks → creator only;
- * board tasks → any org member.
+ * A read: personal tasks → creator only; board tasks → anyone who can open the
+ * board. No capability beyond that, so a viewer still sees the Files tab.
  */
 const getTaskAttachments = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { id } = req.params;
 
-    const result = await loadTaskForChecklist(id, userId);
+    const result = await loadTaskContext(id, userId);
     if (result.error) {
       return res.status(result.status).json({ error: result.error });
     }
@@ -1516,6 +1815,27 @@ const getTaskAttachments = async (req, res) => {
 };
 
 /**
+ * Delete an already-uploaded file that this request is not going to keep.
+ *
+ * `taskAttachmentUpload.single('file')` runs as route middleware, so multer and
+ * CloudinaryStorage have PUSHED THE ASSET TO CLOUDINARY before this controller —
+ * and therefore before the permission gate — gets to run at all. Every early
+ * return on the upload route then leaves a file nothing references: a 403 that
+ * still costs storage, and still leaves the uploader's content sitting in the
+ * account. The gate cannot move earlier without restructuring the route, so the
+ * denial cleans up after it.
+ *
+ * Maps the multer file onto the attachment shape `destroyCloudinaryAssets` reads
+ * (`publicId` + `mime`) — the same fields the success path pulls off `req.file`.
+ */
+const discardUploadedFile = async (file) => {
+  if (!file) return;
+  const publicId = file.public_id || file.filename || '';
+  if (!publicId) return;
+  await destroyCloudinaryAssets([{ publicId, mime: file.mimetype || '' }]);
+};
+
+/**
  * POST /api/tasks/:id/attachments — upload a file (multer + Cloudinary middleware
  * does the upload) and persist its URL on the task.
  */
@@ -1524,9 +1844,15 @@ const uploadTaskAttachment = async (req, res) => {
     const userId = req.user.userId;
     const { id } = req.params;
 
-    const result = await loadTaskForChecklist(id, userId);
+    const result = await loadTaskContext(id, userId);
     if (result.error) {
+      await discardUploadedFile(req.file);
       return res.status(result.status).json({ error: result.error });
+    }
+    const denied = requireTaskEdit(result.ctx, result.task, userId);
+    if (denied) {
+      await discardUploadedFile(req.file);
+      return res.status(denied.status).json({ error: denied.error });
     }
 
     if (!req.file) {
@@ -1578,11 +1904,13 @@ const deleteTaskAttachment = async (req, res) => {
     const userId = req.user.userId;
     const { id, attachmentId } = req.params;
 
-    const result = await loadTaskForChecklist(id, userId);
+    const result = await loadTaskContext(id, userId);
     if (result.error) {
       return res.status(result.status).json({ error: result.error });
     }
     const task = result.task;
+    const denied = requireTaskEdit(result.ctx, task, userId);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const attachment = task.attachments.id(attachmentId);
     if (!attachment) {

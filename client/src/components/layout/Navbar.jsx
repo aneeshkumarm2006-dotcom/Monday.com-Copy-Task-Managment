@@ -16,6 +16,7 @@ import {
 import useAuthStore from '../../store/authStore';
 import useOrgStore from '../../store/orgStore';
 import useNotificationStore from '../../store/notificationStore';
+import usePermissions from '../../hooks/usePermissions';
 import api from '../../services/api';
 import Chip from '../ui/Chip';
 import Avatar from '../ui/Avatar';
@@ -49,17 +50,24 @@ const Logo = () => (
   </div>
 );
 
-const NavLinks = ({ isAdmin, onNavigate }) => {
+const NavLinks = ({ onNavigate }) => {
+  const { can } = usePermissions();
+
+  // Each link asks for the capability its own page needs, not for "admin" — a
+  // role holding analytics.view but not productivity.view_others gets Analytics
+  // alone. Dashboard, Boards and My Work are open to everyone with an org.
   const links = [
     { to: '/dashboard', label: 'Dashboard' },
     { to: '/boards', label: 'My Boards' },
     { to: '/my-tasks', label: 'My Work' },
-    { to: '/members', label: 'Members' },
-    ...(isAdmin
-      ? [
-          { to: '/analytics', label: 'Analytics' },
-          { to: '/productivity', label: 'Productivity' },
-        ]
+    ...(can('org.view_members')
+      ? [{ to: '/members', label: 'Members' }]
+      : []),
+    ...(can('analytics.view')
+      ? [{ to: '/analytics', label: 'Analytics' }]
+      : []),
+    ...(can('productivity.view_others')
+      ? [{ to: '/productivity', label: 'Productivity' }]
       : []),
   ];
 
@@ -845,25 +853,8 @@ const MenuItem = ({ icon: Icon, rightIcon: RightIcon, label, onClick, danger }) 
 const Navbar = () => {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const currentOrg = useOrgStore((s) => s.currentOrg);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
-
-  // Is current user an admin of the currently-selected org?
-  const adminId =
-    typeof currentOrg?.admin === 'object' && currentOrg?.admin !== null
-      ? currentOrg.admin._id || currentOrg.admin
-      : currentOrg?.admin;
-  const isMainAdmin =
-    !!user && !!adminId && String(adminId) === String(user._id);
-  const isExtraAdmin =
-    !!user &&
-    Array.isArray(currentOrg?.admins) &&
-    currentOrg.admins.some((a) => {
-      const id = typeof a === 'object' && a !== null ? a._id || a : a;
-      return String(id) === String(user._id);
-    });
-  const isAdmin = isMainAdmin || isExtraAdmin;
 
   return (
     <nav
@@ -897,7 +888,7 @@ const Navbar = () => {
           <div className="flex items-center gap-4">
             <Logo />
             <div className="hidden md:block h-full">
-              <NavLinks isAdmin={isAdmin} />
+              <NavLinks />
             </div>
           </div>
 
@@ -940,10 +931,7 @@ const Navbar = () => {
           }}
         >
           <div className="flex flex-col gap-1">
-            <NavLinks
-              isAdmin={isAdmin}
-              onNavigate={() => setMobileOpen(false)}
-            />
+            <NavLinks onNavigate={() => setMobileOpen(false)} />
           </div>
         </div>
       )}

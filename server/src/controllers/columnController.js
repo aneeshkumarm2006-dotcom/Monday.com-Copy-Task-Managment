@@ -8,46 +8,32 @@
  *   PATCH  /api/boards/:id/columns/:cid
  *   DELETE /api/boards/:id/columns/:cid
  *
- * Member auth for `GET`; admin auth for write routes. Validation hits
+ * Reading columns needs only board read access, which `loadBoardContext` already
+ * enforces. Every mutation here — including the connect/mirror columns that own
+ * a BoardConnection edge — is gated on `column.manage`: retyping or deleting a
+ * column restructures the board for everyone on it, so it sits on the `edit`
+ * rung rather than with the day-to-day task capabilities. Validation hits
  * `columnTypes.js` before persistence.
  */
 
 const mongoose = require('mongoose');
 const Board = require('../models/Board');
 const Task = require('../models/Task');
-const Organisation = require('../models/Organisation');
 const BoardConnection = require('../models/BoardConnection');
 const { getColumnType, MIRROR_AGGREGATIONS } = require('../utils/columnTypes');
 const { wouldCreateMirrorCycle } = require('../services/mirrorRefresh');
-const { resolveBoardAccess } = require('../utils/boardAccess');
+const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 
 /**
- * Load board + org and confirm the calling user is a member.
- *
- * `isAdmin` means "may edit board content" — true org admins and members
- * granted edit access on a private board both qualify. Returns
- * { board, org, isAdmin } on success, or { status, error } on failure.
+ * Every route here addresses the board by id straight from the URL. The shared
+ * `loadBoardContext` hands an unparseable id to `findById`, which throws a
+ * CastError and surfaces as a 500 — so the shape check stays local to keep the
+ * 400 these routes have always returned.
  */
-const loadBoardContext = async (boardId, userId) => {
-  if (!boardId || !mongoose.Types.ObjectId.isValid(boardId)) {
-    return { status: 400, error: 'Invalid board id' };
-  }
-  const board = await Board.findById(boardId);
-  if (!board) return { status: 404, error: 'Board not found' };
-
-  const org = await Organisation.findById(board.organisation);
-  if (!org) return { status: 404, error: 'Organisation not found' };
-
-  const isMember = org.members.some((m) => m.toString() === userId);
-  if (!isMember) {
-    return { status: 403, error: 'Not a member of this organisation' };
-  }
-  const access = resolveBoardAccess(board, org, userId);
-  if (!access.canRead) {
-    return { status: 403, error: 'Access denied' };
-  }
-  return { board, org, isAdmin: access.canEdit };
-};
+const badBoardId = (boardId) =>
+  !boardId || !mongoose.Types.ObjectId.isValid(boardId)
+    ? { status: 400, error: 'Invalid board id' }
+    : null;
 
 const serializeColumns = (board) =>
   (board.columns || [])
@@ -180,10 +166,13 @@ const removeBoardConnection = async (boardId, columnId) => {
 };
 
 /**
- * GET /api/boards/:id/columns
+ * GET /api/boards/:id/columns — board read access is the whole gate.
  */
 const listColumns = async (req, res) => {
   try {
+    const bad = badBoardId(req.params.id);
+    if (bad) return res.status(bad.status).json({ error: bad.error });
+
     const ctx = await loadBoardContext(req.params.id, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
     return res.json({ columns: serializeColumns(ctx.board) });
@@ -198,13 +187,22 @@ const listColumns = async (req, res) => {
  * Body: { name, type, settings?, width?, after?, key?, isPrimary? }
  *
  * `after` is the column id to insert the new column after; appends if absent.
- * Admin-only. Validates `settings` through the type registry.
+ * Requires `column.manage`. Validates `settings` through the type registry.
  */
 const addColumn = async (req, res) => {
   try {
+    const bad = badBoardId(req.params.id);
+    if (bad) return res.status(bad.status).json({ error: bad.error });
+
     const ctx = await loadBoardContext(req.params.id, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) return res.status(403).json({ error: 'Admin access required' });
+
+    const denied = requireCapability(
+      ctx,
+      'column.manage',
+      'You do not have permission to manage columns'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const { board } = ctx;
     const { name, type, settings = {}, width, after, key, isPrimary } = req.body || {};
@@ -312,12 +310,22 @@ const addColumn = async (req, res) => {
 /**
  * PATCH /api/boards/:id/columns/:cid
  * Body: { name?, settings?, width? } — type changes are out of scope for v1.
+ * Requires `column.manage`.
  */
 const updateColumn = async (req, res) => {
   try {
+    const bad = badBoardId(req.params.id);
+    if (bad) return res.status(bad.status).json({ error: bad.error });
+
     const ctx = await loadBoardContext(req.params.id, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) return res.status(403).json({ error: 'Admin access required' });
+
+    const denied = requireCapability(
+      ctx,
+      'column.manage',
+      'You do not have permission to manage columns'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const { board } = ctx;
     const { cid } = req.params;
@@ -385,12 +393,22 @@ const updateColumn = async (req, res) => {
 /**
  * PATCH /api/boards/:id/columns/reorder
  * Body: { order: [cid, ...] } — must list every column id exactly once.
+ * Requires `column.manage`.
  */
 const reorderColumns = async (req, res) => {
   try {
+    const bad = badBoardId(req.params.id);
+    if (bad) return res.status(bad.status).json({ error: bad.error });
+
     const ctx = await loadBoardContext(req.params.id, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) return res.status(403).json({ error: 'Admin access required' });
+
+    const denied = requireCapability(
+      ctx,
+      'column.manage',
+      'You do not have permission to manage columns'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const { board } = ctx;
     const order = Array.isArray(req.body?.order) ? req.body.order : null;
@@ -424,14 +442,24 @@ const reorderColumns = async (req, res) => {
 /**
  * DELETE /api/boards/:id/columns/:cid
  *
+ * - Requires `column.manage`.
  * - 400 if the column is the primary.
  * - Otherwise `$unset` `columnValues.<cid>` on every Task in the board.
  */
 const deleteColumn = async (req, res) => {
   try {
+    const bad = badBoardId(req.params.id);
+    if (bad) return res.status(bad.status).json({ error: bad.error });
+
     const ctx = await loadBoardContext(req.params.id, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) return res.status(403).json({ error: 'Admin access required' });
+
+    const denied = requireCapability(
+      ctx,
+      'column.manage',
+      'You do not have permission to manage columns'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const { board } = ctx;
     const { cid } = req.params;

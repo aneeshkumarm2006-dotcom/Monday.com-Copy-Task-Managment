@@ -1,14 +1,24 @@
 const mongoose = require('mongoose');
 const ActivityLog = require('../models/ActivityLog');
 const Task = require('../models/Task');
-const Board = require('../models/Board');
-const Organisation = require('../models/Organisation');
 const User = require('../models/User');
+const { loadBoardContext } = require('../utils/boardContext');
 
 /**
- * Permission gate mirrors commentController.checkTaskAccess:
- *   - Personal task: only the creator can read.
- *   - Board task: any org member can read.
+ * Who may read a task's history.
+ *
+ *   Personal task → its creator, and nobody else.
+ *   Board task    → whoever may READ the board the task lives on.
+ *
+ * The board rung used to be "any member of the org", which made this endpoint a
+ * side channel out of every private board. The log carries task names, status
+ * names, note bodies and assignee names, so a member who could not open the
+ * board could still read its contents one task at a time. Board read access is
+ * the gate now — the same one the board itself enforces.
+ *
+ * Reading history needs no capability beyond that: `loadBoardContext` already
+ * refuses a caller who cannot open the board, and there is nothing here a reader
+ * of the board may not see.
  */
 const checkTaskAccess = async (task, userId) => {
   if (task.isPersonal) {
@@ -17,15 +27,9 @@ const checkTaskAccess = async (task, userId) => {
     }
     return { ok: true, board: null };
   }
-  const board = await Board.findById(task.board);
-  if (!board) return { status: 404, error: 'Board not found' };
-  const org = await Organisation.findById(board.organisation);
-  if (!org) return { status: 404, error: 'Organisation not found' };
-  const isMember = org.members.some((m) => m.toString() === userId);
-  if (!isMember) {
-    return { status: 403, error: 'Not a member of this organisation' };
-  }
-  return { ok: true, board };
+  const ctx = await loadBoardContext(task.board, userId);
+  if (ctx.error) return { status: ctx.status, error: ctx.error };
+  return { ok: true, board: ctx.board };
 };
 
 /**

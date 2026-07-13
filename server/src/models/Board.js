@@ -80,11 +80,29 @@ const boardAccessSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
+    /**
+     * A rung on the board access ladder — see
+     * [capabilities.js](../utils/capabilities.js) `BOARD_LEVELS`.
+     *
+     *   view       — read the board
+     *   comment    — + post updates and mention people
+     *   contribute — + create tasks, and edit/complete tasks assigned to them
+     *   edit       — + any task, groups, columns, statuses, notes, automations
+     *
+     * `read` is the legacy spelling of `view` and is still accepted so existing
+     * grants keep working untouched; `normaliseLevel` folds it in. The ladder
+     * used to be `read | edit` and nothing else, which meant the only way to let
+     * someone do their own work was to also let them delete your columns.
+     */
     level: {
       type: String,
-      enum: ['read', 'edit'],
+      enum: ['read', 'view', 'comment', 'contribute', 'edit'],
       required: true,
     },
+    /**
+     * Upgrades an `edit` grant to FULL access: that member may also manage the
+     * board's sharing. Owner-granted only, and meaningless below `edit`.
+     */
     canManage: {
       type: Boolean,
       default: false,
@@ -112,8 +130,24 @@ const boardSchema = new mongoose.Schema(
       enum: ['public', 'private'],
       default: 'private',
     },
-    // Per-member access grants for private boards. Managed by the board's
-    // creator; ignored for public boards (every member can already read those).
+    /**
+     * What a PUBLIC board opens up to the org — the rung every member lands on
+     * without an explicit grant. "Public" used to mean one hardcoded thing
+     * (read everything, change status and nothing else), an arbitrary point on
+     * the ladder that nobody chose. Now each board decides: an announcements
+     * board is public/`view`, a team scratchpad is public/`edit`.
+     *
+     * Ignored entirely when `visibility` is 'private'. An explicit grant in
+     * `memberAccess` always wins over this.
+     */
+    publicDefaultLevel: {
+      type: String,
+      enum: ['view', 'comment', 'contribute', 'edit'],
+      default: 'contribute',
+    },
+    // Per-member access grants. Managed by the board's creator (and anyone the
+    // creator gave full access). On a public board these UPGRADE a member above
+    // `publicDefaultLevel`; on a private board they are the only way in.
     memberAccess: { type: [boardAccessSchema], default: [] },
     order: { type: Number, default: 0, index: true },
     createdBy: {

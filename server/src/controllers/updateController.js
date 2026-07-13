@@ -2,7 +2,6 @@ const Task = require('../models/Task');
 const Board = require('../models/Board');
 const Update = require('../models/Update');
 const User = require('../models/User');
-const Organisation = require('../models/Organisation');
 const {
   createNotificationsForUsers,
   notifyTaskAudience,
@@ -11,7 +10,7 @@ const {
 const { sendMentionEmail } = require('../services/emailService');
 const { logActivity } = require('../services/activityService');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
-const { resolveBoardAccess } = require('../utils/boardAccess');
+const { loadBoardContext } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 
 /**
@@ -25,27 +24,37 @@ const { filterUsersWithBoardRead } = require('../utils/boardAudience');
  * access control was simply not consulted on this path. Comments carry the task
  * name, attachments and @mentions, so it was a full read-side hole around
  * [boardAccess.js](../utils/boardAccess.js).
+ *
+ * Reading the board is only the gate. The returned `can` carries the resolved
+ * two-layer capability set, so every further decision on the task — may I post,
+ * may I delete someone else's comment — is answered from the same context rather
+ * than re-derived per handler.
  */
 const checkTaskAccess = async (task, userId) => {
   if (task.isPersonal) {
     if (!task.createdBy || task.createdBy.toString() !== userId) {
       return { status: 403, error: 'Not authorised' };
     }
-    return { ok: true };
+    // A personal task hangs off no board, so there is no ladder to climb: its
+    // creator is its only audience and holds every task-content capability on it.
+    //
+    // Except `update.delete_any`. A personal task has exactly one participant, so
+    // "delete anyone else's comment" has nobody to apply to — granting it here
+    // would only ever mean "the creator may delete their own", which authorship
+    // already allows. The old code forced isAdmin=false on personal tasks for the
+    // same reason, making deletion strictly author-only; a blanket `() => true`
+    // would silently widen that.
+    return { ok: true, can: (cap) => cap !== 'update.delete_any' };
   }
-  const board = await Board.findById(task.board);
-  if (!board) return { status: 404, error: 'Board not found' };
-  const org = await Organisation.findById(board.organisation);
-  if (!org) return { status: 404, error: 'Organisation not found' };
-  const isMember = org.members.some((m) => m.toString() === userId);
-  if (!isMember) {
-    return { status: 403, error: 'Not a member of this organisation' };
-  }
-  const access = resolveBoardAccess(board, org, userId);
-  if (!access.canRead) {
-    return { status: 403, error: 'Access denied' };
-  }
-  return { ok: true, board, org, access };
+  const ctx = await loadBoardContext(task.board, userId);
+  if (ctx.error) return { status: ctx.status, error: ctx.error };
+  return {
+    ok: true,
+    board: ctx.board,
+    org: ctx.org,
+    access: ctx.access,
+    can: ctx.can,
+  };
 };
 
 /**
@@ -106,6 +115,14 @@ const addUpdate = async (req, res) => {
     const access = await checkTaskAccess(task, userId);
     if (!access.ok) {
       return res.status(access.status).json({ error: access.error });
+    }
+
+    // Reading the board no longer implies being able to comment on it: the
+    // `view` rung is silent by design, and `comment` is the rung that speaks.
+    if (!access.can('update.create')) {
+      return res
+        .status(403)
+        .json({ error: 'You do not have permission to post updates' });
     }
 
     // Validate mention IDs against the people who can actually READ this board —
@@ -268,7 +285,8 @@ const addUpdate = async (req, res) => {
 /**
  * PATCH /api/tasks/:taskId/updates/:id
  *
- * Only the update's author can edit. Accepts the same body shape as addUpdate
+ * Only the update's author can edit, and only while they still hold
+ * `update.create` on the board. Accepts the same body shape as addUpdate
  * (body, bodyText, mentions, attachments) and stamps `editedAt`. No
  * notifications are emitted on edit — newly-added mentions don't ping.
  */
@@ -291,6 +309,18 @@ const editUpdate = async (req, res) => {
 
     if (!update.author || update.author.toString() !== userId) {
       return res.status(403).json({ error: 'Not authorised' });
+    }
+
+    // Authorship is necessary but not sufficient. Editing a comment IS posting
+    // one — it rewrites the body, the attachments and the mention list — so it
+    // takes the same rung addUpdate takes. Gating on authorship alone left the
+    // `update.create` check bypassable for anyone holding a pre-existing update:
+    // a member demoted to `view` could still rewrite their old comments on a
+    // board they may now only read.
+    if (!access.can('update.create')) {
+      return res
+        .status(403)
+        .json({ error: 'You do not have permission to post updates' });
     }
 
     const hasBody =
@@ -348,7 +378,8 @@ const editUpdate = async (req, res) => {
 /**
  * DELETE /api/tasks/:taskId/updates/:id
  *
- * Only the update's author (or an org admin on the board) can delete.
+ * Authors may always delete their own comment. Deleting SOMEONE ELSE'S takes
+ * `update.delete_any` on the board.
  */
 const deleteUpdate = async (req, res) => {
   try {
@@ -367,20 +398,7 @@ const deleteUpdate = async (req, res) => {
     }
 
     const isAuthor = update.author && update.author.toString() === userId;
-    let isAdmin = false;
-    if (!task.isPersonal) {
-      const org =
-        access.org ||
-        (access.board &&
-          (await Organisation.findById(access.board.organisation)));
-      if (org) {
-        isAdmin =
-          (org.admin && org.admin.toString() === userId) ||
-          (Array.isArray(org.admins) &&
-            org.admins.some((a) => a.toString() === userId));
-      }
-    }
-    if (!isAuthor && !isAdmin) {
+    if (!isAuthor && !access.can('update.delete_any')) {
       return res.status(403).json({ error: 'Not authorised' });
     }
 
@@ -399,18 +417,49 @@ const deleteUpdate = async (req, res) => {
  * Cloudinary-backed upload handler. The multer middleware in routes/updates.js
  * does the actual upload; this endpoint just relays the resulting URL back to
  * the client so the editor can embed/link the file.
+ *
+ * Gated on `update.create` — the only thing an attachment can be attached to is
+ * an update, so anyone who cannot post one has no business uploading for it.
  */
 const uploadAttachment = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { taskId } = req.params;
 
+    // multer (updateUpload.single) has ALREADY pushed the file to Cloudinary by
+    // the time this handler runs — the gate is downstream of the upload, not in
+    // front of it. So a denial that simply returns leaves the asset stranded in
+    // the bucket with nothing referencing it. Take it back down on the way out.
+    // No-ops when there is no file: destroyCloudinaryAssets skips entries with no
+    // publicId.
+    const discardUpload = () =>
+      destroyCloudinaryAssets([
+        {
+          publicId: req.file?.public_id || req.file?.filename || '',
+          mime: req.file?.mimetype || '',
+        },
+      ]);
+
     const task = await Task.findById(taskId);
-    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (!task) {
+      // Multer/CloudinaryStorage has ALREADY pushed the file by the time this
+      // handler runs, so every early return that skips cleanup strands a paid
+      // asset in the bucket with nothing referencing it.
+      await discardUpload();
+      return res.status(404).json({ error: 'Task not found' });
+    }
 
     const access = await checkTaskAccess(task, userId);
     if (!access.ok) {
+      await discardUpload();
       return res.status(access.status).json({ error: access.error });
+    }
+
+    if (!access.can('update.create')) {
+      await discardUpload();
+      return res
+        .status(403)
+        .json({ error: 'You do not have permission to post updates' });
     }
 
     if (!req.file) {
@@ -428,6 +477,20 @@ const uploadAttachment = async (req, res) => {
     });
   } catch (err) {
     console.error('uploadAttachment error:', err);
+    // Reachable, not theoretical: the route does not validate :taskId, so a
+    // malformed id makes Task.findById throw a CastError — after the upload has
+    // already happened. Tear the asset down, but never let a cleanup failure mask
+    // the original error.
+    try {
+      await destroyCloudinaryAssets([
+        {
+          publicId: req.file?.public_id || req.file?.filename || '',
+          mime: req.file?.mimetype || '',
+        },
+      ]);
+    } catch (cleanupErr) {
+      console.error('uploadAttachment cleanup failed:', cleanupErr);
+    }
     return res.status(500).json({ error: 'Server error' });
   }
 };

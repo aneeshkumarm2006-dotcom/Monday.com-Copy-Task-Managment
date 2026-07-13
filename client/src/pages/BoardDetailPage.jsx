@@ -54,6 +54,7 @@ import useBoardStore from '../store/boardStore';
 import useTaskStore from '../store/taskStore';
 import useNotificationStore from '../store/notificationStore';
 import useToastStore from '../store/toastStore';
+import usePermissions, { useBoardPermissions } from '../hooks/usePermissions';
 import * as taskService from '../services/taskService';
 import { formatDate } from '../utils/dateUtils';
 import {
@@ -80,34 +81,13 @@ const GROUP_DOT_CYCLE = [
  */
 const GROUP_SORT_KEY = 'board:groupSortCompletedLast:';
 
-/** Normalise an id that may be a populated object or a raw ObjectId string. */
-const refId = (v) => (typeof v === 'object' && v !== null ? v._id || v : v);
-
-/**
- * Determine whether the signed-in user is the admin of the current org.
- */
-const useIsCurrentOrgAdmin = () => {
-  const user = useAuthStore((s) => s.user);
-  const currentOrg = useOrgStore((s) => s.currentOrg);
-  if (!user || !currentOrg) return false;
-  const adminId =
-    typeof currentOrg.admin === 'object' && currentOrg.admin !== null
-      ? currentOrg.admin._id || currentOrg.admin
-      : currentOrg.admin;
-  const isMainAdmin = !!adminId && String(adminId) === String(user._id);
-  const isExtraAdmin = Array.isArray(currentOrg.admins) &&
-    currentOrg.admins.some((a) => {
-      const id = typeof a === 'object' && a !== null ? a._id || a : a;
-      return String(id) === String(user._id);
-    });
-  return isMainAdmin || isExtraAdmin;
-};
-
 const BoardDetailPage = () => {
   const { id: boardId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const isAdmin = useIsCurrentOrgAdmin();
+  // Org-wide capabilities. Board-scoped ones come off `board.permissions` below —
+  // they are two different questions, and conflating them was the old model's bug.
+  const { can: canOrg } = usePermissions();
   const currentUser = useAuthStore((s) => s.user);
 
   const currentOrg = useOrgStore((s) => s.currentOrg);
@@ -247,35 +227,27 @@ const BoardDetailPage = () => {
   const orgId = currentOrg?._id || null;
 
   // --- Effective board permissions ---------------------------------------
-  // A private board is the creator's alone until they grant members 'read' or
-  // 'edit' access via the "Share" modal — org admins get no automatic access.
-  // Public boards stay readable by everyone and editable by org admins.
-  // `canEdit` gates every edit/create affordance. Sharing is a separate axis:
-  // `canViewAccess` opens the Share modal (owner + editors, so the people
-  // running the board can see who is on it) while `canManageAccess` allows
-  // changing it — the owner always, and any member the owner gave full access
-  // (`canManage` on their grant). Mirrors resolveBoardAccess on the server,
-  // which enforces the same rules.
-  const currentUserId = currentUser?._id ? String(currentUser._id) : null;
-  const myGrant = useMemo(() => {
-    if (!board || !Array.isArray(board.memberAccess) || !currentUserId) return null;
-    return (
-      board.memberAccess.find((g) => String(refId(g.user)) === currentUserId) ||
-      null
-    );
-  }, [board, currentUserId]);
-  const myLevel = myGrant?.level || null;
-  const isBoardCreator =
-    !!board &&
-    !!currentUserId &&
-    String(refId(board.createdBy)) === currentUserId;
-  const canEdit =
-    isBoardCreator ||
-    myLevel === 'edit' ||
-    (board?.visibility === 'public' && isAdmin);
-  const canViewAccess = isBoardCreator || myLevel === 'edit';
-  const canManageAccess =
-    isBoardCreator || (myLevel === 'edit' && myGrant?.canManage === true);
+  // The board's permissions come RESOLVED from the server — the two-layer AND
+  // (org role && board access) already applied for this user, on this board.
+  //
+  // This page used to re-implement that resolution: read `memberAccess`, find my
+  // grant, check its level, OR in a locally-derived isAdmin. It was a second
+  // implementation of the server's rules, free to drift from them, and it could
+  // not express the middle rungs at all. Now the server answers once and this
+  // reads the answer.
+  //
+  // Hiding a control is a courtesy, never a control: every capability below is
+  // enforced independently on the write path.
+  const {
+    can: canOnBoard,
+    isBoardOwner: isBoardCreator,
+    canViewAccess,
+    canManageAccess,
+  } = useBoardPermissions(board?.permissions);
+
+  // "May I restructure this board" — the old `canEdit` bit, now derived from the
+  // capabilities rather than re-guessed.
+  const canEdit = canOnBoard('task.edit_any') && canOnBoard('group.manage');
 
   // If we navigated directly and the boards list is empty, fetch it so the
   // header can resolve the board metadata.
@@ -1130,7 +1102,7 @@ const BoardDetailPage = () => {
                 Share
               </Button>
             )}
-            {isAdmin && (
+            {canOnBoard('automation.view') && (
               <Button
                 variant="secondary"
                 icon={Zap}
@@ -1148,7 +1120,7 @@ const BoardDetailPage = () => {
                 New Group
               </Button>
             )}
-            {isAdmin && (
+            {canOrg('org.manage_settings') && (
               <button
                 type="button"
                 aria-label="Board settings"
@@ -1746,7 +1718,7 @@ const BoardDetailPage = () => {
       />
 
       {/* Automations */}
-      {isAdmin && (
+      {canOnBoard('automation.view') && (
         <AutomationsModal
           isOpen={automationsOpen}
           onClose={() => setAutomationsOpen(false)}
@@ -1754,7 +1726,7 @@ const BoardDetailPage = () => {
           board={board}
           groups={groups}
           members={members}
-          isAdmin={isAdmin}
+          isAdmin={canOnBoard('automation.manage')}
         />
       )}
 

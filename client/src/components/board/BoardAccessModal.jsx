@@ -8,40 +8,81 @@ import useAuthStore from '../../store/authStore';
 import useToastStore from '../../store/toastStore';
 
 /**
- * BoardAccessModal — who can see a PRIVATE board, and at what level:
- *   - Owner     (created the board — always full access, can't be changed)
- *   - Can edit  (full control of board content)
- *   - Read only (view tasks, no edits)
- *   - No access (default — can't see the board at all)
+ * BoardAccessModal — who can reach this board, and how far.
+ *
+ * THE LADDER. Each rung adds to the one below it:
+ *
+ *   No access  — cannot see the board at all (the default on a private board)
+ *   View       — read the board
+ *   Comment    — + post updates and mention people
+ *   Contribute — + create tasks, and edit/complete tasks assigned to them
+ *   Can edit   — + any task, groups, columns, statuses, notes, automations
+ *   Owner      — created it; always full access, cannot be changed
+ *
+ * The ladder used to be View and Can-edit and nothing else, which meant the only
+ * way to let someone do their own work was to also let them delete your columns.
+ * Comment and Contribute are the missing middle, and Contribute is where most of
+ * a real team belongs.
  *
  * Plus a per-member "Full access" toggle: an editor with it on can manage the
  * board's sharing too, exactly like the owner. Only the owner can flip it, so
- * full access can't be chained — a full-access member may hand out read/edit
+ * full access cannot be chained — a full-access member may hand out lower rungs
  * but cannot mint another full-access member or demote one.
  *
- * Two audiences open this: the owner, and members with 'edit' access, who can
+ * Two audiences open this: the owner, and members with edit access, who can
  * always SEE the list (so the people running the board know who is on it) and
  * change it only once the owner gives them full access. `canManage` / `isOwner`
- * come from the caller; the server enforces the same rules, including that
- * nobody may change the owner's access or their own.
+ * come from the caller; the server enforces the same rules, including that nobody
+ * may change the owner's access or their own.
+ *
+ * A member's ORG ROLE still caps everything here — a Viewer handed 'Can edit'
+ * still cannot write, because permission is the AND of the two layers. The rung
+ * is a ceiling, not a grant.
  */
 
 const LEVELS = [
-  { value: 'none', label: 'No access' },
-  { value: 'read', label: 'Read only' },
-  { value: 'edit', label: 'Can edit' },
+  { value: 'none', label: 'No access', hint: 'Cannot see this board' },
+  { value: 'view', label: 'View', hint: 'Read the board' },
+  { value: 'comment', label: 'Comment', hint: 'Read, and post updates' },
+  {
+    value: 'contribute',
+    label: 'Contribute',
+    hint: 'Add tasks, and work on tasks assigned to them',
+  },
+  { value: 'edit', label: 'Can edit', hint: 'Full control of board content' },
 ];
 
 const LEVEL_LABEL = {
   owner: 'Owner',
   edit: 'Can edit',
-  read: 'Read only',
+  contribute: 'Contribute',
+  comment: 'Comment',
+  view: 'View',
+  // Grants written before the ladder existed carry the old spelling. The server
+  // normalises `read` to `view`; label it the same way so the UI never shows a
+  // rung that is not on the ladder.
+  read: 'View',
   none: 'No access',
 };
 
-// Owner pinned to the top, then the people who can actually do something on the
-// board, so the list reads top-down as "who matters here".
-const LEVEL_RANK = { owner: -1, edit: 0, read: 1, none: 2 };
+// Owner pinned to the top, then down the ladder, so the list reads top-down as
+// "who matters most here".
+const LEVEL_RANK = {
+  owner: -1,
+  edit: 0,
+  contribute: 1,
+  comment: 2,
+  view: 3,
+  read: 3,
+  none: 4,
+};
+
+/** Fold a stored grant onto the ladder. Mirrors normaliseLevel on the server. */
+const normaliseLevel = (level) => {
+  if (!level) return 'none';
+  if (level === 'read') return 'view';
+  return LEVELS.some((l) => l.value === level) ? level : 'none';
+};
 
 // Fixed column widths so the two headers line up with every row below them.
 const LEVEL_COL = 130;
@@ -149,7 +190,10 @@ const BoardAccessModal = ({
         member: m,
         isOwnerRow: owner,
         isSelf: id === currentUserId,
-        level: owner ? 'owner' : grant?.level || 'none',
+        // Fold the legacy `read` spelling onto the ladder, exactly as the server
+        // does. Left raw it would be a <select> value matching no <option>, and
+        // the row would render with nothing selected.
+        level: owner ? 'owner' : normaliseLevel(grant?.level),
         fullAccess: owner || grant?.canManage === true,
       };
     });
@@ -358,7 +402,7 @@ const BoardAccessModal = ({
                             }}
                           >
                             {LEVELS.map((l) => (
-                              <option key={l.value} value={l.value}>
+                              <option key={l.value} value={l.value} title={l.hint}>
                                 {l.label}
                               </option>
                             ))}

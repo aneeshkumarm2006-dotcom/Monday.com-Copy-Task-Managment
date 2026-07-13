@@ -9,6 +9,8 @@ import Modal from '../components/ui/Modal';
 import NotificationPreferences from '../components/notifications/NotificationPreferences';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
+import usePermissionStore from '../store/permissionStore';
+import usePermissions from '../hooks/usePermissions';
 import * as orgService from '../services/orgService';
 import * as profileService from '../services/profileService';
 /**
@@ -89,7 +91,7 @@ const Chip = ({ children, variant = 'grey' }) => {
 
 /* ------------------------- Organisation tab ------------------------- */
 
-const OrganisationTab = ({ org, isMainAdmin, onRegenerate, onDeleteOrg }) => {
+const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
   const [copied, setCopied] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -268,7 +270,9 @@ const OrganisationTab = ({ org, isMainAdmin, onRegenerate, onDeleteOrg }) => {
             </Button>
           </div>
 
-          {isMainAdmin && (
+          {/* Deleting the org is reserved to the owner and is deliberately NOT a
+              capability — no role may ever be granted it. */}
+          {isOwner && (
             <div
               className="p-4 flex items-center justify-between gap-4 flex-wrap"
               style={{ borderTop: '1px solid var(--color-status-stuck)' }}
@@ -716,22 +720,14 @@ const SettingsPage = () => {
   const logout = useAuthStore((s) => s.logout);
   const currentOrg = useOrgStore((s) => s.currentOrg);
   const deleteOrgFromStore = useOrgStore((s) => s.deleteOrg);
+  const permissionsLoading = usePermissionStore((s) => s.loading);
+  const loadedForOrg = usePermissionStore((s) => s.loadedForOrg);
+  const { can, isOwner } = usePermissions();
 
-  // Resolve admin-ness from currentOrg (authoritative for the UI guard)
-  const orgAdminId =
-    typeof currentOrg?.admin === 'object' && currentOrg?.admin !== null
-      ? currentOrg.admin._id || currentOrg.admin
-      : currentOrg?.admin;
-  const isMainAdmin =
-    !!user && !!orgAdminId && String(orgAdminId) === String(user._id);
-  const orgAdminsArr = currentOrg?.admins || [];
-  const isExtraAdmin =
-    !!user &&
-    orgAdminsArr.some((a) => {
-      const id = typeof a === 'object' && a !== null ? a._id || a : a;
-      return String(id) === String(user._id);
-    });
-  const isAdmin = isMainAdmin || isExtraAdmin;
+  // The Organisation tab is nothing but org settings — the invite code lives there.
+  const canManageOrg = can('org.manage_settings');
+  const permissionsResolved =
+    !!currentOrg && !permissionsLoading && loadedForOrg === currentOrg._id;
 
   const [activeTab, setActiveTab] = useState('organisation');
   const [orgState, setOrgState] = useState(currentOrg || null);
@@ -741,12 +737,14 @@ const SettingsPage = () => {
     setOrgState(currentOrg || null);
   }, [currentOrg]);
 
-  // If a non-admin has an admin-only tab selected, bounce them to Profile
+  // Bounce off an admin-only tab the user can't manage — but only once permissions
+  // have actually resolved for this org. Capabilities start empty, so deciding
+  // early would strand a manager on Profile and never send them back.
   useEffect(() => {
-    if (!isAdmin && activeTab === 'organisation') {
+    if (permissionsResolved && !canManageOrg && activeTab === 'organisation') {
       setActiveTab('profile');
     }
-  }, [isAdmin, activeTab]);
+  }, [permissionsResolved, canManageOrg, activeTab]);
 
   // Fetch org details (with inviteCode) for Organisation tab
   useEffect(() => {
@@ -788,11 +786,11 @@ const SettingsPage = () => {
   };
 
   const renderTab = () => {
-    if (activeTab === 'organisation' && isAdmin) {
+    if (activeTab === 'organisation' && canManageOrg) {
       return (
         <OrganisationTab
           org={orgState}
-          isMainAdmin={isMainAdmin}
+          isOwner={isOwner}
           onRegenerate={handleRegenerate}
           onDeleteOrg={handleDeleteOrg}
         />
@@ -853,12 +851,12 @@ const SettingsPage = () => {
           <SettingsSidebar
             activeTab={activeTab}
             onTabChange={setActiveTab}
-            showAdminTabs={isAdmin}
+            showAdminTabs={canManageOrg}
           />
           <SettingsTabBar
             activeTab={activeTab}
             onTabChange={setActiveTab}
-            showAdminTabs={isAdmin}
+            showAdminTabs={canManageOrg}
           />
           <div className="flex-1 p-5 md:p-8">
             {renderTab()}

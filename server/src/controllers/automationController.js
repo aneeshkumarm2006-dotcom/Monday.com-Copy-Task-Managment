@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 const Board = require('../models/Board');
 const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
-const Organisation = require('../models/Organisation');
 const User = require('../models/User');
 const Automation = require('../models/Automation');
 const {
@@ -15,6 +14,7 @@ const {
   validateSchedule,
 } = require('../services/automationSchedule');
 const { resolveBoardAccess } = require('../utils/boardAccess');
+const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
@@ -23,33 +23,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * Automations are board CONTENT, not an org-wide admin power.
  *
- * This used to resolve permission with a bare `isOrgAdmin(org, userId)` and
- * never consult the board at all — which got it exactly backwards in both
- * directions: an org admin could manage automations on a private board they
- * cannot even open, while a board's own creator could not manage automations on
- * their own board unless they happened to be an admin. Routing through
- * `resolveBoardAccess` puts automations behind the same gate as every other
- * board mutation.
+ * Every gate on this file is the shared two-layer AND (`org role && board
+ * level`) from `loadBoardContext`: reading a board's automations needs
+ * `automation.view`, and creating, editing, deleting or running one needs
+ * `automation.manage`. Permission used to be resolved with a bare
+ * `isOrgAdmin(org, userId)` that never consulted the board at all, which got it
+ * backwards in both directions — an org admin could manage automations on a
+ * private board they cannot even open, while a board's own creator could not
+ * manage automations on their own board unless they happened to be an admin.
  */
-const loadBoardContext = async (boardId, userId) => {
-  const board = await Board.findById(boardId);
-  if (!board) return { status: 404, error: 'Board not found' };
-
-  const org = await Organisation.findById(board.organisation);
-  if (!org) return { status: 404, error: 'Organisation not found' };
-
-  const isMember = org.members.some((m) => m.toString() === userId);
-  if (!isMember) {
-    return { status: 403, error: 'Not a member of this organisation' };
-  }
-
-  const access = resolveBoardAccess(board, org, userId);
-  if (!access.canRead) {
-    return { status: 403, error: 'Access denied' };
-  }
-
-  return { board, org, access, isAdmin: access.canEdit, readOnly: access.readOnly };
-};
 
 /**
  * Assignees must be able to READ the board, not merely belong to the org.
@@ -597,6 +579,13 @@ const runLegacyTemplateOnce = async (automation, board) => {
  *   - otherwise → legacy `taskTemplate` path used by SCHEDULE triggers.
  * Returns the last task created so the existing `runAutomationNow`
  * endpoint can keep returning a single `taskId` for backwards compat.
+ *
+ * There is deliberately NO actor here: the scheduler and the event dispatcher
+ * both call this with no human behind them, so execution runs as a system
+ * principal and asks no capability question. The authorization that matters at
+ * fire time is the assignee fan-out, and `notifyAssignees` re-checks every
+ * recipient against board READ access then — because an automation outlives the
+ * access that created it.
  */
 const runAutomationOnce = async (automation, ctx = {}) => {
   const board = await Board.findById(automation.board).select('statuses');
@@ -648,9 +637,12 @@ const listAutomations = async (req, res) => {
 
     const ctx = await loadBoardContext(boardId, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    const denied = requireCapability(
+      ctx,
+      'automation.view',
+      "You do not have permission to view this board's automations"
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const automations = await populateAutomation(
       Automation.find({ board: boardId })
@@ -679,9 +671,12 @@ const createAutomation = async (req, res) => {
 
     const ctx = await loadBoardContext(boardId, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    const denied = requireCapability(
+      ctx,
+      'automation.manage',
+      'You do not have permission to create automations'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     if (!body.name || !String(body.name).trim()) {
       return res.status(400).json({ error: 'Automation name is required' });
@@ -800,9 +795,14 @@ const updateAutomation = async (req, res) => {
 
     const ctx = await loadBoardContext(automation.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    // Covers the enabled toggle too — flipping an automation on or off is a
+    // change to what the board does on its own, not a read.
+    const denied = requireCapability(
+      ctx,
+      'automation.manage',
+      'You do not have permission to edit automations'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     let scheduleChanged = false;
     let enabledChanged = false;
@@ -945,9 +945,12 @@ const deleteAutomation = async (req, res) => {
 
     const ctx = await loadBoardContext(automation.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    const denied = requireCapability(
+      ctx,
+      'automation.manage',
+      'You do not have permission to delete automations'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     await Automation.deleteOne({ _id: id });
     return res.json({ success: true });
@@ -970,9 +973,14 @@ const runAutomationNow = async (req, res) => {
 
     const ctx = await loadBoardContext(automation.board, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    if (!ctx.isAdmin) {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
+    // Firing an automation writes tasks and notifies people, so it is gated as a
+    // mutation — `automation.view` alone is not enough to pull the trigger.
+    const denied = requireCapability(
+      ctx,
+      'automation.manage',
+      'You do not have permission to run automations'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
 
     // "Run now" on ITEM_CREATED automations runs every action without a
     // triggering task. CREATE_SUBITEM actions silently skip in that mode

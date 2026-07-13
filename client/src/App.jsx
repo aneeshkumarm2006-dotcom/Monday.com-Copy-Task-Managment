@@ -10,6 +10,8 @@ import {
 import useAuthStore from './store/authStore';
 import useOrgStore from './store/orgStore';
 import useNotificationStore from './store/notificationStore';
+import usePermissionStore from './store/permissionStore';
+import usePermissions from './hooks/usePermissions';
 import LoginPage from './pages/LoginPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
 import OnboardingPage from './pages/OnboardingPage';
@@ -65,28 +67,30 @@ const RequireOrg = () => {
 };
 
 /**
- * RequireAdmin — admin-only routes. Non-admins are redirected to /dashboard.
+ * RequireCapability — gate a route on a capability the SERVER resolved.
+ *
+ * Replaces RequireAdmin, which re-derived "is this person an admin" from
+ * `org.admin` + `org.admins` — a block copy-pasted into eight files, each free to
+ * drift from what the API actually enforces. Now there is one answer, and the
+ * client reads it.
+ *
+ * This is a courtesy redirect, never a control: every one of these routes is
+ * enforced server-side regardless of what the router renders.
  */
-const RequireAdmin = () => {
+const RequireCapability = ({ capability }) => {
   const user = useAuthStore((s) => s.user);
   const loading = useAuthStore((s) => s.loading);
   const currentOrg = useOrgStore((s) => s.currentOrg);
+  const permissionsLoading = usePermissionStore((s) => s.loading);
+  const loadedForOrg = usePermissionStore((s) => s.loadedForOrg);
+  const { can } = usePermissions();
 
-  // While hydrating, don't make a decision yet
+  // Don't decide while anything is still hydrating — a premature "no" would
+  // bounce a user who does in fact hold the capability.
   if (loading || !user || !currentOrg) return <Outlet />;
+  if (permissionsLoading || loadedForOrg !== currentOrg._id) return <Outlet />;
 
-  const adminId =
-    typeof currentOrg.admin === 'object' && currentOrg.admin !== null
-      ? currentOrg.admin._id || currentOrg.admin
-      : currentOrg.admin;
-  const isMainAdmin = !!adminId && String(adminId) === String(user._id);
-  const isExtraAdmin = Array.isArray(currentOrg.admins) &&
-    currentOrg.admins.some((a) => {
-      const id = typeof a === 'object' && a !== null ? a._id || a : a;
-      return String(id) === String(user._id);
-    });
-  const isAdmin = isMainAdmin || isExtraAdmin;
-  return isAdmin ? <Outlet /> : <Navigate to="/dashboard" replace />;
+  return can(capability) ? <Outlet /> : <Navigate to="/dashboard" replace />;
 };
 
 /**
@@ -163,11 +167,20 @@ function App() {
             <Route path="/my-tasks" element={<MyTasksPage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
             <Route path="/calendar" element={<CalendarPage />} />
-            <Route element={<RequireAdmin />}>
+            {/* Analytics and Productivity were admin-only. They are now gated on
+                the capabilities that mean the same thing, so a custom role can be
+                given one without the other. */}
+            <Route element={<RequireCapability capability="analytics.view" />}>
               <Route path="/analytics" element={<AnalyticsPage />} />
+            </Route>
+            <Route
+              element={<RequireCapability capability="productivity.view_others" />}
+            >
               <Route path="/productivity" element={<ProductivityPage />} />
             </Route>
-            <Route path="/members" element={<MembersPage />} />
+            <Route element={<RequireCapability capability="org.view_members" />}>
+              <Route path="/members" element={<MembersPage />} />
+            </Route>
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Route>
