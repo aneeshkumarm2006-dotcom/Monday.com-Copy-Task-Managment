@@ -19,7 +19,6 @@ const {
   getConnectableBoards,
   getBoardAccess,
   setBoardAccess,
-  setBoardAccessSettings,
 } = require('../controllers/boardController');
 const {
   listColumns,
@@ -78,10 +77,9 @@ router.delete('/:id/columns/:cid',    deleteColumn);
 router.get('/:id/connectable',        getConnectableBoards);
 
 // --- Per-board access grants (private boards) ------------------------------
-// Viewing is open to the owner + editors; changing is owner-only unless the
-// owner delegated it via access-settings. All enforced in the controller.
+// Viewing is open to the owner + editors; changing is limited to the owner and
+// members the owner gave full access. All enforced in the controller.
 router.get('/:id/access',             getBoardAccess);
 router.put('/:id/access',             setBoardAccess);
-router.put('/:id/access-settings',    setBoardAccessSettings);
 
 module.exports = router;

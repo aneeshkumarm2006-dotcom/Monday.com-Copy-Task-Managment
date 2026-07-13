@@ -697,8 +697,8 @@ const getConnectableBoards = async (req, res) => {
  * List the board's per-member grants. Open to the owner and to any member with
  * 'edit' access, so the people running the board can see who is on it. Whether
  * the caller may CHANGE it is reported back as `canManageAccess`.
- * Returns: { access: [{ user: {…}, level }], createdBy, isOwner,
- *            canManageAccess, editorsCanManageAccess }
+ * Returns: { access: [{ user: {…}, level, canManage }], createdBy, isOwner,
+ *            canManageAccess }
  */
 const getBoardAccess = async (req, res) => {
   try {
@@ -729,7 +729,6 @@ const getBoardAccess = async (req, res) => {
       createdBy: board.createdBy,
       isOwner: access.creator,
       canManageAccess: access.canManageAccess,
-      editorsCanManageAccess: !!board.editorsCanManageAccess,
     });
   } catch (err) {
     console.error('getBoardAccess error:', err);
@@ -740,13 +739,18 @@ const getBoardAccess = async (req, res) => {
 /**
  * PUT /api/boards/:id/access
  *
- * Body: { userId, level: 'read' | 'edit' | 'none' }
+ * Body: { userId, level: 'read' | 'edit' | 'none', canManage?: boolean }
  *
- * Upserts a grant for the target org member; `'none'` removes it. Allowed for
- * the owner, and for 'edit' members when the owner turned on
- * `editorsCanManageAccess`. Guardrails for everyone: the owner's own grant is
- * untouchable (they always have full access) and nobody can change their own
- * level through here.
+ * Upserts a grant for the target org member; `'none'` removes it. `canManage`
+ * upgrades an 'edit' grant to FULL access (they can manage sharing too); omit
+ * it to leave the existing flag alone. It is meaningless below 'edit', so any
+ * drop to 'read'/'none' clears it.
+ *
+ * Allowed for the owner and for full-access members. Guardrails:
+ *   - the owner's grant is untouchable (they always have full access)
+ *   - nobody changes their own grant here
+ *   - only the OWNER may give or remove full access, so a full-access member
+ *     cannot mint peers or demote the ones the owner appointed
  *
  * Returns the updated board (so the client can refresh its cache) plus the
  * populated access list for display.
@@ -754,13 +758,16 @@ const getBoardAccess = async (req, res) => {
 const setBoardAccess = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { userId: targetUserId, level } = req.body || {};
+    const { userId: targetUserId, level, canManage } = req.body || {};
 
     if (!targetUserId || !mongoose.Types.ObjectId.isValid(targetUserId)) {
       return res.status(400).json({ error: 'Valid userId required' });
     }
     if (level !== 'none' && !VALID_ACCESS_LEVELS.includes(level)) {
       return res.status(400).json({ error: 'Invalid access level' });
+    }
+    if (canManage !== undefined && typeof canManage !== 'boolean') {
+      return res.status(400).json({ error: 'canManage must be true or false' });
     }
 
     const board = await Board.findById(req.params.id);
@@ -773,7 +780,7 @@ const setBoardAccess = async (req, res) => {
     if (!access.canManageAccess) {
       return res.status(403).json({
         error: access.canViewAccess
-          ? 'Only the board owner can change who has access'
+          ? 'Only the board owner, and members given full access, can change who has access'
           : 'Only the board owner can manage access',
       });
     }
@@ -797,20 +804,38 @@ const setBoardAccess = async (req, res) => {
         .json({ error: 'User is not a member of this organisation' });
     }
 
-    // Was this user already granted access? Used to notify only on first grant
-    // (an upsert also fires on a read→edit level change for an existing grant).
-    const wasAlreadyGranted = (board.memberAccess || []).some(
+    const existing = (board.memberAccess || []).find(
       (e) => e.user.toString() === targetUserId
     );
+    // `canManage` omitted → keep whatever the member already had. It only means
+    // anything at 'edit', so any lower level clears it.
+    const requestedManage =
+      typeof canManage === 'boolean' ? canManage : existing?.canManage === true;
+    const nextManage = level === 'edit' && requestedManage;
+    const hadManage = existing?.canManage === true;
+
+    // Full access is the owner's to give and take back — otherwise a delegate
+    // could promote allies or strip the owner's other delegates.
+    if (!access.creator && (nextManage || hadManage)) {
+      return res.status(403).json({
+        error: 'Only the board owner can give or remove full access',
+      });
+    }
 
     // Upsert: drop any existing grant for this user, then re-add unless 'none'.
     board.memberAccess = (board.memberAccess || []).filter(
       (e) => e.user.toString() !== targetUserId
     );
     if (level !== 'none') {
-      board.memberAccess.push({ user: targetUserId, level });
+      board.memberAccess.push({
+        user: targetUserId,
+        level,
+        canManage: nextManage,
+      });
     }
     await board.save();
+
+    const wasAlreadyGranted = !!existing;
 
     // Notify the user the first time they're given access to this board.
     if (level !== 'none' && !wasAlreadyGranted) {
@@ -835,48 +860,6 @@ const setBoardAccess = async (req, res) => {
   }
 };
 
-/**
- * PUT /api/boards/:id/access-settings
- *
- * Body: { editorsCanManageAccess: boolean }
- *
- * Owner-only, deliberately: the flag is what delegates sharing to editors, so
- * letting a delegate flip it would defeat the point. Note this does NOT go
- * through `updateBoard`, which is org-admin gated — a board owner need not be
- * an org admin.
- */
-const setBoardAccessSettings = async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const { editorsCanManageAccess } = req.body || {};
-
-    if (typeof editorsCanManageAccess !== 'boolean') {
-      return res
-        .status(400)
-        .json({ error: 'editorsCanManageAccess must be true or false' });
-    }
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ error: 'Invalid board id' });
-    }
-
-    const board = await Board.findById(req.params.id);
-    if (!board) return res.status(404).json({ error: 'Board not found' });
-    if (!isBoardCreator(board, userId)) {
-      return res
-        .status(403)
-        .json({ error: 'Only the board owner can change this setting' });
-    }
-
-    board.editorsCanManageAccess = editorsCanManageAccess;
-    await board.save();
-
-    return res.json({ board });
-  } catch (err) {
-    console.error('setBoardAccessSettings error:', err);
-    return res.status(500).json({ error: 'Server error' });
-  }
-};
-
 module.exports = {
   getBoards,
   getDashboardStats,
@@ -887,7 +870,6 @@ module.exports = {
   getConnectableBoards,
   getBoardAccess,
   setBoardAccess,
-  setBoardAccessSettings,
   // labels
   listLabels,
   addLabel,

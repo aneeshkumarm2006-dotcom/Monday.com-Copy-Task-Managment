@@ -14,16 +14,16 @@ import useToastStore from '../../store/toastStore';
  *   - Read only (view tasks, no edits)
  *   - No access (default — can't see the board at all)
  *
- * Two audiences open this:
- *   - the owner, who always manages the list, and who decides via the switch at
- *     the bottom whether editors may manage it too;
- *   - members with 'edit' access, who can always SEE the list (so the people
- *     running the board know who is on it) and can change it only once the
- *     owner flips that switch.
+ * Plus a per-member "Full access" toggle: an editor with it on can manage the
+ * board's sharing too, exactly like the owner. Only the owner can flip it, so
+ * full access can't be chained — a full-access member may hand out read/edit
+ * but cannot mint another full-access member or demote one.
  *
- * `canManage` / `isOwner` come from the caller; the server enforces the same
- * rules, including the guardrails that nobody may change the owner's access or
- * their own.
+ * Two audiences open this: the owner, and members with 'edit' access, who can
+ * always SEE the list (so the people running the board know who is on it) and
+ * change it only once the owner gives them full access. `canManage` / `isOwner`
+ * come from the caller; the server enforces the same rules, including that
+ * nobody may change the owner's access or their own.
  */
 
 const LEVELS = [
@@ -43,6 +43,10 @@ const LEVEL_LABEL = {
 // board, so the list reads top-down as "who matters here".
 const LEVEL_RANK = { owner: -1, edit: 0, read: 1, none: 2 };
 
+// Fixed column widths so the two headers line up with every row below them.
+const LEVEL_COL = 130;
+const FULL_COL = 76;
+
 /** Normalise an id that may be a populated object or a raw ObjectId string. */
 const idOf = (v) =>
   typeof v === 'object' && v !== null ? v._id || v : v;
@@ -57,8 +61,9 @@ const initials = (name = '', email = '') => {
 /** Static, non-editable access label — used for rows that can't be changed. */
 const AccessPill = ({ children }) => (
   <span
-    className="font-body shrink-0"
+    className="font-body flex items-center"
     style={{
+      width: LEVEL_COL,
       fontSize: 13,
       fontWeight: 500,
       padding: '6px 10px',
@@ -67,6 +72,23 @@ const AccessPill = ({ children }) => (
       background: 'var(--color-bg-subtle)',
       color: 'var(--color-text-secondary)',
       whiteSpace: 'nowrap',
+    }}
+  >
+    {children}
+  </span>
+);
+
+const ColumnHeading = ({ width, align = 'left', children }) => (
+  <span
+    className="font-body shrink-0"
+    style={{
+      width,
+      textAlign: align,
+      fontSize: 10,
+      fontWeight: 600,
+      letterSpacing: '0.05em',
+      textTransform: 'uppercase',
+      color: 'var(--color-text-muted)',
     }}
   >
     {children}
@@ -83,12 +105,10 @@ const BoardAccessModal = ({
   const members = useOrgStore((s) => s.members);
   const fetchMembers = useOrgStore((s) => s.fetchMembers);
   const setBoardAccess = useBoardStore((s) => s.setBoardAccess);
-  const setBoardAccessSettings = useBoardStore((s) => s.setBoardAccessSettings);
   const currentUser = useAuthStore((s) => s.user);
   const toastError = useToastStore((s) => s.error);
 
   const [savingId, setSavingId] = useState(null);
-  const [savingSettings, setSavingSettings] = useState(false);
   const [query, setQuery] = useState('');
 
   const orgId = board ? idOf(board.organisation) : null;
@@ -105,18 +125,17 @@ const BoardAccessModal = ({
     if (isOpen) setQuery('');
   }, [isOpen]);
 
-  // user id -> granted level, derived from the live board record.
+  // user id -> grant, derived from the live board record.
   const grantByUser = useMemo(() => {
     const map = new Map();
     (board?.memberAccess || []).forEach((g) =>
-      map.set(String(idOf(g.user)), g.level)
+      map.set(String(idOf(g.user)), g)
     );
     return map;
   }, [board]);
 
   const currentUserId = currentUser?._id ? String(currentUser._id) : null;
   const ownerId = board?.createdBy ? String(idOf(board.createdBy)) : null;
-  const editorsCanManage = !!board?.editorsCanManageAccess;
 
   // Every workspace member as a row, including the owner and the viewer — a
   // non-owner needs to see both to understand who runs the board.
@@ -124,12 +143,14 @@ const BoardAccessModal = ({
     const list = (members || []).map((m) => {
       const id = String(m._id);
       const owner = id === ownerId;
+      const grant = grantByUser.get(id);
       return {
         id,
         member: m,
         isOwnerRow: owner,
         isSelf: id === currentUserId,
-        level: owner ? 'owner' : grantByUser.get(id) || 'none',
+        level: owner ? 'owner' : grant?.level || 'none',
+        fullAccess: owner || grant?.canManage === true,
       };
     });
     list.sort((a, b) => {
@@ -154,11 +175,11 @@ const BoardAccessModal = ({
     );
   }, [rows, query]);
 
-  const handleChange = async (memberId, level) => {
+  const save = async (memberId, level, fullAccess) => {
     if (!board) return;
     setSavingId(memberId);
     try {
-      await setBoardAccess(board._id, memberId, level);
+      await setBoardAccess(board._id, memberId, level, fullAccess);
     } catch (err) {
       toastError(
         err?.response?.data?.error || 'Failed to update access. Please try again.'
@@ -168,33 +189,27 @@ const BoardAccessModal = ({
     }
   };
 
-  const handleDelegateToggle = async (next) => {
-    if (!board) return;
-    setSavingSettings(true);
-    try {
-      await setBoardAccessSettings(board._id, next);
-    } catch (err) {
-      toastError(
-        err?.response?.data?.error ||
-          'Failed to update the sharing setting. Please try again.'
-      );
-    } finally {
-      setSavingSettings(false);
-    }
-  };
+  // Dropping below 'edit' takes full access with it — the flag means nothing
+  // for someone who can't edit.
+  const handleLevelChange = (row, level) =>
+    save(row.id, level, level === 'edit' && row.fullAccess);
+
+  // Full access implies edit, so switching it on promotes them in one step.
+  const handleFullAccessChange = (row, next) =>
+    save(row.id, next ? 'edit' : row.level, next);
 
   const intro = isOwner
-    ? 'This board is private. Choose which workspace members can view or edit it.'
+    ? 'This board is private. Choose which workspace members can view or edit it. Give someone full access and they can manage sharing too.'
     : canManage
-      ? 'This board is private. You can manage who can view or edit it.'
-      : 'This board is private. Only the board owner can change who has access.';
+      ? 'This board is private. You have full access, so you can manage who can view or edit it.'
+      : 'This board is private. Only the board owner, and members with full access, can change who has access.';
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
       title="Share board"
-      maxWidth={540}
+      maxWidth={600}
       footer={
         <Button variant="primary" onClick={onClose}>
           Done
@@ -243,132 +258,137 @@ const BoardAccessModal = ({
               No members match “{query.trim()}”.
             </p>
           ) : (
-            <div className="flex flex-col gap-1">
-              {filtered.map((row) => {
-                // The owner's access is fixed, nobody edits their own level, and
-                // viewers without manage rights see the whole list as read-only.
-                const locked = row.isOwnerRow || row.isSelf || !canManage;
-                return (
-                  <div
-                    key={row.id}
-                    className="flex items-center justify-between gap-3"
-                    style={{
-                      padding: '8px 4px',
-                      borderBottom: '1px solid var(--color-border)',
-                    }}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span
-                        className="flex items-center justify-center shrink-0 font-body"
-                        style={{
-                          width: 34,
-                          height: 34,
-                          borderRadius: 'var(--radius-full)',
-                          background: 'var(--color-bg-subtle)',
-                          color: 'var(--color-text-secondary)',
-                          fontSize: 12,
-                          fontWeight: 600,
-                        }}
-                        aria-hidden="true"
-                      >
-                        {initials(row.member.name, row.member.email)}
-                      </span>
-                      <div className="min-w-0">
-                        <p
-                          className="font-body truncate"
+            <>
+              <div
+                className="flex items-center justify-end gap-3"
+                style={{ padding: '0 4px 6px' }}
+              >
+                <ColumnHeading width={LEVEL_COL}>Access</ColumnHeading>
+                <ColumnHeading width={FULL_COL} align="right">
+                  Full access
+                </ColumnHeading>
+              </div>
+
+              <div className="flex flex-col gap-1">
+                {filtered.map((row) => {
+                  // The owner's access is fixed, nobody edits their own level,
+                  // and viewers without manage rights see the list read-only.
+                  const locked = row.isOwnerRow || row.isSelf || !canManage;
+                  // Full access is the owner's to give — a delegate can share
+                  // the board but cannot create or unmake other managers.
+                  const fullLocked = row.isOwnerRow || row.isSelf || !isOwner;
+                  const saving = savingId === row.id;
+                  const who = row.member.name || row.member.email;
+
+                  return (
+                    <div
+                      key={row.id}
+                      className="flex items-center justify-between gap-3"
+                      style={{
+                        padding: '8px 4px',
+                        borderBottom: '1px solid var(--color-border)',
+                      }}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span
+                          className="flex items-center justify-center shrink-0 font-body"
                           style={{
-                            fontSize: 14,
-                            fontWeight: 500,
-                            color: 'var(--color-text-primary)',
+                            width: 34,
+                            height: 34,
+                            borderRadius: 'var(--radius-full)',
+                            background: 'var(--color-bg-subtle)',
+                            color: 'var(--color-text-secondary)',
+                            fontSize: 12,
+                            fontWeight: 600,
                           }}
+                          aria-hidden="true"
                         >
-                          {row.member.name || row.member.email}
-                          {row.isSelf && (
-                            <span style={{ color: 'var(--color-text-muted)' }}>
-                              {' '}
-                              (you)
-                            </span>
-                          )}
-                        </p>
-                        {row.member.email && (
+                          {initials(row.member.name, row.member.email)}
+                        </span>
+                        <div className="min-w-0">
                           <p
                             className="font-body truncate"
-                            style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+                            style={{
+                              fontSize: 14,
+                              fontWeight: 500,
+                              color: 'var(--color-text-primary)',
+                            }}
                           >
-                            {row.member.email}
+                            {who}
+                            {row.isSelf && (
+                              <span style={{ color: 'var(--color-text-muted)' }}>
+                                {' '}
+                                (you)
+                              </span>
+                            )}
                           </p>
+                          {row.member.email && (
+                            <p
+                              className="font-body truncate"
+                              style={{
+                                fontSize: 12,
+                                color: 'var(--color-text-muted)',
+                              }}
+                            >
+                              {row.member.email}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3 shrink-0">
+                        {locked ? (
+                          <AccessPill>{LEVEL_LABEL[row.level]}</AccessPill>
+                        ) : (
+                          <select
+                            value={row.level}
+                            disabled={saving}
+                            onChange={(e) => handleLevelChange(row, e.target.value)}
+                            aria-label={`Access level for ${who}`}
+                            className="font-body"
+                            style={{
+                              width: LEVEL_COL,
+                              fontSize: 13,
+                              padding: '6px 10px',
+                              borderRadius: 'var(--radius-md)',
+                              border: '1.5px solid var(--color-border-strong)',
+                              background: 'var(--color-bg-surface)',
+                              color: 'var(--color-text-primary)',
+                              cursor: saving ? 'wait' : 'pointer',
+                            }}
+                          >
+                            {LEVELS.map((l) => (
+                              <option key={l.value} value={l.value}>
+                                {l.label}
+                              </option>
+                            ))}
+                          </select>
                         )}
+
+                        <div
+                          className="flex justify-end"
+                          style={{ width: FULL_COL }}
+                          title={
+                            row.isOwnerRow
+                              ? 'The board owner always has full access'
+                              : 'Full access — can also manage who this board is shared with'
+                          }
+                        >
+                          <Switch
+                            checked={row.fullAccess}
+                            disabled={fullLocked || saving}
+                            onChange={(next) => handleFullAccessChange(row, next)}
+                            label={`Full access for ${who}`}
+                          />
+                        </div>
                       </div>
                     </div>
-
-                    {locked ? (
-                      <AccessPill>{LEVEL_LABEL[row.level]}</AccessPill>
-                    ) : (
-                      <select
-                        value={row.level}
-                        disabled={savingId === row.id}
-                        onChange={(e) => handleChange(row.id, e.target.value)}
-                        className="font-body shrink-0"
-                        style={{
-                          fontSize: 13,
-                          padding: '6px 10px',
-                          borderRadius: 'var(--radius-md)',
-                          border: '1.5px solid var(--color-border-strong)',
-                          background: 'var(--color-bg-surface)',
-                          color: 'var(--color-text-primary)',
-                          cursor: savingId === row.id ? 'wait' : 'pointer',
-                        }}
-                      >
-                        {LEVELS.map((l) => (
-                          <option key={l.value} value={l.value}>
-                            {l.label}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            </>
           )}
         </>
-      )}
-
-      {isOwner && (
-        <div
-          className="flex items-start justify-between gap-4"
-          style={{
-            marginTop: 16,
-            paddingTop: 14,
-            borderTop: '1px solid var(--color-border)',
-          }}
-        >
-          <div className="min-w-0">
-            <p
-              className="font-body"
-              style={{
-                fontSize: 13,
-                fontWeight: 500,
-                color: 'var(--color-text-primary)',
-              }}
-            >
-              Let editors manage sharing
-            </p>
-            <p
-              className="font-body"
-              style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}
-            >
-              Members with “Can edit” can grant and remove access for others. They
-              can never change your access or their own.
-            </p>
-          </div>
-          <Switch
-            checked={editorsCanManage}
-            onChange={handleDelegateToggle}
-            disabled={savingSettings}
-            label="Let editors manage sharing"
-          />
-        </div>
       )}
     </Modal>
   );

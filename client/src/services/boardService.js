@@ -58,8 +58,8 @@ export const reorderBoards = async (organisation, orderedIds) => {
 /**
  * GET /api/boards/:id/access — list a private board's per-member grants.
  * Open to the owner and to members with 'edit' access.
- * Returns { access: [{ user, level }], createdBy, isOwner, canManageAccess,
- *           editorsCanManageAccess }.
+ * Returns { access: [{ user, level, canManage }], createdBy, isOwner,
+ *           canManageAccess }.
  */
 export const getBoardAccess = async (boardId) => {
   const { data } = await api.get(`/api/boards/${boardId}/access`);
@@ -69,23 +69,15 @@ export const getBoardAccess = async (boardId) => {
 /**
  * PUT /api/boards/:id/access — set a member's access level.
  * `level` is 'read' | 'edit' | 'none' ('none' removes the grant).
+ * `canManage` (owner-only) upgrades an 'edit' grant to full access — they can
+ * manage the board's sharing too. Omit it to leave the current flag alone.
  * Returns { board, access }.
  */
-export const setBoardAccess = async (boardId, userId, level) => {
+export const setBoardAccess = async (boardId, userId, level, canManage) => {
   const { data } = await api.put(`/api/boards/${boardId}/access`, {
     userId,
     level,
-  });
-  return data;
-};
-
-/**
- * PUT /api/boards/:id/access-settings — owner-only. Delegate (or revoke)
- * sharing rights to members who have 'edit' access. Returns { board }.
- */
-export const setBoardAccessSettings = async (boardId, editorsCanManageAccess) => {
-  const { data } = await api.put(`/api/boards/${boardId}/access-settings`, {
-    editorsCanManageAccess,
+    ...(canManage === undefined ? {} : { canManage }),
   });
   return data;
 };

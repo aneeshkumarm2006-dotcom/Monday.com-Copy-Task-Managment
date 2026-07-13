@@ -253,27 +253,29 @@ const BoardDetailPage = () => {
   // `canEdit` gates every edit/create affordance. Sharing is a separate axis:
   // `canViewAccess` opens the Share modal (owner + editors, so the people
   // running the board can see who is on it) while `canManageAccess` allows
-  // changing it — owner always, editors only if the owner delegated it.
-  // Mirrors resolveBoardAccess on the server, which enforces the same rules.
+  // changing it — the owner always, and any member the owner gave full access
+  // (`canManage` on their grant). Mirrors resolveBoardAccess on the server,
+  // which enforces the same rules.
   const currentUserId = currentUser?._id ? String(currentUser._id) : null;
   const myGrant = useMemo(() => {
     if (!board || !Array.isArray(board.memberAccess) || !currentUserId) return null;
-    const entry = board.memberAccess.find(
-      (g) => String(refId(g.user)) === currentUserId
+    return (
+      board.memberAccess.find((g) => String(refId(g.user)) === currentUserId) ||
+      null
     );
-    return entry ? entry.level : null;
   }, [board, currentUserId]);
+  const myLevel = myGrant?.level || null;
   const isBoardCreator =
     !!board &&
     !!currentUserId &&
     String(refId(board.createdBy)) === currentUserId;
   const canEdit =
     isBoardCreator ||
-    myGrant === 'edit' ||
+    myLevel === 'edit' ||
     (board?.visibility === 'public' && isAdmin);
-  const canViewAccess = isBoardCreator || myGrant === 'edit';
+  const canViewAccess = isBoardCreator || myLevel === 'edit';
   const canManageAccess =
-    isBoardCreator || (myGrant === 'edit' && !!board?.editorsCanManageAccess);
+    isBoardCreator || (myLevel === 'edit' && myGrant?.canManage === true);
 
   // If we navigated directly and the boards list is empty, fetch it so the
   // header can resolve the board metadata.

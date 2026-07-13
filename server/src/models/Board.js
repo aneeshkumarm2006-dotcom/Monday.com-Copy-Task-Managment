@@ -68,6 +68,10 @@ const columnSchema = new mongoose.Schema(
  * individual org members `read` (view-only) or `edit` (admin-equivalent over
  * board content) access. Absence of an entry means "no access" — the member
  * cannot see the private board at all. See [boardAccess.js](../utils/boardAccess.js).
+ *
+ * `canManage` upgrades an 'edit' grant to FULL access: that member may also
+ * manage the board's sharing (grant/revoke other members), like the owner.
+ * Only the owner can hand it out, and it is meaningless without level 'edit'.
  */
 const boardAccessSchema = new mongoose.Schema(
   {
@@ -80,6 +84,10 @@ const boardAccessSchema = new mongoose.Schema(
       type: String,
       enum: ['read', 'edit'],
       required: true,
+    },
+    canManage: {
+      type: Boolean,
+      default: false,
     },
   },
   { _id: false, timestamps: false }
@@ -107,10 +115,6 @@ const boardSchema = new mongoose.Schema(
     // Per-member access grants for private boards. Managed by the board's
     // creator; ignored for public boards (every member can already read those).
     memberAccess: { type: [boardAccessSchema], default: [] },
-    // When true, members granted 'edit' may also manage the board's access list
-    // (they still can't touch the owner's grant, their own, or this flag).
-    // Owner-controlled: only the creator can flip it. Off for legacy boards.
-    editorsCanManageAccess: { type: Boolean, default: false },
     order: { type: Number, default: 0, index: true },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
