@@ -9,6 +9,9 @@
  * Semantics: a task must satisfy EVERY active category (AND); within a single
  * category, matching ANY selected value is enough (OR). An empty category
  * imposes no constraint.
+ *
+ * Labels are the one exception — they match EXCLUSIVELY, so the filtered view
+ * shows exactly the label combination that was asked for. See below.
  */
 
 import { isStatusDone } from './statusUtils';
@@ -110,10 +113,14 @@ export const taskMatchesFilters = (task, filters, now = new Date(), board = null
     if (!task.priority || !filters.priorities.includes(task.priority)) return false;
   }
 
-  // Labels — task matches if it carries ANY selected label
+  // Labels — exclusive, unlike every other category: a task passes only if
+  // every label it carries was selected. So a task tagged both "Approved" and
+  // "Meeting Done" fails an "Approved"-only filter, and returns once "Meeting
+  // Done" is selected too. Unlabelled tasks never pass.
   if (filters.labels?.length) {
     const taskLabels = (task.labels || []).map((id) => id.toString());
-    if (!filters.labels.some((id) => taskLabels.includes(id))) return false;
+    if (taskLabels.length === 0) return false;
+    if (!taskLabels.every((id) => filters.labels.includes(id))) return false;
   }
 
   // Due date — match ANY selected bucket. Done tasks are excluded from the
