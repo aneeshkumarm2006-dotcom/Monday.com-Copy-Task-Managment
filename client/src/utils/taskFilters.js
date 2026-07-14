@@ -113,14 +113,17 @@ export const taskMatchesFilters = (task, filters, now = new Date(), board = null
     if (!task.priority || !filters.priorities.includes(task.priority)) return false;
   }
 
-  // Labels — exclusive, unlike every other category: a task passes only if
-  // every label it carries was selected. So a task tagged both "Approved" and
-  // "Meeting Done" fails an "Approved"-only filter, and returns once "Meeting
-  // Done" is selected too. Unlabelled tasks never pass.
+  // Labels — exclusive, unlike every other category: a task passes only if its
+  // label set is exactly the selected set. A task tagged only "Approved" fails
+  // an "Approved" + "Meeting Done" filter (it is missing one), and so does a
+  // task tagged "Approved" + "Meeting Done" + "Sent" (it carries a spare).
+  // Unlabelled tasks never pass.
   if (filters.labels?.length) {
     const taskLabels = (task.labels || []).map((id) => id.toString());
     if (taskLabels.length === 0) return false;
-    if (!taskLabels.every((id) => filters.labels.includes(id))) return false;
+    const hasEverySelected = filters.labels.every((id) => taskLabels.includes(id));
+    const carriesNothingElse = taskLabels.every((id) => filters.labels.includes(id));
+    if (!hasEverySelected || !carriesNothingElse) return false;
   }
 
   // Due date — match ANY selected bucket. Done tasks are excluded from the
