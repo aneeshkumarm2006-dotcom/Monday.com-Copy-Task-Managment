@@ -310,7 +310,11 @@ const createBoard = async (req, res) => {
       useFlexibleColumns: false,
     });
 
-    return res.status(201).json({ board });
+    // Attach the creator's resolved permissions, as getBoards does. The client
+    // prepends this to its cache and may open it straight away without a
+    // refetch; a bare board would leave `permissions` undefined, hiding the
+    // owner's own Share/manage controls until the next full boards load.
+    return res.status(201).json({ board: withPermissions(board, org, userId) });
   } catch (err) {
     console.error('createBoard error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -389,7 +393,11 @@ const updateBoard = async (req, res) => {
     }
 
     await board.save();
-    return res.json({ board });
+    // Re-resolve permissions off the saved board so the client's cached copy
+    // keeps them (and reflects a visibility change): the store writes this
+    // response over the board it holds, and a bare board would strip the
+    // owner's Share/manage controls until a full boards refetch.
+    return res.json({ board: withPermissions(board, ctx.org, userId) });
   } catch (err) {
     console.error('updateBoard error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -999,7 +1007,17 @@ const setBoardAccess = async (req, res) => {
       'memberAccess.user',
       'name email profilePic'
     );
-    return res.json({ board, access: populated.memberAccess });
+    // Ship the board back with its RESOLVED permissions attached, exactly as
+    // getBoards does. The client caches this over the board it already holds; a
+    // bare board (no `.permissions`) would wipe the caller's own resolved
+    // capabilities — `canViewAccess`, `canManageAccess`, `isBoardOwner` — so the
+    // Share button and this very modal would vanish the instant the owner changed
+    // anyone's access, and stay gone until a full boards refetch. Re-resolving
+    // here also reflects the grant that was just written.
+    return res.json({
+      board: withPermissions(board, org, userId),
+      access: populated.memberAccess,
+    });
   } catch (err) {
     console.error('setBoardAccess error:', err);
     return res.status(500).json({ error: 'Server error' });
