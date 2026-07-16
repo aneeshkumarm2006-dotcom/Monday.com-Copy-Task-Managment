@@ -117,13 +117,26 @@ export const taskMatchesFilters = (task, filters, now = new Date(), board = null
   // label set is exactly the selected set. A task tagged only "Approved" fails
   // an "Approved" + "Meeting Done" filter (it is missing one), and so does a
   // task tagged "Approved" + "Meeting Done" + "Sent" (it carries a spare).
-  // Unlabelled tasks never pass.
+  //
+  // The synthetic 'none' value is the one OR-style escape hatch: it matches
+  // unlabelled tasks. Selected on its own it shows exactly the tasks with no
+  // labels; combined with real labels it ORs in — a task passes if it is
+  // unlabelled OR it exactly matches the selected real-label set.
   if (filters.labels?.length) {
+    const wantsNone = filters.labels.includes('none');
+    const realLabels = filters.labels.filter((id) => id !== 'none');
     const taskLabels = (task.labels || []).map((id) => id.toString());
-    if (taskLabels.length === 0) return false;
-    const hasEverySelected = filters.labels.every((id) => taskLabels.includes(id));
-    const carriesNothingElse = taskLabels.every((id) => filters.labels.includes(id));
-    if (!hasEverySelected || !carriesNothingElse) return false;
+
+    const matchesNone = wantsNone && taskLabels.length === 0;
+
+    let matchesReal = false;
+    if (realLabels.length && taskLabels.length) {
+      const hasEverySelected = realLabels.every((id) => taskLabels.includes(id));
+      const carriesNothingElse = taskLabels.every((id) => realLabels.includes(id));
+      matchesReal = hasEverySelected && carriesNothingElse;
+    }
+
+    if (!matchesNone && !matchesReal) return false;
   }
 
   // Due date — match ANY selected bucket. Done tasks are excluded from the

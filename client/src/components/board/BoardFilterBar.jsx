@@ -192,6 +192,20 @@ const BoardFilterBar = ({
       {/* Labels */}
       <FilterPopover label="Labels" icon={Tag} activeCount={filters.labels?.length || 0}>
         <OptionList emptyLabel="No labels on this board">
+          {labelOptions.length > 0 && (
+            <OptionRow
+              key="__none"
+              checked={filters.labels?.includes('none')}
+              onToggle={() => set({ labels: toggleValue(filters.labels, 'none') })}
+            >
+              <span
+                className="font-body italic"
+                style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}
+              >
+                No label
+              </span>
+            </OptionRow>
+          )}
           {labelOptions.map((opt) => (
             <OptionRow
               key={opt.id}
