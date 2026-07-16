@@ -20,6 +20,7 @@ import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
 import Mention from '@tiptap/extension-mention';
 import RichEditor from './RichEditor';
+import { DriveChip, driveChipify } from './driveChipExtension';
 import * as updateService from '../../services/updateService';
 import useAuthStore from '../../store/authStore';
 import useToastStore from '../../store/toastStore';
@@ -987,10 +988,19 @@ const UpdateCard = ({ update, currentUserId, highlighted, onDelete, onEdit, onRe
  * the same plugins the composer uses, without pulling in @tiptap/html.
  */
 export const ReadOnlyRichBody = ({ body, fallbackText }) => {
+  // Google Drive/Docs links are swapped for icon+title chips at display time —
+  // both stored updates (URL as plain text) and new ones render the same way.
+  const content = driveChipify(
+    body ||
+      (fallbackText
+        ? { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: fallbackText }] }] }
+        : '')
+  );
+
   const editor = useEditor(
     {
       editable: false,
-      content: body || (fallbackText ? { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: fallbackText }] }] } : ''),
+      content,
       extensions: [
         StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
         TaskList,
@@ -999,6 +1009,7 @@ export const ReadOnlyRichBody = ({ body, fallbackText }) => {
           HTMLAttributes: { class: 'macan-mention' },
           renderText: ({ node }) => `@${node.attrs.label || node.attrs.id}`,
         }),
+        DriveChip,
       ],
     },
     [body, fallbackText]
@@ -1051,6 +1062,14 @@ export const ReadOnlyRichBody = ({ body, fallbackText }) => {
           padding: 1px 4px;
           border-radius: 4px;
           font-weight: 600;
+        }
+        .macan-rich-readonly .ProseMirror .drive-link-chip {
+          margin: 3px 0;
+          transition: background 120ms, border-color 120ms;
+        }
+        .macan-rich-readonly .ProseMirror .drive-link-chip:hover {
+          background: var(--color-bg-subtle, #F3F4F6);
+          border-color: var(--color-border-strong);
         }
       `}</style>
     </div>
