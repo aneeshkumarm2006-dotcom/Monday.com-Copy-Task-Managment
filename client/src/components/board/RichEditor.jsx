@@ -6,6 +6,7 @@ import Placeholder from '@tiptap/extension-placeholder';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
 import Mention from '@tiptap/extension-mention';
+import { DriveChip, driveChipify, driveContentFromText } from './driveChipExtension';
 import useOrgStore from '../../store/orgStore';
 
 /**
@@ -191,6 +192,9 @@ const RichEditor = ({ placeholder = 'Write an update…', onChange, editorRef, i
 
   const [mentionState, setMentionState] = useState(null); // { items, command, rect } | null
   const componentRef = useRef(null);
+  // Holds the live editor instance so the (creation-time) paste handler can
+  // reach it — `editor` from useEditor isn't assigned yet inside the config.
+  const selfEditorRef = useRef(null);
 
   const mentionSuggestion = useMemo(
     () => ({
@@ -265,18 +269,32 @@ const RichEditor = ({ placeholder = 'Write an update…', onChange, editorRef, i
         suggestion: mentionSuggestion,
         renderText: ({ node }) => `@${node.attrs.label || node.attrs.id}`,
       }),
+      DriveChip,
     ],
-    content: initialContent || '',
+    // Chipify any Drive URLs already present (e.g. editing an older update whose
+    // body stored the link as plain text) so edit mode matches the feed.
+    content: driveChipify(initialContent || ''),
     editorProps: {
       attributes: {
         class: 'macan-rich-content',
         'aria-label': 'Update body',
+      },
+      // Paste of a Google Drive link → convert to an icon+title chip on the spot.
+      // Non-Drive pastes fall through to TipTap's default handling untouched.
+      handlePaste: (_view, event) => {
+        const text = event.clipboardData?.getData('text/plain');
+        const content = driveContentFromText(text);
+        const ed = selfEditorRef.current;
+        if (!content || !ed) return false;
+        ed.chain().focus().insertContent(content).run();
+        return true;
       },
     },
   });
 
   useEffect(() => {
     if (!editor) return;
+    selfEditorRef.current = editor;
     if (editorRef && typeof editorRef === 'object') {
       editorRef.current = editor;
     }
@@ -382,6 +400,11 @@ const RichEditor = ({ placeholder = 'Write an update…', onChange, editorRef, i
           padding: 1px 4px;
           border-radius: 4px;
           font-weight: 600;
+        }
+        .macan-rich-editor .macan-rich-content .drive-link-chip {
+          margin: 3px 2px 3px 0;
+          cursor: default;
+          user-select: none;
         }
         .macan-rich-editor .macan-rich-content .macan-rich-empty::before,
         .macan-rich-editor .macan-rich-content p.is-editor-empty:first-child::before {
