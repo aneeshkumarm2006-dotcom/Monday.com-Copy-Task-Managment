@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import useNotificationStore from '../store/notificationStore';
 import useToastStore from '../store/toastStore';
+import useTaskStore from '../store/taskStore';
 
 /**
  * Real-time notification delivery over Server-Sent Events. Opens an EventSource
@@ -38,6 +39,10 @@ export default function useNotificationStream(token, orgId, enabled) {
               .getState()
               .info(data.notification.message, { duration: 5000 });
           }
+        } else if (data?.type === 'board.changed' && data.boardId) {
+          // An automation moved/created tasks out-of-band — let the board view
+          // refetch if it's the one currently open.
+          useTaskStore.getState().signalBoardRefresh(data.boardId);
         }
       } catch {
         // ignore heartbeats / malformed frames

@@ -111,6 +111,9 @@ const BoardDetailPage = () => {
   const removeGroupLocal = useTaskStore((s) => s.removeGroup);
   const reorderGroupsAction = useTaskStore((s) => s.reorderGroups);
   const reorderTasksAction = useTaskStore((s) => s.reorderTasks);
+  const boardRefreshSignal = useTaskStore((s) => s.boardRefreshSignal);
+  const boardRefreshTarget = useTaskStore((s) => s.boardRefreshTarget);
+  const refreshBoardTasks = useTaskStore((s) => s.refreshBoardTasks);
   const refreshNotifications = useNotificationStore((s) => s.fetchNotifications);
   const toastError = useToastStore((s) => s.error);
 
@@ -270,6 +273,15 @@ const BoardDetailPage = () => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId]);
+
+  // Realtime: when an automation moves/creates tasks out-of-band, the server
+  // pings this board over the notification SSE (bumping boardRefreshSignal).
+  // Quietly refetch tasks so the change appears without a manual reload.
+  useEffect(() => {
+    if (!boardId || boardRefreshTarget !== boardId) return;
+    refreshBoardTasks(boardId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardRefreshSignal]);
 
   // --- Handle highlightTask query param from notification click -----------
   useEffect(() => {

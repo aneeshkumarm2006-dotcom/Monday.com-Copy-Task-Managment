@@ -83,6 +83,25 @@ const handleNotificationCreated = async ({ userId, notificationId } = {}) => {
 };
 
 /**
+ * Deliver a lightweight "board changed" ping to a single user's open
+ * connections. Used when a background job (e.g. an automation) mutates a board
+ * out-of-band, so the user's board view can refetch. Carries only the boardId —
+ * the client decides whether it's viewing that board and refetches if so.
+ */
+const handleBoardChanged = ({ userId, boardId } = {}) => {
+  try {
+    if (!userId || !boardId) return;
+    const set = connections.get(String(userId));
+    if (!set || set.size === 0) return;
+    for (const conn of set) {
+      writeEvent(conn.res, { type: 'board.changed', boardId: String(boardId) });
+    }
+  } catch (err) {
+    console.error('notificationStream handleBoardChanged error:', err);
+  }
+};
+
+/**
  * Subscribe to the event bus and start the heartbeat. Idempotent — safe to call
  * once on server boot next to the other mount() calls.
  */
@@ -90,6 +109,7 @@ const mount = () => {
   if (mounted) return;
   mounted = true;
   eventBus.on('notification.created', handleNotificationCreated);
+  eventBus.on('board.changed', handleBoardChanged);
   heartbeat = setInterval(() => {
     for (const set of connections.values()) {
       for (const conn of set) {

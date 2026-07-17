@@ -21,8 +21,9 @@ const TRIGGER_OPTIONS = [
   { value: 'GROUP_CREATED', label: 'When a group is created' },
 ];
 
+// Group scope moved to its own "Runs for" selector, so the free-form condition
+// list only carries status filters now.
 const CONDITION_TYPES = [
-  { value: 'ITEM_IN_GROUP', label: 'item is in group' },
   { value: 'ITEM_IN_STATUS', label: 'item is in status' },
 ];
 
@@ -261,6 +262,7 @@ const buildInitialForm = (groups) => ({
   dueInDays: '',
   note: '',
   // ITEM_CREATED fields
+  scopeGroupId: '', // '' = all groups (whole board); else a specific group id
   conditions: [],
   actions: [buildEmptyAction(groups)],
   // GROUP_CREATED fields
@@ -277,17 +279,23 @@ const formFromAutomation = (a, groups) => {
   const triggerType = a.triggerType || 'SCHEDULE';
   const groupId = idOf(t.group);
 
-  // GROUP_NAME_MATCHES conditions store a raw string, so don't force them
-  // through `idOf` — that would clobber the regex pattern.
-  const conditions = (a.conditions || []).map((c) => ({
-    type: c.type,
-    value:
-      c.type === 'GROUP_NAME_MATCHES'
-        ? c.value == null
-          ? ''
-          : String(c.value)
-        : idOf(c.value) || '',
-  }));
+  // Group scope for ITEM_CREATED lives in its own "Runs for" selector, so pull
+  // any ITEM_IN_GROUP condition out into `scopeGroupId` and keep the rest
+  // (e.g. status) in the free-form conditions list. GROUP_NAME_MATCHES stores a
+  // raw string, so don't force it through `idOf` — that would clobber the regex.
+  const scopeCond = (a.conditions || []).find((c) => c.type === 'ITEM_IN_GROUP');
+  const scopeGroupId = scopeCond ? idOf(scopeCond.value) || '' : '';
+  const conditions = (a.conditions || [])
+    .filter((c) => c.type !== 'ITEM_IN_GROUP')
+    .map((c) => ({
+      type: c.type,
+      value:
+        c.type === 'GROUP_NAME_MATCHES'
+          ? c.value == null
+            ? ''
+            : String(c.value)
+          : idOf(c.value) || '',
+    }));
 
   const actions = (a.actions || []).map((act) => ({
     type: act.type,
@@ -333,6 +341,7 @@ const formFromAutomation = (a, groups) => {
         ? String(t.dueInDays)
         : '',
     note: t.note || '',
+    scopeGroupId,
     conditions,
     actions: actions.length > 0 ? actions : [buildEmptyAction(groups)],
     groupNamePattern: String(groupNamePattern || ''),
@@ -792,7 +801,7 @@ const EventDrivenBuilder = ({
   const addCondition = () => {
     setForm((f) => ({
       ...f,
-      conditions: [...(f.conditions || []), { type: 'ITEM_IN_GROUP', value: '' }],
+      conditions: [...(f.conditions || []), { type: 'ITEM_IN_STATUS', value: '' }],
     }));
   };
 
@@ -836,6 +845,46 @@ const EventDrivenBuilder = ({
         >
           When an item is created
         </p>
+
+        {/* Group scope — the single home for "which groups this runs for". */}
+        <div className="mt-2">
+          <label
+            className="font-body"
+            style={{
+              display: 'block',
+              fontSize: 12,
+              color: 'var(--color-text-muted)',
+              marginBottom: 4,
+            }}
+          >
+            Runs for
+          </label>
+          <select
+            value={form.scopeGroupId || ''}
+            disabled={saving}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, scopeGroupId: e.target.value }))
+            }
+            className="font-body w-full"
+            style={{
+              height: 32,
+              padding: '0 8px',
+              borderRadius: 'var(--radius-sm)',
+              border: '1.5px solid var(--color-border)',
+              background: 'var(--color-bg-input)',
+              color: 'var(--color-text-primary)',
+              fontSize: 13,
+            }}
+          >
+            <option value="">All groups (whole board)</option>
+            {groupOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                Only “{opt.label}”
+              </option>
+            ))}
+          </select>
+        </div>
+
         {conditions.length > 0 && (
           <div className="mt-2 flex flex-col gap-2">
             {conditions.map((c, i) => (
@@ -866,7 +915,7 @@ const EventDrivenBuilder = ({
           }}
         >
           <Plus size={12} aria-hidden="true" />
-          Add condition
+          Add status condition
         </button>
       </div>
 
@@ -1300,14 +1349,21 @@ const AutomationsModal = ({
     }
 
     if (form.triggerType === 'ITEM_CREATED') {
+      // Group scope (the "Runs for" selector) is stored as an ITEM_IN_GROUP
+      // condition; '' means all groups (whole board), so we emit no condition.
+      const conditions = [];
+      if (form.scopeGroupId) {
+        conditions.push({ type: 'ITEM_IN_GROUP', value: form.scopeGroupId });
+      }
+      for (const c of form.conditions || []) {
+        if (c.type === 'ITEM_IN_GROUP') continue; // owned by scopeGroupId
+        conditions.push({ type: c.type, value: c.value });
+      }
       return {
         name: form.name.trim(),
         enabled: form.enabled,
         triggerType: 'ITEM_CREATED',
-        conditions: (form.conditions || []).map((c) => ({
-          type: c.type,
-          value: c.value,
-        })),
+        conditions,
         actions: (form.actions || []).map((a) => {
           // POSITION_ITEM carries only a sort strategy — no name/group/assignee.
           if (a.type === 'POSITION_ITEM') {

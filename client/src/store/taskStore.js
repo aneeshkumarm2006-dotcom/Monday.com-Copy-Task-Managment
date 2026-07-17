@@ -33,6 +33,10 @@ const useTaskStore = create((set, get) => ({
   notesCountByGroup: {}, // { [groupId]: number }  — loaded eagerly for header badges
   loading: false,
   error: null,
+  // Bumped when a realtime "board.changed" SSE frame arrives so the board view
+  // can refetch; `boardRefreshTarget` names which board changed.
+  boardRefreshSignal: 0,
+  boardRefreshTarget: null,
 
   /**
    * Fetch all groups for a board, then fetch all tasks for the board and
@@ -66,6 +70,42 @@ const useTaskStore = create((set, get) => ({
       throw err;
     }
   },
+
+  /**
+   * Quietly refetch just the board's tasks and re-bucket by group WITHOUT
+   * toggling `loading` (so a realtime/background refresh doesn't blank the
+   * board). Groups are left as-is — used after an out-of-band change such as an
+   * automation reordering a group.
+   */
+  refreshBoardTasks: async (boardId) => {
+    if (!boardId) return;
+    try {
+      const tasks = await taskService.getTasks(boardId);
+      set((s) => {
+        const tasksByGroup = {};
+        for (const g of s.groups) tasksByGroup[g._id] = [];
+        for (const t of tasks) {
+          const gid = t.group;
+          if (!gid) continue;
+          if (!tasksByGroup[gid]) tasksByGroup[gid] = [];
+          tasksByGroup[gid].push(t);
+        }
+        return { tasksByGroup };
+      });
+    } catch {
+      // Background refresh — stay silent; the next full load reconciles.
+    }
+  },
+
+  /**
+   * Record a realtime board.changed ping (from the notification SSE). The board
+   * view watches `boardRefreshSignal` and refetches when the target matches.
+   */
+  signalBoardRefresh: (boardId) =>
+    set((s) => ({
+      boardRefreshSignal: s.boardRefreshSignal + 1,
+      boardRefreshTarget: boardId,
+    })),
 
   /**
    * Replace the tasks for a single group (used after inline edits/refetches).

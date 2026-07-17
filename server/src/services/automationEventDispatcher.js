@@ -176,12 +176,14 @@ const handleItemCreated = async (payload) => {
     return;
   }
 
+  let ranAny = false;
   for (const automation of automations) {
     if (!evaluateConditions(automation, payload)) continue;
     try {
       await runAutomationOnce(automation, { triggeringTask });
       automation.lastRunAt = new Date();
       await automation.save();
+      ranAny = true;
     } catch (err) {
       console.error(
         '[automation/dispatcher] failed to run automation',
@@ -189,6 +191,17 @@ const handleItemCreated = async (payload) => {
         err
       );
     }
+  }
+
+  // Automations run a beat AFTER the create response has already returned, so
+  // the creator's board view can't know a task was moved/created out-of-band.
+  // Ping their live stream to refetch. Scoped to the creator (the SSE registry
+  // is keyed by user); other viewers still reconcile on their next load.
+  if (ranAny && payload.createdByUserId) {
+    eventBus.emit('board.changed', {
+      userId: payload.createdByUserId,
+      boardId: payload.boardId,
+    });
   }
 };
 
