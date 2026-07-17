@@ -127,13 +127,17 @@ const conditionSchema = new mongoose.Schema(
 );
 
 /**
- * Per-action config. Both action types share the same shape — `group` is
- * required for CREATE_TASK (where the new top-level task needs a home) but
- * ignored for CREATE_SUBITEM (which inherits the parent's group).
+ * Per-action config, shared across every action type:
+ *   - CREATE_TASK    → `name` required, `group` required (the new task's home).
+ *   - CREATE_SUBITEM → `name` required, `group` ignored (inherits the parent's).
+ *   - POSITION_ITEM  → `strategy` required; repositions the triggering task's
+ *     group at run time instead of creating anything (`name`/`group` unused).
+ * `name` is optional at the schema level because POSITION_ITEM carries none;
+ * it's enforced per-type in the controller's `sanitizeActionConfig`.
  */
 const actionConfigSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true },
+    name: { type: String },
     group: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'TaskGroup',
@@ -153,6 +157,13 @@ const actionConfigSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
     },
     note: { type: String },
+    // POSITION_ITEM only: how to (re)order the triggering task's group when a
+    // task is created. `top` floats the new task first; the rest re-sort the
+    // whole group by that field.
+    strategy: {
+      type: String,
+      enum: ['top', 'dueDate', 'priority', 'assignee'],
+    },
   },
   { _id: false }
 );
@@ -161,7 +172,7 @@ const actionSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ['CREATE_TASK', 'CREATE_SUBITEM'],
+      enum: ['CREATE_TASK', 'CREATE_SUBITEM', 'POSITION_ITEM'],
       required: true,
     },
     config: { type: actionConfigSchema, required: true },

@@ -83,7 +83,15 @@ const populateAutomation = (query) =>
 
 const VALID_TRIGGER_TYPES = ['SCHEDULE', 'ITEM_CREATED', 'GROUP_CREATED'];
 const VALID_CONDITION_TYPES = ['ITEM_IN_GROUP', 'ITEM_IN_STATUS', 'GROUP_NAME_MATCHES'];
-const VALID_ACTION_TYPES = ['CREATE_TASK', 'CREATE_SUBITEM'];
+const VALID_ACTION_TYPES = ['CREATE_TASK', 'CREATE_SUBITEM', 'POSITION_ITEM'];
+
+// POSITION_ITEM strategies: how an automation (re)orders the triggering task's
+// group when a task is created. `top` floats the new task first; the rest
+// re-sort the whole group by that field.
+const POSITION_STRATEGIES = ['top', 'dueDate', 'priority', 'assignee'];
+// Ascending rank so `critical` sorts before `low` (mirrors the priority enum
+// order used across the app).
+const PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
 // Map each triggerType to the condition types that are legal for it. Used by
 // sanitizeConditions so a GROUP_CREATED automation can't carry an
@@ -216,6 +224,16 @@ const sanitizeGroupCreatedTemplates = async (rawTemplates, org, board) => {
  */
 const sanitizeActionConfig = async (actionType, rawConfig, board, boardId, org) => {
   const cfg = rawConfig || {};
+
+  // POSITION_ITEM doesn't create a task — it only carries a sort strategy and
+  // repositions the triggering task's group at run time. No name/group needed.
+  if (actionType === 'POSITION_ITEM') {
+    if (!POSITION_STRATEGIES.includes(cfg.strategy)) {
+      return { error: 'POSITION_ITEM action requires a valid strategy' };
+    }
+    return { config: { strategy: cfg.strategy } };
+  }
+
   if (!cfg.name || !String(cfg.name).trim()) {
     return { error: 'Action task name is required' };
   }
@@ -475,6 +493,124 @@ const runActionOnce = async (action, automation, board, triggeringTask) => {
 };
 
 /**
+ * Compute the desired ordered array of task ids for a POSITION_ITEM strategy,
+ * from a group's current top-level tasks. Index in the returned array maps to
+ * the task's new `order` (0..n-1). Stable: ties fall back to the current order.
+ *   - top      → the just-created task first, everything else unchanged.
+ *   - dueDate  → soonest due first; tasks with no due date sink to the bottom.
+ *   - priority → critical → high → medium → low.
+ *   - assignee → grouped by first assignee (in first-seen order), unassigned last.
+ * `tasks` must already be sorted by current `{ order, createdAt }`.
+ */
+const computePositionedOrder = (tasks, strategy, triggeringTaskId) => {
+  const tid = triggeringTaskId.toString();
+
+  if (strategy === 'top') {
+    const moving = tasks.filter((t) => t._id.toString() === tid);
+    const rest = tasks.filter((t) => t._id.toString() !== tid);
+    return [...moving, ...rest].map((t) => t._id);
+  }
+
+  if (strategy === 'assignee') {
+    // Bucket by first assignee, preserving the order each assignee first
+    // appears; unassigned tasks go last. Stable within each bucket.
+    const buckets = new Map();
+    const unassigned = [];
+    for (const t of tasks) {
+      const key =
+        Array.isArray(t.assignedTo) && t.assignedTo.length
+          ? t.assignedTo[0].toString()
+          : null;
+      if (key === null) {
+        unassigned.push(t);
+      } else {
+        if (!buckets.has(key)) buckets.set(key, []);
+        buckets.get(key).push(t);
+      }
+    }
+    const out = [];
+    for (const arr of buckets.values()) out.push(...arr);
+    out.push(...unassigned);
+    return out.map((t) => t._id);
+  }
+
+  // dueDate / priority — stable sort by decorating with the current index.
+  const decorated = tasks.map((t, i) => ({ t, i }));
+  const compare =
+    strategy === 'dueDate'
+      ? (a, b) => {
+          const da = a.t.dueDate ? new Date(a.t.dueDate).getTime() : Infinity;
+          const db = b.t.dueDate ? new Date(b.t.dueDate).getTime() : Infinity;
+          return da - db || a.i - b.i;
+        }
+      : (a, b) => {
+          const pa = PRIORITY_RANK[a.t.priority] ?? 99;
+          const pb = PRIORITY_RANK[b.t.priority] ?? 99;
+          return pa - pb || a.i - b.i;
+        };
+  decorated.sort(compare);
+  return decorated.map((d) => d.t._id);
+};
+
+/**
+ * Run a POSITION_ITEM action: re-order the triggering task's group per the
+ * configured strategy, writing `order` on every row (0..n-1) like
+ * `reorderTasks` does. This is an UPDATE, never a create, so it can't re-emit
+ * `item.created` and needs no `createdByAutomation` guard. Returns null —
+ * there's no spawned task to notify about.
+ */
+const runPositionActionOnce = async (action, automation, triggeringTask) => {
+  if (!triggeringTask) {
+    console.warn(
+      '[automation] POSITION_ITEM skipped — no triggering task on',
+      automation?._id?.toString()
+    );
+    return null;
+  }
+  // Subitems aren't order-managed (reorderTasks rejects them too).
+  if (triggeringTask.parent) return null;
+
+  const groupId = triggeringTask.group;
+  if (!groupId) return null;
+
+  const strategy = action?.config?.strategy;
+  if (!POSITION_STRATEGIES.includes(strategy)) {
+    console.warn(
+      '[automation] POSITION_ITEM skipped — invalid strategy',
+      strategy,
+      'on',
+      automation?._id?.toString()
+    );
+    return null;
+  }
+
+  const tasks = await Task.find({
+    group: groupId,
+    parent: null,
+    isPersonal: { $ne: true },
+  })
+    .select('_id order dueDate priority assignedTo createdAt')
+    .sort({ order: 1, createdAt: 1 })
+    .lean();
+  if (tasks.length === 0) return null;
+
+  const orderedIds = computePositionedOrder(tasks, strategy, triggeringTask._id);
+  const ops = orderedIds.map((id, idx) => ({
+    updateOne: {
+      filter: { _id: id },
+      update: { $set: { order: idx } },
+    },
+  }));
+  if (ops.length > 0) await Task.bulkWrite(ops);
+
+  await Board.updateOne(
+    { _id: automation.board },
+    { $set: { updatedAt: new Date() } }
+  );
+  return null;
+};
+
+/**
  * Spawn every template in `automation.groupCreatedTaskTemplates` into the
  * triggering group. Each spawned task is tagged `createdByAutomation: true`
  * for parity with other automation flows. Returns the last task created so
@@ -605,6 +741,12 @@ const runAutomationOnce = async (automation, ctx = {}) => {
   if (actions.length > 0) {
     let lastTask = null;
     for (const action of actions) {
+      // POSITION_ITEM repositions the triggering task's group instead of
+      // creating anything, so it runs on its own path and yields no task.
+      if (action.type === 'POSITION_ITEM') {
+        await runPositionActionOnce(action, automation, ctx.triggeringTask);
+        continue;
+      }
       const created = await runActionOnce(
         action,
         automation,
@@ -1004,4 +1146,7 @@ module.exports = {
   deleteAutomation,
   runAutomationNow,
   runAutomationOnce,
+  // Exported for unit testing the POSITION_ITEM sort + validation logic.
+  computePositionedOrder,
+  sanitizeActionConfig,
 };

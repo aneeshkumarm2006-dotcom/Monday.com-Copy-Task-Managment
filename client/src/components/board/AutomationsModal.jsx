@@ -29,7 +29,25 @@ const CONDITION_TYPES = [
 const ACTION_TYPES = [
   { value: 'CREATE_SUBITEM', label: 'Create a subitem' },
   { value: 'CREATE_TASK', label: 'Create a task' },
+  { value: 'POSITION_ITEM', label: 'Position / sort the item' },
 ];
+
+// Strategy options for the POSITION_ITEM action. Labels bake in the direction
+// (e.g. soonest-first), so the v1 UI needs no separate direction toggle.
+const POSITION_STRATEGIES = [
+  { value: 'top', label: 'Send to top of group' },
+  { value: 'dueDate', label: 'Sort by due date (soonest first)' },
+  { value: 'priority', label: 'Sort by priority (highest first)' },
+  { value: 'assignee', label: 'Group by assignee' },
+];
+
+// Short labels used in the one-line automation summary.
+const POSITION_STRATEGY_LABELS = {
+  top: 'to top',
+  dueDate: 'by due date',
+  priority: 'by priority',
+  assignee: 'by assignee',
+};
 
 const PRIORITIES = [
   { value: 'low', label: 'Low' },
@@ -149,6 +167,11 @@ const describeEventDriven = (automation, groups = [], statuses = []) => {
   }
   if (taskCount > 0) {
     phrases.push(`create ${taskCount} task${taskCount === 1 ? '' : 's'}`);
+  }
+  const position = actions.find((a) => a.type === 'POSITION_ITEM');
+  if (position) {
+    const lbl = POSITION_STRATEGY_LABELS[position.config?.strategy];
+    phrases.push(lbl ? `sort ${lbl}` : 'position the item');
   }
   return `${when} → ${phrases.join(' & ')}`;
 };
@@ -273,6 +296,7 @@ const formFromAutomation = (a, groups) => {
     priority: act.config?.priority || 'medium',
     assignedTo: (act.config?.assignedTo || []).map((u) => idOf(u)),
     note: act.config?.note || '',
+    strategy: act.config?.strategy || 'top',
   }));
 
   const groupCreatedTemplates = (a.groupCreatedTaskTemplates || []).map((tpl) => ({
@@ -596,6 +620,7 @@ const ActionRow = ({
   disabled,
 }) => {
   const isSubitem = action.type === 'CREATE_SUBITEM';
+  const isPosition = action.type === 'POSITION_ITEM';
   return (
     <div
       className="flex flex-col gap-2"
@@ -621,7 +646,14 @@ const ActionRow = ({
         <select
           value={action.type}
           disabled={disabled}
-          onChange={(e) => onChange({ ...action, type: e.target.value })}
+          onChange={(e) => {
+            const type = e.target.value;
+            const next = { ...action, type };
+            // Seed a default strategy so a freshly-switched positioning action
+            // is valid without an extra click.
+            if (type === 'POSITION_ITEM' && !next.strategy) next.strategy = 'top';
+            onChange(next);
+          }}
           className="font-body"
           style={{
             height: 32,
@@ -658,13 +690,11 @@ const ActionRow = ({
           <X size={12} color="var(--color-text-secondary)" />
         </button>
       </div>
-      <div className={isSubitem ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-1 sm:grid-cols-2 gap-2'}>
-        <input
-          type="text"
-          placeholder={isSubitem ? 'Subitem name' : 'Task name'}
-          value={action.name}
+      {isPosition ? (
+        <select
+          value={action.strategy || 'top'}
           disabled={disabled}
-          onChange={(e) => onChange({ ...action, name: e.target.value })}
+          onChange={(e) => onChange({ ...action, strategy: e.target.value })}
           className="font-body"
           style={{
             height: 32,
@@ -675,12 +705,21 @@ const ActionRow = ({
             color: 'var(--color-text-primary)',
             fontSize: 13,
           }}
-        />
-        {!isSubitem && (
-          <select
-            value={action.group || ''}
-            disabled={disabled || groupOptions.length === 0}
-            onChange={(e) => onChange({ ...action, group: e.target.value })}
+        >
+          {POSITION_STRATEGIES.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <div className={isSubitem ? 'grid grid-cols-1 gap-2' : 'grid grid-cols-1 sm:grid-cols-2 gap-2'}>
+          <input
+            type="text"
+            placeholder={isSubitem ? 'Subitem name' : 'Task name'}
+            value={action.name}
+            disabled={disabled}
+            onChange={(e) => onChange({ ...action, name: e.target.value })}
             className="font-body"
             style={{
               height: 32,
@@ -691,16 +730,33 @@ const ActionRow = ({
               color: 'var(--color-text-primary)',
               fontSize: 13,
             }}
-          >
-            <option value="">Select group…</option>
-            {groupOptions.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
+          />
+          {!isSubitem && (
+            <select
+              value={action.group || ''}
+              disabled={disabled || groupOptions.length === 0}
+              onChange={(e) => onChange({ ...action, group: e.target.value })}
+              className="font-body"
+              style={{
+                height: 32,
+                padding: '0 8px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1.5px solid var(--color-border)',
+                background: 'var(--color-bg-surface)',
+                color: 'var(--color-text-primary)',
+                fontSize: 13,
+              }}
+            >
+              <option value="">Select group…</option>
+              {groupOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -1253,6 +1309,10 @@ const AutomationsModal = ({
           value: c.value,
         })),
         actions: (form.actions || []).map((a) => {
+          // POSITION_ITEM carries only a sort strategy — no name/group/assignee.
+          if (a.type === 'POSITION_ITEM') {
+            return { type: a.type, config: { strategy: a.strategy || 'top' } };
+          }
           const config = {
             name: a.name.trim(),
             priority: a.priority || 'medium',
@@ -1334,6 +1394,10 @@ const AutomationsModal = ({
       if (acts.length === 0) return 'Add at least one action';
       for (let i = 0; i < acts.length; i++) {
         const a = acts[i];
+        if (a.type === 'POSITION_ITEM') {
+          if (!a.strategy) return `Action ${i + 1}: choose how to position the item`;
+          continue;
+        }
         if (!a.name?.trim()) return `Action ${i + 1}: task name is required`;
         if (a.type === 'CREATE_TASK' && !a.group) {
           return `Action ${i + 1}: choose a group for the new task`;
