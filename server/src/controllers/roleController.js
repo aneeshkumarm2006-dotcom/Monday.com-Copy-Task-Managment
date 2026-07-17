@@ -26,10 +26,10 @@ const { resolveOrgAccess } = require('../utils/permissions');
  *     resolver ignores its stored permissions anyway. A matrix edit that could
  *     lock the owner out of their own workspace is a bug, not a feature.
  *
- *  2. NO SELF-ESCALATION. `org.manage_roles` is owner-only
- *     (OWNER_ONLY_CAPABILITIES) and is stripped from every role on write.
- *     Whoever can rewrite the matrix that constrains them is, in effect, already
- *     the owner — so only the owner may.
+ *  2. OWNER-ONLY POWERS STAY OWNER-ONLY. Anything in OWNER_ONLY_CAPABILITIES is
+ *     stripped from every role on write. (`org.manage_roles` used to be in that
+ *     set; it is now grantable — by default the admin role holds it — so matrix
+ *     editing can be delegated.)
  */
 
 /** Turn a display name into a slug that won't collide with the system keys. */
@@ -122,7 +122,7 @@ const createRole = async (req, res) => {
     if (!ctx.can('org.manage_roles')) {
       return res
         .status(403)
-        .json({ error: 'Only the workspace owner can manage roles' });
+        .json({ error: 'You do not have permission to manage roles' });
     }
 
     const { name, description, color, permissions } = req.body;
@@ -179,7 +179,7 @@ const updateRole = async (req, res) => {
     if (!ctx.can('org.manage_roles')) {
       return res
         .status(403)
-        .json({ error: 'Only the workspace owner can manage roles' });
+        .json({ error: 'You do not have permission to manage roles' });
     }
 
     const { org } = ctx;
@@ -257,7 +257,7 @@ const deleteRole = async (req, res) => {
     if (!ctx.can('org.manage_roles')) {
       return res
         .status(403)
-        .json({ error: 'Only the workspace owner can manage roles' });
+        .json({ error: 'You do not have permission to manage roles' });
     }
 
     const { org } = ctx;

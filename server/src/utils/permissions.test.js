@@ -121,18 +121,14 @@ test('org: owner cannot be locked out by a malicious matrix edit', () => {
   assert.ok(!a.can('board.view_all_private'));
 });
 
-test('org: org.manage_roles is owner-only even if granted to a role', () => {
-  const org = makeOrg({
-    roles: roles.map((r) =>
-      r.key === 'admin'
-        ? { ...r, permissions: [...r.permissions, 'org.manage_roles'] }
-        : r
-    ),
-  });
-  // Admin has it in stored data, but the resolver strips it: delegating the
-  // power to rewrite the matrix that constrains you is escalation to owner.
-  assert.ok(!resolveOrgAccess(org, ADMIN).can('org.manage_roles'));
+test('org: org.manage_roles is grantable — admin holds it by default', () => {
+  const org = makeOrg();
+  // Matrix editing is deliberately delegable: the seeded admin role carries it,
+  // and any role granted it in the matrix gets it. Roles without it do not.
+  assert.ok(resolveOrgAccess(org, ADMIN).can('org.manage_roles'));
   assert.ok(resolveOrgAccess(org, OWNER).can('org.manage_roles'));
+  assert.ok(!resolveOrgAccess(org, MEMBER).can('org.manage_roles'));
+  assert.ok(!resolveOrgAccess(org, VIEWER).can('org.manage_roles'));
 });
 
 test('org: view_all_private is off for every seeded role — INCLUDING the owner', () => {

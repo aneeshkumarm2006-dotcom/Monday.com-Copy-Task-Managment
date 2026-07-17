@@ -60,9 +60,8 @@ router.put('/:id/members/:userId/role', assignRole);
 //
 // Reading is open to any member: knowing who can do what is not itself a
 // privilege, and the UI needs it to render honest affordances. Writing requires
-// `org.manage_roles`, which OWNER_ONLY_CAPABILITIES makes ungrantable to anyone
-// but the owner — whoever can rewrite the matrix that constrains them is
-// already, in effect, the owner.
+// `org.manage_roles` — held by the owner always, by the admin role by default,
+// and grantable to any role via the matrix.
 // ---------------------------------------------------------------------------
 router.get('/:id/roles', listRoles);
 router.post('/:id/roles', createRole);

@@ -234,10 +234,13 @@ const levelAtLeast = (a, b) => {
 
 /**
  * Capabilities that are the owner's alone and can never be granted to another
- * role, no matter what the matrix says. Delegating the power to rewrite the
- * matrix that constrains you is how a delegate escalates to owner.
+ * role, no matter what the matrix says. Currently empty: `org.manage_roles`
+ * used to live here, but the workspace decided delegating matrix editing (to
+ * admins, typically) is acceptable — note that a role holding it can rewrite
+ * the matrix that constrains itself. The plumbing stays so a capability can be
+ * made owner-only again by listing it.
  */
-const OWNER_ONLY_CAPABILITIES = new Set(['org.manage_roles']);
+const OWNER_ONLY_CAPABILITIES = new Set([]);
 
 /**
  * Capabilities the OWNER does not get implicitly, despite otherwise holding
@@ -289,6 +292,7 @@ const SYSTEM_ROLES = [
       'org.invite_members',
       'org.remove_members',
       'org.assign_roles',
+      'org.manage_roles',
       'org.manage_settings',
       'board.create',
       'board.rename',
@@ -317,9 +321,8 @@ const SYSTEM_ROLES = [
       'analytics.view',
       'productivity.view_others',
     ],
-    // NOT granted by default, on purpose: `org.manage_roles` (only the owner
-    // shapes the matrix — see OWNER_ONLY_CAPABILITIES) and
-    // `board.view_all_private` (private stays private until you say otherwise).
+    // NOT granted by default, on purpose: `board.view_all_private` (private
+    // stays private until you say otherwise).
   },
   {
     key: 'member',
