@@ -1146,6 +1146,8 @@ module.exports = {
   deleteAutomation,
   runAutomationNow,
   runAutomationOnce,
+  // Used by the dispatcher's synchronous positioning path (createTask response).
+  runPositionActionOnce,
   // Exported for unit testing the POSITION_ITEM sort + validation logic.
   computePositionedOrder,
   sanitizeActionConfig,

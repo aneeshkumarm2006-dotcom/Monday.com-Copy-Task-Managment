@@ -3,7 +3,10 @@ const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
 const Board = require('../models/Board');
 const eventBus = require('./eventBus');
-const { runAutomationOnce } = require('../controllers/automationController');
+const {
+  runAutomationOnce,
+  runPositionActionOnce,
+} = require('../controllers/automationController');
 
 let mounted = false;
 
@@ -206,6 +209,84 @@ const handleItemCreated = async (payload) => {
 };
 
 /**
+ * Synchronously apply any matching POSITION_ITEM automations for a freshly
+ * created task, so the create RESPONSE can return the task already in its final
+ * spot (no bottom-then-top hop on the client). Positioning is idempotent —
+ * re-sorting an already-ordered group is a no-op — so it's safe that the async
+ * `item.created` path runs it again a beat later.
+ *
+ * Returns the target groupId (so the caller can re-read that group) when a
+ * reposition ran, else null. Cheap-gates on the automation query first so
+ * boards without positioning automations pay only one indexed lookup.
+ */
+const applyItemCreatedPositioning = async (payload) => {
+  if (!payload || !payload.taskId || !payload.boardId) return null;
+
+  let automations;
+  try {
+    automations = await Automation.find({
+      board: payload.boardId,
+      enabled: true,
+      triggerType: 'ITEM_CREATED',
+    });
+  } catch (err) {
+    console.error('[automation/dispatcher] sync positioning query failed:', err);
+    return null;
+  }
+  const positioners = automations.filter((a) =>
+    (Array.isArray(a.actions) ? a.actions : []).some(
+      (act) => act.type === 'POSITION_ITEM'
+    )
+  );
+  if (positioners.length === 0) return null;
+
+  let triggeringTask;
+  try {
+    triggeringTask = await Task.findById(payload.taskId);
+  } catch (err) {
+    return null;
+  }
+  if (!triggeringTask || triggeringTask.createdByAutomation || triggeringTask.parent) {
+    return null;
+  }
+
+  // Same flexible-columns status shim as handleItemCreated, so ITEM_IN_STATUS
+  // conditions evaluate consistently.
+  let board = null;
+  try {
+    board = await Board.findById(payload.boardId)
+      .select('useFlexibleColumns columns')
+      .lean();
+  } catch (err) {
+    // fall through with the legacy status on the payload
+  }
+  let evalPayload = payload;
+  if (board && board.useFlexibleColumns) {
+    const refreshedStatusId = readCurrentStatusId(triggeringTask, board);
+    if (refreshedStatusId) evalPayload = { ...payload, statusId: refreshedStatusId };
+  }
+
+  let ran = false;
+  for (const automation of positioners) {
+    if (!evaluateConditions(automation, evalPayload)) continue;
+    for (const action of automation.actions) {
+      if (action.type !== 'POSITION_ITEM') continue;
+      try {
+        await runPositionActionOnce(action, automation, triggeringTask);
+        ran = true;
+      } catch (err) {
+        console.error(
+          '[automation/dispatcher] sync positioning failed',
+          automation?._id?.toString(),
+          err
+        );
+      }
+    }
+  }
+  return ran ? triggeringTask.group : null;
+};
+
+/**
  * Subscribe the dispatcher to the event bus. Idempotent — safe to call
  * multiple times across hot-reloads.
  */
@@ -227,6 +308,7 @@ const mountAutomationEventDispatcher = () => {
 
 module.exports = {
   mountAutomationEventDispatcher,
+  applyItemCreatedPositioning,
   evaluateConditions,
   evaluateGroupCreatedConditions,
   readCurrentStatusId,

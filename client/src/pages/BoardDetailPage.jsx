@@ -104,6 +104,7 @@ const BoardDetailPage = () => {
   const fetchBoardData = useTaskStore((s) => s.fetchBoardData);
   const clearTasks = useTaskStore((s) => s.clear);
   const addTaskLocal = useTaskStore((s) => s.addTask);
+  const setGroupTasksLocal = useTaskStore((s) => s.setGroupTasks);
   const updateTaskLocal = useTaskStore((s) => s.updateTask);
   const setUpdatesCount = useTaskStore((s) => s.setUpdatesCount);
   const deleteTaskLocal = useTaskStore((s) => s.deleteTask);
@@ -550,7 +551,14 @@ const BoardDetailPage = () => {
           board: boardId,
           group: groupId,
         });
-        addTaskLocal(created);
+        // When a positioning automation settled the group, the server returns
+        // the full ordered list — drop it in so the task renders in its final
+        // spot immediately (no bottom-then-top hop). Otherwise append as usual.
+        if (created.groupTasks) {
+          setGroupTasksLocal(groupId, created.groupTasks);
+        } else {
+          addTaskLocal(created);
+        }
         // Increment the key for this group so the creation row resets
         setNewTaskKeysByGroup((prev) => ({
           ...prev,
@@ -566,7 +574,7 @@ const BoardDetailPage = () => {
         throw err;
       }
     },
-    [boardId, addTaskLocal, refreshNotifications, toastError]
+    [boardId, addTaskLocal, setGroupTasksLocal, refreshNotifications, toastError]
   );
 
   // --- Inline edit ------------------------------------------------------

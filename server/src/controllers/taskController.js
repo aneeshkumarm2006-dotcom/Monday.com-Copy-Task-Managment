@@ -962,6 +962,38 @@ const createTask = async (req, res) => {
       });
     }
 
+    // Apply POSITION_ITEM automations synchronously so the response already
+    // reflects the task's final spot — the client can drop it straight into
+    // place instead of showing it at the bottom and hopping it to the top when
+    // the async item.created path lands. Idempotent with that async path.
+    // Lazy require avoids a load-time cycle (dispatcher -> automationController).
+    let groupTasks = null;
+    if (!resolvedParent) {
+      try {
+        const {
+          applyItemCreatedPositioning,
+        } = require('../services/automationEventDispatcher');
+        const movedGroupId = await applyItemCreatedPositioning({
+          taskId: task._id,
+          boardId,
+          groupId,
+          statusId: resolvedStatus,
+          createdByUserId: userId,
+        });
+        if (movedGroupId) {
+          groupTasks = await populateTask(
+            Task.find({ group: movedGroupId, parent: null, isPersonal: { $ne: true } })
+          )
+            .sort({ order: 1, createdAt: 1 })
+            .lean();
+          await annotateHasSubitems(groupTasks);
+          await annotateUpdateCounts(groupTasks);
+        }
+      } catch (err) {
+        console.error('createTask positioning error:', err);
+      }
+    }
+
     if (assigneeIds.length > 0) {
       await createNotificationsForUsers({
         userIds: assigneeIds,
@@ -1000,7 +1032,7 @@ const createTask = async (req, res) => {
     }
 
     const populated = await populateTask(Task.findById(task._id));
-    return res.status(201).json({ task: populated });
+    return res.status(201).json({ task: populated, groupTasks });
   } catch (err) {
     console.error('createTask error:', err);
     return res.status(500).json({ error: 'Server error' });

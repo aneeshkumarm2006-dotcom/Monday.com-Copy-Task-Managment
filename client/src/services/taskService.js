@@ -48,6 +48,12 @@ export const getCalendarTasks = async (month, year, orgId) => {
  */
 export const createTask = async (payload) => {
   const { data } = await api.post('/api/tasks', payload);
+  // When a positioning automation ran, the server returns the settled group
+  // order so the board can drop the task straight into its final spot. Attach
+  // it to the returned task; callers that don't need it ignore the extra field.
+  if (data.groupTasks) {
+    return { ...data.task, groupTasks: data.groupTasks };
+  }
   return data.task;
 };
 
