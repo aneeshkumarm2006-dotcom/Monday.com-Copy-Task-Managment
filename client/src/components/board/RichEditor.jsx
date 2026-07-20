@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { useEditor, EditorContent, ReactRenderer } from '@tiptap/react';
+import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import TaskList from '@tiptap/extension-task-list';
@@ -191,7 +191,9 @@ const RichEditor = ({ placeholder = 'Write an update…', onChange, editorRef, i
   }, [members]);
 
   const [mentionState, setMentionState] = useState(null); // { items, command, rect } | null
-  const componentRef = useRef(null);
+  // Imperative handle of the (single, visible) mention dropdown so the TipTap
+  // suggestion plugin can drive keyboard navigation on the list the user sees.
+  const mentionListRef = useRef(null);
   // Holds the live editor instance so the (creation-time) paste handler can
   // reach it — `editor` from useEditor isn't assigned yet inside the config.
   const selfEditorRef = useRef(null);
@@ -205,50 +207,37 @@ const RichEditor = ({ placeholder = 'Write an update…', onChange, editorRef, i
           .filter((m) => m.name?.toLowerCase().includes(q))
           .slice(0, 8);
       },
-      render: () => {
-        let component;
-        return {
-          onStart: (props) => {
-            component = new ReactRenderer(MentionList, {
-              props,
-              editor: props.editor,
-            });
-            componentRef.current = component;
-            setMentionState({
-              items: props.items,
-              command: props.command,
-              rect: props.clientRect ? props.clientRect() : null,
-              ref: component.ref,
-            });
-          },
-          onUpdate: (props) => {
-            component?.updateProps(props);
-            setMentionState((prev) =>
-              prev
-                ? {
-                    ...prev,
-                    items: props.items,
-                    command: props.command,
-                    rect: props.clientRect ? props.clientRect() : prev.rect,
-                  }
-                : null
-            );
-          },
-          onKeyDown: (props) => {
-            if (props.event.key === 'Escape') {
-              setMentionState(null);
-              return true;
-            }
-            return component?.ref?.onKeyDown?.(props) || false;
-          },
-          onExit: () => {
-            component?.destroy();
-            component = null;
-            componentRef.current = null;
+      render: () => ({
+        onStart: (props) => {
+          setMentionState({
+            items: props.items,
+            command: props.command,
+            rect: props.clientRect ? props.clientRect() : null,
+          });
+        },
+        onUpdate: (props) => {
+          setMentionState((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  items: props.items,
+                  command: props.command,
+                  rect: props.clientRect ? props.clientRect() : prev.rect,
+                }
+              : null
+          );
+        },
+        onKeyDown: (props) => {
+          if (props.event.key === 'Escape') {
             setMentionState(null);
-          },
-        };
-      },
+            return true;
+          }
+          return mentionListRef.current?.onKeyDown?.(props) || false;
+        },
+        onExit: () => {
+          setMentionState(null);
+        },
+      }),
     }),
     []
   );
@@ -330,7 +319,7 @@ const RichEditor = ({ placeholder = 'Write an update…', onChange, editorRef, i
       {mentionState ? (
         <PortalAnchor rect={mentionState.rect}>
           <MentionList
-            ref={mentionState.ref}
+            ref={mentionListRef}
             items={mentionState.items}
             command={mentionState.command}
           />
