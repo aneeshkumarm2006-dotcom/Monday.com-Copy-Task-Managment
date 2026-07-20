@@ -20,6 +20,7 @@ import { timeAgo } from '../../utils/dateUtils';
  *   onOpen      — called when the card body is clicked
  *   canManage   — if true, show the ⋯ menu with Edit/Delete
  *   onEdit, onDelete — options menu handlers
+ *   showProgress — if true (default), render the completion-percentage bar
  */
 const BoardCard = ({
   board,
@@ -28,6 +29,7 @@ const BoardCard = ({
   canManage = false,
   onEdit,
   onDelete,
+  showProgress = true,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
@@ -167,6 +169,7 @@ const BoardCard = ({
         </p>
 
         {/* Progress — percentage of tasks done on this board */}
+        {showProgress && (
         <div className="mt-4">
           <div
             className="flex items-center justify-between font-body"
@@ -211,6 +214,7 @@ const BoardCard = ({
             />
           </div>
         </div>
+        )}
 
         {/* Divider */}
         <div

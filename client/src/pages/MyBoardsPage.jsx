@@ -61,6 +61,21 @@ const ACCENT_CYCLE = [
   'var(--color-card-purple)',
 ];
 
+/**
+ * localStorage key for the "Detailed view" preference — whether each board card
+ * shows its completion percentage bar. Defaults ON (absent key ⇒ true); only an
+ * explicit '0' turns it off, so the bar shows until the user hides it.
+ */
+const DETAILED_VIEW_KEY = 'myBoards:detailedView';
+
+const readDetailedView = () => {
+  try {
+    return localStorage.getItem(DETAILED_VIEW_KEY) !== '0';
+  } catch {
+    return true;
+  }
+};
+
 const MyBoardsPage = () => {
   const navigate = useNavigate();
   const currentOrg = useOrgStore((s) => s.currentOrg);
@@ -93,7 +108,20 @@ const MyBoardsPage = () => {
   const [view, setView] = useState('grid'); // "grid" | "list"
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState(EMPTY_BOARD_FILTERS);
+  const [detailedView, setDetailedView] = useState(readDetailedView);
   const [createOpen, setCreateOpen] = useState(false);
+
+  // Flip the "Detailed view" preference and persist it.
+  const toggleDetailedView = () =>
+    setDetailedView((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(DETAILED_VIEW_KEY, next ? '1' : '0');
+      } catch {
+        /* ignore storage failures (private mode, quota) */
+      }
+      return next;
+    });
   const [editTarget, setEditTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
@@ -295,12 +323,15 @@ const MyBoardsPage = () => {
           </button>
         </div>
 
-        {/* Filter popup — visibility / progress / ownership / last updated */}
+        {/* Filter popup — visibility / progress / ownership / last updated,
+            plus the Detailed view toggle */}
         <BoardFilterPanel
           filters={filters}
           onChange={setFilters}
           matchedCount={filteredBoards.length}
           totalCount={boards.length}
+          detailedView={detailedView}
+          onToggleDetailedView={toggleDetailedView}
         />
       </div>
 
@@ -386,6 +417,7 @@ const MyBoardsPage = () => {
                     onEdit={(b) => setEditTarget(b)}
                     onDelete={(b) => setDeleteTarget(b)}
                     dndDisabled={dndDisabled}
+                    showProgress={detailedView}
                   />
                 ))}
               </div>
@@ -406,6 +438,7 @@ const MyBoardsPage = () => {
                 onEdit={(b) => setEditTarget(b)}
                 onDelete={(b) => setDeleteTarget(b)}
                 dndDisabled={dndDisabled}
+                showProgress={detailedView}
               />
             </SortableContext>
           </DndContext>
@@ -452,6 +485,7 @@ const BoardListView = ({
   onEdit,
   onDelete,
   dndDisabled = false,
+  showProgress = true,
 }) => {
   return (
     <div
@@ -477,6 +511,7 @@ const BoardListView = ({
             onEdit={onEdit}
             onDelete={onDelete}
             dndDisabled={dndDisabled}
+            showProgress={showProgress}
           />
         );
       })}
@@ -497,6 +532,7 @@ const SortableBoardCard = ({
   onEdit,
   onDelete,
   dndDisabled,
+  showProgress = true,
 }) => (
   <SortableItem id={board._id} data={{ type: 'board' }} disabled={dndDisabled}>
     {({ ref, setActivatorNodeRef, style, attributes, listeners, isDragging }) => (
@@ -536,6 +572,7 @@ const SortableBoardCard = ({
           canManage={canManage}
           onEdit={onEdit}
           onDelete={onDelete}
+          showProgress={showProgress}
         />
       </div>
     )}
@@ -553,6 +590,7 @@ const BoardListRow = ({
   onEdit,
   onDelete,
   dndDisabled = false,
+  showProgress = true,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   return (
@@ -638,6 +676,7 @@ const BoardListRow = ({
         </p>
       </div>
       {/* Progress — percentage of tasks done on this board */}
+      {showProgress && (
       <div
         className="hidden sm:flex items-center gap-2 shrink-0"
         style={{ width: 128 }}
@@ -683,6 +722,7 @@ const BoardListRow = ({
           {board.progress ?? 0}%
         </span>
       </div>
+      )}
 
       <span
         className="inline-flex items-center gap-1 font-body shrink-0"

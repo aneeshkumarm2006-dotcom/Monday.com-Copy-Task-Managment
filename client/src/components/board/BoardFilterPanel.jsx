@@ -8,6 +8,7 @@ import {
   CircleDot,
   User,
   Calendar,
+  Eye,
 } from 'lucide-react';
 import { OptionRow } from '../ui/FilterControls';
 import { toggleValue } from '../../utils/taskFilters';
@@ -33,6 +34,8 @@ import {
  *   onChange     — (nextFilters) => void
  *   matchedCount — boards currently passing the filters
  *   totalCount   — total boards in the org
+ *   detailedView — whether the completion-percentage bar shows on each board
+ *   onToggleDetailedView — () => void, flips the Detailed view preference
  */
 const SECTIONS = [
   { key: 'visibility', label: 'Visibility', icon: null, options: VISIBILITY_OPTIONS },
@@ -66,6 +69,8 @@ const BoardFilterPanel = ({
   onChange,
   matchedCount = 0,
   totalCount = 0,
+  detailedView = true,
+  onToggleDetailedView,
 }) => {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
@@ -191,6 +196,78 @@ const BoardFilterPanel = ({
                 Clear all
               </button>
             )}
+          </div>
+
+          {/* View preference — not a filter (doesn't narrow the list), so it
+              sits apart above the categories with its own divider. */}
+          <div
+            style={{
+              padding: '8px',
+              marginBottom: 4,
+              borderTop: '1px solid var(--color-border)',
+              borderBottom: '1px solid var(--color-border)',
+            }}
+          >
+            <button
+              type="button"
+              role="switch"
+              aria-checked={detailedView}
+              onClick={() => onToggleDetailedView?.()}
+              className="w-full flex items-center justify-between gap-3 text-left transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+              style={{
+                padding: '2px',
+                background: 'transparent',
+                border: 'none',
+                borderRadius: 'var(--radius-sm)',
+                cursor: 'pointer',
+              }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Eye size={14} color="var(--color-text-secondary)" aria-hidden="true" />
+                <span
+                  className="font-body font-medium"
+                  style={{ fontSize: 13, color: 'var(--color-text-primary)' }}
+                >
+                  Detailed view
+                </span>
+              </span>
+              <span
+                aria-hidden="true"
+                className="inline-flex items-center shrink-0"
+                style={{
+                  width: 36,
+                  height: 20,
+                  padding: 2,
+                  borderRadius: 'var(--radius-full)',
+                  background: detailedView
+                    ? 'var(--color-accent)'
+                    : 'var(--color-border-strong)',
+                  justifyContent: detailedView ? 'flex-end' : 'flex-start',
+                  transition: 'background-color 150ms ease',
+                }}
+              >
+                <span
+                  style={{
+                    width: 16,
+                    height: 16,
+                    borderRadius: '50%',
+                    background: '#FFFFFF',
+                    boxShadow: 'var(--shadow-card)',
+                    transition: 'transform 150ms ease',
+                  }}
+                />
+              </span>
+            </button>
+            <p
+              className="font-body"
+              style={{
+                margin: '4px 2px 0',
+                fontSize: 11,
+                color: 'var(--color-text-muted)',
+              }}
+            >
+              Show each board&rsquo;s completion percentage
+            </p>
           </div>
 
           {SECTIONS.map((section, idx) => {
