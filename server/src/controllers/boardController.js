@@ -181,7 +181,7 @@ const findDoneStatusIdsForOrg = async (orgId) => {
 /**
  * GET /api/dashboard/stats?org=:orgId
  *
- * Returns: { totalBoards, completedTasks, pendingTasks, completionRate }
+ * Returns: { totalBoards, completedTasks, pendingTasks, myPendingTasks, completionRate }
  *
  * This is the HOME dashboard, not the analytics page: it was open to every
  * member before the capability model existed and stays that way, so it carries
@@ -219,15 +219,26 @@ const getDashboardStats = async (req, res) => {
     };
 
     const doneStatusIds = await findDoneStatusIdsForOrg(orgId);
+    const notDoneStatus = {
+      $nin: doneStatusIds.length ? doneStatusIds : ['done'],
+    };
 
-    const [completedTasks, pendingTasks] = await Promise.all([
+    const [completedTasks, pendingTasks, myPendingTasks] = await Promise.all([
       Task.countDocuments({
         ...taskFilter,
         status: { $in: doneStatusIds.length ? doneStatusIds : ['done'] },
       }),
       Task.countDocuments({
         ...taskFilter,
-        status: { $nin: doneStatusIds.length ? doneStatusIds : ['done'] },
+        status: notDoneStatus,
+      }),
+      // "Tasks waiting" in the greeting mirrors My Work: not-done tasks assigned
+      // to the caller (same board scope). Kept separate from the workspace-wide
+      // `pendingTasks` above, which the Pending Tasks / Completion Rate cards use.
+      Task.countDocuments({
+        ...taskFilter,
+        assignedTo: new mongoose.Types.ObjectId(userId),
+        status: notDoneStatus,
       }),
     ]);
     const totalBoards = readableBoardIds.length;
@@ -240,6 +251,7 @@ const getDashboardStats = async (req, res) => {
       totalBoards,
       completedTasks,
       pendingTasks,
+      myPendingTasks,
       completionRate,
     });
   } catch (err) {

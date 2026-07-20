@@ -20,6 +20,7 @@ const INITIAL_STATS = {
   totalBoards: 0,
   completedTasks: 0,
   pendingTasks: 0,
+  myPendingTasks: 0,
   completionRate: 0,
 };
 
@@ -101,7 +102,7 @@ const DashboardPage = () => {
       ) : (
         <GreetingBanner
           name={user?.name}
-          pendingCount={stats.pendingTasks}
+          pendingCount={stats.myPendingTasks}
         />
       )}
 
