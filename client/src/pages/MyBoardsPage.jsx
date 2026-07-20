@@ -5,7 +5,6 @@ import {
   Search,
   LayoutGrid,
   List as ListIcon,
-  SlidersHorizontal,
   Folder,
   FolderOpen,
   Lock,
@@ -39,11 +38,17 @@ import {
 import BoardCard from '../components/board/BoardCard';
 import BoardFormModal from '../components/board/BoardFormModal';
 import DeleteBoardModal from '../components/board/DeleteBoardModal';
+import BoardFilterPanel from '../components/board/BoardFilterPanel';
 import SortableItem from '../components/dnd/SortableItem';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
 import usePermissions from '../hooks/usePermissions';
 import { timeAgo } from '../utils/dateUtils';
+import {
+  EMPTY_BOARD_FILTERS,
+  boardMatchesFilters,
+  countActiveBoardFilters,
+} from '../utils/boardFilters';
 
 /**
  * Rotating palette for the top accent bar on each card.
@@ -87,6 +92,7 @@ const MyBoardsPage = () => {
 
   const [view, setView] = useState('grid'); // "grid" | "list"
   const [search, setSearch] = useState('');
+  const [filters, setFilters] = useState(EMPTY_BOARD_FILTERS);
   const [createOpen, setCreateOpen] = useState(false);
   const [editTarget, setEditTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -101,12 +107,17 @@ const MyBoardsPage = () => {
     });
   }, [orgId, fetchBoards]);
 
-  // Client-side search filter (Task 7.8)
+  const activeFilterCount = countActiveBoardFilters(filters);
+
+  // Client-side search (Task 7.8) + Filter popup categories. A board must pass
+  // the name search AND every active filter category.
   const filteredBoards = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return boards;
-    return boards.filter((b) => (b.name || '').toLowerCase().includes(q));
-  }, [boards, search]);
+    return boards.filter((b) => {
+      if (q && !(b.name || '').toLowerCase().includes(q)) return false;
+      return boardMatchesFilters(b, filters);
+    });
+  }, [boards, search, filters]);
 
   const handleCreateSubmit = async (values) => {
     await createBoardAction({
@@ -139,10 +150,14 @@ const MyBoardsPage = () => {
   const hasBoards = boards.length > 0;
   const hasResults = filteredBoards.length > 0;
   const searching = search.trim().length > 0;
+  // The view is "narrowed" when either the name search or the Filter popup is
+  // active — both hide boards, so both must gate reordering and drive the
+  // "nothing found" state.
+  const narrowed = searching || activeFilterCount > 0;
 
-  // Reordering is disabled while a search filter is active so the user
-  // doesn't accidentally rewrite the full order using a partial slice.
-  const dndDisabled = searching;
+  // Reordering is disabled while the list is narrowed so the user doesn't
+  // accidentally rewrite the full order using a partial slice.
+  const dndDisabled = narrowed;
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -280,10 +295,13 @@ const MyBoardsPage = () => {
           </button>
         </div>
 
-        {/* Filter (placeholder — no active filters in v1) */}
-        <Button variant="secondary" size="default" icon={SlidersHorizontal}>
-          Filter
-        </Button>
+        {/* Filter popup — visibility / progress / ownership / last updated */}
+        <BoardFilterPanel
+          filters={filters}
+          onChange={setFilters}
+          matchedCount={filteredBoards.length}
+          totalCount={boards.length}
+        />
       </div>
 
       {/* Content area */}
@@ -331,7 +349,7 @@ const MyBoardsPage = () => {
               onAction={canCreateBoard ? () => setCreateOpen(true) : undefined}
             />
           </div>
-        ) : !hasResults && searching ? (
+        ) : !hasResults && narrowed ? (
           <div
             className="bg-surface"
             style={{
@@ -343,7 +361,11 @@ const MyBoardsPage = () => {
             <EmptyState
               icon={Search}
               title="Nothing found"
-              description="Try a different search term"
+              description={
+                searching
+                  ? 'Try a different search term or adjust your filters'
+                  : 'No boards match the selected filters'
+              }
             />
           </div>
         ) : view === 'grid' ? (
