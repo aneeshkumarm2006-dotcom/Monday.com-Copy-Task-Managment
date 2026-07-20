@@ -615,6 +615,53 @@ const BoardListRow = ({
           {board.description || 'No description'}
         </p>
       </div>
+      {/* Progress — percentage of tasks done on this board */}
+      <div
+        className="hidden sm:flex items-center gap-2 shrink-0"
+        style={{ width: 128 }}
+        title={
+          (board.taskCount ?? 0) > 0
+            ? `${board.doneCount ?? 0} of ${board.taskCount} tasks done`
+            : 'No tasks yet'
+        }
+      >
+        <div
+          role="progressbar"
+          aria-valuenow={board.progress ?? 0}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${board.progress ?? 0}% of tasks done`}
+          style={{
+            flex: 1,
+            height: 6,
+            borderRadius: 'var(--radius-full)',
+            background: 'var(--color-bg-subtle)',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              width: `${board.progress ?? 0}%`,
+              height: '100%',
+              background: 'var(--color-status-done)',
+              borderRadius: 'var(--radius-full)',
+            }}
+          />
+        </div>
+        <span
+          className="font-body"
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            width: 34,
+            textAlign: 'right',
+            color: 'var(--color-text-secondary)',
+          }}
+        >
+          {board.progress ?? 0}%
+        </span>
+      </div>
+
       <span
         className="inline-flex items-center gap-1 font-body shrink-0"
         style={{

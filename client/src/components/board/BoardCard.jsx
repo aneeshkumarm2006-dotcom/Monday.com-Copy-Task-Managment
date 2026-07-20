@@ -54,6 +54,12 @@ const BoardCard = ({
   const isPublic = board.visibility === 'public';
   const PrivacyIcon = isPublic ? Globe : Lock;
 
+  // Completion stats shipped by GET /api/boards; default to 0 for older
+  // cached boards that predate the progress payload.
+  const taskCount = board.taskCount ?? 0;
+  const doneCount = board.doneCount ?? 0;
+  const progress = board.progress ?? 0;
+
   const handleCardClick = () => {
     if (menuOpen) return;
     onOpen?.(board);
@@ -159,6 +165,52 @@ const BoardCard = ({
         >
           {board.description || 'No description'}
         </p>
+
+        {/* Progress — percentage of tasks done on this board */}
+        <div className="mt-4">
+          <div
+            className="flex items-center justify-between font-body"
+            style={{ marginBottom: 6 }}
+          >
+            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+              {taskCount > 0
+                ? `${doneCount}/${taskCount} done`
+                : 'No tasks yet'}
+            </span>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: 'var(--color-text-secondary)',
+              }}
+            >
+              {progress}%
+            </span>
+          </div>
+          <div
+            role="progressbar"
+            aria-valuenow={progress}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label={`${progress}% of tasks done`}
+            style={{
+              height: 6,
+              borderRadius: 'var(--radius-full)',
+              background: 'var(--color-bg-subtle)',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: `${progress}%`,
+                height: '100%',
+                background: 'var(--color-status-done)',
+                borderRadius: 'var(--radius-full)',
+                transition: 'width 300ms ease',
+              }}
+            />
+          </div>
+        </div>
 
         {/* Divider */}
         <div

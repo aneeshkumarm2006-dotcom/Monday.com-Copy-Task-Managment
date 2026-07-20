@@ -105,6 +105,77 @@ const DEFAULT_STATUSES = [
 ];
 
 /**
+ * Compute a completion percentage for each board in `boards`.
+ *
+ * "Done" is board-relative: each board owns its own `statuses`, and the done
+ * rung is the subdoc with `key === 'done'` (its `_id` is unique to that board,
+ * so a task's status id maps back to exactly one board — no cross-board
+ * leakage). We count only the rows a user actually sees in the board view:
+ * top-level (`parent: null`), non-personal tasks. Subitems and personal tasks
+ * are excluded so the number matches the visible task list.
+ *
+ * Returns a Map of boardId → { taskCount, doneCount, progress } that the caller
+ * merges into each board's payload.
+ */
+const computeBoardProgress = async (boards) => {
+  const result = new Map();
+  const boardIds = boards.map((b) => b._id);
+  for (const b of boards) {
+    result.set(b._id.toString(), { taskCount: 0, doneCount: 0, progress: 0 });
+  }
+  if (boardIds.length === 0) return result;
+
+  // Every board's done-status id, flattened. Each id is unique to its board,
+  // so matching a task's status against this set is already board-scoped.
+  const doneStatusIds = [];
+  for (const b of boards) {
+    for (const s of b.statuses || []) {
+      if (s.key === 'done') doneStatusIds.push(s._id);
+    }
+  }
+
+  const baseMatch = {
+    board: { $in: boardIds },
+    isPersonal: { $ne: true },
+    parent: null,
+  };
+
+  const [totals, dones] = await Promise.all([
+    Task.aggregate([
+      { $match: baseMatch },
+      { $group: { _id: '$board', count: { $sum: 1 } } },
+    ]),
+    // Also match the legacy string 'done' so pre-migration board tasks (whose
+    // status was the enum string, not a status _id) still count as complete.
+    Task.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          status: { $in: [...doneStatusIds, 'done'] },
+        },
+      },
+      { $group: { _id: '$board', count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  for (const row of totals) {
+    const entry = result.get(row._id.toString());
+    if (entry) entry.taskCount = row.count;
+  }
+  for (const row of dones) {
+    const entry = result.get(row._id.toString());
+    if (entry) entry.doneCount = row.count;
+  }
+  for (const entry of result.values()) {
+    entry.progress =
+      entry.taskCount === 0
+        ? 0
+        : Math.round((entry.doneCount / entry.taskCount) * 100);
+  }
+  return result;
+};
+
+/**
  * GET /api/boards?org=:orgId
  *
  * The boards this member's ROLE reaches — see `boardVisibilityFilter`. Sorted by
@@ -146,6 +217,9 @@ const getBoards = async (req, res) => {
       }
     }
 
+    // Per-board completion percentage, shown on each card in the My Boards grid.
+    const progressByBoard = await computeBoardProgress(boards);
+
     // Ship each board's RESOLVED permissions with it — the two-layer AND already
     // applied, for this user, on this board.
     //
@@ -153,7 +227,16 @@ const getBoards = async (req, res) => {
     // except to re-derive it from `memberAccess` + its own idea of what an admin
     // is, which is precisely the drift this whole system exists to remove. The
     // resolver is pure, so this costs nothing beyond the boards already loaded.
-    return res.json({ boards: boards.map((b) => withPermissions(b, org, userId)) });
+    return res.json({
+      boards: boards.map((b) => ({
+        ...withPermissions(b, org, userId),
+        ...(progressByBoard.get(b._id.toString()) || {
+          taskCount: 0,
+          doneCount: 0,
+          progress: 0,
+        }),
+      })),
+    });
   } catch (err) {
     console.error('getBoards error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -783,7 +866,22 @@ const reorderBoards = async (req, res) => {
       organisation,
       ...visibilityFilter,
     }).sort({ order: 1, updatedAt: -1 });
-    return res.json({ boards });
+
+    // Ship the same enriched shape getBoards does — resolved permissions and
+    // per-board progress. The store overwrites its cache with this response, so
+    // returning bare boards here would strip the ⋯ menu (permissions) and the
+    // completion bar (progress) from every card the moment a board is dragged.
+    const progressByBoard = await computeBoardProgress(boards);
+    return res.json({
+      boards: boards.map((b) => ({
+        ...withPermissions(b, org, userId),
+        ...(progressByBoard.get(b._id.toString()) || {
+          taskCount: 0,
+          doneCount: 0,
+          progress: 0,
+        }),
+      })),
+    });
   } catch (err) {
     console.error('reorderBoards error:', err);
     return res.status(500).json({ error: 'Server error' });
