@@ -101,6 +101,7 @@ const TaskTable = ({
   createKey = 0,
   isAdmin = false,
   highlightedTaskId = null,
+  highlightedParentId = null,
   onOpenTask,
   onStatusClick,
   onPriorityClick,
@@ -166,6 +167,25 @@ const TaskTable = ({
       return next;
     });
   };
+
+  // Auto-expand a parent row when a subtask notification points into it, so the
+  // target subtask actually renders (and can be scrolled to + highlighted). Only
+  // the table that owns the parent acts; the rest ignore the id.
+  useEffect(() => {
+    if (!highlightedParentId) return;
+    if (!tasks.some((t) => t._id === highlightedParentId)) return;
+    setExpanded((prev) => {
+      if (prev.has(highlightedParentId)) return prev;
+      const next = new Set(prev);
+      next.add(highlightedParentId);
+      return next;
+    });
+    if (!subitemsByParent[highlightedParentId]) {
+      fetchSubitems(highlightedParentId).catch((err) => {
+        console.error('Failed to load subitems:', err);
+      });
+    }
+  }, [highlightedParentId, tasks, subitemsByParent, fetchSubitems]);
 
   // Collapse expanded rows for tasks that no longer exist (e.g. deleted).
   useEffect(() => {
@@ -403,6 +423,7 @@ const TaskTable = ({
                             isLast={isLastRow}
                             isAdmin={isAdmin}
                             editingTaskId={editingTaskId}
+                            highlightedTaskId={highlightedTaskId}
                             onOpenTask={onOpenTask}
                             onStatusClick={onStatusClick}
                             onPriorityClick={onPriorityClick}
@@ -465,6 +486,7 @@ const SubtaskSection = ({
   isLast,
   isAdmin,
   editingTaskId,
+  highlightedTaskId = null,
   onOpenTask,
   onStatusClick,
   onPriorityClick,
@@ -550,6 +572,7 @@ const SubtaskSection = ({
               board={board}
               isSubtask
               dndDisabled
+              highlighted={highlightedTaskId === sub._id}
               onOpen={onOpenTask}
               onStatusClick={onStatusClick}
               onPriorityClick={onPriorityClick}

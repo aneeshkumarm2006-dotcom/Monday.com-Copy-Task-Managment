@@ -68,7 +68,7 @@ const handleNotificationCreated = async ({ userId, notificationId } = {}) => {
     const notif = await Notification.findById(notificationId)
       .populate('actor', 'name profilePic email')
       .populate('board', 'name')
-      .populate('task', 'board name');
+      .populate('task', 'board name parent');
     if (!notif) return;
 
     const notifOrg = notif.organisation ? String(notif.organisation) : null;

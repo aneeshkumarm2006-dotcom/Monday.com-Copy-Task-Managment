@@ -192,7 +192,7 @@ const getNotifications = async (req, res) => {
       .limit(limit + 1)
       .populate('actor', 'name profilePic email')
       .populate('board', 'name')
-      .populate('task', 'board name');
+      .populate('task', 'board name parent');
 
     let nextCursor = null;
     if (docs.length > limit) {

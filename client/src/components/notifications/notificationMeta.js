@@ -74,7 +74,9 @@ export const FILTER_TABS = [
  * - Otherwise null (non-navigable).
  *
  * `notif.board` is populated ({_id, name}); `notif.task` is populated with its
- * raw `board` ObjectId — so we accept both shapes.
+ * raw `board` ObjectId (and `parent` ObjectId for subtasks) — so we accept both
+ * shapes. When the task is a subtask, `parent` lets the board expand the parent
+ * row so the subtask is actually visible before it's highlighted.
  */
 export const resolveNotifLink = (notif) => {
   if (!notif) return null;
@@ -85,10 +87,15 @@ export const resolveNotifLink = (notif) => {
     null;
   const taskId =
     notif.task?._id || (typeof notif.task === 'string' ? notif.task : null);
+  // A subtask's parent id — carried so the board can expand the parent row.
+  const parentId = notif.task?.parent
+    ? String(notif.task.parent)
+    : null;
 
   if (boardId && taskId) {
     const tabParam = notif.tab ? `&openTab=${notif.tab}` : '';
-    return `/boards/${boardId}?highlightTask=${taskId}${tabParam}`;
+    const parentParam = parentId ? `&highlightParent=${parentId}` : '';
+    return `/boards/${boardId}?highlightTask=${taskId}${parentParam}${tabParam}`;
   }
   if (boardId) return `/boards/${boardId}`;
   if (notif.type === 'memberJoined') return '/members';

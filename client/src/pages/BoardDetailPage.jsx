@@ -222,6 +222,9 @@ const BoardDetailPage = () => {
 
   // --- Notification highlight (scroll-to + glow) --------------------------
   const [highlightedTaskId, setHighlightedTaskId] = useState(null);
+  // When the highlighted item is a subtask, its parent's id — used to auto-expand
+  // the parent row so the subtask row actually renders and can be scrolled to.
+  const [highlightedParentId, setHighlightedParentId] = useState(null);
   // Tab the task detail panel should open on when arriving from a notification
   // that carries a tab hint (e.g. reply → 'updates'). null → the panel uses
   // its default tab.
@@ -292,12 +295,20 @@ const BoardDetailPage = () => {
     // Optional tab hint (from a reply notification) — opens the task detail
     // panel on that tab once we confirm the task lives on this board.
     const openTab = searchParams.get('openTab');
+    // For a subtask notification the target row lives under a parent, which we
+    // must expand (its subtasks aren't in `tasksByGroup`). The parent id rides
+    // along on the link so we can find/expand the parent group even before its
+    // subitems have been fetched.
+    const parentId = searchParams.get('highlightParent');
+    // The top-level row we need to reveal: the parent for a subtask, else the
+    // task itself.
+    const groupTargetId = parentId || taskId;
     let found = false;
 
-    // Find which group contains the task and ensure it's expanded
+    // Find which group contains the (parent) task and ensure it's expanded
     for (const group of groups) {
       const groupTasks = tasksByGroup[group._id] || [];
-      if (groupTasks.some((t) => t._id === taskId)) {
+      if (groupTasks.some((t) => t._id === groupTargetId)) {
         found = true;
         // Expand the group if collapsed
         setCollapsed((prev) => {
@@ -313,12 +324,16 @@ const BoardDetailPage = () => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       next.delete('highlightTask');
+      next.delete('highlightParent');
       next.delete('openTab');
       return next;
     }, { replace: true });
 
-    // Set highlight — scroll + auto-remove are handled by separate effects below
+    // Set highlight — scroll + auto-remove are handled by separate effects below.
+    // The parent id (if any) drives the TaskTable auto-expand so the subtask row
+    // mounts and can receive the glow + scroll.
     setHighlightedTaskId(taskId);
+    setHighlightedParentId(parentId || null);
 
     // Open the detail panel on the requested tab (if the task is on this board)
     if (found && openTab) {
@@ -330,7 +345,10 @@ const BoardDetailPage = () => {
   // --- Auto-remove highlight after animation completes -------------------
   useEffect(() => {
     if (!highlightedTaskId) return;
-    const timer = setTimeout(() => setHighlightedTaskId(null), 3000);
+    const timer = setTimeout(() => {
+      setHighlightedTaskId(null);
+      setHighlightedParentId(null);
+    }, 3000);
     return () => clearTimeout(timer);
   }, [highlightedTaskId]);
 
@@ -1375,6 +1393,7 @@ const BoardDetailPage = () => {
                               createKey={newTaskKeysByGroup[group._id] || 0}
                               isAdmin={canEdit}
                               highlightedTaskId={highlightedTaskId}
+                              highlightedParentId={highlightedParentId}
                               onOpenTask={handleOpenTask}
                               onStatusClick={handleStatusClick}
                               onPriorityClick={handlePriorityClick}

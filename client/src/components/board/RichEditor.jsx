@@ -16,10 +16,17 @@ import useOrgStore from '../../store/orgStore';
  */
 const MentionList = forwardRef(({ items, command }, ref) => {
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const itemRefs = useRef([]);
 
   useEffect(() => {
     setSelectedIndex(0);
   }, [items]);
+
+  // Keep the highlighted row scrolled into view as the user arrows past the
+  // visible edge of the (max-height, overflow-y:auto) list.
+  useEffect(() => {
+    itemRefs.current[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+  }, [selectedIndex]);
 
   const selectItem = (idx) => {
     const item = items[idx];
@@ -82,6 +89,9 @@ const MentionList = forwardRef(({ items, command }, ref) => {
       {items.map((m, idx) => (
         <li
           key={m._id}
+          ref={(el) => {
+            itemRefs.current[idx] = el;
+          }}
           onMouseDown={(e) => {
             e.preventDefault();
             selectItem(idx);
