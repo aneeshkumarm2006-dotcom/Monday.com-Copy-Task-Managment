@@ -21,6 +21,32 @@ const { getColumnType } = require('../utils/columnTypes');
 const { embedMirrorValues } = require('../services/mirrorRefresh');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { resolveAccess } = require('../utils/permissions');
+const ClientContact = require('../models/ClientContact');
+const { isResolvedStatus } = require('../utils/doneStatus');
+const { sendPortalResolvedEmail } = require('../services/emailService');
+
+/**
+ * Client Portal: when a client-submitted task moves to a "done" status, email
+ * the external client who raised it. No-op for internal tasks. Fire-and-forget —
+ * swallows its own errors so it never blocks the status change.
+ */
+const emailClientOnResolve = async (task, board) => {
+  try {
+    if (!task || task.source !== 'client' || !task.portalSubmitter) return;
+    if (!isResolvedStatus(board, task.status)) return;
+    const contact = await ClientContact.findById(task.portalSubmitter).select('email');
+    if (!contact?.email) return;
+    const org = await Organisation.findById(board.organisation).select('name');
+    await sendPortalResolvedEmail({
+      to: contact.email,
+      orgName: org?.name || '',
+      taskName: task.name,
+      link: `${process.env.CLIENT_URL || 'http://localhost:5173'}/portal`,
+    });
+  } catch (err) {
+    console.error('emailClientOnResolve error:', err);
+  }
+};
 
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 // Legacy enum keys — accepted for personal tasks (which don't have a board).
@@ -1153,6 +1179,7 @@ const updateTask = async (req, res) => {
           actorId: userId,
           boardId: task.board,
         });
+        emailClientOnResolve(task, ctx.board);
         logActivity({
           task,
           actor: userId,
@@ -1383,6 +1410,7 @@ const updateTask = async (req, res) => {
         actorId: userId,
         boardId: task.board,
       });
+      emailClientOnResolve(task, ctx.board);
     }
     if (activityChanges.some((c) => c.field === 'group')) {
       await notifyTaskAudience(task, {

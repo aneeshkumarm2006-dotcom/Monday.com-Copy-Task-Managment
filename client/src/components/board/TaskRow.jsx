@@ -269,6 +269,26 @@ const TaskRow = ({
           >
             {task.name}
           </button>
+          {/* Client Portal: mark tasks raised by an external client so the team
+              can tell them apart from internal rows at a glance. */}
+          {task.source === 'client' && (
+            <span
+              className="font-body shrink-0"
+              title="Raised by a client"
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                color: 'var(--color-accent)',
+                background: 'var(--color-accent-light, #EFF6FF)',
+                padding: '1px 6px',
+                borderRadius: 'var(--radius-full)',
+              }}
+            >
+              Client
+            </span>
+          )}
         </div>
       </td>
 

@@ -360,6 +360,8 @@ const createBoard = async (req, res) => {
       visibility = 'private',
       organisation,
       description = '',
+      boardType = 'standard',
+      portalCategories,
     } = req.body;
 
     if (!organisation) {
@@ -368,9 +370,24 @@ const createBoard = async (req, res) => {
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Board name is required' });
     }
-    if (!VALID_VISIBILITIES.includes(visibility)) {
+    if (!['standard', 'client'].includes(boardType)) {
+      return res.status(400).json({ error: 'Invalid board type' });
+    }
+    // A client-portal board is always internally private — the client plane sits
+    // on top of a private board, so we ignore any visibility the client sent and
+    // pin it to 'private'. Standard boards validate visibility as before.
+    const effectiveVisibility = boardType === 'client' ? 'private' : visibility;
+    if (!VALID_VISIBILITIES.includes(effectiveVisibility)) {
       return res.status(400).json({ error: 'Invalid visibility value' });
     }
+    // Categories are only meaningful on client boards; sanitize to non-empty strings.
+    const cleanPortalCategories =
+      boardType === 'client' && Array.isArray(portalCategories)
+        ? portalCategories
+            .map((c) => (typeof c === 'string' ? c.trim() : ''))
+            .filter(Boolean)
+            .slice(0, 30)
+        : [];
 
     const { org, isMember } = await loadOrgForMember(organisation, userId);
     if (!org) return res.status(404).json({ error: 'Organisation not found' });
@@ -395,7 +412,9 @@ const createBoard = async (req, res) => {
     const board = await Board.create({
       name: name.trim(),
       description: typeof description === 'string' ? description.trim() : '',
-      visibility,
+      visibility: effectiveVisibility,
+      boardType,
+      portalCategories: cleanPortalCategories,
       organisation,
       createdBy: userId,
       order: nextBoardOrder,

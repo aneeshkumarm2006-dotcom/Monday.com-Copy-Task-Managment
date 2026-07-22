@@ -640,7 +640,12 @@ const UpdatesTab = ({ task, onCountChange }) => {
  * here — they were uploaded once and stay attached.
  */
 const UpdateCard = ({ update, currentUserId, highlighted, onDelete, onEdit, onReply, onJumpToParent, onToggleMentionRead }) => {
-  const author = update.author || {};
+  // Client Portal: an update can be authored by an external client (authorType
+  // 'client', no `author` User) rather than a team member. Fall back to the
+  // portalAuthor identity so the card renders their name instead of crashing on
+  // a null author, and tag it so the team knows it came from the client.
+  const isClientAuthor = update.authorType === 'client';
+  const author = (isClientAuthor ? update.portalAuthor : update.author) || {};
   const isAuthor = author._id && currentUserId && author._id === currentUserId;
   // The "Mark as read" affordance belongs only to a user who was mentioned.
   const idOf = (u) => (u && typeof u === 'object' ? u._id : u);
@@ -777,8 +782,25 @@ const UpdateCard = ({ update, currentUserId, highlighted, onDelete, onEdit, onRe
                 color: 'var(--color-text-primary)',
               }}
             >
-              {author.name || 'Unknown'}
+              {author.name || (isClientAuthor ? 'Client' : 'Unknown')}
             </span>
+            {isClientAuthor && (
+              <span
+                className="font-body"
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  color: 'var(--color-accent)',
+                  background: 'var(--color-accent-light, #EFF6FF)',
+                  padding: '1px 6px',
+                  borderRadius: 'var(--radius-full)',
+                }}
+              >
+                Client
+              </span>
+            )}
             <span
               className="font-body"
               title={formatDate(update.createdAt)}

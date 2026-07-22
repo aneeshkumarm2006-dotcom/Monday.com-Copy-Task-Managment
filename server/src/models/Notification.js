@@ -38,6 +38,9 @@ const notificationSchema = new mongoose.Schema(
         'taskMoved',
         'unassigned',
         'dueDateChanged',
+        // Client Portal — team-facing alerts about external client activity.
+        'clientIssueCreated',
+        'clientReplied',
       ],
     },
     message: {

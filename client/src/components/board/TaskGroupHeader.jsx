@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, StickyNote, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, StickyNote, Trash2, Link2 } from 'lucide-react';
 
 /**
  * TaskGroupHeader — collapsible header for a group within a board.
@@ -25,6 +25,7 @@ const TaskGroupHeader = ({
   onToggle,
   onDeleteGroup,
   onOpenNotes,
+  onOpenClientPortal,
   noteCount = 0,
   dragHandle = null,
 }) => {
@@ -177,6 +178,21 @@ const TaskGroupHeader = ({
               {noteCount > 99 ? '99+' : noteCount}
             </span>
           )}
+        </button>
+      )}
+
+      {/* Client link (client boards, managers only) — opens the portal setup
+          modal for this group. */}
+      {onOpenClientPortal && (
+        <button
+          type="button"
+          onClick={onOpenClientPortal}
+          aria-label={`Client link for group ${name}`}
+          title="Client link"
+          className="inline-flex items-center justify-center transition-colors duration-150 hover:bg-[color:var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{ width: 28, height: 28, borderRadius: 'var(--radius-sm)' }}
+        >
+          <Link2 size={14} color="var(--color-text-secondary)" aria-hidden="true" />
         </button>
       )}
 

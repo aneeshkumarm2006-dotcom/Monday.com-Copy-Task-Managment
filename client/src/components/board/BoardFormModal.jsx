@@ -14,7 +14,13 @@ import Button from '../ui/Button';
  *   initialValues — pre-fill values when editing
  *   mode          — "create" | "edit" (affects title + submit label)
  */
-const DEFAULTS = { name: '', visibility: 'private', description: '' };
+const DEFAULTS = {
+  name: '',
+  visibility: 'private',
+  description: '',
+  boardType: 'standard',
+  portalCategoriesText: '',
+};
 
 const BoardFormModal = ({
   isOpen,
@@ -34,10 +40,28 @@ const BoardFormModal = ({
       name: initialValues?.name || '',
       visibility: initialValues?.visibility || 'private',
       description: initialValues?.description || '',
+      boardType: initialValues?.boardType || 'standard',
+      portalCategoriesText: Array.isArray(initialValues?.portalCategories)
+        ? initialValues.portalCategories.join(', ')
+        : '',
     });
     setError(null);
     setSubmitting(false);
   }, [isOpen, initialValues]);
+
+  const isClient = values.boardType === 'client';
+  // In the create dialog the user picks one of three: Public, Private, or the
+  // new Client Portal. Client Portal is a board TYPE (internally always private);
+  // Public/Private are visibilities on a standard board. `kind` collapses these
+  // into one radio group.
+  const kind = isClient ? 'client' : values.visibility;
+  const setKind = (next) => {
+    setValues((v) =>
+      next === 'client'
+        ? { ...v, boardType: 'client', visibility: 'private' }
+        : { ...v, boardType: 'standard', visibility: next }
+    );
+  };
 
   const handleSubmit = async (e) => {
     e?.preventDefault?.();
@@ -51,8 +75,15 @@ const BoardFormModal = ({
       setError(null);
       await onSubmit({
         name: trimmed,
-        visibility: values.visibility,
+        visibility: isClient ? 'private' : values.visibility,
         description: values.description.trim(),
+        boardType: values.boardType,
+        portalCategories: isClient
+          ? values.portalCategoriesText
+              .split(',')
+              .map((c) => c.trim())
+              .filter(Boolean)
+          : [],
       });
     } catch (err) {
       const msg =
@@ -99,78 +130,129 @@ const BoardFormModal = ({
           autoFocus
         />
 
-        {/* Visibility radios */}
-        <div>
-          <label
-            className="block mb-2 font-body font-medium text-xs uppercase tracking-wide"
-            style={{ color: 'var(--color-text-secondary)' }}
-          >
-            Visibility
-          </label>
-          <div className="flex items-center gap-5">
-            {[
-              { value: 'public', label: 'Public' },
-              { value: 'private', label: 'Private' },
-            ].map((opt) => {
-              const checked = values.visibility === opt.value;
-              return (
-                <label
-                  key={opt.value}
-                  className="flex items-center gap-2 cursor-pointer select-none"
-                >
-                  <span
-                    className="flex items-center justify-center"
-                    style={{
-                      width: 18,
-                      height: 18,
-                      borderRadius: 'var(--radius-full)',
-                      border: `1.5px solid ${
-                        checked
-                          ? 'var(--color-accent)'
-                          : 'var(--color-border-strong)'
-                      }`,
-                      background: checked
-                        ? 'var(--color-accent-light)'
-                        : 'var(--color-bg-surface)',
-                      transition:
-                        'border-color 150ms ease, background 150ms ease',
-                    }}
-                  >
-                    {checked && (
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: 'var(--radius-full)',
-                          background: 'var(--color-accent)',
-                        }}
-                      />
-                    )}
-                  </span>
-                  <input
-                    type="radio"
-                    name="visibility"
-                    value={opt.value}
-                    checked={checked}
-                    onChange={() =>
-                      setValues((v) => ({ ...v, visibility: opt.value }))
-                    }
-                    className="sr-only"
-                  />
-                  <span
-                    className="font-body"
-                    style={{
-                      fontSize: 14,
-                      color: 'var(--color-text-primary)',
-                    }}
-                  >
-                    {opt.label}
-                  </span>
-                </label>
-              );
-            })}
+        {/* Type / visibility selector. In edit mode an existing Client Portal
+            board's type can't be changed, so we show a static note instead. */}
+        {mode === 'edit' && isClient ? (
+          <div>
+            <label
+              className="block mb-2 font-body font-medium text-xs uppercase tracking-wide"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              Board type
+            </label>
+            <span
+              className="font-body inline-flex items-center gap-2"
+              style={{ fontSize: 14, color: 'var(--color-text-primary)' }}
+            >
+              <span
+                style={{
+                  width: 8, height: 8, borderRadius: 'var(--radius-full)',
+                  background: 'var(--color-accent)',
+                }}
+              />
+              Client Portal
+            </span>
           </div>
-        </div>
+        ) : (
+          <div>
+            <label
+              className="block mb-2 font-body font-medium text-xs uppercase tracking-wide"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              {mode === 'create' ? 'Type' : 'Visibility'}
+            </label>
+            <div className="flex items-center gap-5 flex-wrap">
+              {(mode === 'create'
+                ? [
+                    { value: 'public', label: 'Public' },
+                    { value: 'private', label: 'Private' },
+                    { value: 'client', label: 'Client Portal' },
+                  ]
+                : [
+                    { value: 'public', label: 'Public' },
+                    { value: 'private', label: 'Private' },
+                  ]
+              ).map((opt) => {
+                const checked = kind === opt.value;
+                return (
+                  <label
+                    key={opt.value}
+                    className="flex items-center gap-2 cursor-pointer select-none"
+                  >
+                    <span
+                      className="flex items-center justify-center"
+                      style={{
+                        width: 18,
+                        height: 18,
+                        borderRadius: 'var(--radius-full)',
+                        border: `1.5px solid ${
+                          checked
+                            ? 'var(--color-accent)'
+                            : 'var(--color-border-strong)'
+                        }`,
+                        background: checked
+                          ? 'var(--color-accent-light)'
+                          : 'var(--color-bg-surface)',
+                        transition:
+                          'border-color 150ms ease, background 150ms ease',
+                      }}
+                    >
+                      {checked && (
+                        <span
+                          style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: 'var(--radius-full)',
+                            background: 'var(--color-accent)',
+                          }}
+                        />
+                      )}
+                    </span>
+                    <input
+                      type="radio"
+                      name="boardKind"
+                      value={opt.value}
+                      checked={checked}
+                      onChange={() => setKind(opt.value)}
+                      className="sr-only"
+                    />
+                    <span
+                      className="font-body"
+                      style={{
+                        fontSize: 14,
+                        color: 'var(--color-text-primary)',
+                      }}
+                    >
+                      {opt.label}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            {mode === 'create' && isClient && (
+              <p
+                className="font-body mt-2"
+                style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+              >
+                A private board where each group is a client. You'll generate a
+                shareable link per group so clients can raise issues.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Client categories — optional, client boards only */}
+        {mode === 'create' && isClient && (
+          <Input
+            label="Client issue categories (optional)"
+            placeholder="e.g. Bug, Concern, Request"
+            value={values.portalCategoriesText}
+            onChange={(e) =>
+              setValues((v) => ({ ...v, portalCategoriesText: e.target.value }))
+            }
+            helperText="Comma-separated. Clients can optionally tag an issue with one."
+          />
+        )}
 
         <Input
           label="Description (optional)"

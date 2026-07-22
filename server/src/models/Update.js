@@ -29,10 +29,30 @@ const updateSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Who posted this update. For 'user' updates this is the required author
+    // User (the normal case). For 'client' updates — posts made by an external
+    // ClientContact through the Client Portal — `author` is null and
+    // `portalAuthor` carries the identity instead. The two sides share one
+    // thread per task, so the board's UpdatesTab and the portal both render
+    // this feed; each must tolerate a null `author`.
+    authorType: {
+      type: String,
+      enum: ['user', 'client'],
+      default: 'user',
+    },
     author: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      // Required only for team (user) updates. Client updates have no User.
+      required: function requireAuthorForUserUpdates() {
+        return this.authorType !== 'client';
+      },
+    },
+    // The external ClientContact who posted this update (client updates only).
+    portalAuthor: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientContact',
+      default: null,
     },
     // TipTap JSON document (rich content). Stored as Mixed so structure can
     // evolve without schema migrations.

@@ -82,6 +82,28 @@ export const setBoardAccess = async (boardId, userId, level, canManage) => {
   return data;
 };
 
+// --- Client Portal (per-group link management; client boards only) ----------
+
+/**
+ * GET /api/portal/groups/:groupId/config — the group's portal link state for the
+ * management modal. Board-manager only (enforced server-side).
+ * Returns { groupId, portalEnabled, clientName, passcodeSet, link }.
+ */
+export const getGroupPortalConfig = async (groupId) => {
+  const { data } = await api.get(`/api/portal/groups/${groupId}/config`);
+  return data.portal;
+};
+
+/**
+ * PUT /api/portal/groups/:groupId/config — enable/disable, set the client label,
+ * (re)set the passcode, or rotate the link.
+ * Body: { enabled?, clientName?, passcode?, regenerateLink? }.
+ */
+export const saveGroupPortalConfig = async (groupId, payload) => {
+  const { data } = await api.put(`/api/portal/groups/${groupId}/config`, payload);
+  return data.portal;
+};
+
 // --- Labels ----------------------------------------------------------------
 
 export const addLabel = async (boardId, payload) => {

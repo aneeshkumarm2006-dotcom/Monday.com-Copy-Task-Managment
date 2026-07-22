@@ -131,6 +131,31 @@ const boardSchema = new mongoose.Schema(
       default: 'private',
     },
     /**
+     * Client Portal boards ('client') add an external-collaboration plane on top
+     * of a normal PRIVATE board: each group can expose a shareable link + passcode
+     * so an external client (not an app user) can submit issues and hold a thread
+     * with the team. A 'standard' board is an ordinary internal board.
+     *
+     * This is intentionally SEPARATE from `visibility` — a client board is still
+     * `visibility: 'private'` internally, so the whole org access model (roles,
+     * memberAccess, resolveAccess) is untouched. See utils/permissions.js.
+     */
+    boardType: {
+      type: String,
+      enum: ['standard', 'client'],
+      default: 'standard',
+    },
+    /**
+     * Optional categories a client may tag an issue with when submitting from the
+     * portal (e.g. "Bug", "Concern", "Request"). Configured per client board by
+     * the team; empty means the portal submit form omits the category field.
+     * Client boards only.
+     */
+    portalCategories: {
+      type: [String],
+      default: [],
+    },
+    /**
      * What a PUBLIC board opens up to the org — the rung every member lands on
      * without an explicit grant. "Public" used to mean one hardcoded thing
      * (read everything, change status and nothing else), an arbitrary point on

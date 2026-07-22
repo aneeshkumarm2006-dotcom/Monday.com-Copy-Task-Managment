@@ -265,4 +265,138 @@ const sendMentionEmail = async ({ to, mentionedByName, taskName, commentText, ta
   });
 };
 
-module.exports = { sendTaskAssignmentEmail, sendInviteEmail, sendMentionEmail };
+/**
+ * Shared shell for the Client Portal emails — same visual language as the app
+ * emails above, but addressed to an EXTERNAL client (not an app user). `title`
+ * and `intro` set the header copy; `bodyCard` is raw inner HTML; `ctaLabel` /
+ * `ctaLink` render the button (omitted when no link).
+ */
+const buildPortalHtml = ({ orgName, title, intro, bodyCard, ctaLabel, ctaLink }) => {
+  const cta = ctaLink
+    ? `<div class="cta"><a href="${ctaLink}">${escapeHtml(ctaLabel || 'Open')} &rarr;</a></div>`
+    : '';
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body { margin: 0; padding: 0; background: #F3F4F8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif; }
+    .wrapper { max-width: 560px; margin: 40px auto; background: #FFFFFF; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+    .header { background: #2563EB; padding: 28px 32px; }
+    .header-logo { font-size: 22px; font-weight: 800; color: #FFFFFF; letter-spacing: -0.02em; }
+    .body { padding: 32px; }
+    .title { font-size: 20px; font-weight: 700; color: #111827; margin: 0 0 6px; }
+    .subtitle { font-size: 14px; color: #6B7280; margin: 0 0 24px; line-height: 1.5; }
+    .card { background: #F9FAFB; border: 1.5px solid #E5E7EB; border-radius: 10px; padding: 20px 24px; margin-bottom: 28px; }
+    .card-text { font-size: 14px; color: #111827; line-height: 1.55; margin: 0; white-space: pre-wrap; word-break: break-word; }
+    .card-label { font-size: 12px; font-weight: 600; color: #6B7280; margin: 0 0 8px; }
+    .cta { text-align: center; }
+    .cta a { display: inline-block; background: #2563EB; color: #FFFFFF !important; font-size: 14px; font-weight: 600; padding: 13px 32px; border-radius: 8px; text-decoration: none; }
+    .footer { background: #F9FAFB; border-top: 1px solid #E5E7EB; padding: 18px 32px; }
+    .footer p { font-size: 12px; color: #9CA3AF; margin: 0; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="header">
+      <div class="header-logo">${escapeHtml(orgName || 'Client Portal')}</div>
+    </div>
+    <div class="body">
+      <p class="title">${escapeHtml(title)}</p>
+      <p class="subtitle">${intro}</p>
+      ${bodyCard || ''}
+      ${cta}
+    </div>
+    <div class="footer">
+      <p>You received this email because you're using the ${escapeHtml(orgName || 'client')} portal. If you don't recognise this, you can safely ignore it.</p>
+    </div>
+  </div>
+</body>
+</html>`;
+};
+
+/**
+ * Email the one-time magic link that logs a client into their portal dashboard.
+ * @param {object} opts
+ * @param {string} opts.to        — client email
+ * @param {string} opts.orgName   — organisation name (branding)
+ * @param {string} opts.clientName— client/company label
+ * @param {string} opts.link      — full /portal/verify?token=... URL
+ */
+const sendPortalMagicLinkEmail = async ({ to, orgName, clientName, link }) => {
+  const html = buildPortalHtml({
+    orgName,
+    title: 'Your sign-in link',
+    intro: `Click the button below to open your ${escapeHtml(
+      clientName || orgName || ''
+    )} support portal. This link works once and expires shortly.`,
+    ctaLabel: 'Open my portal',
+    ctaLink: link,
+  });
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+    to,
+    subject: `Your sign-in link for ${orgName || 'the client portal'}`,
+    html,
+  });
+};
+
+/**
+ * Email the client when a team member replies on one of their issues.
+ * @param {object} opts
+ * @param {string} opts.to, opts.orgName, opts.taskName, opts.snippet, opts.link
+ */
+const sendPortalReplyEmail = async ({ to, orgName, taskName, snippet, link }) => {
+  const html = buildPortalHtml({
+    orgName,
+    title: 'New reply on your issue',
+    intro: `The team replied on your issue <strong>${escapeHtml(taskName)}</strong>.`,
+    bodyCard: snippet
+      ? `<div class="card"><p class="card-label">Reply</p><p class="card-text">${escapeHtml(
+          snippet
+        )}</p></div>`
+      : '',
+    ctaLabel: 'View the conversation',
+    ctaLink: link,
+  });
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+    to,
+    subject: `New reply on "${taskName}"`,
+    html,
+  });
+};
+
+/**
+ * Email the client when their issue is marked resolved.
+ * @param {object} opts
+ * @param {string} opts.to, opts.orgName, opts.taskName, opts.link
+ */
+const sendPortalResolvedEmail = async ({ to, orgName, taskName, link }) => {
+  const html = buildPortalHtml({
+    orgName,
+    title: 'Your issue was resolved',
+    intro: `Your issue <strong>${escapeHtml(
+      taskName
+    )}</strong> has been marked as resolved. If it still needs attention, reply on the thread and we'll take another look.`,
+    ctaLabel: 'View my issues',
+    ctaLink: link,
+  });
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+    to,
+    subject: `Resolved: "${taskName}"`,
+    html,
+  });
+};
+
+module.exports = {
+  sendTaskAssignmentEmail,
+  sendInviteEmail,
+  sendMentionEmail,
+  sendPortalMagicLinkEmail,
+  sendPortalReplyEmail,
+  sendPortalResolvedEmail,
+};

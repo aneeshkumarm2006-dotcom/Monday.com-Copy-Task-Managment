@@ -4,6 +4,8 @@ const Update = require('../models/Update');
 const Note = require('../models/Note');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
+const ClientContact = require('../models/ClientContact');
+const PortalMagicToken = require('../models/PortalMagicToken');
 const eventBus = require('../services/eventBus');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 
@@ -166,6 +168,10 @@ const deleteGroup = async (req, res) => {
     }
     await Note.deleteMany({ group: id });
     await Task.deleteMany({ group: id });
+    // Client Portal cleanup: a group can be a client's portal, so drop its
+    // external contacts and any outstanding magic-link tokens with it.
+    await ClientContact.deleteMany({ group: id });
+    await PortalMagicToken.deleteMany({ group: id });
     await TaskGroup.deleteOne({ _id: id });
 
     return res.json({ success: true });

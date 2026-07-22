@@ -42,6 +42,7 @@ import PriorityMenu from '../components/board/PriorityMenu';
 import TaskActionsMenu from '../components/board/TaskActionsMenu';
 import CommentPanel from '../components/board/CommentPanel';
 import GroupNotesPanel from '../components/board/GroupNotesPanel';
+import ClientPortalModal from '../components/board/ClientPortalModal';
 import AutomationsModal from '../components/board/AutomationsModal';
 import LabelPicker from '../components/board/LabelPicker';
 import EditChipsModal from '../components/board/EditChipsModal';
@@ -255,6 +256,11 @@ const BoardDetailPage = () => {
   // "May I restructure this board" — the old `canEdit` bit, now derived from the
   // capabilities rather than re-guessed.
   const canEdit = canOnBoard('task.edit_any') && canOnBoard('group.manage');
+
+  // Client Portal boards expose a per-group shareable client link, managed only
+  // by board managers. `clientPortalGroup` holds the group whose link modal is open.
+  const isClientBoard = board?.boardType === 'client';
+  const [clientPortalGroup, setClientPortalGroup] = useState(null);
 
   // If we navigated directly and the boards list is empty, fetch it so the
   // header can resolve the board metadata.
@@ -1346,6 +1352,11 @@ const BoardDetailPage = () => {
                           onToggle={() => toggleGroup(group._id)}
                           onDeleteGroup={canEdit ? () => handleDeleteGroup(group) : undefined}
                           onOpenNotes={() => handleOpenNotes(group)}
+                          onOpenClientPortal={
+                            isClientBoard && canManageAccess
+                              ? () => setClientPortalGroup(group)
+                              : undefined
+                          }
                           noteCount={notesCountByGroup[group._id] ?? 0}
                           dragHandle={
                             !groupDndDisabled && (
@@ -1777,6 +1788,15 @@ const BoardDetailPage = () => {
           onClose={() => setAccessModalOpen(false)}
           isOwner={isBoardCreator}
           canManage={canManageAccess}
+        />
+      )}
+
+      {/* Client Portal link management (client boards, managers only) */}
+      {clientPortalGroup && (
+        <ClientPortalModal
+          groupId={clientPortalGroup._id}
+          groupName={clientPortalGroup.name}
+          onClose={() => setClientPortalGroup(null)}
         />
       )}
     </PageWrapper>

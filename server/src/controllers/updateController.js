@@ -12,6 +12,7 @@ const { logActivity } = require('../services/activityService');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const { loadBoardContext } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
+const { sendPortalReplyEmailForTask } = require('./portalController');
 
 /**
  * Access rules:
@@ -74,8 +75,9 @@ const getUpdates = async (req, res) => {
 
     const updates = await Update.find({ task: taskId })
       .populate('author', 'name profilePic email')
+      .populate('portalAuthor', 'name')
       .populate('mentions', 'name profilePic email')
-      .populate({ path: 'replyTo', select: 'author bodyText attachments', populate: { path: 'author', select: 'name' } })
+      .populate({ path: 'replyTo', select: 'author portalAuthor bodyText attachments', populate: [{ path: 'author', select: 'name' }, { path: 'portalAuthor', select: 'name' }] })
       .sort({ createdAt: -1 });
 
     return res.json({ updates });
@@ -180,10 +182,18 @@ const addUpdate = async (req, res) => {
       },
     });
 
+    // Client Portal: this is the authenticated (team) post path, so when the
+    // task was raised by an external client, email that client their reply.
+    // Fire-and-forget — the helper swallows its own errors.
+    if (task.source === 'client' && task.portalSubmitter) {
+      sendPortalReplyEmailForTask(task, bodyText);
+    }
+
     const populated = await Update.findById(update._id)
       .populate('author', 'name profilePic email')
+      .populate('portalAuthor', 'name')
       .populate('mentions', 'name profilePic email')
-      .populate({ path: 'replyTo', select: 'author bodyText attachments', populate: { path: 'author', select: 'name' } });
+      .populate({ path: 'replyTo', select: 'author portalAuthor bodyText attachments', populate: [{ path: 'author', select: 'name' }, { path: 'portalAuthor', select: 'name' }] });
 
     // Resolve org id from the board (board tasks only) so notifications are
     // scoped to the right organisation.
@@ -365,8 +375,9 @@ const editUpdate = async (req, res) => {
 
     const populated = await Update.findById(update._id)
       .populate('author', 'name profilePic email')
+      .populate('portalAuthor', 'name')
       .populate('mentions', 'name profilePic email')
-      .populate({ path: 'replyTo', select: 'author bodyText attachments', populate: { path: 'author', select: 'name' } });
+      .populate({ path: 'replyTo', select: 'author portalAuthor bodyText attachments', populate: [{ path: 'author', select: 'name' }, { path: 'portalAuthor', select: 'name' }] });
 
     return res.json({ update: populated });
   } catch (err) {
@@ -540,8 +551,9 @@ const setUpdateMentionRead = async (req, res) => {
 
     const populated = await Update.findById(update._id)
       .populate('author', 'name profilePic email')
+      .populate('portalAuthor', 'name')
       .populate('mentions', 'name profilePic email')
-      .populate({ path: 'replyTo', select: 'author bodyText attachments', populate: { path: 'author', select: 'name' } });
+      .populate({ path: 'replyTo', select: 'author portalAuthor bodyText attachments', populate: [{ path: 'author', select: 'name' }, { path: 'portalAuthor', select: 'name' }] });
 
     return res.json({ update: populated });
   } catch (err) {

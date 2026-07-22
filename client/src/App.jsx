@@ -14,6 +14,9 @@ import usePermissionStore from './store/permissionStore';
 import usePermissions from './hooks/usePermissions';
 import LoginPage from './pages/LoginPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
+import PortalLandingPage from './pages/PortalLandingPage';
+import PortalVerifyPage from './pages/PortalVerifyPage';
+import PortalDashboardPage from './pages/PortalDashboardPage';
 import OnboardingPage from './pages/OnboardingPage';
 import DashboardPage from './pages/DashboardPage';
 import MyBoardsPage from './pages/MyBoardsPage';
@@ -156,6 +159,14 @@ function App() {
           }
         />
         <Route path="/auth/callback" element={<AuthCallbackPage />} />
+
+        {/* Client Portal — fully public, external-client surface. NOT behind
+            ProtectedRoute and deliberately not using the app shell or app stores;
+            it authenticates with its own portal token (see portalService). The
+            more specific /portal/verify must precede /portal/:portalToken. */}
+        <Route path="/portal" element={<PortalDashboardPage />} />
+        <Route path="/portal/verify" element={<PortalVerifyPage />} />
+        <Route path="/portal/:portalToken" element={<PortalLandingPage />} />
 
         {/* Protected */}
         <Route element={<ProtectedRoute />}>

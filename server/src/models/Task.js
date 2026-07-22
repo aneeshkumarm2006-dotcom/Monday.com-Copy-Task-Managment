@@ -90,6 +90,28 @@ const taskSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
     },
+    // Where this task originated. 'client' tasks were submitted by an external
+    // ClientContact through a Client Portal group; they have `createdBy: null`
+    // and a `portalSubmitter`. Everything else is 'internal'. Drives the "Client"
+    // badge on the board and the client-facing email/notification hooks.
+    source: {
+      type: String,
+      enum: ['internal', 'client'],
+      default: 'internal',
+    },
+    // The external ClientContact who raised this issue (client tasks only). This
+    // is the scoping key for "a client sees only their own issues".
+    portalSubmitter: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ClientContact',
+      default: null,
+    },
+    // Optional client-chosen category from the board's `portalCategories`
+    // (client tasks only). Free string mirror kept simple; the team triages on it.
+    portalCategory: {
+      type: String,
+      default: '',
+    },
     // Files attached directly to the task (uploaded via the Files tab).
     // Mirrors the Update.attachments shape so the FE can share UI.
     attachments: {

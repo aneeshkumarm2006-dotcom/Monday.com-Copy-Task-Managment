@@ -152,6 +152,9 @@ const MyBoardsPage = () => {
       name: values.name,
       visibility: values.visibility,
       description: values.description,
+      // Client Portal boards: boardType 'client' + optional client categories.
+      boardType: values.boardType || 'standard',
+      portalCategories: values.portalCategories || [],
       organisation: orgId,
     });
     setCreateOpen(false);
