@@ -29,6 +29,13 @@ app.use('/auth', require('./routes/auth'));
 app.use('/api/orgs', require('./routes/orgs'));
 app.use('/api/boards', require('./routes/boards'));
 app.use('/api/dashboard', require('./routes/dashboard'));
+// Client Portal — MUST be mounted before the bare `app.use('/api', ...)` routers
+// below (groups/automations/updates/notes/activity). Each of those applies its
+// own `router.use(authMiddleware)` to EVERY `/api/*` path, so if the portal
+// router came after them, an unauthenticated public portal request
+// (GET /api/portal/:token, /verify, request-link) or a portal-token request
+// (/me/*) would be 401'd by the groups router before it ever reached here.
+app.use('/api/portal', require('./routes/portal'));
 app.use('/api', require('./routes/groups'));
 app.use('/api', require('./routes/automations'));
 app.use('/api/tasks', require('./routes/tasks'));
@@ -36,7 +43,6 @@ app.use('/api', require('./routes/updates'));
 app.use('/api', require('./routes/notes'));
 app.use('/api', require('./routes/activity'));
 app.use('/api/notifications', require('./routes/notifications'));
-app.use('/api/portal', require('./routes/portal'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/productivity', require('./routes/productivity'));
 app.use('/api/profile', require('./routes/profile'));
