@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Copy, Check, Link2, RefreshCw, Loader2, Lock } from 'lucide-react';
+import { X, Copy, Check, Link2, RefreshCw, Loader2, Mail, Send } from 'lucide-react';
 import {
   getGroupPortalConfig,
   saveGroupPortalConfig,
+  sendGroupInvite,
 } from '../../services/boardService';
 
 /**
  * ClientPortalModal — manage the shareable client link for one group of a Client
- * Portal board. Mirrors InviteModal's copy-link pattern. Only rendered for board
- * managers (BoardDetailPage gates on canManageAccess); the server enforces it too.
+ * Portal board. The link is minted when the group is created, so this modal is
+ * about SHARING it: copy the link, or email an invitation. Only rendered for
+ * board managers (BoardDetailPage gates on canManageAccess); the server enforces
+ * it too.
  *
  * Props:
  *   groupId, groupName — the group being configured
@@ -36,12 +39,15 @@ const field = {
   boxSizing: 'border-box',
 };
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const ClientPortalModal = ({ groupId, groupName, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState(null);
   const [clientName, setClientName] = useState('');
-  const [passcode, setPasscode] = useState('');
+  const [inviteEmail, setInviteEmail] = useState('');
   const [saving, setSaving] = useState(false);
+  const [inviting, setInviting] = useState(false);
   const [error, setError] = useState('');
   const [savedMsg, setSavedMsg] = useState('');
   const [copied, setCopied] = useState(false);
@@ -63,6 +69,11 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId]);
 
+  const flash = (msg) => {
+    setSavedMsg(msg);
+    setTimeout(() => setSavedMsg(''), 2500);
+  };
+
   const save = async (patch, successMsg = 'Saved.') => {
     setSaving(true);
     setError('');
@@ -71,9 +82,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
       const c = await saveGroupPortalConfig(groupId, patch);
       setConfig(c);
       setClientName(c.clientName || '');
-      setPasscode('');
-      setSavedMsg(successMsg);
-      setTimeout(() => setSavedMsg(''), 2500);
+      flash(successMsg);
       return c;
     } catch (err) {
       setError(
@@ -87,15 +96,25 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
     }
   };
 
-  const handleEnable = async () => {
-    if (!passcode.trim()) {
-      setError('Set a passcode to share with your client before enabling.');
+  const handleSendInvite = async () => {
+    const email = inviteEmail.trim();
+    if (!EMAIL_RE.test(email)) {
+      setError('Enter a valid email address to send the invitation.');
       return;
     }
-    await save(
-      { enabled: true, passcode: passcode.trim(), clientName: clientName.trim() },
-      'Client link enabled.'
-    );
+    setInviting(true);
+    setError('');
+    setSavedMsg('');
+    try {
+      const data = await sendGroupInvite(groupId, email);
+      if (data.portal) setConfig(data.portal);
+      setInviteEmail('');
+      flash(data.message || 'Invitation sent.');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Could not send the invitation. Please try again.');
+    } finally {
+      setInviting(false);
+    }
   };
 
   const handleCopy = () => {
@@ -138,7 +157,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
           </button>
         </div>
         <p className="font-body" style={{ fontSize: 13, color: 'var(--color-text-secondary)', margin: '0 0 20px' }}>
-          Share a private portal for <strong>{groupName}</strong> so this client can raise issues.
+          Share the portal for <strong>{groupName}</strong> so this client can raise issues — copy the link or email an invitation.
         </p>
 
         {loading ? (
@@ -155,28 +174,16 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
                 value={clientName}
                 onChange={(e) => setClientName(e.target.value)}
                 placeholder={groupName}
+                onBlur={() => {
+                  if ((clientName.trim() || '') !== (config?.clientName || '')) {
+                    save({ clientName: clientName.trim() }, 'Client name saved.');
+                  }
+                }}
               />
             </div>
 
-            {/* Passcode */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={label}>
-                {config?.passcodeSet ? 'Reset passcode (optional)' : 'Passcode'}
-              </label>
-              <div style={{ ...field, display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', height: 40 }}>
-                <Lock size={14} color="var(--color-text-muted)" />
-                <input
-                  style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: 14, color: 'var(--color-text-primary)' }}
-                  value={passcode}
-                  onChange={(e) => setPasscode(e.target.value)}
-                  placeholder={config?.passcodeSet ? 'Leave blank to keep current' : 'Choose a passcode'}
-                  autoComplete="off"
-                />
-              </div>
-            </div>
-
-            {/* Link (once enabled) */}
-            {enabled && config?.link && (
+            {/* Shareable link */}
+            {config?.link && (
               <div style={{ marginBottom: 16 }}>
                 <label style={label}>Shareable link</label>
                 <div style={{ ...field, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -196,6 +203,34 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
               </div>
             )}
 
+            {/* Email an invitation */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={label}>Email an invitation</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ ...field, flex: 1, display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', height: 40 }}>
+                  <Mail size={14} color="var(--color-text-muted)" />
+                  <input
+                    style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontSize: 14, color: 'var(--color-text-primary)' }}
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    placeholder="client@company.com"
+                    type="email"
+                    autoComplete="off"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleSendInvite();
+                    }}
+                  />
+                </div>
+                <button
+                  type="button" onClick={handleSendInvite} disabled={inviting}
+                  className="flex items-center gap-1.5 shrink-0"
+                  style={{ height: 40, padding: '0 14px', border: 'none', borderRadius: 'var(--radius-md)', background: 'var(--color-accent)', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: inviting ? 'not-allowed' : 'pointer', opacity: inviting ? 0.7 : 1 }}
+                >
+                  <Send size={14} /> {inviting ? 'Sending…' : 'Send'}
+                </button>
+              </div>
+            </div>
+
             {error && (
               <p className="font-body" style={{ fontSize: 13, color: 'var(--color-status-stuck, #dc2626)', margin: '0 0 14px' }}>
                 {error}
@@ -207,43 +242,31 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
               </p>
             )}
 
-            {/* Actions */}
+            {/* Link controls */}
             <div className="flex items-center gap-2" style={{ marginTop: 4 }}>
-              {!enabled ? (
+              <button
+                type="button" onClick={() => save({ regenerateLink: true }, 'New link generated.')} disabled={saving}
+                title="Generate a new link and invalidate the old one"
+                className="flex items-center gap-1.5"
+                style={{ height: 40, padding: '0 12px', border: '1.5px solid var(--color-border)', borderRadius: 'var(--radius-md)', background: 'transparent', color: 'var(--color-text-secondary)', fontSize: 13, cursor: saving ? 'not-allowed' : 'pointer' }}
+              >
+                <RefreshCw size={14} /> Rotate link
+              </button>
+              <div style={{ flex: 1 }} />
+              {enabled ? (
                 <button
-                  type="button" onClick={handleEnable} disabled={saving}
-                  style={{ flex: 1, height: 40, border: 'none', borderRadius: 'var(--radius-md)', background: 'var(--color-accent)', color: '#FFF', fontSize: 14, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1 }}
+                  type="button" onClick={() => save({ enabled: false }, 'Client link disabled.')} disabled={saving}
+                  style={{ height: 40, padding: '0 12px', border: '1.5px solid var(--color-border)', borderRadius: 'var(--radius-md)', background: 'transparent', color: 'var(--color-status-stuck, #dc2626)', fontSize: 13, cursor: 'pointer' }}
                 >
-                  {saving ? 'Enabling…' : 'Enable client link'}
+                  Disable link
                 </button>
               ) : (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => save({
-                      clientName: clientName.trim(),
-                      ...(passcode.trim() ? { passcode: passcode.trim() } : {}),
-                    }, 'Changes saved.')}
-                    disabled={saving}
-                    style={{ flex: 1, height: 40, border: 'none', borderRadius: 'var(--radius-md)', background: 'var(--color-accent)', color: '#FFF', fontSize: 14, fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}
-                  >
-                    {saving ? 'Saving…' : 'Save changes'}
-                  </button>
-                  <button
-                    type="button" onClick={() => save({ regenerateLink: true }, 'New link generated.')} disabled={saving}
-                    title="Generate a new link and invalidate the old one"
-                    className="flex items-center gap-1.5"
-                    style={{ height: 40, padding: '0 12px', border: '1.5px solid var(--color-border)', borderRadius: 'var(--radius-md)', background: 'transparent', color: 'var(--color-text-secondary)', fontSize: 13, cursor: 'pointer' }}
-                  >
-                    <RefreshCw size={14} /> Rotate
-                  </button>
-                  <button
-                    type="button" onClick={() => save({ enabled: false }, 'Client link disabled.')} disabled={saving}
-                    style={{ height: 40, padding: '0 12px', border: '1.5px solid var(--color-border)', borderRadius: 'var(--radius-md)', background: 'transparent', color: 'var(--color-status-stuck, #dc2626)', fontSize: 13, cursor: 'pointer' }}
-                  >
-                    Disable
-                  </button>
-                </>
+                <button
+                  type="button" onClick={() => save({ enabled: true }, 'Client link enabled.')} disabled={saving}
+                  style={{ height: 40, padding: '0 16px', border: 'none', borderRadius: 'var(--radius-md)', background: 'var(--color-accent)', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}
+                >
+                  Enable link
+                </button>
               )}
             </div>
           </>

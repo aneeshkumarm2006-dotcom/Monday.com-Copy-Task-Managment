@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
-import { verifyMagicLink, setPortalToken } from '../services/portalService';
+import { setPortalToken } from '../services/portalService';
 
 /**
- * PortalVerifyPage — `/portal/verify?token=...`. Exchanges the one-time magic
- * token for a scoped portal session, stores it under `macan_portal_token`, and
- * routes to the dashboard. Mirrors AuthCallbackPage but for the portal plane.
+ * PortalVerifyPage — `/portal/verify`. The landing spot after Google sign-in.
+ * The API's OAuth callback redirects here with `?ptoken=<scoped portal JWT>`
+ * (already minted server-side); we just store it and route to the dashboard.
+ * `?error=1` means sign-in failed. Mirrors AuthCallbackPage for the portal plane.
  */
 const shell = {
   minHeight: '100vh',
@@ -25,22 +26,17 @@ const PortalVerifyPage = () => {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    const token = searchParams.get('token');
-    if (!token) {
-      setError('This link is missing its verification code.');
+    if (searchParams.get('error')) {
+      setError("We couldn't sign you in. Please reopen your invitation link and try again.");
       return;
     }
-    verifyMagicLink(token)
-      .then((data) => {
-        setPortalToken(data.token);
-        navigate('/portal', { replace: true });
-      })
-      .catch((err) => {
-        setError(
-          err.response?.data?.error ||
-            'This sign-in link is invalid or has expired. Please request a new one.'
-        );
-      });
+    const ptoken = searchParams.get('ptoken');
+    if (!ptoken) {
+      setError('This sign-in link is missing its access token. Please reopen your invitation link.');
+      return;
+    }
+    setPortalToken(ptoken);
+    navigate('/portal', { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -54,7 +50,7 @@ const PortalVerifyPage = () => {
           }}
         >
           <p style={{ fontSize: 16, fontWeight: 700, color: '#111827', margin: '0 0 8px' }}>
-            Sign-in link expired
+            Sign-in failed
           </p>
           <p style={{ fontSize: 14, color: '#6B7280', margin: 0, lineHeight: 1.5 }}>{error}</p>
         </div>

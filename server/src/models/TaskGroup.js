@@ -15,11 +15,11 @@ const taskGroupSchema = new mongoose.Schema({
   },
   // ---- Client Portal fields (only meaningful when the parent board is a
   // 'client' board — the controller gates every write on board.boardType). A
-  // group in a client board represents one client company; enabling the portal
-  // mints a link + passcode the team shares out-of-band. ----
+  // group in a client board represents one client company; the link is minted
+  // the moment the group is created and the invite goes out by email. ----
   //
   // Whether the shareable client link is currently live. Disabling instantly
-  // closes the portal without discarding the token/passcode.
+  // closes the portal without discarding the token.
   portalEnabled: {
     type: Boolean,
     default: false,
@@ -34,16 +34,6 @@ const taskGroupSchema = new mongoose.Schema({
   // index and the second such group would collide (E11000). Absent → not indexed.
   portalToken: {
     type: String,
-  },
-  // scrypt(passcode, salt) — never the raw passcode. Compared with
-  // timingSafeEqual on the request-link step. See utils/portalCrypto.js.
-  portalPasscodeHash: {
-    type: String,
-    default: null,
-  },
-  portalPasscodeSalt: {
-    type: String,
-    default: null,
   },
   // Friendly client/company label shown on the client's dashboard header.
   // Falls back to the group `name` when empty.

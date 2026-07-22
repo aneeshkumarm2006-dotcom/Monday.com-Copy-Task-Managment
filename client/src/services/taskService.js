@@ -87,10 +87,12 @@ export const getGroups = async (boardId) => {
 
 /**
  * POST /api/boards/:boardId/groups — create a new group (admin only).
+ * Returns the full payload: { group, inviteSent } (inviteSent is only meaningful
+ * on client boards where a clientEmail was supplied).
  */
 export const createGroup = async (boardId, payload) => {
   const { data } = await api.post(`/api/boards/${boardId}/groups`, payload);
-  return data.group;
+  return data;
 };
 
 /**

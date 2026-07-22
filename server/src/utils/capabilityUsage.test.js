@@ -91,13 +91,15 @@ test('every module loads — no dangling imports or cycles', () => {
   const failed = [];
   for (const file of FILES) {
     // Skipped, and none of them carry permission logic:
-    //   config/     — passport throws without Google OAuth env vars
-    //   routes/auth — requires config/passport transitively, same reason
-    //   scripts/    — migrations connect to Mongo and RUN on import
-    //   app/server  — boot the whole express app
+    //   config/       — passport throws without Google OAuth env vars
+    //   routes/auth   — requires config/passport transitively, same reason
+    //   routes/portal — requires config/passport (client Google sign-in), same reason
+    //   scripts/      — migrations connect to Mongo and RUN on import
+    //   app/server    — boot the whole express app
     if (file.includes(`config${path.sep}`)) continue;
     if (file.includes(`scripts${path.sep}`)) continue;
     if (file.endsWith(`routes${path.sep}auth.js`)) continue;
+    if (file.endsWith(`routes${path.sep}portal.js`)) continue;
     if (file.endsWith('app.js') || file.endsWith('server.js')) continue;
     try {
       require(file);

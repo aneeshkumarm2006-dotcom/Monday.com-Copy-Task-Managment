@@ -10,6 +10,33 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+/**
+ * A SEPARATE transporter for the Client Portal emails (invite / reply / resolved),
+ * which send from the team's own Gmail over SMTP — no third-party email API. Set
+ * GMAIL_USER + GMAIL_APP_PASSWORD (a Google App Password, not the account
+ * password). Built lazily and cached so the app still boots when the vars are
+ * absent; the portal senders are all best-effort and log on failure.
+ */
+let portalTransporter = null;
+const getPortalTransporter = () => {
+  if (portalTransporter) return portalTransporter;
+  portalTransporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_APP_PASSWORD,
+    },
+  });
+  return portalTransporter;
+};
+
+// The From for portal mail — the team's Gmail. GMAIL_FROM lets you set a
+// friendly "Name <addr>" form; otherwise the raw Gmail address is used.
+const portalFrom = () =>
+  process.env.GMAIL_FROM || process.env.GMAIL_USER || 'noreply@davnoot.com';
+
 const PRIORITY_LABELS = {
   critical: 'Critical',
   high: 'High',
@@ -318,27 +345,30 @@ const buildPortalHtml = ({ orgName, title, intro, bodyCard, ctaLabel, ctaLink })
 };
 
 /**
- * Email the one-time magic link that logs a client into their portal dashboard.
+ * Email a client their portal INVITATION link. Opening it lands them on the
+ * portal landing page, where "Accept invitation" starts Google sign-in. The link
+ * is the group's public portal URL (`/portal/:portalToken`) — no passcode, no
+ * one-time token. Sends from the team's Gmail.
  * @param {object} opts
  * @param {string} opts.to        — client email
  * @param {string} opts.orgName   — organisation name (branding)
  * @param {string} opts.clientName— client/company label
- * @param {string} opts.link      — full /portal/verify?token=... URL
+ * @param {string} opts.link      — full /portal/:portalToken URL
  */
-const sendPortalMagicLinkEmail = async ({ to, orgName, clientName, link }) => {
+const sendPortalInviteEmail = async ({ to, orgName, clientName, link }) => {
   const html = buildPortalHtml({
     orgName,
-    title: 'Your sign-in link',
-    intro: `Click the button below to open your ${escapeHtml(
+    title: "You've been invited to your support portal",
+    intro: `You've been invited to the ${escapeHtml(
       clientName || orgName || ''
-    )} support portal. This link works once and expires shortly.`,
-    ctaLabel: 'Open my portal',
+    )} support portal, where you can raise issues and track their progress. Click below to accept — you'll sign in securely with your Google account.`,
+    ctaLabel: 'Accept invitation',
     ctaLink: link,
   });
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
     to,
-    subject: `Your sign-in link for ${orgName || 'the client portal'}`,
+    subject: `You're invited to the ${orgName || 'client'} support portal`,
     html,
   });
 };
@@ -361,8 +391,8 @@ const sendPortalReplyEmail = async ({ to, orgName, taskName, snippet, link }) =>
     ctaLabel: 'View the conversation',
     ctaLink: link,
   });
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
     to,
     subject: `New reply on "${taskName}"`,
     html,
@@ -384,8 +414,8 @@ const sendPortalResolvedEmail = async ({ to, orgName, taskName, link }) => {
     ctaLabel: 'View my issues',
     ctaLink: link,
   });
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
     to,
     subject: `Resolved: "${taskName}"`,
     html,
@@ -396,7 +426,7 @@ module.exports = {
   sendTaskAssignmentEmail,
   sendInviteEmail,
   sendMentionEmail,
-  sendPortalMagicLinkEmail,
+  sendPortalInviteEmail,
   sendPortalReplyEmail,
   sendPortalResolvedEmail,
 };

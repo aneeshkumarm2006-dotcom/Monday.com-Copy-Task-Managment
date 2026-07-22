@@ -8,32 +8,33 @@ const PortalMagicToken = require('../models/PortalMagicToken');
 const Organisation = require('../models/Organisation');
 const { loadBoardContext } = require('../utils/boardContext');
 const { isResolvedStatus } = require('../utils/doneStatus');
-const {
-  hashPasscode,
-  verifyPasscode,
-  generatePortalToken,
-  generateMagicToken,
-  hashMagicToken,
-} = require('../utils/portalCrypto');
-const { rateLimit } = require('../utils/portalRateLimit');
+const { generatePortalToken } = require('../utils/portalCrypto');
 const { createNotificationsForUsers } = require('../services/notificationService');
-const {
-  sendPortalMagicLinkEmail,
-  sendPortalReplyEmail,
-} = require('../services/emailService');
+const { sendPortalReplyEmail } = require('../services/emailService');
+const { sendGroupInvite } = require('../services/portalInviteService');
 
 const CLIENT_URL = () => process.env.CLIENT_URL || 'http://localhost:5173';
-const MAGIC_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const PORTAL_JWT_TTL = '7d';
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const clientIp = (req) =>
-  (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
-  req.socket?.remoteAddress ||
-  'unknown';
-
 const clientLabel = (group) =>
   (group.portalClientName && group.portalClientName.trim()) || group.name;
+
+/** Mint the scoped portal session JWT for a signed-in client contact. */
+const signPortalToken = (contact, group) =>
+  jwt.sign(
+    {
+      scope: 'portal',
+      contactId: String(contact._id),
+      groupId: String(group._id),
+      boardId: String(group.board),
+      orgId: contact.organisation ? String(contact.organisation) : null,
+      email: contact.email,
+      ptk: group.portalToken,
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: PORTAL_JWT_TTL }
+  );
 
 // ---- serializers (never leak internal fields to the client) -----------------
 
@@ -63,7 +64,7 @@ const cleanAttachments = (attachments) =>
 
 /**
  * GET /api/portal/:portalToken
- * Public branding + whether a passcode is required. No secrets.
+ * Public branding shown on the invitation landing page. No secrets.
  */
 const getPortalMeta = async (req, res) => {
   try {
@@ -80,7 +81,6 @@ const getPortalMeta = async (req, res) => {
     return res.json({
       orgName: org?.name || '',
       clientName: clientLabel(group),
-      passcodeRequired: !!group.portalPasscodeHash,
     });
   } catch (err) {
     console.error('getPortalMeta error:', err);
@@ -89,42 +89,28 @@ const getPortalMeta = async (req, res) => {
 };
 
 /**
- * POST /api/portal/:portalToken/request-link   Body: { email, passcode }
- * Verify the passcode, upsert the ClientContact, mint a magic token, email it.
- * Email existence is never revealed; a wrong passcode is reported (throttled).
+ * GET /api/portal/auth/google/callback
+ * The client returns here after "Accept invitation" → Google sign-in. Passport
+ * (`google-portal`) has verified the Google account and attached the raw
+ * identity to `req.user`; the group being joined rode along in `req.query.state`
+ * as its portalToken. We upsert the ClientContact for (group, email), mint the
+ * scoped portal JWT, and hand it to the frontend via a redirect. NEVER creates
+ * an app User. On any failure we bounce to the portal verify page with an error.
  */
-const requestMagicLink = async (req, res) => {
+const portalGoogleCallback = async (req, res) => {
+  const fail = () => res.redirect(`${CLIENT_URL()}/portal/verify?error=1`);
   try {
-    const { portalToken } = req.params;
-    const email = (req.body?.email || '').trim().toLowerCase();
-    const passcode = req.body?.passcode ?? '';
-
-    const rl = rateLimit(`${clientIp(req)}:${portalToken}`, { max: 8 });
-    if (!rl.allowed) {
-      return res
-        .status(429)
-        .json({ error: `Too many attempts. Try again in ${rl.retryAfterSec}s.` });
-    }
-
-    if (!EMAIL_RE.test(email)) {
-      return res.status(400).json({ error: 'Please enter a valid email address.' });
-    }
+    const profile = req.user; // { email, name, picture } from google-portal strategy
+    const portalToken = (req.query?.state || '').toString();
+    if (!profile?.email || !portalToken) return fail();
 
     const group = await TaskGroup.findOne({ portalToken, portalEnabled: true });
-    if (!group) return res.status(404).json({ error: 'Portal not found' });
+    if (!group) return fail();
 
     const board = await Board.findById(group.board).select('boardType organisation');
-    if (!board || board.boardType !== 'client') {
-      return res.status(404).json({ error: 'Portal not found' });
-    }
+    if (!board || board.boardType !== 'client') return fail();
 
-    // Passcode gate (constant-time). Reported clearly for UX, throttled above.
-    if (group.portalPasscodeHash) {
-      const ok = verifyPasscode(passcode, group.portalPasscodeSalt, group.portalPasscodeHash);
-      if (!ok) return res.status(401).json({ error: 'Incorrect passcode.' });
-    }
-
-    // Upsert the contact for (group, email).
+    const email = String(profile.email).toLowerCase();
     const contact = await ClientContact.findOneAndUpdate(
       { group: group._id, email },
       {
@@ -134,92 +120,20 @@ const requestMagicLink = async (req, res) => {
           organisation: board.organisation,
           email,
         },
+        // Signing in with Google IS the verification, and it's a fresh chance to
+        // pick up their display name.
+        $set: { verified: true, ...(profile.name ? { name: profile.name } : {}) },
       },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
-    const { raw, hash } = generateMagicToken();
-    await PortalMagicToken.create({
-      tokenHash: hash,
-      contact: contact._id,
-      group: group._id,
-      board: board._id,
-      expiresAt: new Date(Date.now() + MAGIC_TTL_MS),
-    });
-
-    const org = await Organisation.findById(board.organisation).select('name');
-    const link = `${CLIENT_URL()}/portal/verify?token=${raw}`;
-    try {
-      await sendPortalMagicLinkEmail({
-        to: email,
-        orgName: org?.name || '',
-        clientName: clientLabel(group),
-        link,
-      });
-    } catch (mailErr) {
-      console.error('sendPortalMagicLinkEmail error:', mailErr);
-      // Don't leak send failures as a way to probe; still return generic success.
-    }
-
-    return res.json({ message: 'Check your email for a sign-in link.' });
-  } catch (err) {
-    console.error('requestMagicLink error:', err);
-    return res.status(500).json({ error: 'Server error' });
-  }
-};
-
-/**
- * GET /api/portal/verify?token=RAW
- * Redeem a magic token (single-use, unexpired) → a scoped portal JWT.
- */
-const verifyMagicLink = async (req, res) => {
-  try {
-    const raw = (req.query?.token || '').toString();
-    if (!raw) return res.status(400).json({ error: 'Missing token' });
-
-    const record = await PortalMagicToken.findOne({ tokenHash: hashMagicToken(raw) });
-    if (!record || record.usedAt || record.expiresAt.getTime() < Date.now()) {
-      return res.status(400).json({ error: 'This link is invalid or has expired.' });
-    }
-
-    const group = await TaskGroup.findById(record.group);
-    if (!group || !group.portalEnabled) {
-      return res.status(400).json({ error: 'This portal is no longer available.' });
-    }
-
-    record.usedAt = new Date();
-    await record.save();
-
-    const contact = await ClientContact.findById(record.contact);
-    if (!contact) return res.status(400).json({ error: 'This link is invalid.' });
-    if (!contact.verified) {
-      contact.verified = true;
-      await contact.save();
-    }
-
-    const org = await Organisation.findById(contact.organisation).select('name');
-
-    const token = jwt.sign(
-      {
-        scope: 'portal',
-        contactId: String(contact._id),
-        groupId: String(group._id),
-        boardId: String(group.board),
-        orgId: contact.organisation ? String(contact.organisation) : null,
-        email: contact.email,
-        ptk: group.portalToken,
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: PORTAL_JWT_TTL }
+    const token = signPortalToken(contact, group);
+    return res.redirect(
+      `${CLIENT_URL()}/portal/verify?ptoken=${encodeURIComponent(token)}`
     );
-
-    return res.json({
-      token,
-      portal: { orgName: org?.name || '', clientName: clientLabel(group) },
-    });
   } catch (err) {
-    console.error('verifyMagicLink error:', err);
-    return res.status(500).json({ error: 'Server error' });
+    console.error('portalGoogleCallback error:', err);
+    return fail();
   }
 };
 
@@ -510,7 +424,6 @@ const adminPortalPayload = (group) => ({
   groupId: String(group._id),
   portalEnabled: !!group.portalEnabled,
   clientName: group.portalClientName || '',
-  passcodeSet: !!group.portalPasscodeHash,
   link: group.portalToken ? `${CLIENT_URL()}/portal/${group.portalToken}` : null,
 });
 
@@ -530,43 +443,32 @@ const getPortalConfig = async (req, res) => {
 
 /**
  * PUT /api/portal/groups/:groupId/config
- * Body: { enabled?, clientName?, passcode?, regenerateLink? }
- * Enable/disable, set the client label, (re)set the passcode, rotate the link.
+ * Body: { enabled?, clientName?, regenerateLink? }
+ * Set the client label, enable/disable, or rotate the link. The link itself is
+ * minted at group creation; this only mints one lazily for legacy groups.
  */
 const savePortalConfig = async (req, res) => {
   try {
     const ctx = await loadManageContext(req.params.groupId, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
     const { group } = ctx;
-    const { enabled, clientName, passcode, regenerateLink } = req.body || {};
+    const { enabled, clientName, regenerateLink } = req.body || {};
 
     if (typeof clientName === 'string') {
       group.portalClientName = clientName.trim();
     }
 
-    if (typeof passcode === 'string' && passcode.length > 0) {
-      const { salt, hash } = hashPasscode(passcode);
-      group.portalPasscodeSalt = salt;
-      group.portalPasscodeHash = hash;
-    }
-
-    // Mint a token the first time the portal is enabled, or on explicit rotate.
+    // Mint a token the first time (legacy groups from before auto-mint), or on
+    // explicit rotate. Rotating invalidates the old link and, via portalAuth's
+    // ptk check, kills every live client session on this group.
     const needsToken = !group.portalToken;
     if (regenerateLink || needsToken) {
       group.portalToken = generatePortalToken();
-      // Rotating the link kills every outstanding magic link for this group.
       await PortalMagicToken.deleteMany({ group: group._id });
     }
 
     if (typeof enabled === 'boolean') {
       group.portalEnabled = enabled;
-    }
-
-    // Enabling requires a passcode to exist (the plan's "revocable + passcode").
-    if (group.portalEnabled && !group.portalPasscodeHash) {
-      return res
-        .status(400)
-        .json({ error: 'Set a passcode before enabling the client link.' });
     }
 
     await group.save();
@@ -577,11 +479,43 @@ const savePortalConfig = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/portal/groups/:groupId/invite   Body: { email }
+ * Email (or re-email) the invitation link to a client. Ensures the group has a
+ * live link first, so this doubles as "turn the portal on and invite".
+ */
+const sendPortalInvite = async (req, res) => {
+  try {
+    const ctx = await loadManageContext(req.params.groupId, req.user.userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const { group, board } = ctx;
+
+    const email = (req.body?.email || '').trim().toLowerCase();
+    if (!EMAIL_RE.test(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    if (!group.portalToken) group.portalToken = generatePortalToken();
+    if (!group.portalEnabled) group.portalEnabled = true;
+    await group.save();
+
+    const ok = await sendGroupInvite({ group, board, email });
+    if (!ok) {
+      return res
+        .status(502)
+        .json({ error: 'Could not send the invite email. Check the mail settings.' });
+    }
+    return res.json({ message: `Invitation sent to ${email}.`, portal: adminPortalPayload(group) });
+  } catch (err) {
+    console.error('sendPortalInvite error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   // public
   getPortalMeta,
-  requestMagicLink,
-  verifyMagicLink,
+  portalGoogleCallback,
   // portal-authed
   getMyIssues,
   createMyIssue,
@@ -591,6 +525,7 @@ module.exports = {
   // team admin
   getPortalConfig,
   savePortalConfig,
+  sendPortalInvite,
   // reused by updateController for the "team replied on a client task" email hook
   sendPortalReplyEmailForTask: async (task, snippet = '') => {
     try {

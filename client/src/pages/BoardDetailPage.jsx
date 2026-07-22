@@ -118,6 +118,7 @@ const BoardDetailPage = () => {
   const refreshBoardTasks = useTaskStore((s) => s.refreshBoardTasks);
   const refreshNotifications = useNotificationStore((s) => s.fetchNotifications);
   const toastError = useToastStore((s) => s.error);
+  const toastSuccess = useToastStore((s) => s.success);
 
   // Collapse state, keyed by group id
   const [collapsed, setCollapsed] = useState(() => new Set());
@@ -190,6 +191,9 @@ const BoardDetailPage = () => {
   // New-group modal state
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  // Client-board only: the invited client's email, collected in the same step so
+  // the link is minted and emailed the moment the group exists.
+  const [newGroupClientEmail, setNewGroupClientEmail] = useState('');
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [groupModalError, setGroupModalError] = useState(null);
   // Delete-group confirmation state
@@ -905,6 +909,7 @@ const BoardDetailPage = () => {
 
   const handleOpenGroupModal = () => {
     setNewGroupName('');
+    setNewGroupClientEmail('');
     setGroupModalError(null);
     setCreatingGroup(false);
     setGroupModalOpen(true);
@@ -922,13 +927,35 @@ const BoardDetailPage = () => {
       setGroupModalError('Group name is required');
       return;
     }
+    // On a client board, validate the email if one was entered (it's optional —
+    // you can create the link now and share it later).
+    const clientEmail = newGroupClientEmail.trim();
+    if (isClientBoard && clientEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail)) {
+      setGroupModalError('Enter a valid client email, or leave it blank to share the link yourself.');
+      return;
+    }
     try {
       setCreatingGroup(true);
       setGroupModalError(null);
-      const created = await taskService.createGroup(boardId, { name: trimmed });
+      const payload = { name: trimmed };
+      if (isClientBoard && clientEmail) payload.clientEmail = clientEmail;
+      const { group: created, inviteSent } = await taskService.createGroup(boardId, payload);
       addGroupLocal(created);
       setGroupModalOpen(false);
       setNewGroupName('');
+      setNewGroupClientEmail('');
+      if (isClientBoard) {
+        // Confirm the invite (createGroup returns whether the email went out) and
+        // open the link manager so the link is right there to copy or resend.
+        if (inviteSent) {
+          toastSuccess(`Client group created — invitation sent to ${clientEmail}.`);
+        } else if (clientEmail) {
+          toastError('Group created, but the invitation email could not be sent. Copy the link to share it manually.');
+        } else {
+          toastSuccess('Client group created — copy the link to share it.');
+        }
+        setClientPortalGroup(created);
+      }
     } catch (err) {
       console.error('Failed to create group:', err);
       setGroupModalError(
@@ -1598,20 +1625,42 @@ const BoardDetailPage = () => {
               onClick={handleSubmitNewGroup}
               disabled={creatingGroup}
             >
-              {creatingGroup ? 'Creating…' : 'Create Group'}
+              {creatingGroup
+                ? 'Creating…'
+                : isClientBoard
+                ? 'Create & invite'
+                : 'Create Group'}
             </Button>
           </>
         }
       >
         <form onSubmit={handleSubmitNewGroup} className="flex flex-col gap-3">
           <Input
-            label="Group Name"
+            label={isClientBoard ? 'Client / group name' : 'Group Name'}
             required
-            placeholder="e.g. To Do"
+            placeholder={isClientBoard ? 'e.g. Acme Corp' : 'e.g. To Do'}
             value={newGroupName}
             onChange={(e) => setNewGroupName(e.target.value)}
             autoFocus
           />
+          {isClientBoard && (
+            <>
+              <Input
+                label="Client email (we'll send the invitation)"
+                type="email"
+                placeholder="client@company.com"
+                value={newGroupClientEmail}
+                onChange={(e) => setNewGroupClientEmail(e.target.value)}
+              />
+              <p
+                className="font-body text-xs"
+                style={{ color: 'var(--color-text-muted)', marginTop: -4 }}
+              >
+                A private portal link is created automatically. Leave the email
+                blank to share the link yourself instead.
+              </p>
+            </>
+          )}
           {groupModalError && (
             <p
               className="font-body text-xs"

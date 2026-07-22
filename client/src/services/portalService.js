@@ -42,13 +42,16 @@ portalApi.interceptors.response.use(
 export const getPortalMeta = (portalToken) =>
   portalApi.get(`/api/portal/${portalToken}`).then((r) => r.data);
 
-export const requestMagicLink = (portalToken, { email, passcode }) =>
-  portalApi
-    .post(`/api/portal/${portalToken}/request-link`, { email, passcode })
-    .then((r) => r.data);
-
-export const verifyMagicLink = (token) =>
-  portalApi.get(`/api/portal/verify`, { params: { token } }).then((r) => r.data);
+/**
+ * The full URL that starts the "Accept invitation" → Google sign-in flow. It's a
+ * full-page navigation (not an XHR): the browser goes to the API, which redirects
+ * to Google and back to `/portal/verify?ptoken=...`. The API base has no trailing
+ * slash in practice, but guard against one just in case.
+ */
+export const portalGoogleSignInUrl = (portalToken) => {
+  const base = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+  return `${base}/api/portal/${portalToken}/auth/google`;
+};
 
 // ---- Client dashboard (portal-authenticated) ----
 export const getMyIssues = () =>

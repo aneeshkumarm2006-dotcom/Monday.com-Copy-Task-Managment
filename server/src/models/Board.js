@@ -132,9 +132,10 @@ const boardSchema = new mongoose.Schema(
     },
     /**
      * Client Portal boards ('client') add an external-collaboration plane on top
-     * of a normal PRIVATE board: each group can expose a shareable link + passcode
-     * so an external client (not an app user) can submit issues and hold a thread
-     * with the team. A 'standard' board is an ordinary internal board.
+     * of a normal PRIVATE board: each group exposes a shareable link (minted when
+     * the group is created) that an external client opens, accepts, and signs into
+     * with Google — no passcode — to submit issues and hold a thread with the
+     * team. A 'standard' board is an ordinary internal board.
      *
      * This is intentionally SEPARATE from `visibility` — a client board is still
      * `visibility: 'private'` internally, so the whole org access model (roles,

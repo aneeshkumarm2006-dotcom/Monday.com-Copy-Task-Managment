@@ -25,6 +25,18 @@ const hostAvatar = async (googleUrl) => {
   }
 };
 
+/**
+ * Where Google sends the EXTERNAL CLIENT back after they "Accept invitation" and
+ * sign in on a Client Portal link. It is a distinct callback from the app's
+ * (`GOOGLE_CALLBACK_URL`) so the two flows never cross. Derived from the app
+ * callback's origin when `GOOGLE_PORTAL_CALLBACK_URL` isn't set explicitly.
+ */
+const portalCallbackURL =
+  process.env.GOOGLE_PORTAL_CALLBACK_URL ||
+  (process.env.GOOGLE_CALLBACK_URL
+    ? new URL('/api/portal/auth/google/callback', process.env.GOOGLE_CALLBACK_URL).toString()
+    : undefined);
+
 passport.use(
   new GoogleStrategy(
     {
@@ -68,6 +80,45 @@ passport.use(
         console.error('Google strategy verify error:', err);
         return done(err, null);
       }
+    }
+  )
+);
+
+/**
+ * `google-portal` — the Client Portal's Google sign-in. It is deliberately a
+ * SEPARATE strategy from the app one above:
+ *
+ *  - It NEVER touches the `User` collection. An external client must never
+ *    become an app user or enter the org/permission graph. The verify callback
+ *    just hands the raw Google identity (email + name + avatar) to the portal
+ *    callback controller, which upserts a `ClientContact` scoped to one group
+ *    and mints a `scope:'portal'` JWT.
+ *  - It uses its own callback URL (`portalCallbackURL`) so Google can tell the
+ *    two flows apart. Add that URL to the OAuth client's authorized redirect
+ *    URIs in the Google Cloud console.
+ *
+ * Which group the client is joining rides along in the OAuth `state` param (the
+ * group's `portalToken`), set when the flow starts in routes/portal.js.
+ */
+passport.use(
+  'google-portal',
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: portalCallbackURL,
+    },
+    (accessToken, refreshToken, profile, done) => {
+      const email =
+        profile.emails && profile.emails[0] && profile.emails[0].value;
+      if (!email) {
+        return done(new Error('Google account did not return an email'), null);
+      }
+      return done(null, {
+        email: String(email).toLowerCase(),
+        name: profile.displayName || '',
+        picture: (profile.photos && profile.photos[0] && profile.photos[0].value) || '',
+      });
     }
   )
 );

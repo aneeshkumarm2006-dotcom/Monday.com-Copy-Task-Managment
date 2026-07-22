@@ -8,6 +8,10 @@ const ClientContact = require('../models/ClientContact');
 const PortalMagicToken = require('../models/PortalMagicToken');
 const eventBus = require('../services/eventBus');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const { generatePortalToken } = require('../utils/portalCrypto');
+const { sendGroupInvite } = require('../services/portalInviteService');
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Every group mutation on this board — create, rename, reorder, delete — is one
@@ -52,7 +56,7 @@ const createGroup = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { boardId } = req.params;
-    const { name, order } = req.body;
+    const { name, order, clientEmail, clientName } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Group name is required' });
@@ -72,11 +76,32 @@ const createGroup = async (req, res) => {
       resolvedOrder = await TaskGroup.countDocuments({ board: boardId });
     }
 
+    // Client Portal boards mint the shareable link AT CREATION and turn the
+    // portal on immediately — the link exists the moment the group does, so it
+    // can be shared or emailed straight away. A trimmed client email, if given,
+    // gets the invitation. Standard boards are untouched.
+    const isClientBoard = ctx.board.boardType === 'client';
+    const inviteEmail = (clientEmail || '').trim().toLowerCase();
+    const portalFields = isClientBoard
+      ? {
+          portalToken: generatePortalToken(),
+          portalEnabled: true,
+          portalClientName: (clientName || '').trim() || name.trim(),
+        }
+      : {};
+
     const group = await TaskGroup.create({
       name: name.trim(),
       board: boardId,
       order: resolvedOrder,
+      ...portalFields,
     });
+
+    // Send the invitation email (best-effort — never fails the create).
+    let inviteSent = false;
+    if (isClientBoard && EMAIL_RE.test(inviteEmail)) {
+      inviteSent = await sendGroupInvite({ group, board: ctx.board, email: inviteEmail });
+    }
 
     // Fan out a group.created event so GROUP_CREATED automations can
     // spawn predefined tasks into the new group. The dispatcher fetches
@@ -88,7 +113,7 @@ const createGroup = async (req, res) => {
       createdByUserId: userId,
     });
 
-    return res.status(201).json({ group });
+    return res.status(201).json({ group, inviteSent });
   } catch (err) {
     console.error('createGroup error:', err);
     return res.status(500).json({ error: 'Server error' });

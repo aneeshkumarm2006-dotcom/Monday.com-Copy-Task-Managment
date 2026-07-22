@@ -87,7 +87,7 @@ export const setBoardAccess = async (boardId, userId, level, canManage) => {
 /**
  * GET /api/portal/groups/:groupId/config — the group's portal link state for the
  * management modal. Board-manager only (enforced server-side).
- * Returns { groupId, portalEnabled, clientName, passcodeSet, link }.
+ * Returns { groupId, portalEnabled, clientName, link }.
  */
 export const getGroupPortalConfig = async (groupId) => {
   const { data } = await api.get(`/api/portal/groups/${groupId}/config`, {
@@ -97,15 +97,27 @@ export const getGroupPortalConfig = async (groupId) => {
 };
 
 /**
- * PUT /api/portal/groups/:groupId/config — enable/disable, set the client label,
- * (re)set the passcode, or rotate the link.
- * Body: { enabled?, clientName?, passcode?, regenerateLink? }.
+ * PUT /api/portal/groups/:groupId/config — set the client label, enable/disable,
+ * or rotate the link. Body: { enabled?, clientName?, regenerateLink? }.
  */
 export const saveGroupPortalConfig = async (groupId, payload) => {
   const { data } = await api.put(`/api/portal/groups/${groupId}/config`, payload, {
     timeout: 20000,
   });
   return data.portal;
+};
+
+/**
+ * POST /api/portal/groups/:groupId/invite — email the client the invitation link
+ * (ensures the link is live first). Body: { email }. Returns { message, portal }.
+ */
+export const sendGroupInvite = async (groupId, email) => {
+  const { data } = await api.post(
+    `/api/portal/groups/${groupId}/invite`,
+    { email },
+    { timeout: 20000 }
+  );
+  return data;
 };
 
 // --- Labels ----------------------------------------------------------------
