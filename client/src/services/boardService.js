@@ -90,7 +90,9 @@ export const setBoardAccess = async (boardId, userId, level, canManage) => {
  * Returns { groupId, portalEnabled, clientName, passcodeSet, link }.
  */
 export const getGroupPortalConfig = async (groupId) => {
-  const { data } = await api.get(`/api/portal/groups/${groupId}/config`);
+  const { data } = await api.get(`/api/portal/groups/${groupId}/config`, {
+    timeout: 20000,
+  });
   return data.portal;
 };
 
@@ -100,7 +102,9 @@ export const getGroupPortalConfig = async (groupId) => {
  * Body: { enabled?, clientName?, passcode?, regenerateLink? }.
  */
 export const saveGroupPortalConfig = async (groupId, payload) => {
-  const { data } = await api.put(`/api/portal/groups/${groupId}/config`, payload);
+  const { data } = await api.put(`/api/portal/groups/${groupId}/config`, payload, {
+    timeout: 20000,
+  });
   return data.portal;
 };
 

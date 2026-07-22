@@ -43,6 +43,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
   const [passcode, setPasscode] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [savedMsg, setSavedMsg] = useState('');
   const [copied, setCopied] = useState(false);
 
   const load = async () => {
@@ -62,17 +63,24 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId]);
 
-  const save = async (patch) => {
+  const save = async (patch, successMsg = 'Saved.') => {
     setSaving(true);
     setError('');
+    setSavedMsg('');
     try {
       const c = await saveGroupPortalConfig(groupId, patch);
       setConfig(c);
       setClientName(c.clientName || '');
       setPasscode('');
+      setSavedMsg(successMsg);
+      setTimeout(() => setSavedMsg(''), 2500);
       return c;
     } catch (err) {
-      setError(err.response?.data?.error || 'Could not save. Please try again.');
+      setError(
+        err.code === 'ECONNABORTED'
+          ? 'The server took too long to respond. Please try again.'
+          : err.response?.data?.error || 'Could not save. Please try again.'
+      );
       return null;
     } finally {
       setSaving(false);
@@ -84,7 +92,10 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
       setError('Set a passcode to share with your client before enabling.');
       return;
     }
-    await save({ enabled: true, passcode: passcode.trim(), clientName: clientName.trim() });
+    await save(
+      { enabled: true, passcode: passcode.trim(), clientName: clientName.trim() },
+      'Client link enabled.'
+    );
   };
 
   const handleCopy = () => {
@@ -190,6 +201,11 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
                 {error}
               </p>
             )}
+            {savedMsg && !error && (
+              <p className="font-body" style={{ fontSize: 13, color: 'var(--color-success, #16a34a)', margin: '0 0 14px' }}>
+                {savedMsg}
+              </p>
+            )}
 
             {/* Actions */}
             <div className="flex items-center gap-2" style={{ marginTop: 4 }}>
@@ -207,14 +223,14 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
                     onClick={() => save({
                       clientName: clientName.trim(),
                       ...(passcode.trim() ? { passcode: passcode.trim() } : {}),
-                    })}
+                    }, 'Changes saved.')}
                     disabled={saving}
                     style={{ flex: 1, height: 40, border: 'none', borderRadius: 'var(--radius-md)', background: 'var(--color-accent)', color: '#FFF', fontSize: 14, fontWeight: 600, cursor: 'pointer', opacity: saving ? 0.7 : 1 }}
                   >
                     {saving ? 'Saving…' : 'Save changes'}
                   </button>
                   <button
-                    type="button" onClick={() => save({ regenerateLink: true })} disabled={saving}
+                    type="button" onClick={() => save({ regenerateLink: true }, 'New link generated.')} disabled={saving}
                     title="Generate a new link and invalidate the old one"
                     className="flex items-center gap-1.5"
                     style={{ height: 40, padding: '0 12px', border: '1.5px solid var(--color-border)', borderRadius: 'var(--radius-md)', background: 'transparent', color: 'var(--color-text-secondary)', fontSize: 13, cursor: 'pointer' }}
@@ -222,7 +238,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
                     <RefreshCw size={14} /> Rotate
                   </button>
                   <button
-                    type="button" onClick={() => save({ enabled: false })} disabled={saving}
+                    type="button" onClick={() => save({ enabled: false }, 'Client link disabled.')} disabled={saving}
                     style={{ height: 40, padding: '0 12px', border: '1.5px solid var(--color-border)', borderRadius: 'var(--radius-md)', background: 'transparent', color: 'var(--color-status-stuck, #dc2626)', fontSize: 13, cursor: 'pointer' }}
                   >
                     Disable

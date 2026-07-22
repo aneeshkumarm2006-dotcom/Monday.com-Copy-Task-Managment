@@ -61,14 +61,21 @@ const PortalLandingPage = () => {
     let alive = true;
     getPortalMeta(portalToken)
       .then((data) => alive && setMeta(data))
-      .catch((err) =>
-        alive &&
-        setLoadError(
-          err.response?.status === 404
-            ? "This portal link isn't valid or has been turned off."
-            : 'Could not load this portal. Please try again later.'
-        )
-      )
+      .catch((err) => {
+        if (!alive) return;
+        const status = err.response?.status;
+        if (status === 404) {
+          setLoadError("This portal link isn't valid or has been turned off.");
+        } else if (status) {
+          // A real HTTP error from the server — surface the code + message so
+          // it's diagnosable rather than a generic wall.
+          const msg = err.response?.data?.error || 'server error';
+          setLoadError(`Could not load this portal (error ${status}: ${msg}).`);
+        } else {
+          // No response at all — network/CORS/timeout.
+          setLoadError('Could not reach the server. Check your connection and try again.');
+        }
+      })
       .finally(() => alive && setLoading(false));
     return () => {
       alive = false;

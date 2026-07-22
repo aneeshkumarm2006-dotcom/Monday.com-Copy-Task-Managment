@@ -17,6 +17,8 @@ export const clearPortalToken = () =>
 
 const portalApi = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL,
+  // Surface hangs as errors instead of an endless spinner.
+  timeout: 20000,
 });
 
 portalApi.interceptors.request.use((config) => {

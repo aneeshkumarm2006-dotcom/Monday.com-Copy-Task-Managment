@@ -26,11 +26,14 @@ const taskGroupSchema = new mongoose.Schema({
   },
   // The public link id (crypto.randomBytes hex). Present in the URL the client
   // opens: `${CLIENT_URL}/portal/${portalToken}`. Regenerating rotates it and
-  // invalidates the old link. Sparse+unique so non-portal groups (null) don't
-  // collide on the unique index.
+  // invalidates the old link.
+  //
+  // NO `default` on purpose: the field must be ABSENT (not null) on groups
+  // without a portal. A sparse index skips absent fields but DOES index null
+  // values, so a `default: null` would put every group's null into the unique
+  // index and the second such group would collide (E11000). Absent → not indexed.
   portalToken: {
     type: String,
-    default: null,
   },
   // scrypt(passcode, salt) — never the raw passcode. Compared with
   // timingSafeEqual on the request-link step. See utils/portalCrypto.js.
