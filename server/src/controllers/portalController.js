@@ -656,7 +656,7 @@ const loadManageContext = async (groupId, userId) => {
   return { group, board: ctx.board, org: ctx.org };
 };
 
-const adminPortalPayload = (group) => ({
+const adminPortalPayload = (group, board = null) => ({
   groupId: String(group._id),
   portalEnabled: !!group.portalEnabled,
   clientName: group.portalClientName || '',
