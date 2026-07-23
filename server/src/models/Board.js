@@ -157,6 +157,38 @@ const boardSchema = new mongoose.Schema(
       default: [],
     },
     /**
+     * Monotonic counter for human-friendly client ticket references (#REQ-1042).
+     * Bumped atomically ($inc) as each client issue is created. Client boards only.
+     */
+    portalTicketSeq: {
+      type: Number,
+      default: 0,
+    },
+    /**
+     * An optional announcement the team broadcasts to every client on this
+     * board's portal (shown as a banner). Empty = no banner. Client boards only.
+     */
+    portalAnnouncement: {
+      type: String,
+      default: '',
+    },
+    /**
+     * Optional FAQ / knowledge-base entries shown to clients in the portal's Help
+     * section. Configured by the team. Client boards only.
+     */
+    portalFaqs: {
+      type: [
+        new mongoose.Schema(
+          {
+            q: { type: String, default: '' },
+            a: { type: String, default: '' },
+          },
+          { _id: true, timestamps: false }
+        ),
+      ],
+      default: [],
+    },
+    /**
      * What a PUBLIC board opens up to the org — the rung every member lands on
      * without an explicit grant. "Public" used to mean one hardcoded thing
      * (read everything, change status and nothing else), an arbitrary point on

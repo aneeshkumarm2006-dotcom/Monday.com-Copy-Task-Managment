@@ -64,10 +64,16 @@ const classifyIssue = (board, statusValue) => {
 const PORTAL_TYPES = ['bug', 'feature', 'requirement', 'question'];
 const PORTAL_PRIORITIES = ['low', 'medium', 'high', 'critical'];
 
+// Human-friendly ticket reference. Sequential (REQ-1042) once portalRef is set;
+// falls back to a stable id-suffix for legacy issues created before refs existed.
+const issueRef = (task) =>
+  task.portalRef ? `REQ-${task.portalRef}` : `REQ-${String(task._id).slice(-5).toUpperCase()}`;
+
 const serializeIssue = (task, board) => {
   const { state, label, color } = classifyIssue(board, task.status);
   return {
     id: String(task._id),
+    ref: issueRef(task),
     name: task.name,
     note: task.note || '',
     category: task.portalCategory || '',
@@ -183,7 +189,8 @@ const portalGoogleCallback = async (req, res) => {
 const getMyIssues = async (req, res) => {
   try {
     const { contactId, groupId, boardId } = req.portal;
-    const board = await Board.findById(boardId).select('statuses portalCategories organisation');
+    const board = await Board.findById(boardId)
+      .select('statuses portalCategories organisation portalAnnouncement portalFaqs');
     if (!board) return res.status(404).json({ error: 'Board not found' });
 
     const tasks = await Task.find({ group: groupId, portalSubmitter: contactId })
@@ -228,6 +235,10 @@ const getMyIssues = async (req, res) => {
         contactName, // the client's Google display name
         clientName: company, // kept for backward compat
         categories: Array.isArray(board.portalCategories) ? board.portalCategories : [],
+        announcement: board.portalAnnouncement || '',
+        faqs: (Array.isArray(board.portalFaqs) ? board.portalFaqs : [])
+          .filter((f) => f && (f.q || f.a))
+          .map((f) => ({ q: f.q || '', a: f.a || '' })),
       },
     });
   } catch (err) {
@@ -274,6 +285,19 @@ const createMyIssue = async (req, res) => {
     const last = await Task.findOne({ group: groupId }).sort({ order: -1 }).select('order');
     const order = (last?.order ?? -1) + 1;
 
+    // Atomically claim the next human-friendly ticket number for this board.
+    let portalRef = null;
+    try {
+      const bumped = await Board.findByIdAndUpdate(
+        boardId,
+        { $inc: { portalTicketSeq: 1 } },
+        { new: true, select: 'portalTicketSeq' }
+      );
+      portalRef = bumped?.portalTicketSeq || null;
+    } catch (seqErr) {
+      console.error('createMyIssue seq error:', seqErr);
+    }
+
     const task = await Task.create({
       name,
       note: (req.body?.note || '').toString().slice(0, 8000) || undefined,
@@ -286,6 +310,7 @@ const createMyIssue = async (req, res) => {
       portalCategory,
       portalType,
       priority,
+      portalRef,
       createdBy: null,
     });
 
@@ -636,7 +661,20 @@ const adminPortalPayload = (group) => ({
   portalEnabled: !!group.portalEnabled,
   clientName: group.portalClientName || '',
   link: group.portalToken ? `${CLIENT_URL()}/portal/${group.portalToken}` : null,
+  // Board-level portal content (shared by every group on the client board).
+  announcement: board?.portalAnnouncement || '',
+  faqs: (Array.isArray(board?.portalFaqs) ? board.portalFaqs : []).map((f) => ({
+    q: f.q || '',
+    a: f.a || '',
+  })),
 });
+
+/** Sanitize FAQ input from the admin: keep only entries with real content. */
+const cleanFaqs = (faqs) =>
+  (Array.isArray(faqs) ? faqs : [])
+    .map((f) => ({ q: (f?.q || '').toString().trim().slice(0, 300), a: (f?.a || '').toString().trim().slice(0, 2000) }))
+    .filter((f) => f.q || f.a)
+    .slice(0, 30);
 
 /**
  * GET /api/portal/groups/:groupId/config  — current portal state for the modal.
@@ -645,7 +683,7 @@ const getPortalConfig = async (req, res) => {
   try {
     const ctx = await loadManageContext(req.params.groupId, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    return res.json({ portal: adminPortalPayload(ctx.group) });
+    return res.json({ portal: adminPortalPayload(ctx.group, ctx.board) });
   } catch (err) {
     console.error('getPortalConfig error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -654,16 +692,17 @@ const getPortalConfig = async (req, res) => {
 
 /**
  * PUT /api/portal/groups/:groupId/config
- * Body: { enabled?, clientName?, regenerateLink? }
- * Set the client label, enable/disable, or rotate the link. The link itself is
- * minted at group creation; this only mints one lazily for legacy groups.
+ * Body: { enabled?, clientName?, regenerateLink?, announcement?, faqs? }
+ * Set the client label, enable/disable, rotate the link, or edit the board's
+ * portal announcement + FAQ. The link itself is minted at group creation; this
+ * only mints one lazily for legacy groups.
  */
 const savePortalConfig = async (req, res) => {
   try {
     const ctx = await loadManageContext(req.params.groupId, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    const { group } = ctx;
-    const { enabled, clientName, regenerateLink } = req.body || {};
+    const { group, board } = ctx;
+    const { enabled, clientName, regenerateLink, announcement, faqs } = req.body || {};
 
     if (typeof clientName === 'string') {
       group.portalClientName = clientName.trim();
@@ -681,8 +720,20 @@ const savePortalConfig = async (req, res) => {
       group.portalEnabled = enabled;
     }
 
+    // Board-level portal content (announcement banner + FAQ / knowledge base).
+    let boardDirty = false;
+    if (typeof announcement === 'string') {
+      board.portalAnnouncement = announcement.trim().slice(0, 1000);
+      boardDirty = true;
+    }
+    if (Array.isArray(faqs)) {
+      board.portalFaqs = cleanFaqs(faqs);
+      boardDirty = true;
+    }
+
     await group.save();
-    return res.json({ portal: adminPortalPayload(group) });
+    if (boardDirty) await board.save();
+    return res.json({ portal: adminPortalPayload(group, board) });
   } catch (err) {
     console.error('savePortalConfig error:', err);
     return res.status(500).json({ error: 'Server error' });

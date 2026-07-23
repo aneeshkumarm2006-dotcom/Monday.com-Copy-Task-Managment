@@ -45,6 +45,8 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState(null);
   const [clientName, setClientName] = useState('');
+  const [announcement, setAnnouncement] = useState('');
+  const [faqs, setFaqs] = useState([]);
   const [inviteEmail, setInviteEmail] = useState('');
   const [saving, setSaving] = useState(false);
   const [inviting, setInviting] = useState(false);
@@ -57,6 +59,8 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
       const c = await getGroupPortalConfig(groupId);
       setConfig(c);
       setClientName(c.clientName || '');
+      setAnnouncement(c.announcement || '');
+      setFaqs(Array.isArray(c.faqs) ? c.faqs : []);
     } catch (err) {
       setError(err.response?.data?.error || 'Could not load portal settings.');
     } finally {
@@ -227,6 +231,67 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
                   style={{ height: 40, padding: '0 14px', border: 'none', borderRadius: 'var(--radius-md)', background: 'var(--color-accent)', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: inviting ? 'not-allowed' : 'pointer', opacity: inviting ? 0.7 : 1 }}
                 >
                   <Send size={14} /> {inviting ? 'Sending…' : 'Send'}
+                </button>
+              </div>
+            </div>
+
+            {/* Announcement banner shown to all clients on this board */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={label}>Announcement (shown to every client)</label>
+              <textarea
+                style={{ ...field, minHeight: 58, resize: 'vertical' }}
+                value={announcement}
+                onChange={(e) => setAnnouncement(e.target.value)}
+                placeholder="e.g. We're on reduced hours this Friday — replies may be slower."
+                onBlur={() => {
+                  if ((announcement.trim() || '') !== (config?.announcement || '')) {
+                    save({ announcement: announcement.trim() }, 'Announcement saved.');
+                  }
+                }}
+              />
+            </div>
+
+            {/* FAQ / knowledge base */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={label}>Help &amp; FAQs (shown in the portal)</label>
+              {faqs.map((f, i) => (
+                <div key={i} style={{ border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: 10, marginBottom: 8 }}>
+                  <input
+                    style={{ ...field, marginBottom: 6 }}
+                    placeholder="Question"
+                    value={f.q || ''}
+                    onChange={(e) => setFaqs((prev) => prev.map((x, j) => (j === i ? { ...x, q: e.target.value } : x)))}
+                  />
+                  <textarea
+                    style={{ ...field, minHeight: 46, resize: 'vertical' }}
+                    placeholder="Answer"
+                    value={f.a || ''}
+                    onChange={(e) => setFaqs((prev) => prev.map((x, j) => (j === i ? { ...x, a: e.target.value } : x)))}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setFaqs((prev) => prev.filter((_, j) => j !== i))}
+                    style={{ marginTop: 6, background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: 'var(--color-status-stuck, #dc2626)' }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => setFaqs((prev) => [...prev, { q: '', a: '' }])}
+                  style={{ height: 34, padding: '0 12px', border: '1.5px solid var(--color-border)', borderRadius: 'var(--radius-md)', background: 'transparent', color: 'var(--color-text-secondary)', fontSize: 13, cursor: 'pointer' }}
+                >
+                  + Add FAQ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => save({ faqs }, 'FAQs saved.')}
+                  disabled={saving}
+                  style={{ height: 34, padding: '0 14px', border: 'none', borderRadius: 'var(--radius-md)', background: 'var(--color-accent)', color: '#FFF', fontSize: 13, fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.7 : 1 }}
+                >
+                  Save FAQs
                 </button>
               </div>
             </div>

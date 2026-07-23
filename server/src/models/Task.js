@@ -128,6 +128,12 @@ const taskSchema = new mongoose.Schema(
       max: 5,
       default: null,
     },
+    // Human-friendly sequential ticket number within the board (→ "#REQ-1042"),
+    // assigned from Board.portalTicketSeq at creation. Client tasks only.
+    portalRef: {
+      type: Number,
+      default: null,
+    },
     // Files attached directly to the task (uploaded via the Files tab).
     // Mirrors the Update.attachments shape so the FE can share UI.
     attachments: {

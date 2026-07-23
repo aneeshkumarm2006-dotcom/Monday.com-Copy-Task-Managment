@@ -3,6 +3,7 @@ import {
   Plus, Paperclip, Send, ArrowLeft, LogOut, Loader2, CheckCircle2,
   CircleDot, MessageSquare, X, Inbox, Timer, Building2, ChevronRight,
   Bug, Sparkles, ClipboardList, HelpCircle, Star, RotateCcw, Hand,
+  Search, Megaphone, ChevronDown,
 } from 'lucide-react';
 import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
@@ -28,6 +29,41 @@ const PRIORITIES = {
   medium: { label: 'Medium', color: '#2563EB' },
   high: { label: 'High', color: '#EA580C' },
   critical: { label: 'Urgent', color: '#DC2626' },
+};
+
+// The intake form adapts its labels + placeholders to the chosen request type,
+// so picking Bug vs Requirement vs Question visibly tailors what we ask for.
+const DEFAULT_FORM = {
+  titleLabel: 'Title',
+  titlePlaceholder: 'e.g. Login page not loading',
+  detailsLabel: 'Details',
+  detailsPlaceholder: "Describe what's happening, your requirement, or your question — and anything that helps us.",
+};
+const TYPE_FORM = {
+  bug: {
+    titleLabel: 'What went wrong?',
+    titlePlaceholder: 'e.g. Login page shows a blank screen',
+    detailsLabel: 'What happened?',
+    detailsPlaceholder: 'Steps to reproduce · what you expected · what actually happened.',
+  },
+  feature: {
+    titleLabel: 'What would you like?',
+    titlePlaceholder: 'e.g. Add dark mode to the dashboard',
+    detailsLabel: 'Describe the idea',
+    detailsPlaceholder: 'What should it do, and what problem would it solve for you?',
+  },
+  requirement: {
+    titleLabel: 'What do you need?',
+    titlePlaceholder: 'e.g. New landing page for the spring campaign',
+    detailsLabel: 'Requirement details',
+    detailsPlaceholder: 'Goals · scope · references or deadlines · what "done" looks like.',
+  },
+  question: {
+    titleLabel: 'Your question',
+    titlePlaceholder: 'e.g. How do I export my report?',
+    detailsLabel: 'Add any details',
+    detailsPlaceholder: 'Anything that gives us context to answer well.',
+  },
 };
 
 const LIST_POLL = 20000;
@@ -100,6 +136,12 @@ const PortalDashboardPage = () => {
   const [composerOpen, setComposerOpen] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
 
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState('newest'); // newest | oldest | priority
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [showHelp, setShowHelp] = useState(false);
+  const [annDismissed, setAnnDismissed] = useState(false);
+
   const loadIssues = useCallback(async () => {
     try {
       const data = await getMyIssues();
@@ -134,7 +176,16 @@ const PortalDashboardPage = () => {
     ongoing: issues.filter((i) => i.state === 'ongoing').length,
     resolved: issues.filter((i) => i.state === 'resolved').length,
   };
-  const visible = filter === 'all' ? issues : issues.filter((i) => i.state === filter);
+  const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+  const q = query.trim().toLowerCase();
+  let visible = filter === 'all' ? issues : issues.filter((i) => i.state === filter);
+  if (typeFilter !== 'all') visible = visible.filter((i) => i.type === typeFilter);
+  if (q) visible = visible.filter((i) => `${i.name} ${i.note} ${i.ref}`.toLowerCase().includes(q));
+  visible = [...visible].sort((a, b) => {
+    if (sort === 'priority') return (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9);
+    const da = new Date(a.createdAt).getTime(); const db = new Date(b.createdAt).getTime();
+    return sort === 'oldest' ? da - db : db - da;
+  });
 
   if (loading) return <DashboardSkeleton />;
 
@@ -197,6 +248,22 @@ const PortalDashboardPage = () => {
               </button>
             </div>
 
+            {/* Team announcement banner */}
+            {context.announcement && !annDismissed && (
+              <div className="mcp-card" style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '14px 16px', marginBottom: 18, background: '#FEFCE8', borderColor: '#FDE68A' }}>
+                <span style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#FEF08A', color: '#A16207' }}>
+                  <Megaphone size={16} />
+                </span>
+                <div style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: '#713F12', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                  {context.announcement}
+                </div>
+                <button type="button" onClick={() => setAnnDismissed(true)} aria-label="Dismiss"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A16207', padding: 2 }}>
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+
             {/* Welcome hero (first visit) */}
             {showWelcome && (
               <WelcomeHero
@@ -241,6 +308,26 @@ const PortalDashboardPage = () => {
               </div>
             )}
 
+            {/* Search / type filter / sort toolbar */}
+            {issues.length > 1 && (
+              <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+                <div style={{ position: 'relative', flex: '1 1 220px', minWidth: 180 }}>
+                  <Search size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8' }} />
+                  <input className="mcp-field" style={{ paddingLeft: 34 }} placeholder="Search requests…"
+                    value={query} onChange={(e) => setQuery(e.target.value)} />
+                </div>
+                <select className="mcp-field" style={{ width: 'auto', cursor: 'pointer' }} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                  <option value="all">All types</option>
+                  {Object.entries(TYPES).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
+                </select>
+                <select className="mcp-field" style={{ width: 'auto', cursor: 'pointer' }} value={sort} onChange={(e) => setSort(e.target.value)}>
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
+                  <option value="priority">By priority</option>
+                </select>
+              </div>
+            )}
+
             {issues.length === 0 && !composerOpen ? (
               <div className="mcp-card-lg" style={{ padding: '48px 32px', textAlign: 'center' }}>
                 <div style={{ width: 60, height: 60, borderRadius: 16, margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#eff4ff', color: '#2563eb' }}>
@@ -281,11 +368,37 @@ const PortalDashboardPage = () => {
                     </div>
 
                     <div className="mcp-tcard-foot">
-                      <span>Raised {formatShortDate(issue.createdAt)}</span>
+                      <span>
+                        {issue.ref && <span style={{ fontWeight: 700, color: '#64748B' }}>{issue.ref}</span>}
+                        {issue.ref && ' · '}Raised {formatShortDate(issue.createdAt)}
+                      </span>
                       <ChevronRight size={16} className="mcp-item-chev" />
                     </div>
                   </button>
                 ))}
+              </div>
+            )}
+
+            {/* Help & FAQs (knowledge base) */}
+            {Array.isArray(context.faqs) && context.faqs.length > 0 && (
+              <div className="mcp-card-lg" style={{ marginTop: 22, overflow: 'hidden' }}>
+                <button type="button" onClick={() => setShowHelp((v) => !v)}
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', background: 'none', border: 'none', cursor: 'pointer', font: 'inherit' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 15, fontWeight: 700 }}>
+                    <HelpCircle size={17} color="#2563eb" /> Help &amp; FAQs
+                  </span>
+                  <ChevronDown size={18} style={{ color: '#94A3B8', transform: showHelp ? 'rotate(180deg)' : 'none', transition: 'transform .18s ease' }} />
+                </button>
+                {showHelp && (
+                  <div style={{ padding: '0 20px 10px' }}>
+                    {context.faqs.map((f, i) => (
+                      <div key={i} style={{ borderTop: '1px solid #eef2f9', padding: '14px 0' }}>
+                        {f.q && <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 5 }}>{f.q}</div>}
+                        {f.a && <div style={{ fontSize: 13.5, color: '#475569', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{f.a}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -388,6 +501,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
   };
 
   const label = { fontSize: 12.5, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 7 };
+  const f = TYPE_FORM[type] || DEFAULT_FORM;
 
   return (
     <form onSubmit={submit} className="mcp-card-lg mcp-pop" style={{ padding: 22, marginBottom: 20 }}>
@@ -411,13 +525,13 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
         })}
       </div>
 
-      <label style={label}>Title</label>
-      <input className="mcp-field" style={{ marginBottom: 16 }} placeholder="e.g. Login page not loading"
+      <label style={label}>{f.titleLabel}</label>
+      <input className="mcp-field" style={{ marginBottom: 16 }} placeholder={f.titlePlaceholder}
         value={name} onChange={(e) => setName(e.target.value)} autoFocus />
 
-      <label style={label}>Details</label>
+      <label style={label}>{f.detailsLabel}</label>
       <textarea className="mcp-field" style={{ marginBottom: 16, minHeight: 104 }}
-        placeholder="Describe what's happening, your requirement, or your question — and anything that helps us."
+        placeholder={f.detailsPlaceholder}
         value={note} onChange={(e) => setNote(e.target.value)} />
 
       {/* Priority */}
@@ -559,6 +673,7 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
 
       <div className="mcp-card-lg" style={{ padding: '17px 20px', marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 0 }}>
+          {issue.ref && <div style={{ fontSize: 12, fontWeight: 700, color: '#94A3B8', marginBottom: 3 }}>{issue.ref}</div>}
           <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.02em' }}>{issue.name}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, flexWrap: 'wrap' }}>
             <TypeBadge type={detail?.type ?? issue.type} />

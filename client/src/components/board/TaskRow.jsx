@@ -16,6 +16,15 @@ import { isStatusDone } from '../../utils/statusUtils';
 
 const NAVBAR_HEIGHT = 56;
 
+// Client-portal request types → a compact board badge, so the team can triage
+// client tickets (bug vs feature vs requirement vs question) at a glance.
+const PORTAL_TYPE_BADGE = {
+  bug: { label: 'Bug', color: '#DC2626' },
+  feature: { label: 'Feature', color: '#7C3AED' },
+  requirement: { label: 'Requirement', color: '#2563EB' },
+  question: { label: 'Question', color: '#0891B2' },
+};
+
 const toYMD = (iso) => {
   if (!iso) return '';
   const d = new Date(iso);
@@ -287,6 +296,43 @@ const TaskRow = ({
               }}
             >
               Client
+            </span>
+          )}
+          {/* The client-chosen request type + category, so the team can triage
+              client tickets at a glance without opening each one. */}
+          {task.source === 'client' && task.portalType && PORTAL_TYPE_BADGE[task.portalType] && (
+            <span
+              className="font-body shrink-0"
+              title={`Request type: ${PORTAL_TYPE_BADGE[task.portalType].label}`}
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                color: PORTAL_TYPE_BADGE[task.portalType].color,
+                background: `${PORTAL_TYPE_BADGE[task.portalType].color}1A`,
+                padding: '1px 6px',
+                borderRadius: 'var(--radius-full)',
+              }}
+            >
+              {PORTAL_TYPE_BADGE[task.portalType].label}
+            </span>
+          )}
+          {task.source === 'client' && task.portalCategory && (
+            <span
+              className="font-body shrink-0 truncate"
+              title={`Category: ${task.portalCategory}`}
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: 'var(--color-text-secondary)',
+                background: 'var(--color-bg-subtle, #F1F5F9)',
+                padding: '1px 6px',
+                borderRadius: 'var(--radius-full)',
+                maxWidth: 120,
+              }}
+            >
+              {task.portalCategory}
             </span>
           )}
         </div>
