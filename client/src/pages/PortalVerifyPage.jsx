@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2 } from 'lucide-react';
+import { Loader2, AlertCircle } from 'lucide-react';
 import { setPortalToken } from '../services/portalService';
+import '../styles/portal.css';
 
 /**
  * PortalVerifyPage — `/portal/verify`. The landing spot after Google sign-in.
@@ -9,17 +10,6 @@ import { setPortalToken } from '../services/portalService';
  * (already minted server-side); we just store it and route to the dashboard.
  * `?error=1` means sign-in failed. Mirrors AuthCallbackPage for the portal plane.
  */
-const shell = {
-  minHeight: '100vh',
-  width: '100%',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  background: '#F3F4F8',
-  padding: 24,
-  fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif",
-};
-
 const PortalVerifyPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -42,27 +32,32 @@ const PortalVerifyPage = () => {
 
   if (error) {
     return (
-      <div style={shell}>
-        <div
-          style={{
-            width: '100%', maxWidth: 420, background: '#FFF', borderRadius: 14,
-            boxShadow: '0 4px 24px rgba(0,0,0,0.10)', padding: 32, textAlign: 'center',
-          }}
-        >
-          <p style={{ fontSize: 16, fontWeight: 700, color: '#111827', margin: '0 0 8px' }}>
-            Sign-in failed
-          </p>
-          <p style={{ fontSize: 14, color: '#6B7280', margin: 0, lineHeight: 1.5 }}>{error}</p>
+      <div className="mcp mcp-page mcp-shell">
+        <div className="mcp-card-lg mcp-pop" style={{ maxWidth: 420, padding: 36, textAlign: 'center' }}>
+          <div
+            style={{
+              width: 52, height: 52, borderRadius: 14, margin: '0 auto 16px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: '#FEF2F2', color: '#DC2626',
+            }}
+          >
+            <AlertCircle size={26} />
+          </div>
+          <p style={{ fontSize: 17, fontWeight: 700, margin: '0 0 8px' }}>Sign-in failed</p>
+          <p style={{ fontSize: 14, color: '#64748B', margin: 0, lineHeight: 1.55 }}>{error}</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div style={shell}>
-      <Loader2 size={28} color="#2563EB" style={{ animation: 'spin 1s linear infinite' }} />
-      <span style={{ marginLeft: 12, color: '#6B7280', fontSize: 14 }}>Signing you in…</span>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    <div className="mcp mcp-page mcp-shell">
+      <div className="mcp-pop" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+        <div className="mcp-brand-mark" style={{ width: 54, height: 54, borderRadius: 15, position: 'relative' }}>
+          <Loader2 size={26} className="mcp-spin" color="#fff" />
+        </div>
+        <span style={{ color: '#475569', fontSize: 14.5, fontWeight: 500 }}>Signing you in…</span>
+      </div>
     </div>
   );
 };

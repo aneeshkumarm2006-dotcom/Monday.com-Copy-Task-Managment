@@ -4,7 +4,6 @@ const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
 const Update = require('../models/Update');
 const ClientContact = require('../models/ClientContact');
-const PortalMagicToken = require('../models/PortalMagicToken');
 const Organisation = require('../models/Organisation');
 const { loadBoardContext } = require('../utils/boardContext');
 const { isResolvedStatus } = require('../utils/doneStatus');
@@ -464,7 +463,6 @@ const savePortalConfig = async (req, res) => {
     const needsToken = !group.portalToken;
     if (regenerateLink || needsToken) {
       group.portalToken = generatePortalToken();
-      await PortalMagicToken.deleteMany({ group: group._id });
     }
 
     if (typeof enabled === 'boolean') {

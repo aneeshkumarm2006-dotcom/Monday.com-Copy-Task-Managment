@@ -1,0 +1,424 @@
+/* =============================================================================
+ * Macan Client Portal — design system
+ * -----------------------------------------------------------------------------
+ * A self-contained visual language for the EXTERNAL client-facing portal
+ * (landing / verify / dashboard). Deliberately scoped under `.mcp` so nothing
+ * here leaks into the main app chrome. Style: "Soft UI Evolution" — soft layered
+ * shadows, subtle depth, blue primary + emerald success, WCAG AA+.
+ *
+ * Everything is class-driven so we get real hover / focus / keyframes /
+ * responsive / reduced-motion that inline styles cannot express.
+ * ========================================================================== */
+
+.mcp {
+  /* ---- tokens ---- */
+  --p-primary: #2563eb;
+  --p-primary-2: #3b82f6;
+  --p-primary-press: #1d4ed8;
+  --p-primary-soft: #eff4ff;
+
+  --p-success: #059669;
+  --p-success-soft: #ecfdf5;
+  --p-warn: #b45309;
+  --p-warn-soft: #fffbeb;
+  --p-danger: #dc2626;
+
+  --p-ink: #0f172a;
+  --p-ink-2: #475569;
+  --p-muted: #94a3b8;
+
+  --p-bg: #f6f8fc;
+  --p-card: #ffffff;
+  --p-border: #e7edf7;
+  --p-border-strong: #d6e0f2;
+  --p-field: #f8fafc;
+
+  --p-r-sm: 10px;
+  --p-r: 14px;
+  --p-r-lg: 20px;
+
+  --p-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --p-shadow: 0 1px 3px rgba(16, 24, 40, 0.06), 0 10px 28px -8px rgba(16, 24, 40, 0.12);
+  --p-shadow-lg: 0 18px 50px -12px rgba(37, 99, 235, 0.28);
+  --p-ring: 0 0 0 4px rgba(37, 99, 235, 0.16);
+
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;
+  color: var(--p-ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'ss01';
+}
+
+/* ---- page canvas ---------------------------------------------------------- */
+.mcp-page {
+  min-height: 100dvh;
+  width: 100%;
+  background:
+    radial-gradient(1200px 520px at 50% -8%, #eaf1ff 0%, rgba(234, 241, 255, 0) 60%),
+    radial-gradient(900px 500px at 100% 0%, #f2ecff 0%, rgba(242, 236, 255, 0) 55%),
+    var(--p-bg);
+}
+
+.mcp-shell {
+  min-height: 100dvh;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.mcp-container {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 20px 72px;
+}
+
+/* ---- cards ---------------------------------------------------------------- */
+.mcp-card {
+  background: var(--p-card);
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-r);
+  box-shadow: var(--p-shadow-sm);
+}
+
+.mcp-card-lg {
+  background: var(--p-card);
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-r-lg);
+  box-shadow: var(--p-shadow);
+}
+
+/* clickable list card */
+.mcp-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--p-card);
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-r);
+  box-shadow: var(--p-shadow-sm);
+  padding: 15px 17px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: transform 0.16s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.mcp-item:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--p-shadow);
+  border-color: var(--p-border-strong);
+}
+.mcp-item:active {
+  transform: translateY(0);
+}
+
+/* ---- buttons -------------------------------------------------------------- */
+.mcp-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 18px;
+  border-radius: var(--p-r-sm);
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.14s ease, box-shadow 0.2s ease, background 0.2s ease,
+    border-color 0.2s ease, opacity 0.2s ease;
+}
+.mcp-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--p-ring);
+}
+.mcp-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.mcp-btn--primary {
+  color: #fff;
+  background: linear-gradient(180deg, var(--p-primary-2) 0%, var(--p-primary) 100%);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12), 0 8px 18px -6px rgba(37, 99, 235, 0.5);
+}
+.mcp-btn--primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(16, 24, 40, 0.14), 0 12px 24px -6px rgba(37, 99, 235, 0.55);
+}
+.mcp-btn--primary:active:not(:disabled) {
+  transform: translateY(0);
+  background: var(--p-primary-press);
+}
+
+.mcp-btn--ghost {
+  color: var(--p-ink-2);
+  background: #fff;
+  border-color: var(--p-border-strong);
+}
+.mcp-btn--ghost:hover:not(:disabled) {
+  background: var(--p-field);
+  color: var(--p-ink);
+  border-color: var(--p-muted);
+}
+
+.mcp-btn--google {
+  width: 100%;
+  height: 48px;
+  font-size: 15px;
+  color: var(--p-ink);
+  background: #fff;
+  border-color: var(--p-border-strong);
+}
+.mcp-btn--google:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--p-shadow);
+  border-color: var(--p-muted);
+}
+
+.mcp-btn--block {
+  width: 100%;
+}
+
+/* subtle text/link button */
+.mcp-linkbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--p-ink-2);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s ease;
+}
+.mcp-linkbtn:hover {
+  color: var(--p-primary);
+}
+.mcp-linkbtn:focus-visible {
+  outline: none;
+  box-shadow: var(--p-ring);
+}
+
+/* ---- fields --------------------------------------------------------------- */
+.mcp-field {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1.5px solid var(--p-border);
+  border-radius: var(--p-r-sm);
+  padding: 11px 13px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--p-ink);
+  background: var(--p-field);
+  outline: none;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+.mcp-field::placeholder {
+  color: var(--p-muted);
+}
+.mcp-field:focus {
+  background: #fff;
+  border-color: var(--p-primary);
+  box-shadow: var(--p-ring);
+}
+textarea.mcp-field {
+  resize: vertical;
+  line-height: 1.55;
+}
+
+/* ---- pills ---------------------------------------------------------------- */
+.mcp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  padding: 4px 11px;
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+.mcp-pill--open {
+  color: var(--p-warn);
+  background: var(--p-warn-soft);
+  box-shadow: inset 0 0 0 1px rgba(180, 83, 9, 0.14);
+}
+.mcp-pill--resolved {
+  color: var(--p-success);
+  background: var(--p-success-soft);
+  box-shadow: inset 0 0 0 1px rgba(5, 150, 105, 0.16);
+}
+.mcp-tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--p-ink-2);
+  background: var(--p-primary-soft);
+  border-radius: 7px;
+  padding: 3px 9px;
+}
+
+/* ---- chat bubbles --------------------------------------------------------- */
+.mcp-msg-row {
+  display: flex;
+  flex-direction: column;
+}
+.mcp-msg-row.mine {
+  align-items: flex-end;
+}
+.mcp-msg-author {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--p-muted);
+  margin: 0 4px 4px;
+}
+.mcp-bubble {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: var(--p-shadow-sm);
+}
+.mcp-bubble.them {
+  background: #fff;
+  color: var(--p-ink);
+  border: 1px solid var(--p-border);
+  border-bottom-left-radius: 6px;
+}
+.mcp-bubble.mine {
+  color: #fff;
+  background: linear-gradient(180deg, var(--p-primary-2) 0%, var(--p-primary) 100%);
+  border-bottom-right-radius: 6px;
+}
+.mcp-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  border-radius: 6px;
+  padding: 2px 0;
+}
+.mcp-bubble.mine .mcp-attach {
+  color: #dbeafe;
+}
+.mcp-bubble.them .mcp-attach {
+  color: var(--p-primary);
+}
+.mcp-attach:hover {
+  text-decoration: underline;
+}
+
+/* ---- header --------------------------------------------------------------- */
+.mcp-topbar {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: saturate(180%) blur(12px);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  border-bottom: 1px solid var(--p-border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.mcp-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  color: #fff;
+  font-weight: 800;
+  font-size: 18px;
+  background: linear-gradient(140deg, var(--p-primary-2), var(--p-primary));
+  box-shadow: 0 6px 16px -4px rgba(37, 99, 235, 0.5);
+}
+
+/* ---- skeleton ------------------------------------------------------------- */
+.mcp-skel {
+  border-radius: var(--p-r);
+  background: linear-gradient(100deg, #eef2f9 30%, #f6f9ff 50%, #eef2f9 70%);
+  background-size: 200% 100%;
+  animation: mcp-shimmer 1.4s ease-in-out infinite;
+}
+
+/* ---- motion --------------------------------------------------------------- */
+@keyframes mcp-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes mcp-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes mcp-pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes mcp-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.mcp-spin {
+  animation: mcp-spin 0.9s linear infinite;
+}
+.mcp-rise {
+  animation: mcp-rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.mcp-pop {
+  animation: mcp-pop 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ---- responsive ----------------------------------------------------------- */
+@media (max-width: 640px) {
+  .mcp-container {
+    padding: 0 14px 56px;
+  }
+  .mcp-bubble {
+    max-width: 88%;
+  }
+}
+
+/* ---- reduced motion ------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .mcp *,
+  .mcp *::before,
+  .mcp *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .mcp-spin {
+    animation: mcp-spin 0.9s linear infinite !important;
+  }
+}
