@@ -15,6 +15,9 @@ const ACTIVITY_TYPES = [
   'attachment.deleted',
   'comment.added',
   'update.added',
+  // Client Portal actions (actor is a ClientContact, not a User → actorType 'client').
+  'client.request_created',
+  'client.update_added',
 ];
 
 const FIELD_KEYS = [
@@ -42,10 +45,25 @@ const activityLogSchema = new mongoose.Schema({
     default: null,
     index: true,
   },
+  // Who acted. For team actions this is the User (actorType 'user'). For Client
+  // Portal actions there is no User — actorType is 'client' and `actorLabel`
+  // carries the client's display name instead.
   actor: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
+    required: function requireActorForUserEvents() {
+      return this.actorType !== 'client';
+    },
+    default: null,
+  },
+  actorType: {
+    type: String,
+    enum: ['user', 'client'],
+    default: 'user',
+  },
+  actorLabel: {
+    type: String,
+    default: '',
   },
   type: {
     type: String,

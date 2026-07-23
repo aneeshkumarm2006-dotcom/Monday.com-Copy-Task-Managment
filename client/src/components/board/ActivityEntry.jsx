@@ -164,6 +164,8 @@ const iconFor = (entry) => {
   if (entry.type === 'attachment.deleted') return Trash2;
   if (entry.type === 'comment.added') return MessageSquare;
   if (entry.type === 'update.added') return FileText;
+  if (entry.type === 'client.request_created') return Plus;
+  if (entry.type === 'client.update_added') return MessageSquare;
   return ActivityIcon;
 };
 
@@ -335,6 +337,21 @@ const renderBody = (entry) => {
     return (
       <span>
         {Actor} posted an update{snippet ? <>: <Quoted muted>“{snippet}”</Quoted></> : '.'}
+      </span>
+    );
+  }
+  if (entry.type === 'client.request_created') {
+    return (
+      <span>
+        {Actor} <span style={{ color: 'var(--color-accent)', fontWeight: 600 }}>(client)</span> raised this request.
+      </span>
+    );
+  }
+  if (entry.type === 'client.update_added') {
+    const snippet = entry.metadata?.updateSnippet;
+    return (
+      <span>
+        {Actor} <span style={{ color: 'var(--color-accent)', fontWeight: 600 }}>(client)</span> sent a message{snippet ? <>: <Quoted muted>“{snippet}”</Quoted></> : '.'}
       </span>
     );
   }

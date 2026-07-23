@@ -3,7 +3,7 @@ import {
   Plus, Paperclip, Send, ArrowLeft, LogOut, Loader2, CheckCircle2,
   CircleDot, MessageSquare, X, Inbox, Timer, Building2, ChevronRight,
   Bug, Sparkles, ClipboardList, HelpCircle, Star, RotateCcw, Hand,
-  Search, Megaphone, ChevronDown,
+  Search, Megaphone, ChevronDown, Clock,
 } from 'lucide-react';
 import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
@@ -365,6 +365,11 @@ const PortalDashboardPage = () => {
                       <TypeBadge type={issue.type} />
                       <PriorityBadge priority={issue.priority} />
                       {issue.category && <span className="mcp-tag">{issue.category}</span>}
+                      {issue.dueDate && (
+                        <span className="mcp-badge" style={{ '--bc': '#0891B2' }}>
+                          <Clock size={12} /> Needed by {formatShortDate(issue.dueDate)}
+                        </span>
+                      )}
                     </div>
 
                     <div className="mcp-tcard-foot">
@@ -475,6 +480,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
   const [note, setNote] = useState('');
   const [type, setType] = useState('');
   const [priority, setPriority] = useState('medium');
+  const [dueDate, setDueDate] = useState('');
   const [category, setCategory] = useState('');
   const [file, setFile] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -490,6 +496,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
       const { issue } = await createMyIssue({
         name: name.trim(), note: note.trim(),
         type: type || undefined, priority,
+        dueDate: dueDate || undefined,
         category: category || undefined,
       });
       if (file) { try { await uploadIssueAttachment(issue.id, file); } catch { /* non-fatal */ } }
@@ -548,6 +555,10 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
           );
         })}
       </div>
+
+      <label style={label}>Needed by <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
+      <input type="date" className="mcp-field" style={{ marginBottom: 16, cursor: 'pointer' }}
+        value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
 
       {Array.isArray(categories) && categories.length > 0 && (
         <>
@@ -678,6 +689,11 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, flexWrap: 'wrap' }}>
             <TypeBadge type={detail?.type ?? issue.type} />
             <PriorityBadge priority={detail?.priority ?? issue.priority} />
+            {issue.dueDate && (
+              <span className="mcp-badge" style={{ '--bc': '#0891B2' }}>
+                <Clock size={12} /> Needed by {formatShortDate(issue.dueDate)}
+              </span>
+            )}
           </div>
         </div>
         <StatusChip label={statusLabel} color={statusColor} />

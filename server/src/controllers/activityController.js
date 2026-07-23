@@ -149,7 +149,15 @@ const getActivity = async (req, res) => {
     const board = access.board;
 
     const items = slice.map((e) => {
-      const actorDoc = userMap.get(e.actor.toString());
+      const actorDoc = e.actor ? userMap.get(e.actor.toString()) : null;
+      let actor;
+      if (actorDoc) {
+        actor = { _id: actorDoc._id, name: actorDoc.name, profilePic: actorDoc.profilePic };
+      } else if (e.actorType === 'client') {
+        actor = { _id: null, name: e.actorLabel || 'Client', profilePic: null, isClient: true };
+      } else {
+        actor = { _id: e.actor, name: 'Unknown', profilePic: null };
+      }
       return {
         _id: e._id,
         type: e.type,
@@ -157,13 +165,7 @@ const getActivity = async (req, res) => {
         oldValue: resolveFieldValue(e.field, e.oldValue, board, userMap),
         newValue: resolveFieldValue(e.field, e.newValue, board, userMap),
         metadata: e.metadata,
-        actor: actorDoc
-          ? {
-              _id: actorDoc._id,
-              name: actorDoc.name,
-              profilePic: actorDoc.profilePic,
-            }
-          : { _id: e.actor, name: 'Unknown', profilePic: null },
+        actor,
         createdAt: e.createdAt,
       };
     });

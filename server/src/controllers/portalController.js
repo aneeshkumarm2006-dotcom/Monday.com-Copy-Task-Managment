@@ -9,6 +9,7 @@ const { loadBoardContext } = require('../utils/boardContext');
 const { isResolvedStatus } = require('../utils/doneStatus');
 const { generatePortalToken } = require('../utils/portalCrypto');
 const { createNotificationsForUsers } = require('../services/notificationService');
+const { logActivity } = require('../services/activityService');
 const { sendPortalReplyEmail } = require('../services/emailService');
 const { sendGroupInvite } = require('../services/portalInviteService');
 
@@ -80,6 +81,7 @@ const serializeIssue = (task, board) => {
     type: task.portalType || '',
     priority: task.priority || 'medium',
     rating: task.portalRating || null,
+    dueDate: task.dueDate || null,
     createdAt: task.createdAt,
     state, // 'open' | 'ongoing' | 'resolved'
     statusLabel: label,
@@ -282,6 +284,14 @@ const createMyIssue = async (req, res) => {
     const reqPriority = (req.body?.priority || '').toString().trim().toLowerCase();
     const priority = PORTAL_PRIORITIES.includes(reqPriority) ? reqPriority : 'medium';
 
+    // Optional "needed by" date the client sets → the task's due date.
+    let dueDate;
+    const rawDue = (req.body?.dueDate || '').toString().trim();
+    if (rawDue) {
+      const d = new Date(rawDue);
+      if (!Number.isNaN(d.getTime())) dueDate = d;
+    }
+
     const last = await Task.findOne({ group: groupId }).sort({ order: -1 }).select('order');
     const order = (last?.order ?? -1) + 1;
 
@@ -311,7 +321,17 @@ const createMyIssue = async (req, res) => {
       portalType,
       priority,
       portalRef,
+      dueDate,
       createdBy: null,
+    });
+
+    // Record the client's action in the task Activity Log (best-effort).
+    logActivity({
+      task,
+      actorType: 'client',
+      actorLabel: req.portal.contact?.name || 'Client',
+      type: 'client.request_created',
+      metadata: { taskName: name },
     });
 
     // Alert the team (in-app). createNotificationsForUsers filters the recipient
@@ -492,6 +512,15 @@ const postIssueThreadMessage = async (req, res) => {
       body: null,
       bodyText: bodyText.slice(0, 4000),
       attachments,
+    });
+
+    // Record the client's message in the task Activity Log (best-effort).
+    logActivity({
+      task,
+      actorType: 'client',
+      actorLabel: req.portal.contact?.name || 'Client',
+      type: 'client.update_added',
+      metadata: { updateSnippet: (bodyText || '').slice(0, 140) },
     });
 
     // Alert the team.

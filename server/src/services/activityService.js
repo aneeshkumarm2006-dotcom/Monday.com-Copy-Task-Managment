@@ -18,6 +18,8 @@ const ActivityLog = require('../models/ActivityLog');
 const logActivity = async ({
   task,
   actor,
+  actorType = 'user',
+  actorLabel = '',
   type,
   field,
   oldValue,
@@ -25,7 +27,9 @@ const logActivity = async ({
   metadata,
 }) => {
   try {
-    if (!task || !actor || !type) return null;
+    // Team events need a User actor; client-portal events carry a label instead.
+    if (!task || !type) return null;
+    if (actorType !== 'client' && !actor) return null;
 
     const taskId = task._id || task;
     const boardId = task.board || null;
@@ -33,7 +37,9 @@ const logActivity = async ({
     const doc = await ActivityLog.create({
       task: taskId,
       board: boardId,
-      actor,
+      actor: actorType === 'client' ? null : actor,
+      actorType,
+      actorLabel,
       type,
       field: field || null,
       oldValue: oldValue === undefined ? null : oldValue,

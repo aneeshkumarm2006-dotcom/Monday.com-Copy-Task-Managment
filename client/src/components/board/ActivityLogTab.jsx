@@ -20,6 +20,8 @@ const TYPE_OPTIONS = [
   { value: 'attachment.deleted', label: 'File deleted' },
   { value: 'comment.added', label: 'Comment added' },
   { value: 'update.added', label: 'Update posted' },
+  { value: 'client.request_created', label: 'Client raised request' },
+  { value: 'client.update_added', label: 'Client message' },
 ];
 
 /**
