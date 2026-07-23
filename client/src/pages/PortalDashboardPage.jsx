@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Plus, Paperclip, Send, ArrowLeft, LogOut, Loader2, CheckCircle2,
-  CircleDot, MessageSquare, X, Inbox,
+  CircleDot, MessageSquare, X, Inbox, Timer, Building2,
 } from 'lucide-react';
 import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
@@ -9,31 +9,39 @@ import {
 } from '../services/portalService';
 import '../styles/portal.css';
 
-const StatusPill = ({ resolved }) => (
-  <span className={`mcp-pill ${resolved ? 'mcp-pill--resolved' : 'mcp-pill--open'}`}>
-    {resolved ? <CheckCircle2 size={13} /> : <CircleDot size={13} />}
-    {resolved ? 'Resolved' : 'Open'}
+/* fixed semantic colours for the three buckets */
+const BUCKETS = {
+  open: { label: 'Open', color: '#B45309', icon: CircleDot },
+  ongoing: { label: 'In progress', color: '#2563EB', icon: Timer },
+  resolved: { label: 'Resolved', color: '#059669', icon: CheckCircle2 },
+};
+
+/* per-issue chip using the board's real status name + colour */
+const StatusChip = ({ label, color }) => (
+  <span className="mcp-status" style={{ '--sc': color || '#64748B' }}>
+    <span className="mcp-status-dot" />
+    {label || 'Open'}
   </span>
 );
 
-/* poll cadences (ms) — cheap, and paused while the tab is hidden */
+/* poll cadences (ms) — cheap, paused while the tab is hidden */
 const LIST_POLL = 20000;
 const THREAD_POLL = 9000;
 
 const PortalDashboardPage = () => {
   const [loading, setLoading] = useState(true);
   const [expired, setExpired] = useState(false);
-  const [context, setContext] = useState({ orgName: '', clientName: '', categories: [] });
+  const [context, setContext] = useState({ orgName: '', companyName: '', contactName: '', categories: [] });
   const [issues, setIssues] = useState([]);
-  const [filter, setFilter] = useState('all'); // all | open | resolved
+  const [filter, setFilter] = useState('all'); // all | open | ongoing | resolved
 
   const [composerOpen, setComposerOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState(null); // issue id in detail view
+  const [selectedId, setSelectedId] = useState(null);
 
   const loadIssues = useCallback(async () => {
     try {
       const data = await getMyIssues();
-      setContext(data.context || { orgName: '', clientName: '', categories: [] });
+      setContext(data.context || { orgName: '', companyName: '', contactName: '', categories: [] });
       setIssues(data.issues || []);
     } catch (err) {
       if (err.response?.status === 401) setExpired(true);
@@ -51,7 +59,6 @@ const PortalDashboardPage = () => {
     loadIssues();
   }, [loadIssues]);
 
-  // Keep the list fresh (status changes as the team works) while it's on screen.
   useEffect(() => {
     if (expired || selectedId) return undefined;
     const tick = () => document.visibilityState === 'visible' && loadIssues();
@@ -65,11 +72,12 @@ const PortalDashboardPage = () => {
   };
 
   const selected = issues.find((i) => i.id === selectedId) || null;
-  const openCount = issues.filter((i) => !i.resolved).length;
-  const resolvedCount = issues.length - openCount;
-  const visible = issues.filter((i) =>
-    filter === 'open' ? !i.resolved : filter === 'resolved' ? i.resolved : true
-  );
+  const counts = {
+    open: issues.filter((i) => i.state === 'open').length,
+    ongoing: issues.filter((i) => i.state === 'ongoing').length,
+    resolved: issues.filter((i) => i.state === 'resolved').length,
+  };
+  const visible = filter === 'all' ? issues : issues.filter((i) => i.state === filter);
 
   if (loading) return <DashboardSkeleton />;
 
@@ -95,7 +103,8 @@ const PortalDashboardPage = () => {
     );
   }
 
-  const initial = (context.orgName || context.clientName || 'S').trim().charAt(0).toUpperCase();
+  const orgInitial = (context.orgName || 'S').trim().charAt(0).toUpperCase();
+  const firstName = (context.contactName || '').trim().split(' ')[0];
 
   return (
     <div className="mcp mcp-page">
@@ -103,18 +112,13 @@ const PortalDashboardPage = () => {
       <header className="mcp-topbar">
         <div
           className="mcp-container"
-          style={{ padding: '15px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
+          style={{ padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-            <span className="mcp-brand-mark">{initial}</span>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1.2 }}>
-                {context.orgName || 'Support portal'}
-              </div>
-              <div style={{ fontSize: 12.5, color: '#64748B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {context.clientName || 'Support portal'}
-              </div>
-            </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
+            <span className="mcp-brand-mark">{orgInitial}</span>
+            <span style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.02em' }}>
+              {context.orgName || 'Support portal'}
+            </span>
           </div>
           <button type="button" onClick={logout} className="mcp-linkbtn">
             <LogOut size={15} /> Sign out
@@ -132,19 +136,48 @@ const PortalDashboardPage = () => {
           />
         ) : (
           <div className="mcp-rise">
-            {/* Title + summary */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>
+            {/* Greeting */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 22, flexWrap: 'wrap' }}>
               <div>
-                <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.03em', margin: 0 }}>My requests</h1>
-                {issues.length > 0 && (
-                  <p style={{ fontSize: 13.5, color: '#64748B', margin: '4px 0 0' }}>
-                    {openCount} open · {resolvedCount} resolved
-                  </p>
-                )}
+                <h1 className="mcp-greet-name">
+                  {firstName ? `Welcome back, ${firstName}` : 'Welcome back'}
+                </h1>
+                <p className="mcp-greet-sub" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span>Here's everything you've raised with {context.orgName || 'us'}.</span>
+                  {context.companyName && (
+                    <span className="mcp-company"><Building2 size={13} /> {context.companyName}</span>
+                  )}
+                </p>
               </div>
               <button type="button" className="mcp-btn mcp-btn--primary" onClick={() => setComposerOpen(true)}>
                 <Plus size={16} /> Raise a request
               </button>
+            </div>
+
+            {/* Stat cards (also act as filters) */}
+            <div className="mcp-stats">
+              {['open', 'ongoing', 'resolved'].map((k) => {
+                const b = BUCKETS[k];
+                const Icon = b.icon;
+                const active = filter === k;
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    className="mcp-stat"
+                    data-active={active}
+                    onClick={() => setFilter(active ? 'all' : k)}
+                    style={{ color: b.color }}
+                    aria-pressed={active}
+                  >
+                    <span className="mcp-stat-ico" style={{ background: `${b.color}18`, color: b.color }}>
+                      <Icon size={17} />
+                    </span>
+                    <div className="mcp-stat-num">{counts[k]}</div>
+                    <div className="mcp-stat-label">{b.label}</div>
+                  </button>
+                );
+              })}
             </div>
 
             {composerOpen && (
@@ -155,33 +188,16 @@ const PortalDashboardPage = () => {
               />
             )}
 
-            {/* Filters */}
+            {/* Section heading + active filter */}
             {issues.length > 0 && (
-              <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-                {[
-                  { k: 'all', label: `All ${issues.length}` },
-                  { k: 'open', label: `Open ${openCount}` },
-                  { k: 'resolved', label: `Resolved ${resolvedCount}` },
-                ].map((t) => {
-                  const active = filter === t.k;
-                  return (
-                    <button
-                      key={t.k}
-                      type="button"
-                      onClick={() => setFilter(t.k)}
-                      className="mcp-btn"
-                      style={{
-                        height: 34, padding: '0 14px', fontSize: 13,
-                        color: active ? '#fff' : '#475569',
-                        background: active ? 'linear-gradient(180deg,#3b82f6,#2563eb)' : '#fff',
-                        borderColor: active ? 'transparent' : '#d6e0f2',
-                        boxShadow: active ? '0 6px 14px -6px rgba(37,99,235,0.5)' : 'none',
-                      }}
-                    >
-                      {t.label}
-                    </button>
-                  );
-                })}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 13 }}>
+                <h2 style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', margin: 0, color: '#334155' }}>
+                  {filter === 'all' ? 'All requests' : BUCKETS[filter].label}
+                  <span style={{ color: '#94A3B8', fontWeight: 600 }}> · {visible.length}</span>
+                </h2>
+                {filter !== 'all' && (
+                  <button type="button" className="mcp-linkbtn" onClick={() => setFilter('all')}>Show all</button>
+                )}
               </div>
             )}
 
@@ -207,7 +223,7 @@ const PortalDashboardPage = () => {
               </div>
             ) : visible.length === 0 ? (
               <div className="mcp-card" style={{ padding: '32px', textAlign: 'center', color: '#64748B', fontSize: 13.5 }}>
-                Nothing {filter} right now.
+                Nothing here right now.
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
@@ -226,7 +242,7 @@ const PortalDashboardPage = () => {
                         </div>
                         {issue.category && <span className="mcp-tag">{issue.category}</span>}
                       </div>
-                      <StatusPill resolved={issue.resolved} />
+                      <StatusChip label={issue.statusLabel} color={issue.statusColor} />
                     </div>
                   </button>
                 ))}
@@ -243,17 +259,19 @@ const PortalDashboardPage = () => {
 const DashboardSkeleton = () => (
   <div className="mcp mcp-page">
     <header className="mcp-topbar">
-      <div className="mcp-container" style={{ padding: '15px 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div className="mcp-container" style={{ padding: '14px 20px', display: 'flex', alignItems: 'center', gap: 11 }}>
         <div className="mcp-skel" style={{ width: 40, height: 40, borderRadius: 11 }} />
-        <div className="mcp-skel" style={{ width: 160, height: 20 }} />
+        <div className="mcp-skel" style={{ width: 150, height: 20 }} />
       </div>
     </header>
     <main className="mcp-container" style={{ paddingTop: 26 }}>
-      <div className="mcp-skel" style={{ width: 190, height: 30, marginBottom: 20 }} />
+      <div className="mcp-skel" style={{ width: 240, height: 30, marginBottom: 10 }} />
+      <div className="mcp-skel" style={{ width: 320, height: 16, marginBottom: 24 }} />
+      <div className="mcp-stats">
+        {[0, 1, 2].map((i) => <div key={i} className="mcp-skel" style={{ height: 96 }} />)}
+      </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-        {[0, 1, 2].map((i) => (
-          <div key={i} className="mcp-skel" style={{ height: 64 }} />
-        ))}
+        {[0, 1, 2].map((i) => <div key={i} className="mcp-skel" style={{ height: 64 }} />)}
       </div>
     </main>
   </div>
@@ -291,7 +309,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
   };
 
   return (
-    <form onSubmit={submit} className="mcp-card-lg mcp-pop" style={{ padding: 22, marginBottom: 18 }}>
+    <form onSubmit={submit} className="mcp-card-lg mcp-pop" style={{ padding: 22, marginBottom: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.01em' }}>Raise a new request</span>
         <button type="button" onClick={onClose} className="mcp-linkbtn" style={{ padding: 4 }} aria-label="Close">
@@ -299,9 +317,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
         </button>
       </div>
 
-      <label style={{ fontSize: 12.5, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 6 }}>
-        Title
-      </label>
+      <label style={{ fontSize: 12.5, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 6 }}>Title</label>
       <input
         className="mcp-field"
         style={{ marginBottom: 14 }}
@@ -311,9 +327,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
         autoFocus
       />
 
-      <label style={{ fontSize: 12.5, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 6 }}>
-        Details
-      </label>
+      <label style={{ fontSize: 12.5, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 6 }}>Details</label>
       <textarea
         className="mcp-field"
         style={{ marginBottom: 14, minHeight: 104 }}
@@ -371,7 +385,6 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
   const scrollAnchor = useRef(null);
   const seenIds = useRef(new Set());
 
-  // Merge fetched messages in, animating only the ones we haven't shown before.
   const applyMessages = useCallback((incoming) => {
     setMessages(incoming.map((m) => ({ ...m, _fresh: !seenIds.current.has(m.id) })));
     incoming.forEach((m) => seenIds.current.add(m.id));
@@ -385,11 +398,8 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
     finally { if (opts.initial) setLoading(false); }
   }, [issue.id, applyMessages]);
 
-  useEffect(() => {
-    load({ initial: true });
-  }, [load]);
+  useEffect(() => { load({ initial: true }); }, [load]);
 
-  // Live-refresh the thread so the client sees team replies without reopening.
   useEffect(() => {
     const tick = () => document.visibilityState === 'visible' && load();
     const id = setInterval(tick, THREAD_POLL);
@@ -398,7 +408,6 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
     return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible); };
   }, [load]);
 
-  // Auto-scroll to the newest message.
   useEffect(() => {
     scrollAnchor.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages.length]);
@@ -430,7 +439,7 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
 
       <div className="mcp-card-lg" style={{ padding: '17px 20px', marginBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.02em', minWidth: 0 }}>{issue.name}</span>
-        <StatusPill resolved={issue.resolved} />
+        <StatusChip label={issue.statusLabel} color={issue.statusColor} />
       </div>
 
       <div className="mcp-card-lg" style={{ padding: 20 }}>
@@ -472,7 +481,6 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
           </div>
         )}
 
-        {/* Composer */}
         <form onSubmit={post} style={{ borderTop: '1px solid #eef2f9', paddingTop: 16 }}>
           <textarea
             className="mcp-field"
@@ -480,9 +488,7 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
             placeholder="Write a message…"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') post(e);
-            }}
+            onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') post(e); }}
           />
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>

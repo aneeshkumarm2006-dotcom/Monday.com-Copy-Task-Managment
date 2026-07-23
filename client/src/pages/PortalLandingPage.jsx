@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Loader2, ShieldCheck, MessagesSquare, Clock, AlertCircle } from 'lucide-react';
+import { Loader2, ShieldCheck, MessagesSquare, ListChecks, AlertCircle } from 'lucide-react';
 import { getPortalMeta, portalGoogleSignInUrl } from '../services/portalService';
 import '../styles/portal.css';
 
 /**
- * PortalLandingPage — `/portal/:portalToken`. The screen an external client sees
- * when they open their shared/emailed invitation link. It shows who invited them
- * and a single "Continue with Google" button that hands off to Google sign-in.
- * No passcode, no forms. Bare shell — no app chrome, no app stores.
+ * PortalLandingPage — `/portal/:portalToken`. Full-page split-screen sign-in an
+ * external client sees when they open their invitation link. Left: branding +
+ * value props. Right: a single "Continue with Google" card. No app chrome.
  */
 
 const GoogleIcon = () => (
@@ -20,10 +19,10 @@ const GoogleIcon = () => (
   </svg>
 );
 
-const PERKS = [
-  { icon: MessagesSquare, label: 'Raise issues and chat with the team in one place' },
-  { icon: Clock, label: 'Follow every request from open through to resolved' },
-  { icon: ShieldCheck, label: 'Private to you — secured with your Google account' },
+const FEATURES = [
+  { icon: MessagesSquare, title: 'One place to talk to us', body: 'Raise a request and chat with the team in a single thread.' },
+  { icon: ListChecks, title: 'Track everything', body: 'Follow each request from open, through in-progress, to resolved.' },
+  { icon: ShieldCheck, title: 'Private & secure', body: 'Your workspace is yours alone — secured with your Google account.' },
 ];
 
 const PortalLandingPage = () => {
@@ -57,7 +56,6 @@ const PortalLandingPage = () => {
 
   const handleAccept = () => {
     setAccepting(true);
-    // Full-page hand-off to the API, which redirects on to Google.
     window.location.href = portalGoogleSignInUrl(portalToken);
   };
 
@@ -89,94 +87,90 @@ const PortalLandingPage = () => {
     );
   }
 
-  const initial = (meta.orgName || meta.clientName || 'C').trim().charAt(0).toUpperCase();
+  const orgName = meta.orgName || 'Client Portal';
+  const company = meta.clientName || '';
+  const initial = (orgName || company || 'C').trim().charAt(0).toUpperCase();
 
   return (
-    <div className="mcp mcp-page mcp-shell">
-      <div className="mcp-card-lg mcp-pop" style={{ width: '100%', maxWidth: 440, overflow: 'hidden' }}>
-        {/* Brand header */}
-        <div
-          style={{
-            padding: '30px 34px 26px',
-            background:
-              'radial-gradient(120% 120% at 0% 0%, #3b82f6 0%, #2563eb 55%, #1d4ed8 100%)',
-            color: '#fff',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 13 }}>
+    <div className="mcp mcp-split">
+      {/* ---- Brand panel ---- */}
+      <aside className="mcp-split-brand">
+        <div style={{ position: 'relative', zIndex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div
               style={{
-                width: 46, height: 46, borderRadius: 13, flexShrink: 0,
+                width: 44, height: 44, borderRadius: 12,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'rgba(255,255,255,0.18)', border: '1px solid rgba(255,255,255,0.3)',
-                fontSize: 20, fontWeight: 800,
+                background: 'rgba(255,255,255,0.16)', border: '1px solid rgba(255,255,255,0.28)',
+                fontSize: 19, fontWeight: 800,
               }}
             >
               {initial}
             </div>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '-0.02em', lineHeight: 1.15 }}>
-                {meta.orgName || 'Client Portal'}
-              </div>
-              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.85)', marginTop: 3 }}>
-                {meta.clientName ? `${meta.clientName} · Support portal` : 'Support portal'}
-              </div>
-            </div>
+            <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>{orgName}</span>
           </div>
         </div>
 
-        {/* Body */}
-        <div style={{ padding: '28px 34px 32px' }}>
-          <p style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em', margin: '0 0 6px' }}>
-            You've been invited
-          </p>
-          <p style={{ fontSize: 14, color: '#64748B', margin: '0 0 22px', lineHeight: 1.6 }}>
-            Welcome to the{' '}
-            <strong style={{ color: '#334155' }}>{meta.clientName || meta.orgName}</strong>{' '}
-            support portal — your direct line to the team. Sign in to raise a request and track it
-            through to done.
+        <div style={{ position: 'relative', zIndex: 1, maxWidth: 460 }}>
+          <h1 style={{ fontSize: 38, fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1.12, margin: '0 0 14px' }}>
+            Your support,<br />all in one place.
+          </h1>
+          <p style={{ fontSize: 15.5, color: 'rgba(255,255,255,0.82)', lineHeight: 1.6, margin: '0 0 34px' }}>
+            Welcome to the {company ? <strong style={{ color: '#fff' }}>{company}</strong> : orgName} support
+            portal — raise requests, share screenshots, and follow every update through to done.
           </p>
 
-          {/* Perks */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 13, marginBottom: 26 }}>
-            {PERKS.map(({ icon: Icon, label }) => (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <span
-                  style={{
-                    width: 34, height: 34, borderRadius: 9, flexShrink: 0,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    background: '#eff4ff', color: '#2563eb',
-                  }}
-                >
-                  <Icon size={17} />
-                </span>
-                <span style={{ fontSize: 13.5, color: '#475569', lineHeight: 1.4 }}>{label}</span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {FEATURES.map(({ icon: Icon, title, body }) => (
+              <div key={title} className="mcp-feat">
+                <span className="mcp-feat-ico"><Icon size={19} color="#fff" /></span>
+                <div>
+                  <div style={{ fontSize: 14.5, fontWeight: 700, marginBottom: 2 }}>{title}</div>
+                  <div style={{ fontSize: 13.5, color: 'rgba(255,255,255,0.75)', lineHeight: 1.5 }}>{body}</div>
+                </div>
               </div>
             ))}
           </div>
+        </div>
 
-          <button
-            type="button"
-            onClick={handleAccept}
-            disabled={accepting}
-            className="mcp-btn mcp-btn--google"
-          >
+        <div style={{ position: 'relative', zIndex: 1, fontSize: 12.5, color: 'rgba(255,255,255,0.6)' }}>
+          Powered by {orgName}
+        </div>
+      </aside>
+
+      {/* ---- Sign-in panel ---- */}
+      <main className="mcp-split-form">
+        <div className="mcp-card-lg mcp-pop" style={{ width: '100%', maxWidth: 400, padding: '38px 34px' }}>
+          {/* compact brand for mobile (brand panel is hidden < 860px) */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 26 }}>
+            <span className="mcp-brand-mark" style={{ width: 42, height: 42 }}>{initial}</span>
+            <div>
+              <div style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.2 }}>{orgName}</div>
+              {company && <div style={{ fontSize: 12.5, color: '#64748B' }}>{company} · Support portal</div>}
+            </div>
+          </div>
+
+          <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em', margin: '0 0 6px' }}>Sign in</h2>
+          <p style={{ fontSize: 14, color: '#64748B', margin: '0 0 24px', lineHeight: 1.55 }}>
+            Use your Google account to access your support portal.
+          </p>
+
+          <button type="button" onClick={handleAccept} disabled={accepting} className="mcp-btn mcp-btn--google">
             {accepting ? (
-              <>
-                <Loader2 size={18} className="mcp-spin" /> Redirecting…
-              </>
+              <><Loader2 size={18} className="mcp-spin" /> Redirecting…</>
             ) : (
-              <>
-                <GoogleIcon /> Continue with Google
-              </>
+              <><GoogleIcon /> Continue with Google</>
             )}
           </button>
 
-          <p style={{ fontSize: 12, color: '#94A3B8', margin: '16px 0 0', textAlign: 'center', lineHeight: 1.5 }}>
-            We only use your Google account to sign you in to this portal.
-          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '20px 0 0', color: '#94A3B8' }}>
+            <ShieldCheck size={14} />
+            <span style={{ fontSize: 12, lineHeight: 1.5 }}>
+              We only use your Google account to sign you in — nothing is posted on your behalf.
+            </span>
+          </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 };

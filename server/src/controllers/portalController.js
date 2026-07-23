@@ -37,14 +37,43 @@ const signPortalToken = (contact, group) =>
 
 // ---- serializers (never leak internal fields to the client) -----------------
 
-const serializeIssue = (task, board) => ({
-  id: String(task._id),
-  name: task.name,
-  note: task.note || '',
-  category: task.portalCategory || '',
-  createdAt: task.createdAt,
-  resolved: isResolvedStatus(board, task.status),
-});
+/**
+ * The status subdoc a task points at, plus a client-friendly 3-way bucket:
+ *   - resolved → the board's "done" status
+ *   - open     → the default / not-started status (nothing has happened yet)
+ *   - ongoing  → anything in between (working on it, stuck, custom in-progress)
+ * We surface the real status name + colour so the portal can show the same
+ * label the team sees, not a flattened open/closed.
+ */
+const classifyIssue = (board, statusValue) => {
+  const statuses = Array.isArray(board.statuses) ? board.statuses : [];
+  const st = statuses.find((s) => String(s._id) === String(statusValue));
+
+  if (isResolvedStatus(board, statusValue)) {
+    return { state: 'resolved', label: st?.name || 'Resolved', color: st?.color || '#059669' };
+  }
+  const isOpen = st ? st.isDefault || st.key === 'not_started' : statusValue === 'not_started';
+  return {
+    state: isOpen ? 'open' : 'ongoing',
+    label: st?.name || (isOpen ? 'Open' : 'In progress'),
+    color: st?.color || (isOpen ? '#B45309' : '#2563EB'),
+  };
+};
+
+const serializeIssue = (task, board) => {
+  const { state, label, color } = classifyIssue(board, task.status);
+  return {
+    id: String(task._id),
+    name: task.name,
+    note: task.note || '',
+    category: task.portalCategory || '',
+    createdAt: task.createdAt,
+    state, // 'open' | 'ongoing' | 'resolved'
+    statusLabel: label,
+    statusColor: color,
+    resolved: state === 'resolved', // kept for backward compat
+  };
+};
 
 const cleanAttachments = (attachments) =>
   (Array.isArray(attachments) ? attachments : [])
@@ -155,11 +184,16 @@ const getMyIssues = async (req, res) => {
 
     const org = await Organisation.findById(board.organisation).select('name');
 
+    const company = clientLabel(req.portal.group);
+    const contactName = req.portal.contact?.name || '';
+
     return res.json({
       issues: tasks.map((t) => serializeIssue(t, board)),
       context: {
         orgName: org?.name || '',
-        clientName: clientLabel(req.portal.group),
+        companyName: company,
+        contactName, // the client's Google display name
+        clientName: company, // kept for backward compat
         categories: Array.isArray(board.portalCategories) ? board.portalCategories : [],
       },
     });
