@@ -357,7 +357,24 @@ const getIssueThread = async (req, res) => {
       };
     });
 
-    return res.json({ issue: { id: String(task._id), name: task.name }, messages });
+    // Include the original request itself (its description + any files the client
+    // attached when raising it) so the detail view can show it above the replies.
+    return res.json({
+      issue: {
+        id: String(task._id),
+        name: task.name,
+        note: task.note || '',
+        createdAt: task.createdAt,
+        authorLabel: myName,
+        attachments: (task.attachments || []).map((a) => ({
+          url: a.url,
+          name: a.name,
+          mime: a.mime,
+          size: a.size,
+        })),
+      },
+      messages,
+    });
   } catch (err) {
     console.error('getIssueThread error:', err);
     return res.status(500).json({ error: 'Server error' });

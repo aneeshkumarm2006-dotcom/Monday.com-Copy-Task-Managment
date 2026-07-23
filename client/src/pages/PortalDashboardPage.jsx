@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Plus, Paperclip, Send, ArrowLeft, LogOut, Loader2, CheckCircle2,
-  CircleDot, MessageSquare, X, Inbox, Timer, Building2,
+  CircleDot, MessageSquare, X, Inbox, Timer, Building2, ChevronRight,
 } from 'lucide-react';
 import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
@@ -14,6 +14,13 @@ const BUCKETS = {
   open: { label: 'Open', color: '#B45309', icon: CircleDot },
   ongoing: { label: 'In progress', color: '#2563EB', icon: Timer },
   resolved: { label: 'Resolved', color: '#059669', icon: CheckCircle2 },
+};
+
+const formatShortDate = (iso) => {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch { return ''; }
 };
 
 /* per-issue chip using the board's real status name + colour */
@@ -111,8 +118,8 @@ const PortalDashboardPage = () => {
       {/* Header */}
       <header className="mcp-topbar">
         <div
-          className="mcp-container"
-          style={{ padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
+          className="mcp-container--wide"
+          style={{ paddingTop: 14, paddingBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
             <span className="mcp-brand-mark">{orgInitial}</span>
@@ -126,14 +133,16 @@ const PortalDashboardPage = () => {
         </div>
       </header>
 
-      <main className="mcp-container" style={{ paddingTop: 26 }}>
+      <main className="mcp-container--wide" style={{ paddingTop: 30 }}>
         {selected ? (
-          <IssueDetail
-            key={selected.id}
-            issue={selected}
-            orgName={context.orgName}
-            onBack={() => { setSelectedId(null); loadIssues(); }}
-          />
+          <div style={{ maxWidth: 860, margin: '0 auto' }}>
+            <IssueDetail
+              key={selected.id}
+              issue={selected}
+              orgName={context.orgName}
+              onBack={() => { setSelectedId(null); loadIssues(); }}
+            />
+          </div>
         ) : (
           <div className="mcp-rise">
             {/* Greeting */}
@@ -171,10 +180,12 @@ const PortalDashboardPage = () => {
                     aria-pressed={active}
                   >
                     <span className="mcp-stat-ico" style={{ background: `${b.color}18`, color: b.color }}>
-                      <Icon size={17} />
+                      <Icon size={22} />
                     </span>
-                    <div className="mcp-stat-num">{counts[k]}</div>
-                    <div className="mcp-stat-label">{b.label}</div>
+                    <div>
+                      <div className="mcp-stat-num">{counts[k]}</div>
+                      <div className="mcp-stat-label">{b.label}</div>
+                    </div>
                   </button>
                 );
               })}
@@ -235,14 +246,21 @@ const PortalDashboardPage = () => {
                     className="mcp-item mcp-rise"
                     style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14 }}>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: issue.category ? 7 : 0 }}>
+                        <div style={{ fontSize: 15.5, fontWeight: 600, letterSpacing: '-0.01em' }}>
                           {issue.name}
                         </div>
-                        {issue.category && <span className="mcp-tag">{issue.category}</span>}
+                        <div className="mcp-item-meta">
+                          {issue.category && <span className="mcp-tag">{issue.category}</span>}
+                          {issue.category && <span className="mcp-item-meta-dot" />}
+                          <span>Raised {formatShortDate(issue.createdAt)}</span>
+                        </div>
                       </div>
-                      <StatusChip label={issue.statusLabel} color={issue.statusColor} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
+                        <StatusChip label={issue.statusLabel} color={issue.statusColor} />
+                        <ChevronRight size={18} className="mcp-item-chev" />
+                      </div>
                     </div>
                   </button>
                 ))}
@@ -377,6 +395,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
 /* ---- Issue detail + thread ------------------------------------------------ */
 const IssueDetail = ({ issue, orgName, onBack }) => {
   const [loading, setLoading] = useState(true);
+  const [detail, setDetail] = useState(null); // original request: note + attachments
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
   const [file, setFile] = useState(null);
@@ -393,10 +412,13 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
   const load = useCallback(async (opts = {}) => {
     try {
       const data = await getIssueThread(issue.id);
+      if (data.issue) setDetail(data.issue);
       applyMessages(data.messages || []);
     } catch { /* keep what we have */ }
     finally { if (opts.initial) setLoading(false); }
   }, [issue.id, applyMessages]);
+
+  const hasRequestBlock = !!(detail && (detail.note || (detail.attachments && detail.attachments.length)));
 
   useEffect(() => { load({ initial: true }); }, [load]);
 
@@ -447,23 +469,25 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
           <div style={{ textAlign: 'center', padding: 24 }}>
             <Loader2 size={22} color="#2563EB" className="mcp-spin" />
           </div>
-        ) : messages.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '18px 0 26px' }}>
-            <div
-              style={{
-                width: 46, height: 46, borderRadius: 12, margin: '0 auto 12px',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: '#eff4ff', color: '#2563eb',
-              }}
-            >
-              <MessageSquare size={22} />
-            </div>
-            <p style={{ fontSize: 13.5, color: '#64748B', margin: 0, lineHeight: 1.5 }}>
-              No messages yet. Add a comment and {orgName || 'the team'} will reply right here.
-            </p>
-          </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 15, marginBottom: 18 }}>
+            {/* Original request — the description + files the client attached at creation */}
+            {hasRequestBlock && (
+              <div className="mcp-msg-row mine">
+                <span className="mcp-msg-author">
+                  {detail.authorLabel || 'You'} · original request
+                </span>
+                <div className="mcp-bubble mine">
+                  {detail.note || 'Attached the following:'}
+                  {Array.isArray(detail.attachments) && detail.attachments.map((a, i) => (
+                    <a key={i} href={a.url} target="_blank" rel="noreferrer" className="mcp-attach">
+                      <Paperclip size={12} /> {a.name || 'Attachment'}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {messages.map((m) => (
               <div key={m.id} className={`mcp-msg-row ${m.mine ? 'mine' : ''} ${m._fresh ? 'mcp-rise' : ''}`}>
                 <span className="mcp-msg-author">{m.authorLabel}</span>
@@ -477,6 +501,23 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
                 </div>
               </div>
             ))}
+
+            {!hasRequestBlock && messages.length === 0 && (
+              <div style={{ textAlign: 'center', padding: '10px 0 22px' }}>
+                <div
+                  style={{
+                    width: 46, height: 46, borderRadius: 12, margin: '0 auto 12px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: '#eff4ff', color: '#2563eb',
+                  }}
+                >
+                  <MessageSquare size={22} />
+                </div>
+                <p style={{ fontSize: 13.5, color: '#64748B', margin: 0, lineHeight: 1.5 }}>
+                  No messages yet. Add a comment and {orgName || 'the team'} will reply right here.
+                </p>
+              </div>
+            )}
             <div ref={scrollAnchor} />
           </div>
         )}

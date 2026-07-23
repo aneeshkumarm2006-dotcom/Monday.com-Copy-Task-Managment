@@ -75,6 +75,20 @@
   padding: 0 20px 72px;
 }
 
+/* Full-width dashboard layout — uses the whole page instead of a skinny column */
+.mcp-container--wide {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 40px 80px;
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (max-width: 720px) {
+  .mcp-container--wide {
+    padding: 0 16px 56px;
+  }
+}
+
 /* ---- cards ---------------------------------------------------------------- */
 .mcp-card {
   background: var(--p-card);
@@ -379,22 +393,34 @@ textarea.mcp-field {
 .mcp-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  margin-bottom: 22px;
+  gap: 16px;
+  margin-bottom: 28px;
 }
 .mcp-stat {
+  display: flex;
+  align-items: center;
+  gap: 16px;
   text-align: left;
   background: var(--p-card);
   border: 1px solid var(--p-border);
   border-radius: var(--p-r);
   box-shadow: var(--p-shadow-sm);
-  padding: 16px 16px 15px;
+  padding: 20px 22px;
   cursor: pointer;
   font: inherit;
   color: inherit;
   transition: transform 0.16s ease, box-shadow 0.2s ease, border-color 0.18s ease;
   position: relative;
   overflow: hidden;
+}
+.mcp-stat::before {
+  /* faint accent wash on the right, in the bucket's colour */
+  content: '';
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, currentColor 7%, transparent));
+  pointer-events: none;
 }
 .mcp-stat:hover {
   transform: translateY(-2px);
@@ -409,27 +435,58 @@ textarea.mcp-field {
   box-shadow: var(--p-shadow), inset 0 0 0 1px currentColor;
 }
 .mcp-stat-ico {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
+  width: 48px;
+  height: 48px;
+  border-radius: 13px;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 12px;
+  position: relative;
+  z-index: 1;
 }
 .mcp-stat-num {
-  font-size: 26px;
+  font-size: 32px;
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   line-height: 1;
   color: var(--p-ink);
   font-variant-numeric: tabular-nums;
 }
 .mcp-stat-label {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--p-ink-2);
-  margin-top: 5px;
+  margin-top: 6px;
+}
+
+/* ---- list row meta -------------------------------------------------------- */
+.mcp-item {
+  padding: 17px 20px;
+}
+.mcp-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 9px;
+  font-size: 12.5px;
+  color: var(--p-muted);
+  flex-wrap: wrap;
+}
+.mcp-item-meta-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #cbd5e1;
+}
+.mcp-item-chev {
+  color: #cbd5e1;
+  flex-shrink: 0;
+  transition: transform 0.16s ease, color 0.16s ease;
+}
+.mcp-item:hover .mcp-item-chev {
+  color: var(--p-primary);
+  transform: translateX(2px);
 }
 
 /* colored status chip driven by a per-status --sc (status colour) var */
