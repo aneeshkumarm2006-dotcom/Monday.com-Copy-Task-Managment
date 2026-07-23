@@ -237,30 +237,28 @@ const PortalDashboardPage = () => {
                 Nothing here right now.
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+              <div className="mcp-cards">
                 {visible.map((issue, i) => (
                   <button
                     key={issue.id}
                     type="button"
                     onClick={() => setSelectedId(issue.id)}
-                    className="mcp-item mcp-rise"
-                    style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
+                    className="mcp-tcard mcp-rise"
+                    style={{ '--sc': issue.statusColor || '#cbd5e1', animationDelay: `${Math.min(i, 8) * 45}ms` }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14 }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 15.5, fontWeight: 600, letterSpacing: '-0.01em' }}>
-                          {issue.name}
-                        </div>
-                        <div className="mcp-item-meta">
-                          {issue.category && <span className="mcp-tag">{issue.category}</span>}
-                          {issue.category && <span className="mcp-item-meta-dot" />}
-                          <span>Raised {formatShortDate(issue.createdAt)}</span>
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
-                        <StatusChip label={issue.statusLabel} color={issue.statusColor} />
-                        <ChevronRight size={18} className="mcp-item-chev" />
-                      </div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                      <StatusChip label={issue.statusLabel} color={issue.statusColor} />
+                      {issue.category && <span className="mcp-tag">{issue.category}</span>}
+                    </div>
+
+                    <div className="mcp-tcard-title">{issue.name}</div>
+                    {issue.note && <div className="mcp-tcard-note">{issue.note}</div>}
+
+                    <div style={{ flex: 1 }} />
+
+                    <div className="mcp-tcard-foot">
+                      <span>Raised {formatShortDate(issue.createdAt)}</span>
+                      <ChevronRight size={16} className="mcp-item-chev" />
                     </div>
                   </button>
                 ))}
