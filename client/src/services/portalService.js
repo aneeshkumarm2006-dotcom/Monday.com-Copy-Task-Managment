@@ -78,4 +78,14 @@ export const postThreadMessage = (issueId, payload) =>
     .post(`/api/portal/me/issues/${issueId}/thread`, payload)
     .then((r) => r.data);
 
+export const reopenIssue = (issueId, note) =>
+  portalApi
+    .post(`/api/portal/me/issues/${issueId}/reopen`, { note })
+    .then((r) => r.data);
+
+export const rateIssue = (issueId, rating) =>
+  portalApi
+    .post(`/api/portal/me/issues/${issueId}/rating`, { rating })
+    .then((r) => r.data);
+
 export default portalApi;

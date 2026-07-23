@@ -112,6 +112,22 @@ const taskSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    // What kind of request the client raised (client tasks only): a bug, a
+    // feature idea, a requirement/brief, or a question. Drives the portal's
+    // type badge. Empty for internal tasks.
+    portalType: {
+      type: String,
+      enum: ['', 'bug', 'feature', 'requirement', 'question'],
+      default: '',
+    },
+    // Client satisfaction rating (1–5) captured when their issue is resolved.
+    // null until they rate. Client tasks only.
+    portalRating: {
+      type: Number,
+      min: 1,
+      max: 5,
+      default: null,
+    },
     // Files attached directly to the task (uploaded via the Files tab).
     // Mirrors the Update.attachments shape so the FE can share UI.
     attachments: {

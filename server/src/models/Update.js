@@ -35,17 +35,22 @@ const updateSchema = new mongoose.Schema(
     // `portalAuthor` carries the identity instead. The two sides share one
     // thread per task, so the board's UpdatesTab and the portal both render
     // this feed; each must tolerate a null `author`.
+    // 'user'   — a team member posted (author required)
+    // 'client' — an external ClientContact posted via the portal (portalAuthor)
+    // 'system' — an automated timeline event (e.g. "Status changed to Done");
+    //            no author, shown only in the portal thread (filtered out of the
+    //            team UpdatesTab so it stays a pure discussion feed).
     authorType: {
       type: String,
-      enum: ['user', 'client'],
+      enum: ['user', 'client', 'system'],
       default: 'user',
     },
     author: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      // Required only for team (user) updates. Client updates have no User.
+      // Required only for team (user) updates. Client/system updates have no User.
       required: function requireAuthorForUserUpdates() {
-        return this.authorType !== 'client';
+        return this.authorType === 'user';
       },
     },
     // The external ClientContact who posted this update (client updates only).

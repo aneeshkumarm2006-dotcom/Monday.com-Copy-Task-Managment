@@ -547,6 +547,212 @@ textarea.mcp-field {
   transform: translateX(2px);
 }
 
+/* type + priority badges (driven by inline --bc badge colour) */
+.mcp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  padding: 3px 9px;
+  border-radius: 7px;
+  color: var(--bc, #475569);
+  background: color-mix(in srgb, var(--bc, #475569) 12%, #fff);
+}
+.mcp-prio-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bc, #94a3b8);
+  flex-shrink: 0;
+}
+
+/* "new reply" indicator */
+.mcp-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--p-primary);
+  border-radius: 9999px;
+  padding: 2px 8px;
+  box-shadow: 0 4px 10px -3px rgba(37, 99, 235, 0.6);
+}
+.mcp-new-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+/* ---- welcome hero --------------------------------------------------------- */
+.mcp-welcome {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--p-r-lg);
+  padding: 30px 32px;
+  margin-bottom: 26px;
+  color: #fff;
+  background:
+    radial-gradient(700px 400px at 8% 0%, #3b82f6 0%, rgba(59, 130, 246, 0) 60%),
+    linear-gradient(140deg, #2563eb 0%, #1e3a8a 100%);
+  box-shadow: var(--p-shadow-lg);
+}
+.mcp-welcome::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(120% 120% at 100% 0%, #000 20%, transparent 70%);
+  pointer-events: none;
+}
+.mcp-welcome-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 22px;
+}
+.mcp-welcome-step {
+  position: relative;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  padding: 14px 15px;
+}
+@media (max-width: 640px) {
+  .mcp-welcome-steps {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- thread: avatars, time, system, thumbs -------------------------------- */
+.mcp-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 5px;
+}
+.mcp-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #eff4ff;
+  border: 1px solid var(--p-border);
+}
+.mcp-avatar-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(140deg, #3b82f6, #2563eb);
+}
+.mcp-msg-time {
+  font-size: 11px;
+  color: var(--p-muted);
+  margin: 4px 4px 0;
+}
+.mcp-thumb {
+  display: block;
+  margin-top: 8px;
+  max-width: 220px;
+  max-height: 160px;
+  width: auto;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.mcp-bubble.them .mcp-thumb {
+  border-color: var(--p-border);
+}
+.mcp-sys {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--p-ink-2);
+  background: var(--p-muted-2, #eef2f9);
+  border: 1px solid var(--p-border);
+  border-radius: 9999px;
+  padding: 5px 13px;
+  margin: 2px 0;
+}
+
+/* ---- reopen / rating panel ------------------------------------------------ */
+.mcp-resolved-panel {
+  text-align: center;
+  padding: 18px;
+  border-radius: var(--p-r);
+  background: var(--p-success-soft);
+  border: 1px solid color-mix(in srgb, var(--p-success) 22%, transparent);
+  margin-bottom: 16px;
+}
+.mcp-stars {
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 10px;
+}
+.mcp-star {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  color: #d1d5db;
+  transition: transform 0.12s ease, color 0.12s ease;
+  line-height: 0;
+}
+.mcp-star:hover {
+  transform: scale(1.15);
+}
+.mcp-star[data-on='true'] {
+  color: #f59e0b;
+}
+
+/* ---- segmented type/priority selector ------------------------------------- */
+.mcp-seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mcp-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--p-ink-2);
+  background: #fff;
+  border: 1.5px solid var(--p-border);
+  border-radius: 10px;
+  padding: 9px 13px;
+  cursor: pointer;
+  transition: border-color 0.14s ease, background 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
+}
+.mcp-seg-btn:hover {
+  border-color: var(--p-border-strong);
+}
+.mcp-seg-btn[data-on='true'] {
+  color: var(--p-primary);
+  border-color: var(--p-primary);
+  background: var(--p-primary-soft);
+  box-shadow: var(--p-ring);
+}
+
 /* colored status chip driven by a per-status --sc (status colour) var */
 .mcp-status {
   display: inline-flex;

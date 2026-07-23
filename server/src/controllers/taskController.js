@@ -48,6 +48,25 @@ const emailClientOnResolve = async (task, board) => {
   }
 };
 
+/**
+ * Client Portal: record a status change as a 'system' timeline event on the
+ * task's thread so the client sees "Status changed to X" in their portal. No-op
+ * for internal tasks. Best-effort — never blocks the status change.
+ */
+const logClientStatusChange = async (task, statusName) => {
+  try {
+    if (!task || task.source !== 'client' || !task.portalSubmitter || !statusName) return;
+    await Update.create({
+      task: task._id,
+      authorType: 'system',
+      author: null,
+      bodyText: `Status changed to ${statusName}`,
+    });
+  } catch (err) {
+    console.error('logClientStatusChange error:', err);
+  }
+};
+
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 // Legacy enum keys — accepted for personal tasks (which don't have a board).
 const LEGACY_STATUS_KEYS = ['not_started', 'working_on_it', 'done', 'stuck'];
@@ -303,7 +322,9 @@ const annotateUpdateCounts = async (tasks) => {
     return tasks;
   }
   const counts = await Update.aggregate([
-    { $match: { task: { $in: ids } } },
+    // Exclude 'system' timeline events (portal-only status-change markers) so the
+    // board's update-count badge reflects real discussion posts.
+    { $match: { task: { $in: ids }, authorType: { $ne: 'system' } } },
     { $group: { _id: '$task', count: { $sum: 1 } } },
   ]);
   const byTask = new Map(counts.map((c) => [c._id.toString(), c.count]));
@@ -1180,6 +1201,7 @@ const updateTask = async (req, res) => {
           boardId: task.board,
         });
         emailClientOnResolve(task, ctx.board);
+        logClientStatusChange(task, match.name);
         logActivity({
           task,
           actor: userId,
@@ -1411,6 +1433,7 @@ const updateTask = async (req, res) => {
         boardId: task.board,
       });
       emailClientOnResolve(task, ctx.board);
+      logClientStatusChange(task, statusName || describeStatus(ctx.board, task.status));
     }
     if (activityChanges.some((c) => c.field === 'group')) {
       await notifyTaskAudience(task, {

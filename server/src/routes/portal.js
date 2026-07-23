@@ -48,6 +48,8 @@ router.post(
 );
 router.get('/me/issues/:id/thread', portalAuth, portal.getIssueThread);
 router.post('/me/issues/:id/thread', portalAuth, threadLimit, portal.postIssueThreadMessage);
+router.post('/me/issues/:id/reopen', portalAuth, threadLimit, portal.reopenIssue);
+router.post('/me/issues/:id/rating', portalAuth, threadLimit, portal.rateIssue);
 
 // ---- Public Google sign-in (the "Accept invitation" → login flow) ----
 // The group being joined is carried through Google in the OAuth `state` param as

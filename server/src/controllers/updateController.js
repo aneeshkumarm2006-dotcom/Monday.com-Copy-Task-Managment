@@ -73,7 +73,9 @@ const getUpdates = async (req, res) => {
       return res.status(access.status).json({ error: access.error });
     }
 
-    const updates = await Update.find({ task: taskId })
+    // 'system' updates are portal-only timeline events (status changes shown to
+    // the client). Keep them out of the team's discussion feed.
+    const updates = await Update.find({ task: taskId, authorType: { $ne: 'system' } })
       .populate('author', 'name profilePic email')
       .populate('portalAuthor', 'name')
       .populate('mentions', 'name profilePic email')

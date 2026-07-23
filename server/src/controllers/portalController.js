@@ -60,6 +60,10 @@ const classifyIssue = (board, statusValue) => {
   };
 };
 
+// Request types the client can raise, and the priorities they can set.
+const PORTAL_TYPES = ['bug', 'feature', 'requirement', 'question'];
+const PORTAL_PRIORITIES = ['low', 'medium', 'high', 'critical'];
+
 const serializeIssue = (task, board) => {
   const { state, label, color } = classifyIssue(board, task.status);
   return {
@@ -67,6 +71,9 @@ const serializeIssue = (task, board) => {
     name: task.name,
     note: task.note || '',
     category: task.portalCategory || '',
+    type: task.portalType || '',
+    priority: task.priority || 'medium',
+    rating: task.portalRating || null,
     createdAt: task.createdAt,
     state, // 'open' | 'ongoing' | 'resolved'
     statusLabel: label,
@@ -187,8 +194,34 @@ const getMyIssues = async (req, res) => {
     const company = clientLabel(req.portal.group);
     const contactName = req.portal.contact?.name || '';
 
+    // Per-issue last activity — the newest thread message and who sent it. Lets
+    // the dashboard flag issues that have an unread TEAM reply (the client
+    // compares lastActivityAt against what they last opened, kept client-side).
+    const taskIds = tasks.map((t) => t._id);
+    const lastByTask = new Map();
+    if (taskIds.length) {
+      const rows = await Update.aggregate([
+        { $match: { task: { $in: taskIds } } },
+        { $sort: { createdAt: 1 } },
+        { $group: { _id: '$task', lastAt: { $last: '$createdAt' }, lastType: { $last: '$authorType' } } },
+      ]);
+      rows.forEach((r) => lastByTask.set(String(r._id), r));
+    }
+
+    const issues = tasks.map((t) => {
+      const base = serializeIssue(t, board);
+      const last = lastByTask.get(base.id);
+      return {
+        ...base,
+        lastActivityAt: last?.lastAt || t.updatedAt || t.createdAt,
+        // A reply the client hasn't necessarily seen exists when the newest
+        // message came from the team (not the client's own post).
+        lastReplyFromTeam: last ? last.lastType === 'user' : false,
+      };
+    });
+
     return res.json({
-      issues: tasks.map((t) => serializeIssue(t, board)),
+      issues,
       context: {
         orgName: org?.name || '',
         companyName: company,
@@ -231,6 +264,13 @@ const createMyIssue = async (req, res) => {
       portalCategory = requested;
     }
 
+    // Request type + priority are optional and validated against fixed sets, so a
+    // client can never inject an arbitrary value onto the team's board.
+    const reqType = (req.body?.type || '').toString().trim().toLowerCase();
+    const portalType = PORTAL_TYPES.includes(reqType) ? reqType : '';
+    const reqPriority = (req.body?.priority || '').toString().trim().toLowerCase();
+    const priority = PORTAL_PRIORITIES.includes(reqPriority) ? reqPriority : 'medium';
+
     const last = await Task.findOne({ group: groupId }).sort({ order: -1 }).select('order');
     const order = (last?.order ?? -1) + 1;
 
@@ -244,6 +284,8 @@ const createMyIssue = async (req, res) => {
       source: 'client',
       portalSubmitter: contactId,
       portalCategory,
+      portalType,
+      priority,
       createdBy: null,
     });
 
@@ -335,17 +377,29 @@ const getIssueThread = async (req, res) => {
     const task = await loadOwnIssue(req, req.params.id);
     if (!task) return res.status(404).json({ error: 'Issue not found' });
 
-    const updates = await Update.find({ task: task._id }).sort({ createdAt: 1 });
+    const board = await Board.findById(task.board).select('statuses organisation');
+    const updates = await Update.find({ task: task._id })
+      .sort({ createdAt: 1 })
+      .populate('author', 'name profilePic');
     const org = await Organisation.findById(req.portal.orgId).select('name');
     const orgName = org?.name || 'Support team';
     const myName = req.portal.contact?.name || 'You';
 
     const messages = updates.map((u) => {
+      // 'system' events (status changes) render as a centered timeline chip.
+      if (u.authorType === 'system') {
+        return { id: String(u._id), system: true, bodyText: u.bodyText || '', createdAt: u.createdAt };
+      }
       const mine = u.authorType === 'client';
+      // Team replies show the actual team member who replied (falls back to the
+      // org name for legacy posts with no stored author).
+      const teamName = u.author?.name || orgName;
       return {
         id: String(u._id),
         mine,
-        authorLabel: mine ? myName : orgName,
+        authorLabel: mine ? myName : teamName,
+        authorTeam: mine ? '' : orgName,
+        authorAvatar: mine ? '' : (u.author?.profilePic || ''),
         bodyText: u.bodyText || '',
         attachments: (u.attachments || []).map((a) => ({
           url: a.url,
@@ -357,6 +411,8 @@ const getIssueThread = async (req, res) => {
       };
     });
 
+    const cls = board ? classifyIssue(board, task.status) : { state: 'open', label: 'Open', color: '#B45309' };
+
     // Include the original request itself (its description + any files the client
     // attached when raising it) so the detail view can show it above the replies.
     return res.json({
@@ -366,6 +422,13 @@ const getIssueThread = async (req, res) => {
         note: task.note || '',
         createdAt: task.createdAt,
         authorLabel: myName,
+        state: cls.state,
+        statusLabel: cls.label,
+        statusColor: cls.color,
+        resolved: cls.state === 'resolved',
+        type: task.portalType || '',
+        priority: task.priority || 'medium',
+        rating: task.portalRating || null,
         attachments: (task.attachments || []).map((a) => ({
           url: a.url,
           name: a.name,
@@ -443,6 +506,104 @@ const postIssueThreadMessage = async (req, res) => {
     });
   } catch (err) {
     console.error('postIssueThreadMessage error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/** Notify the whole team (filtered to board-readers downstream) about a client action. */
+const notifyTeam = async ({ orgId, type, message, taskId, boardId, tab }) => {
+  try {
+    const org = await Organisation.findById(orgId).select('members');
+    const memberIds = (org?.members || []).map((m) => String(m?._id || m));
+    if (memberIds.length) {
+      await createNotificationsForUsers({
+        userIds: memberIds, type, message, taskId, orgId, actorId: null, boardId, tab,
+      });
+    }
+  } catch (err) {
+    console.error('notifyTeam error:', err);
+  }
+};
+
+/**
+ * POST /api/portal/me/issues/:id/reopen
+ * Client reopens a resolved issue: bounce its status back to the board default
+ * and drop a note in the thread so the team sees why it's back.
+ */
+const reopenIssue = async (req, res) => {
+  try {
+    const task = await loadOwnIssue(req, req.params.id);
+    if (!task) return res.status(404).json({ error: 'Issue not found' });
+
+    const board = await Board.findById(task.board).select('statuses organisation');
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+    if (!isResolvedStatus(board, task.status)) {
+      return res.status(400).json({ error: 'This request is already open.' });
+    }
+
+    // Reset to the board's default (isDefault) status, same rule as createMyIssue.
+    let status = 'not_started';
+    if (Array.isArray(board.statuses) && board.statuses.length > 0) {
+      const fav = board.statuses.find((s) => s.isDefault);
+      status = (fav || board.statuses[0])._id;
+    }
+    task.status = status;
+    task.portalRating = null; // reopening invalidates any prior rating
+    await task.save();
+
+    const note = (req.body?.note || '').toString().trim().slice(0, 2000);
+    await Update.create({
+      task: task._id,
+      authorType: 'client',
+      portalAuthor: req.portal.contactId,
+      author: null,
+      bodyText: note || 'Reopened this request — it still needs attention.',
+    });
+
+    await notifyTeam({
+      orgId: req.portal.orgId,
+      type: 'clientReplied',
+      message: `${clientLabel(req.portal.group)} reopened "${task.name}"`,
+      taskId: task._id,
+      boardId: task.board,
+      tab: 'updates',
+    });
+
+    return res.json({ issue: serializeIssue(task, board) });
+  } catch (err) {
+    console.error('reopenIssue error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * POST /api/portal/me/issues/:id/rating   Body: { rating: 1..5 }
+ * Client rates their satisfaction once an issue is resolved.
+ */
+const rateIssue = async (req, res) => {
+  try {
+    const task = await loadOwnIssue(req, req.params.id);
+    if (!task) return res.status(404).json({ error: 'Issue not found' });
+
+    const rating = Number(req.body?.rating);
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5.' });
+    }
+
+    task.portalRating = rating;
+    await task.save();
+
+    await notifyTeam({
+      orgId: req.portal.orgId,
+      type: 'clientReplied',
+      message: `${clientLabel(req.portal.group)} rated "${task.name}" ${rating}/5`,
+      taskId: task._id,
+      boardId: task.board,
+    });
+
+    return res.json({ rating });
+  } catch (err) {
+    console.error('rateIssue error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -571,6 +732,8 @@ module.exports = {
   uploadIssueAttachment,
   getIssueThread,
   postIssueThreadMessage,
+  reopenIssue,
+  rateIssue,
   // team admin
   getPortalConfig,
   savePortalConfig,
