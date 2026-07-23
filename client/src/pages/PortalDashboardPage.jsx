@@ -309,7 +309,7 @@ const PortalDashboardPage = () => {
             )}
 
             {/* Search / type filter / sort toolbar */}
-            {issues.length > 1 && (
+            {issues.length > 0 && (
               <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
                 <div style={{ position: 'relative', flex: '1 1 220px', minWidth: 180 }}>
                   <Search size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8' }} />
