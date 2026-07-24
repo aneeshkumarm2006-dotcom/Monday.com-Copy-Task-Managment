@@ -12,8 +12,15 @@ app.use(
   })
 );
 
-// Body parsing
-app.use(express.json());
+// Body parsing. `verify` stashes the raw bytes on req.rawBody so webhook routes
+// (e.g. inbound email) can verify provider signatures over the exact payload.
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 
 // Passport (stateless — no session middleware)
@@ -36,6 +43,9 @@ app.use('/api/dashboard', require('./routes/dashboard'));
 // (GET /api/portal/:token, /verify, request-link) or a portal-token request
 // (/me/*) would be 401'd by the groups router before it ever reached here.
 app.use('/api/portal', require('./routes/portal'));
+// Inbound email webhooks (public, signature-verified) — before the blanket /api
+// routers so their auth middleware never sees it.
+app.use('/api/inbound', require('./routes/inbound'));
 app.use('/api', require('./routes/groups'));
 app.use('/api', require('./routes/automations'));
 app.use('/api/tasks', require('./routes/tasks'));

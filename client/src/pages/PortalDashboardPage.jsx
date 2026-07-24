@@ -4,6 +4,7 @@ import {
   CircleDot, MessageSquare, X, Inbox, Timer, Building2, ChevronRight,
   Bug, Sparkles, ClipboardList, HelpCircle, Star, RotateCcw, Hand,
   Search, Megaphone, ChevronDown, Clock,
+  Facebook, Chrome, Mail, Code2,
 } from 'lucide-react';
 import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
@@ -19,8 +20,12 @@ const BUCKETS = {
   resolved: { label: 'Resolved', color: '#059669', icon: CheckCircle2 },
 };
 const TYPES = {
+  meta_ads: { label: 'Meta Ads', icon: Facebook, color: '#1877F2' },
+  google_ads: { label: 'Google Ads', icon: Chrome, color: '#EA4335' },
+  email_marketing: { label: 'Email Marketing', icon: Mail, color: '#059669' },
+  website_development: { label: 'Website Development', icon: Code2, color: '#7C3AED' },
   bug: { label: 'Bug', icon: Bug, color: '#DC2626' },
-  feature: { label: 'Feature request', icon: Sparkles, color: '#7C3AED' },
+  feature: { label: 'Feature request', icon: Sparkles, color: '#F59E0B' },
   requirement: { label: 'Requirement', icon: ClipboardList, color: '#2563EB' },
   question: { label: 'Question', icon: HelpCircle, color: '#0891B2' },
 };
@@ -63,6 +68,30 @@ const TYPE_FORM = {
     titlePlaceholder: 'e.g. How do I export my report?',
     detailsLabel: 'Add any details',
     detailsPlaceholder: 'Anything that gives us context to answer well.',
+  },
+  meta_ads: {
+    titleLabel: 'What do you need for Meta Ads?',
+    titlePlaceholder: 'e.g. Launch a lead-gen campaign for the new offer',
+    detailsLabel: 'Campaign details',
+    detailsPlaceholder: 'Goals · budget · audience · creatives/links · start date.',
+  },
+  google_ads: {
+    titleLabel: 'What do you need for Google Ads?',
+    titlePlaceholder: 'e.g. Search campaign for our service pages',
+    detailsLabel: 'Campaign details',
+    detailsPlaceholder: 'Goals · budget · keywords/landing pages · target locations · start date.',
+  },
+  email_marketing: {
+    titleLabel: 'What do you need sent?',
+    titlePlaceholder: 'e.g. Monthly newsletter to our subscriber list',
+    detailsLabel: 'Campaign details',
+    detailsPlaceholder: 'Audience · offer/message · any copy or assets · desired send date.',
+  },
+  website_development: {
+    titleLabel: 'What do you need built?',
+    titlePlaceholder: 'e.g. New landing page for the spring launch',
+    detailsLabel: 'Project details',
+    detailsPlaceholder: 'Pages/features · references or examples · content status · deadline.',
   },
 };
 
@@ -558,7 +587,8 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
 
       <label style={label}>Needed by <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
       <input type="date" className="mcp-field" style={{ marginBottom: 16, cursor: 'pointer' }}
-        value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+        value={dueDate} onChange={(e) => setDueDate(e.target.value)}
+        onClick={(e) => { try { e.currentTarget.showPicker?.(); } catch { /* not supported / not allowed */ } }} />
 
       {Array.isArray(categories) && categories.length > 0 && (
         <>

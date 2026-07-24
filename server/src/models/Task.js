@@ -117,7 +117,17 @@ const taskSchema = new mongoose.Schema(
     // type badge. Empty for internal tasks.
     portalType: {
       type: String,
-      enum: ['', 'bug', 'feature', 'requirement', 'question'],
+      enum: [
+        '',
+        'bug',
+        'feature',
+        'requirement',
+        'question',
+        'meta_ads',
+        'google_ads',
+        'email_marketing',
+        'website_development',
+      ],
       default: '',
     },
     // Client satisfaction rating (1–5) captured when their issue is resolved.

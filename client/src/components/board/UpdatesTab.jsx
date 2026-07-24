@@ -282,16 +282,21 @@ const UpdatesTab = ({ task, onCountChange }) => {
     [taskId, toast]
   );
 
+  // Inbound-email address is only real when the workspace has configured an
+  // inbound domain (VITE_INBOUND_EMAIL_DOMAIN) wired to the /api/inbound webhook.
+  const inboundDomain = import.meta.env.VITE_INBOUND_EMAIL_DOMAIN;
+  const feedbackEmail = import.meta.env.VITE_FEEDBACK_EMAIL;
+
   const handleCopyEmail = useCallback(async () => {
-    if (!taskId) return;
-    const email = `task-${taskId}@updates.yourdomain.com`;
+    if (!taskId || !inboundDomain) return;
+    const email = `task-${taskId}@${inboundDomain}`;
     try {
       await navigator.clipboard.writeText(email);
-      toast.success(`Copied ${email}`);
+      toast.success(`Copied ${email} — reply to this address to post an update.`);
     } catch {
       toast.info(email);
     }
-  }, [taskId, toast]);
+  }, [taskId, inboundDomain, toast]);
 
   const insertEmoji = useCallback((emoji) => {
     const editor = editorRef.current;
@@ -365,43 +370,47 @@ const UpdatesTab = ({ task, onCountChange }) => {
         }}
       >
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={handleCopyEmail}
-            className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
-            style={{
-              fontSize: 12,
-              fontWeight: 500,
-              color: 'var(--color-text-secondary)',
-              background: 'transparent',
-              border: '1px solid var(--color-border)',
-              borderRadius: 'var(--radius-md)',
-              padding: '4px 10px',
-              cursor: 'pointer',
-            }}
-            title="Copy per-task email address"
-          >
-            <Mail size={12} aria-hidden="true" />
-            Update via email
-          </button>
-          <a
-            href="mailto:feedback@yourdomain.com?subject=Macan%20Updates%20Feedback"
-            className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
-            style={{
-              fontSize: 12,
-              fontWeight: 500,
-              color: 'var(--color-text-secondary)',
-              background: 'transparent',
-              border: '1px solid var(--color-border)',
-              borderRadius: 'var(--radius-md)',
-              padding: '4px 10px',
-              cursor: 'pointer',
-              textDecoration: 'none',
-            }}
-          >
-            <MessageSquare size={12} aria-hidden="true" />
-            Give feedback
-          </a>
+          {inboundDomain && (
+            <button
+              type="button"
+              onClick={handleCopyEmail}
+              className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: 'var(--color-text-secondary)',
+                background: 'transparent',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-md)',
+                padding: '4px 10px',
+                cursor: 'pointer',
+              }}
+              title="Copy this task's email address — reply to it to post an update"
+            >
+              <Mail size={12} aria-hidden="true" />
+              Update via email
+            </button>
+          )}
+          {feedbackEmail && (
+            <a
+              href={`mailto:${feedbackEmail}?subject=Macan%20Updates%20Feedback`}
+              className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
+              style={{
+                fontSize: 12,
+                fontWeight: 500,
+                color: 'var(--color-text-secondary)',
+                background: 'transparent',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-md)',
+                padding: '4px 10px',
+                cursor: 'pointer',
+                textDecoration: 'none',
+              }}
+            >
+              <MessageSquare size={12} aria-hidden="true" />
+              Give feedback
+            </a>
+          )}
         </div>
       </div>
 

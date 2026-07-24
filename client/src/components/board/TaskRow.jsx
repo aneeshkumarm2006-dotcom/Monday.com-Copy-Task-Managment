@@ -20,9 +20,13 @@ const NAVBAR_HEIGHT = 56;
 // client tickets (bug vs feature vs requirement vs question) at a glance.
 const PORTAL_TYPE_BADGE = {
   bug: { label: 'Bug', color: '#DC2626' },
-  feature: { label: 'Feature', color: '#7C3AED' },
+  feature: { label: 'Feature', color: '#F59E0B' },
   requirement: { label: 'Requirement', color: '#2563EB' },
   question: { label: 'Question', color: '#0891B2' },
+  meta_ads: { label: 'Meta Ads', color: '#1877F2' },
+  google_ads: { label: 'Google Ads', color: '#EA4335' },
+  email_marketing: { label: 'Email Marketing', color: '#059669' },
+  website_development: { label: 'Website Dev', color: '#7C3AED' },
 };
 
 const toYMD = (iso) => {

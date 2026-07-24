@@ -62,7 +62,16 @@ const classifyIssue = (board, statusValue) => {
 };
 
 // Request types the client can raise, and the priorities they can set.
-const PORTAL_TYPES = ['bug', 'feature', 'requirement', 'question'];
+const PORTAL_TYPES = [
+  'bug',
+  'feature',
+  'requirement',
+  'question',
+  'meta_ads',
+  'google_ads',
+  'email_marketing',
+  'website_development',
+];
 const PORTAL_PRIORITIES = ['low', 'medium', 'high', 'critical'];
 
 // Human-friendly ticket reference. Sequential (REQ-1042) once portalRef is set;
