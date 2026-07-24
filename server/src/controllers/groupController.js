@@ -70,6 +70,21 @@ const createGroup = async (req, res) => {
     );
     if (denied) return res.status(denied.status).json({ error: denied.error });
 
+    // Reject a duplicate group name on the same board (case-insensitive) so a
+    // board never carries two groups the user can't tell apart.
+    const trimmedName = name.trim();
+    const duplicate = await TaskGroup.findOne({
+      board: boardId,
+      name: new RegExp(`^${trimmedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+    })
+      .select('_id')
+      .lean();
+    if (duplicate) {
+      return res.status(409).json({
+        error: `A group named "${trimmedName}" already exists on this board. Please choose a different name.`,
+      });
+    }
+
     let resolvedOrder = order;
     if (typeof resolvedOrder !== 'number') {
       resolvedOrder = await TaskGroup.countDocuments({ board: boardId });

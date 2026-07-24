@@ -14,6 +14,10 @@ const { BOARD_LEVELS } = require('../utils/capabilities');
 const { createNotification } = require('../services/notificationService');
 
 const VALID_VISIBILITIES = ['public', 'private'];
+
+// Escape user text so it can be used as a literal in a RegExp (for the
+// case-insensitive duplicate-name check). Mirrors searchController's ReDoS guard.
+const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /**
  * The rungs a per-board grant may name: the ladder itself, plus `none` to revoke
  * and the legacy `read` spelling of `view`, which grants written before the
@@ -401,6 +405,21 @@ const createBoard = async (req, res) => {
       return res
         .status(403)
         .json({ error: 'You do not have permission to create boards' });
+    }
+
+    // Reject a duplicate board name within the same organisation (case-insensitive)
+    // so the sidebar never shows two boards the user can't tell apart.
+    const trimmedName = name.trim();
+    const duplicate = await Board.findOne({
+      organisation,
+      name: new RegExp(`^${escapeRegExp(trimmedName)}$`, 'i'),
+    })
+      .select('_id')
+      .lean();
+    if (duplicate) {
+      return res.status(409).json({
+        error: `A board named "${trimmedName}" already exists. Please choose a different name.`,
+      });
     }
 
     const lastBoard = await Board.findOne({ organisation })
