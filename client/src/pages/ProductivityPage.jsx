@@ -522,7 +522,9 @@ const ProductivityPage = () => {
 
   const handleOpenTask = (task) => {
     if (task.boardId) {
-      navigate(`/boards/${task.boardId}?highlightTask=${task._id}`);
+      const parentId = task.parent?._id || task.parent;
+      const parentParam = parentId ? `&highlightParent=${parentId}` : '';
+      navigate(`/boards/${task.boardId}?highlightTask=${task._id}${parentParam}`);
     }
   };
 

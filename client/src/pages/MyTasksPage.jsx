@@ -148,7 +148,11 @@ const WorkTaskCard = ({ task, onSelect }) => {
   const handleOpenInBoard = (e) => {
     e.stopPropagation();
     if (boardId) {
-      navigate(`/boards/${boardId}?highlightTask=${task._id}`);
+      // Subitems aren't top-level board rows — pass the parent so the board can
+      // expand the parent's group and reveal the row.
+      const parentId = task.parent?._id || task.parent;
+      const parentParam = parentId ? `&highlightParent=${parentId}` : '';
+      navigate(`/boards/${boardId}?highlightTask=${task._id}${parentParam}`);
     }
   };
 

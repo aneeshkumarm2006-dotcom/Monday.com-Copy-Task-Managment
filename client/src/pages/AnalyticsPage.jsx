@@ -149,7 +149,9 @@ const AnalyticsPage = () => {
     (task) => {
       if (!task?.boardId) return;
       setOverdueModalOpen(false);
-      navigate(`/boards/${task.boardId}?highlightTask=${task._id}`);
+      const parentId = task.parent?._id || task.parent;
+      const parentParam = parentId ? `&highlightParent=${parentId}` : '';
+      navigate(`/boards/${task.boardId}?highlightTask=${task._id}${parentParam}`);
     },
     [navigate]
   );

@@ -330,6 +330,14 @@ const BoardDetailPage = () => {
       }
     }
 
+    // Groups can arrive a render before their tasks. If we haven't found the
+    // target AND no group has any tasks yet, the board rows simply aren't loaded
+    // — bail WITHOUT clearing the link so this effect re-runs (and finds the
+    // group) once tasksByGroup populates. Otherwise we'd expand nothing, land on
+    // a fully-collapsed board, and lose the params on refresh.
+    const anyTasksLoaded = groups.some((g) => (tasksByGroup[g._id] || []).length > 0);
+    if (!found && !anyTasksLoaded) return;
+
     // Clear the query params so refreshing doesn't re-trigger
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
