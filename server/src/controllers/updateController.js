@@ -7,7 +7,8 @@ const {
   notifyTaskAudience,
   filterByEmailPreference,
 } = require('../services/notificationService');
-const { sendMentionEmail } = require('../services/emailService');
+const { sendMentionEmail, sendUpdateEmail } = require('../services/emailService');
+const ItemFollow = require('../models/ItemFollow');
 const { logActivity } = require('../services/activityService');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const { loadBoardContext } = require('../utils/boardContext');
@@ -285,6 +286,53 @@ const addUpdate = async (req, res) => {
           );
         }
       });
+    }
+
+    // Email the task AUDIENCE (assignees + followers) on the update — for every
+    // board, not just client portals. Mentioned users already got their own email
+    // above, and the author is excluded. Preference + DND gated like all channels.
+    if (!task.isPersonal) {
+      try {
+        const followerDocs = await ItemFollow.find({ task: task._id }).select('user');
+        const followerIds = followerDocs.map((f) => String(f.user));
+        const assigneeIds = (task.assignedTo || []).map((u) => String(u._id || u));
+        const mentionSet = new Set((validMentions || []).map((m) => m.toString()));
+        const audienceIds = [...new Set([...assigneeIds, ...followerIds])].filter(
+          (id) => id !== userId && !mentionSet.has(id)
+        );
+        if (audienceIds.length) {
+          const emailAllowed = await filterByEmailPreference(audienceIds, 'commented');
+          const recipients = await User.find(
+            { _id: { $in: [...emailAllowed] } },
+            'email name'
+          );
+          if (recipients.length) {
+            const authorName = populated.author?.name || 'Someone';
+            const boardId = task.board?.toString?.() || task.board;
+            const taskLink = `${process.env.CLIENT_URL || 'http://localhost:5173'}/boards/${boardId}`;
+            const previewText = (bodyText || '').toString().trim().slice(0, 280) || '(rich update)';
+            const results = await Promise.allSettled(
+              recipients.map((u) =>
+                sendUpdateEmail({
+                  to: u.email,
+                  authorName,
+                  taskName: task.name,
+                  commentText: previewText,
+                  taskLink,
+                  taskId: String(task._id),
+                })
+              )
+            );
+            results.forEach((r, i) => {
+              if (r.status === 'rejected') {
+                console.error(`[email] Failed to send update email to ${recipients[i]?.email}:`, r.reason);
+              }
+            });
+          }
+        }
+      } catch (audienceEmailErr) {
+        console.error('audience update email error:', audienceEmailErr);
+      }
     }
 
     return res.status(201).json({ update: populated });

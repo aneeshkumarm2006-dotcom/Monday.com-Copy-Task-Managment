@@ -293,6 +293,35 @@ const sendMentionEmail = async ({ to, mentionedByName, taskName, commentText, ta
 };
 
 /**
+ * Email a task's audience (assignees + followers) when someone posts an update —
+ * works for every board, not just client portals. Same visual language as the
+ * mention email; only the framing copy differs.
+ */
+const buildUpdateHtml = ({ authorName, taskName, commentText, taskLink }) =>
+  buildMentionHtml({ mentionedByName: authorName, taskName, commentText, taskLink })
+    .replace('You were mentioned in a comment', 'New update on a task')
+    .replace(
+      `<strong>${escapeHtml(authorName)}</strong> mentioned you in a comment on a task.`,
+      `<strong>${escapeHtml(authorName)}</strong> posted an update on a task you're assigned to or following.`
+    )
+    .replace(
+      'You received this email because you were mentioned in a comment in Macan. If you believe this is an error, contact your administrator.',
+      "You received this email because you're assigned to or following this task in Macan. Manage this in your notification settings."
+    );
+
+const sendUpdateEmail = async ({ to, authorName, taskName, commentText, taskLink, taskId }) => {
+  const html = buildUpdateHtml({ authorName, taskName, commentText, taskLink });
+  const replyTo = taskReplyAddress(taskId);
+  await transporter.sendMail({
+    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+    ...(replyTo ? { replyTo } : {}),
+    to,
+    subject: `New update on "${taskName}"`,
+    html,
+  });
+};
+
+/**
  * Shared shell for the Client Portal emails — same visual language as the app
  * emails above, but addressed to an EXTERNAL client (not an app user). `title`
  * and `intro` set the header copy; `bodyCard` is raw inner HTML; `ctaLabel` /
@@ -440,6 +469,7 @@ module.exports = {
   sendTaskAssignmentEmail,
   sendInviteEmail,
   sendMentionEmail,
+  sendUpdateEmail,
   sendPortalInviteEmail,
   sendPortalReplyEmail,
   sendPortalResolvedEmail,
