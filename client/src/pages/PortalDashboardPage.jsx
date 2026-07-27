@@ -3,8 +3,7 @@ import {
   Plus, Paperclip, Send, ArrowLeft, LogOut, Loader2, CheckCircle2,
   CircleDot, MessageSquare, X, Inbox, Timer, Building2, ChevronRight,
   Bug, Sparkles, ClipboardList, HelpCircle, Star, RotateCcw, Hand,
-  Search, Megaphone, ChevronDown, Clock,
-  Facebook, Chrome, Mail, Code2,
+  Search, Megaphone, ChevronDown, Clock, Mail, Code2,
 } from 'lucide-react';
 import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
@@ -20,8 +19,8 @@ const BUCKETS = {
   resolved: { label: 'Resolved', color: '#059669', icon: CheckCircle2 },
 };
 const TYPES = {
-  meta_ads: { label: 'Meta Ads', icon: Facebook, color: '#1877F2' },
-  google_ads: { label: 'Google Ads', icon: Chrome, color: '#EA4335' },
+  meta_ads: { label: 'Meta Ads', icon: Megaphone, color: '#1877F2' },
+  google_ads: { label: 'Google Ads', icon: Search, color: '#EA4335' },
   email_marketing: { label: 'Email Marketing', icon: Mail, color: '#059669' },
   website_development: { label: 'Website Development', icon: Code2, color: '#7C3AED' },
   bug: { label: 'Bug', icon: Bug, color: '#DC2626' },
