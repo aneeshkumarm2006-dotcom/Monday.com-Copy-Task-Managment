@@ -282,21 +282,28 @@ const UpdatesTab = ({ task, onCountChange }) => {
     [taskId, toast]
   );
 
-  // Inbound-email address is only real when the workspace has configured an
-  // inbound domain (VITE_INBOUND_EMAIL_DOMAIN) wired to the /api/inbound webhook.
-  const inboundDomain = import.meta.env.VITE_INBOUND_EMAIL_DOMAIN;
+  // "Update via email" uses Gmail plus-addressing: VITE_INBOUND_EMAIL_ADDRESS is
+  // the inbox base (e.g. automations@davnoot.com) and each task gets a tagged
+  // reply address `<local>+task-<id>@<domain>` that the inbound poller reads.
+  // Empty env → the button is hidden (nothing to copy).
+  const inboundAddress = import.meta.env.VITE_INBOUND_EMAIL_ADDRESS;
   const feedbackEmail = import.meta.env.VITE_FEEDBACK_EMAIL;
 
+  const taskEmail = (() => {
+    if (!taskId || !inboundAddress) return null;
+    const [local, domain] = String(inboundAddress).split('@');
+    return local && domain ? `${local}+task-${taskId}@${domain}` : null;
+  })();
+
   const handleCopyEmail = useCallback(async () => {
-    if (!taskId || !inboundDomain) return;
-    const email = `task-${taskId}@${inboundDomain}`;
+    if (!taskEmail) return;
     try {
-      await navigator.clipboard.writeText(email);
-      toast.success(`Copied ${email} — reply to this address to post an update.`);
+      await navigator.clipboard.writeText(taskEmail);
+      toast.success(`Copied ${taskEmail} — reply to this address to post an update.`);
     } catch {
-      toast.info(email);
+      toast.info(taskEmail);
     }
-  }, [taskId, inboundDomain, toast]);
+  }, [taskEmail, toast]);
 
   const insertEmoji = useCallback((emoji) => {
     const editor = editorRef.current;
@@ -370,7 +377,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
         }}
       >
         <div className="flex flex-wrap items-center gap-2">
-          {inboundDomain && (
+          {taskEmail && (
             <button
               type="button"
               onClick={handleCopyEmail}

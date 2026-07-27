@@ -841,6 +841,7 @@ module.exports = {
         taskName: task.name,
         snippet: (snippet || '').toString().slice(0, 280),
         link: `${CLIENT_URL()}/portal`,
+        taskId: String(task._id),
       });
     } catch (err) {
       console.error('sendPortalReplyEmailForTask error:', err);

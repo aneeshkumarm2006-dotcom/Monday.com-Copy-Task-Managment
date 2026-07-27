@@ -378,11 +378,23 @@ const sendPortalInviteEmail = async ({ to, orgName, clientName, link }) => {
  * @param {object} opts
  * @param {string} opts.to, opts.orgName, opts.taskName, opts.snippet, opts.link
  */
-const sendPortalReplyEmail = async ({ to, orgName, taskName, snippet, link }) => {
+/**
+ * The plus-addressed reply address for a task, e.g. `automations+task-<id>@davnoot.com`.
+ * Replies to it land in the GMAIL_USER inbox and the IMAP poller turns them into
+ * updates. Null when GMAIL_USER isn't set.
+ */
+const taskReplyAddress = (taskId) => {
+  const base = process.env.GMAIL_USER || '';
+  const at = base.indexOf('@');
+  if (!taskId || at <= 0) return null;
+  return `${base.slice(0, at)}+task-${taskId}@${base.slice(at + 1)}`;
+};
+
+const sendPortalReplyEmail = async ({ to, orgName, taskName, snippet, link, taskId }) => {
   const html = buildPortalHtml({
     orgName,
     title: 'New reply on your issue',
-    intro: `The team replied on your issue <strong>${escapeHtml(taskName)}</strong>.`,
+    intro: `The team replied on your issue <strong>${escapeHtml(taskName)}</strong>. You can reply straight from your email.`,
     bodyCard: snippet
       ? `<div class="card"><p class="card-label">Reply</p><p class="card-text">${escapeHtml(
           snippet
@@ -391,8 +403,10 @@ const sendPortalReplyEmail = async ({ to, orgName, taskName, snippet, link }) =>
     ctaLabel: 'View the conversation',
     ctaLink: link,
   });
+  const replyTo = taskReplyAddress(taskId);
   await getPortalTransporter().sendMail({
     from: portalFrom(),
+    ...(replyTo ? { replyTo } : {}),
     to,
     subject: `New reply on "${taskName}"`,
     html,

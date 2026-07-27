@@ -9,6 +9,7 @@ const {
 } = require('./src/services/automationEventDispatcher');
 const { mountMirrorRefresh } = require('./src/services/mirrorRefresh');
 const notificationStream = require('./src/services/notificationStream');
+const { startInboundMailPoller } = require('./src/services/inboundMailPoller');
 
 const PORT = process.env.PORT || 5000;
 
@@ -19,6 +20,7 @@ const start = async () => {
   mountMirrorRefresh();
   notificationStream.mount();
   startAutomationRunner();
+  startInboundMailPoller();
   app.listen(PORT, () => {
     console.log(`Macan API listening on port ${PORT}`);
   });
