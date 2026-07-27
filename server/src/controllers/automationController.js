@@ -408,6 +408,7 @@ const notifyAssignees = async (task, boardId, assigneeIds, orgId) => {
           priority: task.priority,
           dueDate: task.dueDate,
           taskLink,
+          assignedByName: 'An automation',
         })
       )
   );

@@ -60,7 +60,7 @@ const escapeHtml = (str) => {
     .replace(/"/g, '&quot;');
 };
 
-const buildHtml = ({ taskName, priority, dueDate, taskLink }) => {
+const buildHtml = ({ taskName, priority, dueDate, taskLink, assignedByName }) => {
   const priorLabel = escapeHtml(PRIORITY_LABELS[priority] || priority);
   const priorBg = PRIORITY_BG[priority] || '#6B7280';
   const dueDateStr = dueDate
@@ -104,8 +104,8 @@ const buildHtml = ({ taskName, priority, dueDate, taskLink }) => {
       <div class="header-logo">Macan</div>
     </div>
     <div class="body">
-      <p class="title">You've been assigned a task</p>
-      <p class="subtitle">A new task has been assigned to you. Review the details below and click the button to open it.</p>
+      <p class="title">${assignedByName ? `${escapeHtml(assignedByName)} assigned you a task` : "You've been assigned a task"}</p>
+      <p class="subtitle">${assignedByName ? `<strong>${escapeHtml(assignedByName)}</strong> assigned this task to you.` : 'A new task has been assigned to you.'} Review the details below and click the button to open it.</p>
       <div class="task-card">
         <p class="task-name">${escapeHtml(taskName)}</p>
         <div class="meta-row">
@@ -141,12 +141,14 @@ const buildHtml = ({ taskName, priority, dueDate, taskLink }) => {
  * @param {Date|string|null} opts.dueDate  — optional due date
  * @param {string} opts.taskLink   — direct URL to the board/task
  */
-const sendTaskAssignmentEmail = async ({ to, taskName, priority, dueDate, taskLink }) => {
-  const html = buildHtml({ taskName, priority, dueDate, taskLink });
+const sendTaskAssignmentEmail = async ({ to, taskName, priority, dueDate, taskLink, assignedByName }) => {
+  const html = buildHtml({ taskName, priority, dueDate, taskLink, assignedByName });
   await transporter.sendMail({
     from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
     to,
-    subject: `You've been assigned: ${taskName}`,
+    subject: assignedByName
+      ? `${assignedByName} assigned you "${taskName}"`
+      : `You've been assigned: ${taskName}`,
     html,
   });
 };
@@ -316,7 +318,7 @@ const sendUpdateEmail = async ({ to, authorName, taskName, commentText, taskLink
     from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
     ...(replyTo ? { replyTo } : {}),
     to,
-    subject: `New update on "${taskName}"`,
+    subject: `${authorName} posted an update on "${taskName}"`,
     html,
   });
 };

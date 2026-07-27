@@ -1068,6 +1068,7 @@ const createTask = async (req, res) => {
               priority: task.priority,
               dueDate: task.dueDate,
               taskLink,
+              assignedByName: req.user?.name || '',
             })
           )
       );
@@ -1470,6 +1471,7 @@ const updateTask = async (req, res) => {
               priority: task.priority,
               dueDate: task.dueDate,
               taskLink,
+              assignedByName: req.user?.name || '',
             })
           )
       );
