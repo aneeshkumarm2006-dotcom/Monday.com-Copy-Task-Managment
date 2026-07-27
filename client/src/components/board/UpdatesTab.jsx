@@ -288,6 +288,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
   // Empty env → the button is hidden (nothing to copy).
   const inboundAddress = import.meta.env.VITE_INBOUND_EMAIL_ADDRESS;
   const feedbackEmail = import.meta.env.VITE_FEEDBACK_EMAIL;
+  const [emailInfoOpen, setEmailInfoOpen] = useState(false);
 
   const taskEmail = (() => {
     if (!taskId || !inboundAddress) return null;
@@ -378,25 +379,80 @@ const UpdatesTab = ({ task, onCountChange }) => {
       >
         <div className="flex flex-wrap items-center gap-2">
           {taskEmail && (
-            <button
-              type="button"
-              onClick={handleCopyEmail}
-              className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
-              style={{
-                fontSize: 12,
-                fontWeight: 500,
-                color: 'var(--color-text-secondary)',
-                background: 'transparent',
-                border: '1px solid var(--color-border)',
-                borderRadius: 'var(--radius-md)',
-                padding: '4px 10px',
-                cursor: 'pointer',
-              }}
-              title="Copy this task's email address — reply to it to post an update"
-            >
-              <Mail size={12} aria-hidden="true" />
-              Update via email
-            </button>
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => setEmailInfoOpen((v) => !v)}
+                className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
+                style={{
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: emailInfoOpen ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+                  background: 'transparent',
+                  border: `1px solid ${emailInfoOpen ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                  borderRadius: 'var(--radius-md)',
+                  padding: '4px 10px',
+                  cursor: 'pointer',
+                }}
+                title="Email an update to this task"
+              >
+                <Mail size={12} aria-hidden="true" />
+                Update via email
+              </button>
+              {emailInfoOpen && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: 'calc(100% + 6px)',
+                    left: 0,
+                    zIndex: 50,
+                    width: 320,
+                    maxWidth: '80vw',
+                    background: 'var(--color-bg-surface, #fff)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 'var(--radius-lg, 12px)',
+                    boxShadow: 'var(--shadow-md, 0 8px 24px rgba(0,0,0,0.14))',
+                    padding: 14,
+                  }}
+                >
+                  <p style={{ fontSize: 12.5, color: 'var(--color-text-secondary)', margin: '0 0 10px', lineHeight: 1.5 }}>
+                    Email this address from your team or client email and it posts to this thread within ~1&ndash;2 min.
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                    <code
+                      style={{
+                        flex: 1,
+                        fontSize: 11.5,
+                        background: 'var(--color-bg-subtle, #f3f4f6)',
+                        borderRadius: 6,
+                        padding: '6px 8px',
+                        color: 'var(--color-text-primary)',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {taskEmail}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={handleCopyEmail}
+                      style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-accent)', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <a
+                    href={`mailto:${taskEmail}?subject=${encodeURIComponent('Update')}`}
+                    onClick={() => setEmailInfoOpen(false)}
+                    className="inline-flex items-center gap-1"
+                    style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-accent)', textDecoration: 'none' }}
+                  >
+                    <Mail size={12} aria-hidden="true" /> Open in email app
+                  </a>
+                </div>
+              )}
+            </div>
           )}
           {feedbackEmail && (
             <a
