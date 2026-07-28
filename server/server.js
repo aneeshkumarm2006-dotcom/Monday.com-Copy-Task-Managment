@@ -20,7 +20,12 @@ const start = async () => {
   mountMirrorRefresh();
   notificationStream.mount();
   startAutomationRunner();
-  startInboundMailPoller();
+  // Non-critical: never let the optional email poller block the server booting.
+  try {
+    startInboundMailPoller();
+  } catch (err) {
+    console.error('startInboundMailPoller failed (continuing without it):', err);
+  }
   app.listen(PORT, () => {
     console.log(`Macan API listening on port ${PORT}`);
   });

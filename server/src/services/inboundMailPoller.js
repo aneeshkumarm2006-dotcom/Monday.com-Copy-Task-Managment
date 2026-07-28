@@ -1,6 +1,4 @@
 const cron = require('node-cron');
-const { ImapFlow } = require('imapflow');
-const { simpleParser } = require('mailparser');
 const { processInboundEmail } = require('./inboundEmail');
 
 /**
@@ -13,11 +11,24 @@ const { processInboundEmail } = require('./inboundEmail');
  * know which task the message belongs to. Processing (authorise sender, create
  * the Update, notify, log) is shared with the Resend path via processInboundEmail.
  *
+ * IMPORTANT: `imapflow` ships as an ES module, so it CANNOT be `require()`d from
+ * this CommonJS server — doing so throws ERR_REQUIRE_ESM and would crash the
+ * whole process on boot. We load it (and mailparser) lazily via dynamic import()
+ * inside the poll, wrapped so any failure disables ONLY this feature.
+ *
  * Disabled automatically when GMAIL_USER / GMAIL_APP_PASSWORD are unset.
  */
 
 let started = false;
 let running = false;
+let libs = null; // { ImapFlow, simpleParser }, loaded once on first poll
+
+const loadLibs = async () => {
+  if (libs) return libs;
+  const [imap, mp] = await Promise.all([import('imapflow'), import('mailparser')]);
+  libs = { ImapFlow: imap.ImapFlow, simpleParser: mp.simpleParser };
+  return libs;
+};
 
 const collectAddresses = (addressObj, out) => {
   if (addressObj && Array.isArray(addressObj.value)) {
@@ -29,6 +40,15 @@ const poll = async () => {
   const user = process.env.GMAIL_USER;
   const pass = process.env.GMAIL_APP_PASSWORD;
   if (!user || !pass) return;
+
+  let ImapFlow;
+  let simpleParser;
+  try {
+    ({ ImapFlow, simpleParser } = await loadLibs());
+  } catch (err) {
+    console.error('[inbound-mail] could not load imapflow/mailparser — disabling this run:', err.message);
+    return;
+  }
 
   const client = new ImapFlow({
     host: 'imap.gmail.com',
@@ -105,7 +125,7 @@ const startInboundMailPoller = () => {
       running = false;
     }
   });
-  console.log('inbound mail poller started (Gmail IMAP)');
+  console.log('inbound mail poller scheduled (Gmail IMAP)');
 };
 
 module.exports = { startInboundMailPoller };
