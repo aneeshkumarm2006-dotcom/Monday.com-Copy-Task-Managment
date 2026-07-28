@@ -37,6 +37,14 @@ const getPortalTransporter = () => {
 const portalFrom = () =>
   process.env.GMAIL_FROM || process.env.GMAIL_USER || 'noreply@davnoot.com';
 
+// All the INTERNAL app emails (assignment, mention, invite, update) go through
+// Gmail too when it's configured — so the workspace needs ONE mail provider and
+// no Resend domain verification. Falls back to the Resend transporter only if
+// Gmail creds are absent.
+const gmailReady = () => !!(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD);
+const appTransporter = () => (gmailReady() ? getPortalTransporter() : transporter);
+const appFrom = () => (gmailReady() ? portalFrom() : process.env.EMAIL_FROM || 'noreply@davnoot.com');
+
 const PRIORITY_LABELS = {
   critical: 'Critical',
   high: 'High',
@@ -143,8 +151,8 @@ const buildHtml = ({ taskName, priority, dueDate, taskLink, assignedByName }) =>
  */
 const sendTaskAssignmentEmail = async ({ to, taskName, priority, dueDate, taskLink, assignedByName }) => {
   const html = buildHtml({ taskName, priority, dueDate, taskLink, assignedByName });
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+  await appTransporter().sendMail({
+    from: appFrom(),
     to,
     subject: assignedByName
       ? `${assignedByName} assigned you "${taskName}"`
@@ -216,8 +224,8 @@ const buildInviteHtml = ({ orgName, inviteLink, inviteCode }) => {
  */
 const sendInviteEmail = async ({ to, orgName, inviteLink, inviteCode }) => {
   const html = buildInviteHtml({ orgName, inviteLink, inviteCode });
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+  await appTransporter().sendMail({
+    from: appFrom(),
     to,
     subject: `You've been invited to join ${orgName} on Macan`,
     html,
@@ -286,8 +294,8 @@ const buildMentionHtml = ({ mentionedByName, taskName, commentText, taskLink }) 
  */
 const sendMentionEmail = async ({ to, mentionedByName, taskName, commentText, taskLink }) => {
   const html = buildMentionHtml({ mentionedByName, taskName, commentText, taskLink });
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+  await appTransporter().sendMail({
+    from: appFrom(),
     to,
     subject: `${mentionedByName} mentioned you in "${taskName}"`,
     html,
@@ -314,8 +322,8 @@ const buildUpdateHtml = ({ authorName, taskName, commentText, taskLink }) =>
 const sendUpdateEmail = async ({ to, authorName, taskName, commentText, taskLink, taskId }) => {
   const html = buildUpdateHtml({ authorName, taskName, commentText, taskLink });
   const replyTo = taskReplyAddress(taskId);
-  await transporter.sendMail({
-    from: process.env.EMAIL_FROM || 'noreply@davnoot.com',
+  await appTransporter().sendMail({
+    from: appFrom(),
     ...(replyTo ? { replyTo } : {}),
     to,
     subject: `${authorName} posted an update on "${taskName}"`,

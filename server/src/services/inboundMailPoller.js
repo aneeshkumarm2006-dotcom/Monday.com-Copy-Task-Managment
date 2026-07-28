@@ -56,10 +56,21 @@ const poll = async () => {
     secure: true,
     auth: { user, pass },
     logger: false,
+    // Fail fast instead of hanging the poll on a slow/blocked network.
+    connectionTimeout: 15000,
+    greetingTimeout: 10000,
+    socketTimeout: 30000,
   });
 
-  await client.connect();
+  // CRITICAL: an ImapFlow instance with no 'error' listener CRASHES the whole
+  // process when its socket errors/times out (Node treats an unhandled 'error'
+  // event as fatal). Swallow it here — the next scheduled poll reconnects.
+  client.on('error', (err) => {
+    console.error('[inbound-mail] imap socket error (non-fatal):', err?.message || err);
+  });
+
   try {
+    await client.connect();
     const lock = await client.getMailboxLock('INBOX');
     try {
       // Only unseen messages; marking them seen after processing avoids re-work.
