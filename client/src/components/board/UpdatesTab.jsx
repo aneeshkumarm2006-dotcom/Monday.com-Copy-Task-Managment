@@ -13,6 +13,7 @@ import {
   CornerDownLeft,
   X,
   Check,
+  Lock,
 } from 'lucide-react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -59,13 +60,23 @@ const replyPreview = (parent) => {
 /**
  * UpdatesTab — full Updates panel mounted inside CommentPanel.
  *
+ * Renders EITHER of the task's two threads, chosen by `visibility`. They are the
+ * same feed and the same composer; only the audience differs, so this component
+ * is shared rather than duplicated:
+ *
+ *   'shared'   — the thread a Client Portal client also reads and gets emailed.
+ *   'internal' — team-only notes. Never rendered in the portal, never emailed to
+ *                a client. See models/Update.js `visibility`.
+ *
  * Props:
  *   task — populated task
- *   onCountChange(n) — bubbles the current updates count up so the tab badge
- *                     stays in sync as updates are added/removed
+ *   visibility — 'shared' (default) | 'internal'
+ *   onCountChange(n) — bubbles the current count up so the tab badge stays in
+ *                     sync as posts are added/removed
  */
-const UpdatesTab = ({ task, onCountChange }) => {
+const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
   const taskId = task?._id || null;
+  const isInternal = visibility === 'internal';
   const currentUser = useAuthStore((s) => s.user);
   const toast = useToastStore.getState();
   const refreshNotifications = useNotificationStore((s) => s.fetchNotifications);
@@ -105,7 +116,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
     setLoading(true);
     setError('');
     updateService
-      .getUpdates(taskId)
+      .getUpdates(taskId, visibility)
       .then((list) => {
         if (!cancelled) setUpdates(list || []);
       })
@@ -124,7 +135,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
     return () => {
       cancelled = true;
     };
-  }, [taskId]);
+  }, [taskId, visibility]);
 
   const handleEditorChange = useCallback(({ json, text, mentions, isEmpty }) => {
     setBodyJson(json);
@@ -147,6 +158,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
         mentions: mentionIds,
         attachments,
         replyTo: replyingTo?._id || null,
+        visibility,
       });
       setUpdates((prev) => [created, ...prev]);
       // Reset composer
@@ -177,12 +189,15 @@ const UpdatesTab = ({ task, onCountChange }) => {
     submitting,
     replyingTo,
     refreshNotifications,
+    visibility,
   ]);
 
   const handleDelete = useCallback(
     async (updateId) => {
       if (!taskId) return;
-      const ok = window.confirm('Delete this update?');
+      const ok = window.confirm(
+        isInternal ? 'Delete this internal note?' : 'Delete this update?'
+      );
       if (!ok) return;
       try {
         await updateService.deleteUpdate(taskId, updateId);
@@ -194,7 +209,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
         );
       }
     },
-    [taskId, toast]
+    [taskId, toast, isInternal]
   );
 
   const handleEdit = useCallback(
@@ -285,6 +300,8 @@ const UpdatesTab = ({ task, onCountChange }) => {
   // "Update via email" uses Gmail plus-addressing: VITE_INBOUND_EMAIL_ADDRESS is
   // the inbox base (e.g. automations@davnoot.com) and each task gets a tagged
   // reply address `<local>+task-<id>@<domain>` that the inbound poller reads.
+  // The internal thread has its own tag, `task-<id>-int`, which files the reply
+  // team-only — see server/src/services/inboundEmail.js.
   // Empty env → the button is hidden (nothing to copy).
   const inboundAddress = import.meta.env.VITE_INBOUND_EMAIL_ADDRESS;
   const feedbackEmail = import.meta.env.VITE_FEEDBACK_EMAIL;
@@ -293,18 +310,23 @@ const UpdatesTab = ({ task, onCountChange }) => {
   const taskEmail = (() => {
     if (!taskId || !inboundAddress) return null;
     const [local, domain] = String(inboundAddress).split('@');
-    return local && domain ? `${local}+task-${taskId}@${domain}` : null;
+    if (!local || !domain) return null;
+    return `${local}+task-${taskId}${isInternal ? '-int' : ''}@${domain}`;
   })();
 
   const handleCopyEmail = useCallback(async () => {
     if (!taskEmail) return;
     try {
       await navigator.clipboard.writeText(taskEmail);
-      toast.success(`Copied ${taskEmail} — reply to this address to post an update.`);
+      toast.success(
+        isInternal
+          ? `Copied ${taskEmail} — email this address to add a team-only note.`
+          : `Copied ${taskEmail} — reply to this address to post an update.`
+      );
     } catch {
       toast.info(taskEmail);
     }
-  }, [taskEmail, toast]);
+  }, [taskEmail, toast, isInternal]);
 
   const insertEmoji = useCallback((emoji) => {
     const editor = editorRef.current;
@@ -319,6 +341,32 @@ const UpdatesTab = ({ task, onCountChange }) => {
 
   return (
     <div className="flex flex-col h-full" style={{ minHeight: 0 }}>
+      {/* Standing reminder of who can read this thread. The whole point of the
+          internal thread is confidence that the client is not in it, and that
+          confidence has to be visible at the moment of typing — not remembered
+          from whichever tab you clicked. */}
+      {isInternal && (
+        <div
+          className="flex items-start gap-2 font-body"
+          style={{
+            margin: '12px 24px 0 24px',
+            padding: '8px 10px',
+            borderRadius: 'var(--radius-md)',
+            background: '#FEF3C7',
+            border: '1px solid #FDE68A',
+            color: '#92400E',
+            fontSize: 12,
+            lineHeight: 1.45,
+          }}
+        >
+          <Lock size={13} style={{ flexShrink: 0, marginTop: 1 }} aria-hidden="true" />
+          <span>
+            <strong>Team only.</strong> Notes here never appear in the client
+            portal and are never emailed to the client.
+          </span>
+        </div>
+      )}
+
       {/* Updates feed */}
       <div
         className="flex-1 overflow-y-auto"
@@ -333,7 +381,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
               padding: '24px 0',
             }}
           >
-            Loading updates…
+            {isInternal ? 'Loading notes…' : 'Loading updates…'}
           </p>
         ) : updates.length === 0 ? (
           <p
@@ -344,7 +392,9 @@ const UpdatesTab = ({ task, onCountChange }) => {
               padding: '32px 0',
             }}
           >
-            No updates yet. Post the first one.
+            {isInternal
+              ? 'No internal notes yet. Anything you write here stays with the team.'
+              : 'No updates yet. Post the first one.'}
           </p>
         ) : (
           <ul
@@ -394,10 +444,14 @@ const UpdatesTab = ({ task, onCountChange }) => {
                   padding: '4px 10px',
                   cursor: 'pointer',
                 }}
-                title="Email an update to this task"
+                title={
+                  isInternal
+                    ? 'Email a team-only note to this task'
+                    : 'Email an update to this task'
+                }
               >
                 <Mail size={12} aria-hidden="true" />
-                Update via email
+                {isInternal ? 'Note via email' : 'Update via email'}
               </button>
               {emailInfoOpen && (
                 <div
@@ -416,7 +470,17 @@ const UpdatesTab = ({ task, onCountChange }) => {
                   }}
                 >
                   <p style={{ fontSize: 12.5, color: 'var(--color-text-secondary)', margin: '0 0 10px', lineHeight: 1.5 }}>
-                    Email this address from your team or client email and it posts to this thread within ~1&ndash;2 min.
+                    {isInternal ? (
+                      <>
+                        Email this address from your work email and it posts here
+                        within ~1&ndash;2 min. Only teammates who can open this
+                        board can post &mdash; the client cannot.
+                      </>
+                    ) : (
+                      <>
+                        Email this address from your team or client email and it posts to this thread within ~1&ndash;2 min.
+                      </>
+                    )}
                   </p>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
                     <code
@@ -443,7 +507,9 @@ const UpdatesTab = ({ task, onCountChange }) => {
                     </button>
                   </div>
                   <a
-                    href={`mailto:${taskEmail}?subject=${encodeURIComponent('Update')}`}
+                    href={`mailto:${taskEmail}?subject=${encodeURIComponent(
+                      isInternal ? 'Internal note' : 'Update'
+                    )}`}
                     onClick={() => setEmailInfoOpen(false)}
                     className="inline-flex items-center gap-1"
                     style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-accent)', textDecoration: 'none' }}
@@ -454,7 +520,7 @@ const UpdatesTab = ({ task, onCountChange }) => {
               )}
             </div>
           )}
-          {feedbackEmail && (
+          {feedbackEmail && !isInternal && (
             <a
               href={`mailto:${feedbackEmail}?subject=Macan%20Updates%20Feedback`}
               className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
@@ -556,7 +622,11 @@ const UpdatesTab = ({ task, onCountChange }) => {
         )}
 
         <RichEditor
-          placeholder="Write an update and mention others with @"
+          placeholder={
+            isInternal
+              ? 'Write a note for the team and mention others with @'
+              : 'Write an update and mention others with @'
+          }
           onChange={handleEditorChange}
           editorRef={editorRef}
         />
@@ -695,8 +765,12 @@ const UpdatesTab = ({ task, onCountChange }) => {
                 !bodyEmpty || attachments.length > 0 ? 'pointer' : 'not-allowed',
             }}
           >
-            <Send size={13} aria-hidden="true" />
-            {submitting ? 'Posting…' : 'Update'}
+            {isInternal ? (
+              <Lock size={13} aria-hidden="true" />
+            ) : (
+              <Send size={13} aria-hidden="true" />
+            )}
+            {submitting ? 'Posting…' : isInternal ? 'Post note' : 'Update'}
           </button>
         </div>
       </form>

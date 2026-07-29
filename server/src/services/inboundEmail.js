@@ -20,16 +20,30 @@ const { logActivity } = require('./activityService');
  * webhook signature before calling in.)
  */
 
-// A recipient/address string containing `task-<24 hex>` → the task id (else null).
-// Matches both `task-<id>@domain` and Gmail plus form `you+task-<id>@domain`.
-const extractTaskId = (recipients) => {
+/**
+ * A recipient/address string containing `task-<24 hex>` → `{ taskId, internal }`
+ * (else null). Matches both `task-<id>@domain` and the Gmail plus form
+ * `you+task-<id>@domain`.
+ *
+ * The optional `-int` suffix (`task-<id>-int@…`) marks the address we put in the
+ * Reply-To of INTERNAL-note emails, which only ever go to team Users. It routes
+ * the reply back into the team-only thread. It is a routing hint, not an
+ * authorisation: the sender is still resolved and authorised below, and a
+ * ClientContact is never allowed to post internally whatever address they hit.
+ */
+const extractTaskTarget = (recipients) => {
   const arr = Array.isArray(recipients) ? recipients : [recipients];
   for (const addr of arr) {
-    const m = String(addr || '').match(/task-([a-f0-9]{24})/i);
-    if (m && mongoose.Types.ObjectId.isValid(m[1])) return m[1];
+    const m = String(addr || '').match(/task-([a-f0-9]{24})(-int)?/i);
+    if (m && mongoose.Types.ObjectId.isValid(m[1])) {
+      return { taskId: m[1], internal: !!m[2] };
+    }
   }
   return null;
 };
+
+/** Back-compat shorthand — the task id alone. */
+const extractTaskId = (recipients) => extractTaskTarget(recipients)?.taskId || null;
 
 // "Name <a@b.com>" | "a@b.com" → "a@b.com" (lowercased).
 const parseFromAddress = (from) => {
@@ -57,8 +71,9 @@ const cleanReply = (text) => {
  * @returns {Promise<{ok:boolean, skipped?:string, updateId?:string}>}
  */
 const processInboundEmail = async ({ recipients, from, text: rawText }) => {
-  const taskId = extractTaskId(recipients);
-  if (!taskId) return { ok: true, skipped: 'no task address' };
+  const target = extractTaskTarget(recipients);
+  if (!target) return { ok: true, skipped: 'no task address' };
+  const { taskId, internal: addressedInternal } = target;
 
   const task = await Task.findById(taskId);
   if (!task || !task.board) return { ok: true, skipped: 'task not found' };
@@ -93,6 +108,13 @@ const processInboundEmail = async ({ recipients, from, text: rawText }) => {
   }
   if (!authorType) return { ok: true, skipped: 'sender not authorised' };
 
+  // A reply is internal only when BOTH hold: the address carried the `-int` tag,
+  // and the sender resolved to a team User. A ClientContact who somehow reaches
+  // an internal address (a forwarded thread, a guessed tag) posts to the shared
+  // thread — where their own portal can show it back to them — rather than
+  // writing into a feed they can never read.
+  const isInternal = addressedInternal && authorType === 'user';
+
   const update = await Update.create({
     task: task._id,
     authorType,
@@ -101,6 +123,7 @@ const processInboundEmail = async ({ recipients, from, text: rawText }) => {
     body: null,
     bodyText: text.slice(0, 8000),
     attachments: [],
+    visibility: isInternal ? 'internal' : 'shared',
   });
 
   const snippet = text.slice(0, 140);
@@ -136,17 +159,31 @@ const processInboundEmail = async ({ recipients, from, text: rawText }) => {
       metadata: { updateSnippet: snippet },
     });
   } else {
-    logActivity({ task, actor: String(author), type: 'update.added', metadata: { updateSnippet: snippet } });
+    logActivity({
+      task,
+      actor: String(author),
+      type: 'update.added',
+      metadata: { updateSnippet: snippet, internal: isInternal },
+    });
     // Team member replied by email → if this is a client task, email the client.
-    try {
-      const { sendPortalReplyEmailForTask } = require('../controllers/portalController');
-      sendPortalReplyEmailForTask(task, text);
-    } catch (hookErr) {
-      console.error('inboundEmail portal reply hook error:', hookErr);
+    // Never for an internal note: that reply is team-only by definition.
+    if (!isInternal) {
+      try {
+        const { sendPortalReplyEmailForTask } = require('../controllers/portalController');
+        sendPortalReplyEmailForTask(task, text);
+      } catch (hookErr) {
+        console.error('inboundEmail portal reply hook error:', hookErr);
+      }
     }
   }
 
   return { ok: true, updateId: String(update._id) };
 };
 
-module.exports = { processInboundEmail, extractTaskId, parseFromAddress, cleanReply };
+module.exports = {
+  processInboundEmail,
+  extractTaskTarget,
+  extractTaskId,
+  parseFromAddress,
+  cleanReply,
+};

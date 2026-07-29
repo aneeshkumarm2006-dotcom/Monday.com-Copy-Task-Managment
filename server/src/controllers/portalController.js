@@ -219,7 +219,10 @@ const getMyIssues = async (req, res) => {
     const lastByTask = new Map();
     if (taskIds.length) {
       const rows = await Update.aggregate([
-        { $match: { task: { $in: taskIds } } },
+        // Internal notes are invisible here too, not just in the thread body — a
+        // "new activity" dot the client cannot open onto anything would still tell
+        // them the team said something, and when.
+        { $match: { task: { $in: taskIds }, visibility: { $ne: 'internal' } } },
         { $sort: { createdAt: 1 } },
         { $group: { _id: '$task', lastAt: { $last: '$createdAt' }, lastType: { $last: '$authorType' } } },
       ]);
@@ -425,6 +428,12 @@ const uploadIssueAttachment = async (req, res) => {
  * GET /api/portal/me/issues/:id/thread
  * The shared comment thread, projected so no internal user identity leaks: team
  * posts show as the org name, the client's own posts as their name.
+ *
+ * `visibility: { $ne: 'internal' }` is the whole enforcement of the team's
+ * internal-notes thread. It is written as a NEGATION on purpose: updates created
+ * before the field existed carry no `visibility` at all, so an inclusive
+ * `{ visibility: 'shared' }` would empty every existing client thread. Any new
+ * portal read of Update must repeat this clause.
  */
 const getIssueThread = async (req, res) => {
   try {
@@ -432,7 +441,7 @@ const getIssueThread = async (req, res) => {
     if (!task) return res.status(404).json({ error: 'Issue not found' });
 
     const board = await Board.findById(task.board).select('statuses organisation');
-    const updates = await Update.find({ task: task._id })
+    const updates = await Update.find({ task: task._id, visibility: { $ne: 'internal' } })
       .sort({ createdAt: 1 })
       .populate('author', 'name profilePic');
     const org = await Organisation.findById(req.portal.orgId).select('name');

@@ -2,9 +2,15 @@ import api from './api';
 
 /**
  * GET /api/tasks/:taskId/updates — newest-first list of updates.
+ *
+ * @param {string} taskId
+ * @param {'shared'|'internal'} visibility — which thread to read. 'shared' is the
+ *   feed the client also sees in the portal; 'internal' is the team-only one.
  */
-export const getUpdates = async (taskId) => {
-  const { data } = await api.get(`/api/tasks/${taskId}/updates`);
+export const getUpdates = async (taskId, visibility = 'shared') => {
+  const { data } = await api.get(`/api/tasks/${taskId}/updates`, {
+    params: { visibility },
+  });
   return data.updates;
 };
 
@@ -18,10 +24,19 @@ export const getUpdates = async (taskId) => {
  * @param {string[]} payload.mentions   — array of mentioned user ids
  * @param {object[]} payload.attachments — [{ url, name, mime, size }]
  * @param {string|null} payload.replyTo — id of the update being replied to
+ * @param {'shared'|'internal'} payload.visibility — 'internal' posts to the
+ *        team-only thread; the client never sees it and is never emailed it.
  */
 export const addUpdate = async (
   taskId,
-  { body, bodyText = '', mentions = [], attachments = [], replyTo = null }
+  {
+    body,
+    bodyText = '',
+    mentions = [],
+    attachments = [],
+    replyTo = null,
+    visibility = 'shared',
+  }
 ) => {
   const { data } = await api.post(`/api/tasks/${taskId}/updates`, {
     body,
@@ -29,6 +44,7 @@ export const addUpdate = async (
     mentions,
     attachments,
     replyTo,
+    visibility,
   });
   return data.update;
 };

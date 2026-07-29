@@ -307,26 +307,42 @@ const sendMentionEmail = async ({ to, mentionedByName, taskName, commentText, ta
  * works for every board, not just client portals. Same visual language as the
  * mention email; only the framing copy differs.
  */
-const buildUpdateHtml = ({ authorName, taskName, commentText, taskLink }) =>
+const buildUpdateHtml = ({ authorName, taskName, commentText, taskLink, internal }) =>
   buildMentionHtml({ mentionedByName: authorName, taskName, commentText, taskLink })
-    .replace('You were mentioned in a comment', 'New update on a task')
+    .replace(
+      'You were mentioned in a comment',
+      internal ? 'New internal note on a task' : 'New update on a task'
+    )
     .replace(
       `<strong>${escapeHtml(authorName)}</strong> mentioned you in a comment on a task.`,
-      `<strong>${escapeHtml(authorName)}</strong> posted an update on a task you're assigned to or following.`
+      internal
+        ? `<strong>${escapeHtml(authorName)}</strong> posted an internal note on a task you're assigned to or following. Internal notes stay with the team &mdash; the client never sees them, including your reply to this email.`
+        : `<strong>${escapeHtml(authorName)}</strong> posted an update on a task you're assigned to or following.`
     )
     .replace(
       'You received this email because you were mentioned in a comment in Macan. If you believe this is an error, contact your administrator.',
       "You received this email because you're assigned to or following this task in Macan. Manage this in your notification settings."
     );
 
-const sendUpdateEmail = async ({ to, authorName, taskName, commentText, taskLink, taskId }) => {
-  const html = buildUpdateHtml({ authorName, taskName, commentText, taskLink });
-  const replyTo = taskReplyAddress(taskId);
+/**
+ * Email a task's audience about a new post.
+ *
+ * `internal: true` does two things, and the second one matters more than the
+ * copy: it swaps the Reply-To for the task's INTERNAL reply address, so a
+ * recipient who just hits reply lands back in the team-only thread. With the
+ * shared address, that reply would be posted to the thread the client reads —
+ * and would email it to them.
+ */
+const sendUpdateEmail = async ({ to, authorName, taskName, commentText, taskLink, taskId, internal = false }) => {
+  const html = buildUpdateHtml({ authorName, taskName, commentText, taskLink, internal });
+  const replyTo = taskReplyAddress(taskId, { internal });
   await appTransporter().sendMail({
     from: appFrom(),
     ...(replyTo ? { replyTo } : {}),
     to,
-    subject: `${authorName} posted an update on "${taskName}"`,
+    subject: internal
+      ? `${authorName} posted an internal note on "${taskName}"`
+      : `${authorName} posted an update on "${taskName}"`,
     html,
   });
 };
@@ -421,12 +437,19 @@ const sendPortalInviteEmail = async ({ to, orgName, clientName, link }) => {
  * The plus-addressed reply address for a task, e.g. `automations+task-<id>@davnoot.com`.
  * Replies to it land in the GMAIL_USER inbox and the IMAP poller turns them into
  * updates. Null when GMAIL_USER isn't set.
+ *
+ * `{ internal: true }` appends the `-int` tag → `+task-<id>-int@…`. Gmail ignores
+ * everything after the first `+`, so it still delivers to the same inbox; the
+ * inbound pipeline reads the tag back and files the reply in the team-only thread
+ * (see services/inboundEmail.js). The tag is only ever put on mail addressed to
+ * team Users — never on a client's, whose replies must stay shared.
  */
-const taskReplyAddress = (taskId) => {
+const taskReplyAddress = (taskId, { internal = false } = {}) => {
   const base = process.env.GMAIL_USER || '';
   const at = base.indexOf('@');
   if (!taskId || at <= 0) return null;
-  return `${base.slice(0, at)}+task-${taskId}@${base.slice(at + 1)}`;
+  const tag = `task-${taskId}${internal ? '-int' : ''}`;
+  return `${base.slice(0, at)}+${tag}@${base.slice(at + 1)}`;
 };
 
 const sendPortalReplyEmail = async ({ to, orgName, taskName, snippet, link, taskId }) => {

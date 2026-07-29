@@ -80,6 +80,25 @@ const updateSchema = new mongoose.Schema(
         ref: 'User',
       },
     ],
+    // Who may READ this post. This is the only thing separating the client-facing
+    // thread from the team's private one, so it is enforced on the PORTAL side
+    // (portalController never selects 'internal') rather than trusted anywhere.
+    //
+    // 'shared'   — part of the one thread the team and the client both see. The
+    //              default, and what every pre-existing row means: legacy docs
+    //              carry no `visibility` field at all, so a shared-only read must
+    //              be written `{ visibility: { $ne: 'internal' } }`, never
+    //              `{ visibility: 'shared' }`.
+    // 'internal' — a team-only note on the task. Never rendered in the portal,
+    //              never emailed to a ClientContact, and never counted in the
+    //              client's "last activity" signal. Only `authorType: 'user'`
+    //              posts may be internal — a client cannot author one by
+    //              definition, and 'system' events exist for the portal timeline.
+    visibility: {
+      type: String,
+      enum: ['shared', 'internal'],
+      default: 'shared',
+    },
     // Threaded reply — references the parent Update this one replies to.
     // null for top-level updates. One level deep.
     replyTo: {
@@ -102,5 +121,10 @@ const updateSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Every read of this collection is "one task's thread, filtered by visibility,
+// newest first" — the team feed, the internal feed and the portal thread all take
+// that shape.
+updateSchema.index({ task: 1, visibility: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Update', updateSchema);

@@ -323,8 +323,11 @@ const annotateUpdateCounts = async (tasks) => {
   }
   const counts = await Update.aggregate([
     // Exclude 'system' timeline events (portal-only status-change markers) so the
-    // board's update-count badge reflects real discussion posts.
-    { $match: { task: { $in: ids }, authorType: { $ne: 'system' } } },
+    // board's update-count badge reflects real discussion posts. Internal notes
+    // are excluded for a different reason: they have their own tab with its own
+    // count, so folding them in here would make the row badge disagree with the
+    // Updates tab it points at.
+    { $match: { task: { $in: ids }, authorType: { $ne: 'system' }, visibility: { $ne: 'internal' } } },
     { $group: { _id: '$task', count: { $sum: 1 } } },
   ]);
   const byTask = new Map(counts.map((c) => [c._id.toString(), c.count]));
@@ -726,7 +729,7 @@ const getMyTasks = async (req, res) => {
     const tasks = await Task.find({ $or: filters })
       .populate('assignedTo', 'name profilePic email')
       .populate('createdBy', 'name profilePic email')
-      .populate('board', 'name visibility statuses labels')
+      .populate('board', 'name visibility statuses labels boardType')
       .populate('group', 'name')
       .populate('parent', 'name')
       .sort({ dueDate: 1, createdAt: -1 })
@@ -801,7 +804,7 @@ const getCalendarTasks = async (req, res) => {
     const tasks = await Task.find({ $or: filters })
       .populate('assignedTo', 'name profilePic email')
       .populate('createdBy', 'name profilePic email')
-      .populate('board', 'name visibility statuses labels')
+      .populate('board', 'name visibility statuses labels boardType')
       .populate('parent', 'name')
       .sort({ dueDate: 1, createdAt: 1 })
       .lean();

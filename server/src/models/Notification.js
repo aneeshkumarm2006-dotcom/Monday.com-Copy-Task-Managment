@@ -61,10 +61,11 @@ const notificationSchema = new mongoose.Schema(
     },
     // Optional hint telling the client which tab of the task detail panel to open
     // when the notification is clicked (e.g. 'updates' for an update reply,
-    // 'comments' for a comment reply). Null → just highlight the task row.
+    // 'internal' for a team-only note, 'comments' for a comment reply).
+    // Null → just highlight the task row.
     tab: {
       type: String,
-      enum: ['updates', 'comments', 'files', 'activity', null],
+      enum: ['updates', 'internal', 'comments', 'files', 'activity', null],
       default: null,
     },
     isRead: {

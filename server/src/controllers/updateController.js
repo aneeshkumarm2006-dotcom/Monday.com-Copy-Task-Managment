@@ -60,7 +60,24 @@ const checkTaskAccess = async (task, userId) => {
 };
 
 /**
- * GET /api/tasks/:taskId/updates
+ * The `visibility` clause for a thread read.
+ *
+ * 'internal' is an exact match; anything else means the shared thread — and that
+ * one has to be `$ne: 'internal'` rather than `'shared'`, because every Update
+ * written before this field existed carries no `visibility` at all. A
+ * `{ visibility: 'shared' }` query would return an empty feed for every
+ * pre-existing task.
+ */
+const visibilityFilter = (raw) =>
+  raw === 'internal' ? 'internal' : { $ne: 'internal' };
+
+/**
+ * GET /api/tasks/:taskId/updates?visibility=shared|internal
+ *
+ * Both feeds are gated on board READ, exactly as the single feed was: internal
+ * notes are hidden from the CLIENT (who reaches the task through /api/portal and
+ * can never select them), not from teammates who can already open the task.
+ * Posting one still takes `update.create` — see addUpdate.
  */
 const getUpdates = async (req, res) => {
   try {
@@ -76,7 +93,11 @@ const getUpdates = async (req, res) => {
 
     // 'system' updates are portal-only timeline events (status changes shown to
     // the client). Keep them out of the team's discussion feed.
-    const updates = await Update.find({ task: taskId, authorType: { $ne: 'system' } })
+    const updates = await Update.find({
+      task: taskId,
+      authorType: { $ne: 'system' },
+      visibility: visibilityFilter(req.query?.visibility),
+    })
       .populate('author', 'name profilePic email')
       .populate('portalAuthor', 'name')
       .populate('mentions', 'name profilePic email')
@@ -98,6 +119,8 @@ const getUpdates = async (req, res) => {
  *   bodyText:    plain-text fallback for notifications/preview
  *   mentions:    [userId]
  *   attachments: [{ url, name, mime, size }]
+ *   visibility:  'shared' (default) | 'internal' — 'internal' posts to the
+ *                team-only thread: no portal render, no client email.
  * }
  */
 const addUpdate = async (req, res) => {
@@ -105,6 +128,7 @@ const addUpdate = async (req, res) => {
     const userId = req.user.userId;
     const { taskId } = req.params;
     const { body, bodyText, mentions, attachments, replyTo } = req.body || {};
+    const isInternal = req.body?.visibility === 'internal';
 
     const hasBody =
       (body && typeof body === 'object' && Object.keys(body).length > 0) ||
@@ -153,11 +177,17 @@ const addUpdate = async (req, res) => {
           }))
       : [];
 
-    // Validate replyTo — must reference an update on the same task.
+    // Validate replyTo — must reference an update on the same task AND in the
+    // same thread. Crossing the boundary would render an internal note's snippet
+    // inside the shared feed's "Replying to" block, which the client can read.
     let replyToId = null;
     let parentAuthorId = null;
     if (replyTo) {
-      const parentUpdate = await Update.findOne({ _id: replyTo, task: taskId });
+      const parentUpdate = await Update.findOne({
+        _id: replyTo,
+        task: taskId,
+        visibility: visibilityFilter(isInternal ? 'internal' : 'shared'),
+      });
       if (parentUpdate) {
         replyToId = parentUpdate._id;
         parentAuthorId = parentUpdate.author || null;
@@ -172,6 +202,7 @@ const addUpdate = async (req, res) => {
       mentions: validMentions,
       attachments: cleanAttachments,
       replyTo: replyToId,
+      visibility: isInternal ? 'internal' : 'shared',
     });
 
     logActivity({
@@ -182,13 +213,15 @@ const addUpdate = async (req, res) => {
         updateSnippet: (bodyText || '').toString().trim().slice(0, 80),
         taskName: task.name,
         attachmentCount: cleanAttachments.length,
+        internal: isInternal,
       },
     });
 
     // Client Portal: this is the authenticated (team) post path, so when the
     // task was raised by an external client, email that client their reply.
     // Fire-and-forget — the helper swallows its own errors.
-    if (task.source === 'client' && task.portalSubmitter) {
+    // An internal note is precisely the thing that must NOT reach them.
+    if (!isInternal && task.source === 'client' && task.portalSubmitter) {
       sendPortalReplyEmailForTask(task, bodyText);
     }
 
@@ -208,16 +241,21 @@ const addUpdate = async (req, res) => {
       notifOrgId = taskBoard?.organisation || null;
     }
 
-    // Notify assignees (board tasks only).
+    // Notify assignees (board tasks only). Notifications only ever reach app
+    // Users — a ClientContact has no notification feed — so an internal note is
+    // safe here; it just says which thread it landed in and deep-links to it.
     if (!task.isPersonal && Array.isArray(task.assignedTo)) {
       const authorName = populated.author?.name || 'Someone';
       await notifyTaskAudience(task, {
         type: 'commented',
-        message: `${authorName} posted an update on "${task.name}"`,
+        message: isInternal
+          ? `${authorName} posted an internal note on "${task.name}"`
+          : `${authorName} posted an update on "${task.name}"`,
         orgId: notifOrgId,
         excludeUserId: userId,
         actorId: userId,
         boardId: task.board,
+        tab: isInternal ? 'internal' : null,
       });
     }
 
@@ -229,11 +267,13 @@ const addUpdate = async (req, res) => {
       await createNotificationsForUsers({
         userIds: [parentAuthorId],
         type: 'replied',
-        message: `${authorName} replied to your update on "${task.name}"`,
+        message: isInternal
+          ? `${authorName} replied to your internal note on "${task.name}"`
+          : `${authorName} replied to your update on "${task.name}"`,
         taskId: task._id,
         orgId: notifOrgId,
         excludeUserId: userId,
-        tab: 'updates',
+        tab: isInternal ? 'internal' : 'updates',
         actorId: userId,
         boardId: task.board,
       });
@@ -320,6 +360,10 @@ const addUpdate = async (req, res) => {
                   commentText: previewText,
                   taskLink,
                   taskId: String(task._id),
+                  // Marks the copy AND swaps the Reply-To for the internal
+                  // task address, so a reply by email lands back in the
+                  // internal thread instead of being published to the client.
+                  internal: isInternal,
                 })
               )
             );

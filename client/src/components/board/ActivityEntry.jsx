@@ -334,9 +334,13 @@ const renderBody = (entry) => {
   }
   if (entry.type === 'update.added') {
     const snippet = entry.metadata?.updateSnippet;
+    // The activity log is team-only, so an internal note is safe to quote here —
+    // but it must say which thread it landed in, or the timeline reads as if the
+    // client were told something they weren't.
+    const what = entry.metadata?.internal ? 'posted an internal note' : 'posted an update';
     return (
       <span>
-        {Actor} posted an update{snippet ? <>: <Quoted muted>“{snippet}”</Quoted></> : '.'}
+        {Actor} {what}{snippet ? <>: <Quoted muted>“{snippet}”</Quoted></> : '.'}
       </span>
     );
   }
