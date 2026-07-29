@@ -4,6 +4,7 @@ import {
   CircleDot, MessageSquare, X, Inbox, Timer, Building2, ChevronRight,
   Bug, Sparkles, ClipboardList, HelpCircle, Star, RotateCcw, Hand,
   Search, Megaphone, ChevronDown, Clock, Mail, Code2,
+  FileText, Check, AlertCircle, UploadCloud,
 } from 'lucide-react';
 import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
@@ -116,6 +117,16 @@ const isImage = (a) =>
   /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(a?.name || '') ||
   /\.(png|jpe?g|gif|webp|bmp|svg)(\?|$)/i.test(a?.url || '');
 
+const formatBytes = (n) => {
+  const b = Number(n);
+  if (!Number.isFinite(b) || b <= 0) return '';
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`;
+  const mb = b / (1024 * 1024);
+  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+};
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 const getSeen = () => { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || '{}'); } catch { return {}; } };
 const markSeen = (id) => {
   try {
@@ -151,6 +162,187 @@ const Avatar = ({ url, name }) =>
     ? <img className="mcp-avatar" src={url} alt="" />
     : <span className="mcp-avatar-fallback">{initialsOf(name)}</span>;
 
+/* ---- attachments ---------------------------------------------------------- */
+const MAX_FILE_BYTES = 25 * 1024 * 1024; // mirrors the server's multer limit
+const MAX_FILES = 6;
+let attachSeq = 0;
+
+/**
+ * Owns the files a client has picked and each file's own upload lifecycle
+ * (`ready` → `uploading` → `done` | `error`). Both composers share it so a
+ * picked file, its progress and — the point of all this — its confirmed
+ * "Uploaded" state look and behave identically wherever you attach something.
+ */
+const useAttachmentTray = () => {
+  const [items, setItems] = useState([]);
+  const [notice, setNotice] = useState('');
+  const previews = useRef([]);
+  // Mirror of `items` for the event handlers below, which need the latest list
+  // without being re-created (and re-binding) on every keystroke.
+  const itemsRef = useRef(items);
+  useEffect(() => { itemsRef.current = items; }, [items]);
+
+  // Object URLs are released only on unmount: revoking on remove would blank the
+  // preview of a row that is still on screen.
+  useEffect(() => () => previews.current.forEach((u) => URL.revokeObjectURL(u)), []);
+
+  const addFiles = useCallback((fileList) => {
+    const picked = Array.from(fileList || []);
+    if (!picked.length) return;
+    const current = itemsRef.current;
+    const problems = [];
+    const accepted = [];
+    let room = MAX_FILES - current.length;
+
+    picked.forEach((file) => {
+      const isDupe = (p) => p.file.name === file.name && p.file.size === file.size;
+      if (current.some(isDupe) || accepted.some(isDupe)) return; // already picked
+      if (room <= 0) { problems.push(`You can attach up to ${MAX_FILES} files at a time.`); return; }
+      if (file.size > MAX_FILE_BYTES) {
+        problems.push(`“${file.name}” is ${formatBytes(file.size)} — files must be under 25MB.`);
+        return;
+      }
+      let previewUrl = '';
+      if ((file.type || '').startsWith('image/')) {
+        previewUrl = URL.createObjectURL(file);
+        previews.current.push(previewUrl);
+      }
+      attachSeq += 1;
+      accepted.push({
+        key: `att-${attachSeq}`, file, previewUrl,
+        status: 'ready', progress: 0, error: '', attachment: null,
+      });
+      room -= 1;
+    });
+
+    if (accepted.length) setItems((prev) => [...prev, ...accepted]);
+    setNotice(problems[0] || '');
+  }, []);
+
+  const patch = useCallback((key, changes) => {
+    setItems((prev) => prev.map((it) => (it.key === key ? { ...it, ...changes } : it)));
+  }, []);
+  const remove = useCallback((key) => {
+    setItems((prev) => prev.filter((it) => it.key !== key));
+    setNotice('');
+  }, []);
+  const reset = useCallback(() => { setItems([]); setNotice(''); }, []);
+
+  /**
+   * Uploads every not-yet-stored file onto `issueId`, streaming progress into the
+   * tray. Files already `done` are skipped and returned as-is, so retrying after
+   * a partial failure never uploads the same screenshot twice.
+   *
+   * Sequential on purpose: one bar moving at a time reads far clearer than
+   * several crawling together, and it stays well inside the upload rate limit.
+   */
+  const uploadAll = useCallback(async (issueId) => {
+    const snapshot = itemsRef.current;
+    const uploaded = [];
+    const failures = [];
+    for (const it of snapshot) {
+      if (it.status === 'done' && it.attachment) { uploaded.push(it.attachment); continue; }
+      patch(it.key, { status: 'uploading', progress: 0, error: '' });
+      try {
+        const { attachment } = await uploadIssueAttachment(issueId, it.file, (p) => patch(it.key, { progress: p }));
+        patch(it.key, { status: 'done', progress: 100, attachment });
+        uploaded.push(attachment);
+      } catch (err) {
+        const msg = err.response?.data?.error
+          || (err.code === 'ECONNABORTED' ? 'Upload timed out.' : "Couldn't upload — tap to retry.");
+        patch(it.key, { status: 'error', progress: 0, error: msg });
+        failures.push(it.file.name);
+      }
+    }
+    return { uploaded, failures };
+  }, [patch]);
+
+  return { items, notice, setNotice, addFiles, remove, reset, uploadAll };
+};
+
+/** One picked file: preview, name, size, live progress, and its final state. */
+const AttachmentTray = ({ items, onRemove, locked }) => {
+  if (!items.length) return null;
+  return (
+    <div className="mcp-tray">
+      {items.map((it) => (
+        <div key={it.key} className="mcp-tray-item" data-status={it.status}>
+          {it.previewUrl
+            ? <img className="mcp-tray-thumb" src={it.previewUrl} alt="" />
+            : <span className="mcp-tray-ico"><FileText size={17} /></span>}
+
+          <div className="mcp-tray-meta">
+            <div className="mcp-tray-name" title={it.file.name}>{it.file.name}</div>
+            <div className="mcp-tray-sub">
+              {it.status === 'uploading' && <><Loader2 size={11} className="mcp-spin" /> Uploading… {it.progress}%</>}
+              {it.status === 'done' && <span className="mcp-tray-ok"><Check size={12} /> Uploaded</span>}
+              {it.status === 'error' && <span className="mcp-tray-bad"><AlertCircle size={12} /> {it.error}</span>}
+              {it.status === 'ready' && (formatBytes(it.file.size) || 'Ready to upload')}
+            </div>
+            {(it.status === 'uploading' || it.status === 'done') && (
+              <span className="mcp-bar"><i style={{ width: `${it.status === 'done' ? 100 : it.progress}%` }} /></span>
+            )}
+          </div>
+
+          {it.status === 'done' ? (
+            <span className="mcp-tray-check" aria-label="Uploaded"><Check size={13} /></span>
+          ) : it.status !== 'uploading' && !locked ? (
+            <button type="button" className="mcp-tray-x" onClick={() => onRemove(it.key)}
+              aria-label={`Remove ${it.file.name}`}>
+              <X size={14} />
+            </button>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+/** Drop zone + browse button. `variant="inline"` renders just the button. */
+const AttachControl = ({ tray, disabled, variant = 'zone' }) => {
+  const inputRef = useRef(null);
+  const [over, setOver] = useState(false);
+  const pick = (e) => { tray.addFiles(e.target.files); e.target.value = ''; };
+
+  const input = (
+    <input ref={inputRef} type="file" multiple style={{ display: 'none' }} onChange={pick} />
+  );
+
+  if (variant === 'inline') {
+    return (
+      <>
+        {input}
+        <button type="button" disabled={disabled} onClick={() => inputRef.current?.click()}
+          className="mcp-btn mcp-btn--ghost" style={{ height: 38, fontSize: 13 }}>
+          <Paperclip size={14} /> Attach
+        </button>
+      </>
+    );
+  }
+
+  return (
+    <div
+      className="mcp-drop" data-over={over} data-disabled={disabled || undefined}
+      onDragOver={(e) => { e.preventDefault(); if (!disabled) setOver(true); }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => {
+        e.preventDefault(); setOver(false);
+        if (!disabled) tray.addFiles(e.dataTransfer?.files);
+      }}
+      onClick={() => !disabled && inputRef.current?.click()}
+      role="button" tabIndex={disabled ? -1 : 0}
+      onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); inputRef.current?.click(); } }}
+    >
+      {input}
+      <span className="mcp-drop-ico"><UploadCloud size={18} /></span>
+      <span className="mcp-drop-text">
+        <b>Click to browse</b> or drop files here
+        <span className="mcp-drop-hint">Screenshots, PDFs, docs — up to {MAX_FILES} files, 25MB each. You can paste a screenshot too.</span>
+      </span>
+    </div>
+  );
+};
+
 /* ========================================================================== */
 const PortalDashboardPage = () => {
   const [loading, setLoading] = useState(true);
@@ -163,6 +355,8 @@ const PortalDashboardPage = () => {
 
   const [composerOpen, setComposerOpen] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
+  // Post-submit receipt: { ref, uploaded, failed }
+  const [flash, setFlash] = useState(null);
 
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('newest'); // newest | oldest | priority
@@ -193,6 +387,14 @@ const PortalDashboardPage = () => {
     const id = setInterval(tick, LIST_POLL);
     return () => clearInterval(id);
   }, [expired, selectedId, loadIssues]);
+
+  // The submit receipt clears itself, but a failed-upload one stays until the
+  // client dismisses it — that's something they may still need to act on.
+  useEffect(() => {
+    if (!flash || flash.failed) return undefined;
+    const t = setTimeout(() => setFlash(null), 10000);
+    return () => clearTimeout(t);
+  }, [flash]);
 
   const openIssue = (id) => { markSeen(id); setSeen(getSeen()); setSelectedId(id); };
   const dismissWelcome = () => { localStorage.setItem(WELCOME_KEY, '1'); setShowWelcome(false); };
@@ -276,6 +478,31 @@ const PortalDashboardPage = () => {
               </button>
             </div>
 
+            {/* Submit receipt — the client's confirmation that the request AND
+                their files actually landed. */}
+            {flash && (
+              <div className={`mcp-flash mcp-pop ${flash.failed ? 'mcp-flash--warn' : ''}`}>
+                <span className="mcp-flash-ico">
+                  {flash.failed ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="mcp-flash-title">
+                    {flash.failed ? 'Request submitted — some files missing' : 'Request submitted'}
+                    {flash.ref ? ` · ${flash.ref}` : ''}
+                  </div>
+                  <div className="mcp-flash-sub">
+                    {flash.uploaded > 0 && <><Paperclip size={12} /> {plural(flash.uploaded, 'file')} uploaded and attached. </>}
+                    {flash.failed > 0
+                      ? `${plural(flash.failed, 'file')} didn’t upload — open the request to attach ${flash.failed === 1 ? 'it' : 'them'} again.`
+                      : `${context.orgName || 'The team'} has been notified and will reply here.`}
+                  </div>
+                </div>
+                <button type="button" onClick={() => setFlash(null)} aria-label="Dismiss" className="mcp-flash-x">
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+
             {/* Team announcement banner */}
             {context.announcement && !annDismissed && (
               <div className="mcp-card" style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '14px 16px', marginBottom: 18, background: '#FEFCE8', borderColor: '#FDE68A' }}>
@@ -322,7 +549,11 @@ const PortalDashboardPage = () => {
               <NewIssueForm
                 categories={context.categories}
                 onClose={() => setComposerOpen(false)}
-                onCreated={() => { setComposerOpen(false); loadIssues(); }}
+                onCreated={(receipt) => {
+                  setComposerOpen(false);
+                  setFlash({ ref: '', uploaded: 0, failed: 0, ...(receipt || {}) });
+                  loadIssues();
+                }}
               />
             )}
 
@@ -393,6 +624,11 @@ const PortalDashboardPage = () => {
                       <TypeBadge type={issue.type} />
                       <PriorityBadge priority={issue.priority} />
                       {issue.category && <span className="mcp-tag">{issue.category}</span>}
+                      {issue.attachmentCount > 0 && (
+                        <span className="mcp-badge" style={{ '--bc': '#475569' }}>
+                          <Paperclip size={12} /> {plural(issue.attachmentCount, 'file')}
+                        </span>
+                      )}
                       {issue.dueDate && (
                         <span className="mcp-badge" style={{ '--bc': '#0891B2' }}>
                           <Clock size={12} /> Needed by {formatShortDate(issue.dueDate)}
@@ -510,30 +746,57 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
   const [priority, setPriority] = useState('medium');
   const [dueDate, setDueDate] = useState('');
   const [category, setCategory] = useState('');
-  const [file, setFile] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
+  // idle → creating → uploading → (partial | done)
+  const [phase, setPhase] = useState('idle');
   const [error, setError] = useState('');
-  const fileRef = useRef(null);
+  const tray = useAttachmentTray();
+  // Set once the issue exists, so retrying a failed upload never re-creates it.
+  const [created, setCreated] = useState(null);
+
+  const failedCount = tray.items.filter((i) => i.status === 'error').length;
+  const doneCount = tray.items.filter((i) => i.status === 'done').length;
+  const busy = phase === 'creating' || phase === 'uploading';
+  const locked = busy || phase === 'partial' || phase === 'done';
 
   const submit = async (e) => {
     e?.preventDefault?.();
+    if (locked && phase !== 'partial') return;
     if (!name.trim()) { setError('Please describe your issue.'); return; }
-    setSubmitting(true);
     setError('');
-    try {
-      const { issue } = await createMyIssue({
-        name: name.trim(), note: note.trim(),
-        type: type || undefined, priority,
-        dueDate: dueDate || undefined,
-        category: category || undefined,
-      });
-      if (file) { try { await uploadIssueAttachment(issue.id, file); } catch { /* non-fatal */ } }
-      onCreated();
-    } catch (err) {
-      setError(err.response?.data?.error || 'Could not submit. Please try again.');
-      setSubmitting(false);
+
+    let issueInfo = created;
+    if (!issueInfo) {
+      setPhase('creating');
+      try {
+        const { issue } = await createMyIssue({
+          name: name.trim(), note: note.trim(),
+          type: type || undefined, priority,
+          dueDate: dueDate || undefined,
+          category: category || undefined,
+        });
+        issueInfo = { id: issue.id, ref: issue.ref };
+        setCreated(issueInfo);
+      } catch (err) {
+        setError(err.response?.data?.error || 'Could not submit. Please try again.');
+        setPhase('idle');
+        return;
+      }
     }
+
+    if (!tray.items.length) { onCreated({ ref: issueInfo.ref, uploaded: 0 }); return; }
+
+    setPhase('uploading');
+    const { uploaded, failures } = await tray.uploadAll(issueInfo.id);
+    if (failures.length) { setPhase('partial'); return; }
+
+    // Hold for a beat so the green "Uploaded" ticks are actually seen — the
+    // whole point is that the client knows their files landed.
+    setPhase('done');
+    setTimeout(() => onCreated({ ref: issueInfo.ref, uploaded: uploaded.length }), 950);
   };
+
+  const finishWithoutFailed = () =>
+    onCreated({ ref: created?.ref, uploaded: doneCount, failed: failedCount });
 
   const label = { fontSize: 12.5, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 7 };
   const f = TYPE_FORM[type] || DEFAULT_FORM;
@@ -542,7 +805,10 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
     <form onSubmit={submit} className="mcp-card-lg mcp-pop" style={{ padding: 22, marginBottom: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: '-0.01em' }}>Raise a new request</span>
-        <button type="button" onClick={onClose} className="mcp-linkbtn" style={{ padding: 4 }} aria-label="Close"><X size={18} /></button>
+        {/* Once the request exists, closing must still refresh the list and show
+            the receipt — otherwise it looks like nothing was submitted. */}
+        <button type="button" onClick={created ? finishWithoutFailed : onClose} disabled={busy}
+          className="mcp-linkbtn" style={{ padding: 4 }} aria-label="Close"><X size={18} /></button>
       </div>
 
       {/* Type */}
@@ -551,7 +817,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
         {Object.entries(TYPES).map(([k, t]) => {
           const Icon = t.icon; const on = type === k;
           return (
-            <button key={k} type="button" className="mcp-seg-btn" data-on={on}
+            <button key={k} type="button" className="mcp-seg-btn" data-on={on} disabled={locked}
               onClick={() => setType(on ? '' : k)}
               style={on ? { color: t.color, borderColor: t.color, background: `${t.color}12`, boxShadow: `0 0 0 4px ${t.color}22` } : undefined}>
               <Icon size={15} /> {t.label}
@@ -561,13 +827,19 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
       </div>
 
       <label style={label}>{f.titleLabel}</label>
-      <input className="mcp-field" style={{ marginBottom: 16 }} placeholder={f.titlePlaceholder}
+      <input className="mcp-field" style={{ marginBottom: 16 }} placeholder={f.titlePlaceholder} disabled={locked}
         value={name} onChange={(e) => setName(e.target.value)} autoFocus />
 
       <label style={label}>{f.detailsLabel}</label>
       <textarea className="mcp-field" style={{ marginBottom: 16, minHeight: 104 }}
-        placeholder={f.detailsPlaceholder}
-        value={note} onChange={(e) => setNote(e.target.value)} />
+        placeholder={f.detailsPlaceholder} disabled={locked}
+        value={note} onChange={(e) => setNote(e.target.value)}
+        onPaste={(e) => {
+          // Pasting a screenshot straight into the description attaches it —
+          // the most common way a client shares one.
+          const files = e.clipboardData?.files;
+          if (files?.length) { e.preventDefault(); tray.addFiles(files); }
+        }} />
 
       {/* Priority */}
       <label style={label}>How urgent is it?</label>
@@ -575,7 +847,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
         {Object.entries(PRIORITIES).map(([k, p]) => {
           const on = priority === k;
           return (
-            <button key={k} type="button" className="mcp-seg-btn" data-on={on}
+            <button key={k} type="button" className="mcp-seg-btn" data-on={on} disabled={locked}
               onClick={() => setPriority(k)}
               style={on ? { color: p.color, borderColor: p.color, background: `${p.color}12`, boxShadow: `0 0 0 4px ${p.color}22` } : undefined}>
               <span className="mcp-prio-dot" style={{ '--bc': p.color }} /> {p.label}
@@ -585,32 +857,78 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
       </div>
 
       <label style={label}>Needed by <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-      <input type="date" className="mcp-field" style={{ marginBottom: 16, cursor: 'pointer' }}
+      <input type="date" className="mcp-field" style={{ marginBottom: 16, cursor: 'pointer' }} disabled={locked}
         value={dueDate} onChange={(e) => setDueDate(e.target.value)}
         onClick={(e) => { try { e.currentTarget.showPicker?.(); } catch { /* not supported / not allowed */ } }} />
 
       {Array.isArray(categories) && categories.length > 0 && (
         <>
           <label style={label}>Category <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-          <select className="mcp-field" style={{ marginBottom: 16, cursor: 'pointer' }} value={category} onChange={(e) => setCategory(e.target.value)}>
+          <select className="mcp-field" style={{ marginBottom: 16, cursor: 'pointer' }} disabled={locked} value={category} onChange={(e) => setCategory(e.target.value)}>
             <option value="">Select a category</option>
             {categories.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </>
       )}
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-          <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
-          <button type="button" onClick={() => fileRef.current?.click()} className="mcp-btn mcp-btn--ghost" style={{ height: 38, fontSize: 13 }}>
-            <Paperclip size={14} /> {file ? 'Change file' : 'Attach a screenshot'}
-          </button>
-          {file && <span style={{ fontSize: 12.5, color: '#64748B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{file.name}</span>}
+      {/* Attachments */}
+      <label style={label}>
+        Attachments <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span>
+        {tray.items.length > 0 && (
+          <span style={{ fontWeight: 600, color: '#2563EB' }}> · {plural(tray.items.length, 'file')} selected</span>
+        )}
+      </label>
+      <AttachControl tray={tray} disabled={locked} />
+      {/* `busy`, not `locked`: after a partial failure the client must still be
+          able to drop a stubborn file and continue. */}
+      <AttachmentTray items={tray.items} onRemove={tray.remove} locked={busy} />
+      {tray.notice && (
+        <p className="mcp-inline-warn"><AlertCircle size={13} /> {tray.notice}</p>
+      )}
+
+      {/* Some files failed — the request itself is already saved, so never make
+          the client retype it. Retry uploads the failed ones only. */}
+      {phase === 'partial' && failedCount > 0 ? (
+        <div className="mcp-warnbox" style={{ marginTop: 16 }}>
+          <div style={{ display: 'flex', gap: 9 }}>
+            <AlertCircle size={17} style={{ flexShrink: 0, marginTop: 1 }} />
+            <div>
+              <div style={{ fontWeight: 700, marginBottom: 3 }}>
+                Request {created?.ref} was submitted{doneCount > 0 ? ` with ${plural(doneCount, 'file')}` : ''}.
+              </div>
+              <div style={{ lineHeight: 1.5 }}>
+                {plural(failedCount, 'file')} didn’t upload. Your request is safe — you can retry the upload now, or
+                continue and add the {failedCount === 1 ? 'file' : 'files'} later from inside the request.
+              </div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 9, marginTop: 12, flexWrap: 'wrap' }}>
+            <button type="submit" className="mcp-btn mcp-btn--primary" style={{ height: 36, fontSize: 13 }}>
+              <RotateCcw size={14} /> Retry {failedCount === 1 ? 'upload' : 'uploads'}
+            </button>
+            <button type="button" onClick={finishWithoutFailed} className="mcp-btn mcp-btn--ghost" style={{ height: 36, fontSize: 13 }}>
+              Continue anyway
+            </button>
+          </div>
         </div>
-        <button type="submit" disabled={submitting} className="mcp-btn mcp-btn--primary">
-          {submitting ? <><Loader2 size={15} className="mcp-spin" /> Submitting…</> : <><Send size={14} /> Submit request</>}
-        </button>
-      </div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 18, flexWrap: 'wrap' }}>
+          {phase === 'uploading' && (
+            <span className="mcp-progress-note">
+              <Loader2 size={13} className="mcp-spin" /> Uploading {plural(tray.items.length, 'file')} — please keep this page open
+            </span>
+          )}
+          <button type="submit" disabled={busy || phase === 'done'} className="mcp-btn mcp-btn--primary">
+            {phase === 'creating' && <><Loader2 size={15} className="mcp-spin" /> Submitting…</>}
+            {phase === 'uploading' && <><Loader2 size={15} className="mcp-spin" /> Uploading {Math.min(doneCount + 1, tray.items.length)} of {tray.items.length}…</>}
+            {phase === 'done' && <><CheckCircle2 size={15} /> Submitted</>}
+            {/* 'partial' with nothing left failing = the client dropped the
+                problem files; the request is already saved, so just finish. */}
+            {phase === 'partial' && <><Check size={15} /> Finish</>}
+            {phase === 'idle' && <><Send size={14} /> Submit request</>}
+          </button>
+        </div>
+      )}
       {error && <p style={{ fontSize: 13, color: '#DC2626', margin: '14px 0 0' }}>{error}</p>}
     </form>
   );
@@ -622,11 +940,12 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
   const [detail, setDetail] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
-  const [file, setFile] = useState(null);
   const [posting, setPosting] = useState(false);
+  const [postError, setPostError] = useState('');
+  const [sentAt, setSentAt] = useState(0);
   const [busy, setBusy] = useState('');
   const [hoverStar, setHoverStar] = useState(0);
-  const fileRef = useRef(null);
+  const tray = useAttachmentTray();
   const scrollAnchor = useRef(null);
   const seenIds = useRef(new Set());
 
@@ -662,19 +981,39 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
 
   const post = async (e) => {
     e?.preventDefault?.();
-    if (!text.trim() && !file) return;
+    if (posting) return;
+    if (!text.trim() && !tray.items.length) return;
     setPosting(true);
+    setPostError('');
     try {
       let attachments;
-      if (file) { const { attachment } = await uploadIssueAttachment(issue.id, file); attachments = [attachment]; }
+      if (tray.items.length) {
+        const { uploaded, failures } = await tray.uploadAll(issue.id);
+        if (failures.length) {
+          // Don't send half a message: the client keeps their text and can retry
+          // (already-uploaded files are reused, not uploaded again).
+          setPostError(`${plural(failures.length, 'file')} couldn’t upload, so your message hasn’t been sent yet. Retry, or remove ${failures.length === 1 ? 'it' : 'them'} and send.`);
+          return;
+        }
+        attachments = uploaded;
+      }
       const { message } = await postThreadMessage(issue.id, { bodyText: text.trim(), attachments });
       seenIds.current.add(message.id);
       setMessages((m) => [...m, { ...message, _fresh: true }]);
-      setText(''); setFile(null);
+      setText(''); tray.reset();
+      setSentAt(Date.now());
       markSeen(issue.id);
-    } catch { /* keep composer state */ }
-    finally { setPosting(false); }
+    } catch (err) {
+      setPostError(err.response?.data?.error || 'Couldn’t send your message. Please try again.');
+    } finally { setPosting(false); }
   };
+
+  // The "Sent" tick is a confirmation, not a permanent label — fade it out.
+  useEffect(() => {
+    if (!sentAt) return undefined;
+    const t = setTimeout(() => setSentAt(0), 4000);
+    return () => clearTimeout(t);
+  }, [sentAt]);
 
   const doReopen = async () => {
     setBusy('reopen');
@@ -692,18 +1031,27 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
   const resolved = detail ? detail.resolved : issue.resolved;
   const rating = detail?.rating || 0;
 
-  const renderAttachments = (list) =>
-    (Array.isArray(list) ? list : []).map((a, i) =>
-      isImage(a) ? (
-        <a key={i} href={a.url} target="_blank" rel="noreferrer">
-          <img className="mcp-thumb" src={a.url} alt={a.name || 'attachment'} />
-        </a>
-      ) : (
-        <a key={i} href={a.url} target="_blank" rel="noreferrer" className="mcp-attach">
-          <Paperclip size={12} /> {a.name || 'Attachment'}
-        </a>
-      )
+  // Every stored attachment renders with its name and size, images with a
+  // thumbnail — so a client can see exactly what the team received.
+  const renderAttachments = (list) => {
+    const arr = (Array.isArray(list) ? list : []).filter((a) => a && a.url);
+    if (!arr.length) return null;
+    return (
+      <div className="mcp-att-wrap">
+        <span className="mcp-att-count"><Paperclip size={11} /> {plural(arr.length, 'attachment')}</span>
+        {arr.map((a, i) => (
+          <a key={i} href={a.url} target="_blank" rel="noreferrer" className="mcp-att-item">
+            {isImage(a) && <img className="mcp-thumb" src={a.url} alt={a.name || 'attachment'} />}
+            <span className="mcp-attach">
+              <Paperclip size={12} />
+              <span className="mcp-att-name">{a.name || 'Attachment'}</span>
+              {formatBytes(a.size) && <span className="mcp-att-size">· {formatBytes(a.size)}</span>}
+            </span>
+          </a>
+        ))}
+      </div>
     );
+  };
 
   return (
     <div className="mcp-rise">
@@ -738,8 +1086,8 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
               <div className="mcp-msg-row mine">
                 <span className="mcp-msg-author">{detail.authorLabel || 'You'} · original request</span>
                 <div className="mcp-bubble mine">
-                  {detail.note || 'Attached the following:'}
-                  {renderAttachments(detail.attachments, true)}
+                  {detail.note}
+                  {renderAttachments(detail.attachments)}
                 </div>
               </div>
             )}
@@ -764,7 +1112,7 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
                   )}
                   <div className={`mcp-bubble ${m.mine ? 'mine' : 'them'}`}>
                     {m.bodyText}
-                    {renderAttachments(m.attachments, m.mine)}
+                    {renderAttachments(m.attachments)}
                   </div>
                   <span className="mcp-msg-time">{formatTime(m.createdAt)}</span>
                 </div>
@@ -817,20 +1165,35 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
         )}
 
         {/* Composer */}
-        <form onSubmit={post} style={{ borderTop: '1px solid #eef2f9', paddingTop: 16 }}>
-          <textarea className="mcp-field" style={{ minHeight: 66, marginBottom: 12 }} placeholder="Write a message…"
-            value={text} onChange={(e) => setText(e.target.value)}
+        <form onSubmit={post} style={{ borderTop: '1px solid #eef2f9', paddingTop: 16 }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => { e.preventDefault(); tray.addFiles(e.dataTransfer?.files); }}>
+          <textarea className="mcp-field" style={{ minHeight: 66, marginBottom: 12 }} placeholder="Write a message… (you can paste or drop a screenshot)"
+            value={text} onChange={(e) => setText(e.target.value)} disabled={posting}
+            onPaste={(e) => {
+              const files = e.clipboardData?.files;
+              if (files?.length) { e.preventDefault(); tray.addFiles(files); }
+            }}
             onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') post(e); }} />
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+
+          <AttachmentTray items={tray.items} onRemove={tray.remove} locked={posting} />
+          {tray.notice && <p className="mcp-inline-warn"><AlertCircle size={13} /> {tray.notice}</p>}
+          {postError && <p className="mcp-inline-error"><AlertCircle size={13} /> {postError}</p>}
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-              <input ref={fileRef} type="file" style={{ display: 'none' }} onChange={(e) => setFile(e.target.files?.[0] || null)} />
-              <button type="button" onClick={() => fileRef.current?.click()} className="mcp-btn mcp-btn--ghost" style={{ height: 38, fontSize: 13 }}>
-                <Paperclip size={14} /> {file ? 'Change file' : 'Attach'}
-              </button>
-              {file && <span style={{ fontSize: 12.5, color: '#64748B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 150 }}>{file.name}</span>}
+              <AttachControl tray={tray} disabled={posting} variant="inline" />
+              {tray.items.length > 0 && (
+                <span style={{ fontSize: 12.5, color: '#64748B' }}>{plural(tray.items.length, 'file')} ready</span>
+              )}
+              {!!sentAt && !tray.items.length && (
+                <span className="mcp-sent-note mcp-pop"><CheckCircle2 size={13} /> Sent</span>
+              )}
             </div>
-            <button type="submit" disabled={posting || (!text.trim() && !file)} className="mcp-btn mcp-btn--primary">
-              {posting ? <><Loader2 size={14} className="mcp-spin" /> Sending…</> : <><Send size={14} /> Send</>}
+            <button type="submit" disabled={posting || (!text.trim() && !tray.items.length)} className="mcp-btn mcp-btn--primary">
+              {posting
+                ? <><Loader2 size={14} className="mcp-spin" /> {tray.items.length ? 'Uploading & sending…' : 'Sending…'}</>
+                : <><Send size={14} /> Send</>}
             </button>
           </div>
         </form>

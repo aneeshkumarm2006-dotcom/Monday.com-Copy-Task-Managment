@@ -339,6 +339,334 @@ textarea.mcp-field {
   text-decoration: underline;
 }
 
+/* ---- attachments in a bubble ---------------------------------------------- */
+.mcp-att-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+.mcp-att-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  opacity: 0.75;
+}
+.mcp-att-item {
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+.mcp-att-item .mcp-attach {
+  max-width: 100%;
+}
+/* The name shrinks and ellipsises so the size never wraps onto its own line. */
+.mcp-att-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-att-size {
+  flex-shrink: 0;
+  white-space: nowrap;
+  opacity: 0.75;
+  font-weight: 400;
+}
+.mcp-att-item .mcp-attach {
+  margin-top: 3px;
+}
+.mcp-att-item .mcp-thumb {
+  margin-top: 2px;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+.mcp-att-item:hover .mcp-thumb {
+  transform: translateY(-1px);
+  box-shadow: var(--p-shadow-sm);
+}
+
+/* ---- upload tray ---------------------------------------------------------- */
+.mcp-drop {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 13px 15px;
+  border: 1.5px dashed var(--p-border-strong);
+  border-radius: var(--p-r);
+  background: var(--p-field);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+.mcp-drop:hover,
+.mcp-drop:focus-visible {
+  border-color: var(--p-primary-2);
+  background: var(--p-primary-soft);
+  outline: none;
+}
+.mcp-drop[data-over='true'] {
+  border-color: var(--p-primary);
+  background: var(--p-primary-soft);
+  box-shadow: var(--p-ring);
+}
+.mcp-drop[data-disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.mcp-drop-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: #fff;
+  color: var(--p-primary);
+  border: 1px solid var(--p-border);
+}
+.mcp-drop-text {
+  font-size: 13px;
+  color: var(--p-ink-2);
+  line-height: 1.4;
+  min-width: 0;
+}
+.mcp-drop-text b {
+  color: var(--p-ink);
+  font-weight: 600;
+}
+.mcp-drop-hint {
+  display: block;
+  font-size: 11.5px;
+  color: var(--p-muted);
+  margin-top: 2px;
+}
+
+.mcp-tray {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.mcp-tray-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-r-sm);
+  background: #fff;
+  box-shadow: var(--p-shadow-sm);
+  animation: mcp-rise 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.mcp-tray-item[data-status='done'] {
+  border-color: #bbf7d0;
+  background: var(--p-success-soft);
+}
+.mcp-tray-item[data-status='error'] {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+.mcp-tray-thumb {
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--p-border);
+  background: var(--p-field);
+}
+.mcp-tray-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--p-primary-soft);
+  color: var(--p-primary);
+}
+.mcp-tray-meta {
+  flex: 1;
+  min-width: 0;
+}
+.mcp-tray-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--p-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-tray-sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--p-ink-2);
+  margin-top: 2px;
+}
+.mcp-tray-ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--p-success);
+}
+.mcp-tray-bad {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+  color: var(--p-danger);
+}
+.mcp-tray-x,
+.mcp-tray-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: none;
+}
+.mcp-tray-x {
+  background: transparent;
+  color: var(--p-muted);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+.mcp-tray-x:hover {
+  background: #fee2e2;
+  color: var(--p-danger);
+}
+.mcp-tray-check {
+  background: var(--p-success);
+  color: #fff;
+}
+.mcp-bar {
+  display: block;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 9999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+.mcp-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, var(--p-primary-2), var(--p-primary));
+  transition: width 0.22s ease;
+}
+.mcp-tray-item[data-status='done'] .mcp-bar > i {
+  background: var(--p-success);
+}
+
+/* ---- inline feedback ------------------------------------------------------ */
+.mcp-inline-warn,
+.mcp-inline-error,
+.mcp-progress-note,
+.mcp-sent-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  margin: 10px 0 0;
+}
+.mcp-inline-warn {
+  color: var(--p-warn);
+}
+.mcp-inline-error {
+  color: var(--p-danger);
+}
+.mcp-progress-note {
+  color: var(--p-ink-2);
+  margin: 0;
+}
+.mcp-sent-note {
+  color: var(--p-success);
+  font-weight: 600;
+  margin: 0;
+}
+.mcp-warnbox {
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border-radius: var(--p-r);
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+}
+
+/* ---- submit receipt ------------------------------------------------------- */
+.mcp-flash {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  border-radius: var(--p-r);
+  border: 1px solid #a7f3d0;
+  background: var(--p-success-soft);
+  color: #065f46;
+}
+.mcp-flash--warn {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+}
+.mcp-flash-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.75);
+}
+.mcp-flash-title {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+/* Block, not flex: the leading paperclip must flow with the sentence, or it
+   strands itself on its own line as soon as the text wraps. */
+.mcp-flash-sub {
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 2px;
+  opacity: 0.92;
+}
+.mcp-flash-sub svg {
+  vertical-align: -2px;
+  margin-right: 3px;
+}
+.mcp-flash-x {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.7;
+  padding: 2px;
+}
+.mcp-flash-x:hover {
+  opacity: 1;
+}
+
 /* ---- header --------------------------------------------------------------- */
 .mcp-topbar {
   background: rgba(255, 255, 255, 0.82);
@@ -841,6 +1169,10 @@ textarea.mcp-field {
 }
 
 @media (max-width: 560px) {
+  /* Full width so it doesn't squeeze into a 3-line column beside the button. */
+  .mcp-progress-note {
+    flex: 1 1 100%;
+  }
   .mcp-stats {
     gap: 9px;
   }

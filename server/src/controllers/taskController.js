@@ -323,11 +323,11 @@ const annotateUpdateCounts = async (tasks) => {
   }
   const counts = await Update.aggregate([
     // Exclude 'system' timeline events (portal-only status-change markers) so the
-    // board's update-count badge reflects real discussion posts. Internal notes
-    // are excluded for a different reason: they have their own tab with its own
-    // count, so folding them in here would make the row badge disagree with the
-    // Updates tab it points at.
-    { $match: { task: { $in: ids }, authorType: { $ne: 'system' }, visibility: { $ne: 'internal' } } },
+    // board's update-count badge reflects real discussion posts. BOTH threads are
+    // counted: on a client board the team and client threads are separate tabs,
+    // and the row badge means "this task has discussion" rather than tracking one
+    // of them. Everyone who can read the row can read both.
+    { $match: { task: { $in: ids }, authorType: { $ne: 'system' } } },
     { $group: { _id: '$task', count: { $sum: 1 } } },
   ]);
   const byTask = new Map(counts.map((c) => [c._id.toString(), c.count]));

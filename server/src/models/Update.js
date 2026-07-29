@@ -84,16 +84,23 @@ const updateSchema = new mongoose.Schema(
     // thread from the team's private one, so it is enforced on the PORTAL side
     // (portalController never selects 'internal') rather than trusted anywhere.
     //
-    // 'shared'   — part of the one thread the team and the client both see. The
-    //              default, and what every pre-existing row means: legacy docs
-    //              carry no `visibility` field at all, so a shared-only read must
-    //              be written `{ visibility: { $ne: 'internal' } }`, never
+    // The values describe CLIENT VISIBILITY, not which tab the post shows up in.
+    // On a Client Portal board the panel's tabs invert the intuition: **Updates**
+    // is the team thread ('internal') and **Client** is the client-facing one
+    // ('shared'). On a standard board there is one thread and it is 'shared'.
+    //
+    // 'shared'   — the client can read this. On a client board it is their portal
+    //              thread and they are emailed each post; on a standard board it
+    //              just means "no client restriction". The default, and what every
+    //              pre-existing row means: legacy docs carry no `visibility` field
+    //              at all, so a shared-only read must be written
+    //              `{ visibility: { $ne: 'internal' } }`, never
     //              `{ visibility: 'shared' }`.
-    // 'internal' — a team-only note on the task. Never rendered in the portal,
-    //              never emailed to a ClientContact, and never counted in the
-    //              client's "last activity" signal. Only `authorType: 'user'`
-    //              posts may be internal — a client cannot author one by
-    //              definition, and 'system' events exist for the portal timeline.
+    // 'internal' — team only. Never rendered in the portal, never emailed to a
+    //              ClientContact, and never counted in the client's "last
+    //              activity" signal. Only `authorType: 'user'` posts may be
+    //              internal — a client cannot author one by definition, and
+    //              'system' events exist for the portal timeline.
     visibility: {
       type: String,
       enum: ['shared', 'internal'],

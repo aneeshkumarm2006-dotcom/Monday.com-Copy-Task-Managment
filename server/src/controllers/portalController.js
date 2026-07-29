@@ -92,6 +92,9 @@ const serializeIssue = (task, board) => {
     rating: task.portalRating || null,
     dueDate: task.dueDate || null,
     createdAt: task.createdAt,
+    // Surfaced on the client's list card so an upload is visibly confirmed
+    // without having to open the request.
+    attachmentCount: Array.isArray(task.attachments) ? task.attachments.length : 0,
     state, // 'open' | 'ongoing' | 'resolved'
     statusLabel: label,
     statusColor: color,
@@ -553,7 +556,7 @@ const postIssueThreadMessage = async (req, res) => {
           taskId: task._id,
           orgId: req.portal.orgId,
           actorId: null,
-          tab: 'updates',
+          tab: 'client',
           boardId: task.board,
         });
       }
@@ -638,7 +641,7 @@ const reopenIssue = async (req, res) => {
       message: `${clientLabel(req.portal.group)} reopened "${task.name}"`,
       taskId: task._id,
       boardId: task.board,
-      tab: 'updates',
+      tab: 'client',
     });
 
     return res.json({ issue: serializeIssue(task, board) });

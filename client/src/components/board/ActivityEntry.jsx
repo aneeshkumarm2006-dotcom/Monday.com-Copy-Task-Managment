@@ -334,10 +334,16 @@ const renderBody = (entry) => {
   }
   if (entry.type === 'update.added') {
     const snippet = entry.metadata?.updateSnippet;
-    // The activity log is team-only, so an internal note is safe to quote here —
-    // but it must say which thread it landed in, or the timeline reads as if the
-    // client were told something they weren't.
-    const what = entry.metadata?.internal ? 'posted an internal note' : 'posted an update';
+    // The activity log is team-only, so either thread is safe to quote here — but
+    // it must say WHICH one, or the timeline reads as if the client were told
+    // something they weren't (or vice versa). `internal: true` is the team thread,
+    // which is the unremarkable case and so gets the plain wording.
+    // Only 'client' is remarkable; 'team', 'default' and legacy rows with no
+    // `thread` at all are all just an update.
+    const what =
+      entry.metadata?.thread === 'client'
+        ? 'posted on the client thread'
+        : 'posted an update';
     return (
       <span>
         {Actor} {what}{snippet ? <>: <Quoted muted>“{snippet}”</Quoted></> : '.'}

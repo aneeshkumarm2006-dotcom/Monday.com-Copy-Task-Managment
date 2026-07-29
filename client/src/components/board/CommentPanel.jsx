@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Check,
   Lock,
+  Users,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
@@ -77,15 +78,15 @@ const CommentPanel = ({
   // its existing admin-gated permission model is unchanged.
   editableStatusPriority = false,
 }) => {
-  // Tabs (Updates / Internal / Files / Activity Log)
+  // Tabs (Updates / Client / Files / Activity Log)
   const [activeTab, setActiveTab] = useState('updates');
   const [updatesCount, setUpdatesCount] = useState(0);
-  const [internalCount, setInternalCount] = useState(0);
+  const [clientCount, setClientCount] = useState(0);
   const [filesCount, setFilesCount] = useState(0);
 
-  // The Internal thread only exists where there is a client to keep out of it: a
-  // Client Portal board. On an ordinary board every reader of Updates is already
-  // internal, so a second thread would split the discussion for nothing.
+  // A separate Client thread only exists where there IS a client: a Client Portal
+  // board. Everywhere else Updates is the only thread, and splitting it would be
+  // for nothing.
   //
   // `board` is only passed from BoardDetailPage — My Work and Calendar render this
   // panel without it — so fall back to the populated `task.board`, and finally to
@@ -97,11 +98,16 @@ const CommentPanel = ({
     boardTypeOf(task?.board) === 'client' ||
     !!task?.portalSubmitter;
 
-  // A notification's `tab: 'internal'` hint is itself evidence the task has notes,
-  // so honour it even if none of the signals above resolved (the board doc hasn't
-  // landed yet, or it was since converted back to a standard board). Otherwise
-  // the hint would select a tab that isn't rendered and the pane would be blank.
-  const showInternalTab = isClientTask || activeTab === 'internal';
+  // A notification's `tab: 'client'` hint is itself evidence the task has a client
+  // thread, so honour it even if none of the signals above resolved (the board doc
+  // hasn't landed yet, or it was since converted back to a standard board).
+  // Otherwise the hint would select a tab that isn't rendered and the pane would
+  // be blank.
+  const showClientTab = isClientTask || activeTab === 'client';
+
+  // On a client board Updates is the TEAM thread; everywhere else it is the single
+  // ordinary thread. Only the former is stored as internal — see UpdatesTab.
+  const updatesAudience = isClientTask ? 'team' : 'default';
 
   // Org members for @mention
   const currentOrg = useOrgStore((s) => s.currentOrg);
@@ -122,7 +128,7 @@ const CommentPanel = ({
   // FilesTab re-report their live counts as soon as they load).
   useEffect(() => {
     setUpdatesCount(0);
-    setInternalCount(0);
+    setClientCount(0);
     setFilesCount(0);
   }, [taskId]);
 
@@ -137,7 +143,11 @@ const CommentPanel = ({
   // Comments tab was merged into Updates) fall back to the Updates tab.
   useEffect(() => {
     if (!isOpen || !initialTab) return;
-    setActiveTab(initialTab === 'comments' ? 'updates' : initialTab);
+    // Legacy hints both resolve to Updates: 'comments' predates the
+    // Comments/Updates merge, and 'internal' predates the Internal tab becoming
+    // Updates (the team thread) with Client as its own tab.
+    const legacy = initialTab === 'comments' || initialTab === 'internal';
+    setActiveTab(legacy ? 'updates' : initialTab);
   }, [isOpen, initialTab, taskId]);
 
   // Keep the board row's discussion-count badge in sync with the live updates
@@ -597,14 +607,19 @@ const CommentPanel = ({
               active={activeTab}
               onChange={setActiveTab}
               tabs={[
-                { key: 'updates', label: 'Updates', count: updatesCount },
-                ...(showInternalTab
+                {
+                  key: 'updates',
+                  label: 'Updates',
+                  count: updatesCount,
+                  icon: isClientTask ? Lock : null,
+                },
+                ...(showClientTab
                   ? [
                       {
-                        key: 'internal',
-                        label: 'Internal',
-                        count: internalCount,
-                        icon: Lock,
+                        key: 'client',
+                        label: 'Client',
+                        count: clientCount,
+                        icon: Users,
                       },
                     ]
                   : []),
@@ -623,22 +638,26 @@ const CommentPanel = ({
                 flexDirection: 'column',
               }}
             >
-              <UpdatesTab task={task} onCountChange={setUpdatesCount} />
+              <UpdatesTab
+                task={task}
+                audience={updatesAudience}
+                onCountChange={setUpdatesCount}
+              />
             </div>
 
-            {showInternalTab && (
+            {showClientTab && (
               <div
                 style={{
                   flex: 1,
                   minHeight: 0,
-                  display: activeTab === 'internal' ? 'flex' : 'none',
+                  display: activeTab === 'client' ? 'flex' : 'none',
                   flexDirection: 'column',
                 }}
               >
                 <UpdatesTab
                   task={task}
-                  visibility="internal"
-                  onCountChange={setInternalCount}
+                  audience="client"
+                  onCountChange={setClientCount}
                 />
               </div>
             )}

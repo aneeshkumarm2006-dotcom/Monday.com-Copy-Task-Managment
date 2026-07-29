@@ -307,16 +307,16 @@ const sendMentionEmail = async ({ to, mentionedByName, taskName, commentText, ta
  * works for every board, not just client portals. Same visual language as the
  * mention email; only the framing copy differs.
  */
-const buildUpdateHtml = ({ authorName, taskName, commentText, taskLink, internal }) =>
+const buildUpdateHtml = ({ authorName, taskName, commentText, taskLink, thread }) =>
   buildMentionHtml({ mentionedByName: authorName, taskName, commentText, taskLink })
     .replace(
       'You were mentioned in a comment',
-      internal ? 'New internal note on a task' : 'New update on a task'
+      thread === 'client' ? 'New message on the client thread' : 'New update on a task'
     )
     .replace(
       `<strong>${escapeHtml(authorName)}</strong> mentioned you in a comment on a task.`,
-      internal
-        ? `<strong>${escapeHtml(authorName)}</strong> posted an internal note on a task you're assigned to or following. Internal notes stay with the team &mdash; the client never sees them, including your reply to this email.`
+      thread === 'client'
+        ? `<strong>${escapeHtml(authorName)}</strong> posted on the CLIENT thread of a task you're assigned to or following. The client can read this thread &mdash; including anything you send by replying to this email.`
         : `<strong>${escapeHtml(authorName)}</strong> posted an update on a task you're assigned to or following.`
     )
     .replace(
@@ -327,22 +327,28 @@ const buildUpdateHtml = ({ authorName, taskName, commentText, taskLink, internal
 /**
  * Email a task's audience about a new post.
  *
- * `internal: true` does two things, and the second one matters more than the
- * copy: it swaps the Reply-To for the task's INTERNAL reply address, so a
- * recipient who just hits reply lands back in the team-only thread. With the
- * shared address, that reply would be posted to the thread the client reads —
- * and would email it to them.
+ * `thread` picks the framing AND — more importantly — the Reply-To, because on a
+ * client board the two threads have different audiences and hitting reply must
+ * land in the same one the mail came from:
+ *
+ *   'team'    — the team thread (Updates). Reply-To is the INTERNAL task address,
+ *               so a reply stays team-only. Using the plain address here would
+ *               publish that reply to the client and email it to them.
+ *   'client'  — the client-facing thread. Plain address, and the copy says so, so
+ *               nobody replies to an external audience by accident.
+ *   'default' — a standard board: one thread, no client, no warning needed.
  */
-const sendUpdateEmail = async ({ to, authorName, taskName, commentText, taskLink, taskId, internal = false }) => {
-  const html = buildUpdateHtml({ authorName, taskName, commentText, taskLink, internal });
-  const replyTo = taskReplyAddress(taskId, { internal });
+const sendUpdateEmail = async ({ to, authorName, taskName, commentText, taskLink, taskId, thread = 'default' }) => {
+  const html = buildUpdateHtml({ authorName, taskName, commentText, taskLink, thread });
+  const replyTo = taskReplyAddress(taskId, { internal: thread === 'team' });
   await appTransporter().sendMail({
     from: appFrom(),
     ...(replyTo ? { replyTo } : {}),
     to,
-    subject: internal
-      ? `${authorName} posted an internal note on "${taskName}"`
-      : `${authorName} posted an update on "${taskName}"`,
+    subject:
+      thread === 'client'
+        ? `${authorName} posted on the client thread of "${taskName}"`
+        : `${authorName} posted an update on "${taskName}"`,
     html,
   });
 };

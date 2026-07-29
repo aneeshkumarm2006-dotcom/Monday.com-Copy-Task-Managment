@@ -60,12 +60,28 @@ export const getMyIssues = () =>
 export const createMyIssue = (payload) =>
   portalApi.post('/api/portal/me/issues', payload).then((r) => r.data);
 
-export const uploadIssueAttachment = (issueId, file) => {
+/**
+ * Upload one attachment onto an issue.
+ *
+ * `onProgress` receives 0-100 so the UI can show a real progress bar — clients
+ * on slow connections otherwise stare at a spinner with no idea whether their
+ * screenshot is going anywhere. The 20s default timeout is far too tight for a
+ * 25MB file (the server's per-file limit), so uploads get their own.
+ */
+export const uploadIssueAttachment = (issueId, file, onProgress) => {
   const form = new FormData();
   form.append('file', file);
   return portalApi
     .post(`/api/portal/me/issues/${issueId}/attachments`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000,
+      onUploadProgress: (e) => {
+        if (!onProgress) return;
+        // Cap at 99 until the response lands — 100% should mean "stored", not
+        // "finished sending bytes".
+        const pct = e.total ? Math.min(99, Math.round((e.loaded * 100) / e.total)) : 0;
+        onProgress(pct);
+      },
     })
     .then((r) => r.data);
 };

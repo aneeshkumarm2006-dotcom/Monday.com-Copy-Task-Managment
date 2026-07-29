@@ -61,11 +61,16 @@ const notificationSchema = new mongoose.Schema(
     },
     // Optional hint telling the client which tab of the task detail panel to open
     // when the notification is clicked (e.g. 'updates' for an update reply,
-    // 'internal' for a team-only note, 'comments' for a comment reply).
+    // 'client' for the client-facing thread on a Client Portal board).
     // Null → just highlight the task row.
+    //
+    // 'comments' and 'internal' are retired but still listed: rows carrying them
+    // are already in the database, and dropping a value from the enum would make
+    // every such document fail validation on any later save. The panel maps both
+    // to the Updates tab.
     tab: {
       type: String,
-      enum: ['updates', 'internal', 'comments', 'files', 'activity', null],
+      enum: ['updates', 'client', 'internal', 'comments', 'files', 'activity', null],
       default: null,
     },
     isRead: {

@@ -154,6 +154,13 @@ const addUpdate = async (req, res) => {
         .json({ error: 'You do not have permission to post updates' });
     }
 
+    // Which of the task's threads this post lands in. Only a client board has
+    // two, so a shared post is only "client-facing" there; on a standard board
+    // 'shared' just means the one ordinary thread. Drives the activity wording,
+    // the notification tab hint, and the audience email's Reply-To.
+    const isClientBoard = access.board?.boardType === 'client';
+    const thread = isInternal ? 'team' : isClientBoard ? 'client' : 'default';
+
     // Validate mention IDs against the people who can actually READ this board —
     // not merely against org members. Mentioning someone fires a notification and
     // an email naming the task, so an org-only check let you pull a colleague into
@@ -213,7 +220,7 @@ const addUpdate = async (req, res) => {
         updateSnippet: (bodyText || '').toString().trim().slice(0, 80),
         taskName: task.name,
         attachmentCount: cleanAttachments.length,
-        internal: isInternal,
+        thread,
       },
     });
 
@@ -241,39 +248,45 @@ const addUpdate = async (req, res) => {
       notifOrgId = taskBoard?.organisation || null;
     }
 
+    // Which tab a click on this notification should open. The team thread IS the
+    // Updates tab, so it needs no hint. The client thread is its own tab — and
+    // only exists on a client board, so on a standard board there is nothing to
+    // point at.
+    const notifTab = thread === 'client' ? 'client' : null;
+
     // Notify assignees (board tasks only). Notifications only ever reach app
-    // Users — a ClientContact has no notification feed — so an internal note is
-    // safe here; it just says which thread it landed in and deep-links to it.
+    // Users — a ClientContact has no notification feed — so either thread is safe
+    // here; the wording just says which one the post landed in.
     if (!task.isPersonal && Array.isArray(task.assignedTo)) {
       const authorName = populated.author?.name || 'Someone';
       await notifyTaskAudience(task, {
         type: 'commented',
-        message: isInternal
-          ? `${authorName} posted an internal note on "${task.name}"`
-          : `${authorName} posted an update on "${task.name}"`,
+        message:
+          thread === 'client'
+            ? `${authorName} replied to the client on "${task.name}"`
+            : `${authorName} posted an update on "${task.name}"`,
         orgId: notifOrgId,
         excludeUserId: userId,
         actorId: userId,
         boardId: task.board,
-        tab: isInternal ? 'internal' : null,
+        tab: notifTab,
       });
     }
 
-    // Notify the author of the update being replied to (skips self-replies via
-    // excludeUserId). Carries a 'updates' tab hint so clicking the notification
-    // opens the task's Updates tab.
+    // Notify the author of the post being replied to (skips self-replies via
+    // excludeUserId), carrying the tab hint for the thread it landed in.
     if (parentAuthorId) {
       const authorName = populated.author?.name || 'Someone';
       await createNotificationsForUsers({
         userIds: [parentAuthorId],
         type: 'replied',
-        message: isInternal
-          ? `${authorName} replied to your internal note on "${task.name}"`
-          : `${authorName} replied to your update on "${task.name}"`,
+        message: `${authorName} replied to your ${
+          notifTab === 'client' ? 'client message' : 'update'
+        } on "${task.name}"`,
         taskId: task._id,
         orgId: notifOrgId,
         excludeUserId: userId,
-        tab: isInternal ? 'internal' : 'updates',
+        tab: notifTab || 'updates',
         actorId: userId,
         boardId: task.board,
       });
@@ -360,10 +373,9 @@ const addUpdate = async (req, res) => {
                   commentText: previewText,
                   taskLink,
                   taskId: String(task._id),
-                  // Marks the copy AND swaps the Reply-To for the internal
-                  // task address, so a reply by email lands back in the
-                  // internal thread instead of being published to the client.
-                  internal: isInternal,
+                  // Picks the Reply-To as well as the copy, so a reply by email
+                  // lands back in the SAME thread this mail came from.
+                  thread,
                 })
               )
             );

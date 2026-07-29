@@ -127,8 +127,11 @@ const processInboundEmail = async ({ recipients, from, text: rawText }) => {
   });
 
   const snippet = text.slice(0, 140);
-  const board = await Board.findById(task.board).select('organisation');
+  const board = await Board.findById(task.board).select('organisation boardType');
   const orgId = board?.organisation;
+  // Matches updateController's vocabulary: only a client board has a distinct
+  // client-facing thread, so a shared post is only 'client' there.
+  const thread = isInternal ? 'team' : board?.boardType === 'client' ? 'client' : 'default';
 
   if (authorType === 'client') {
     try {
@@ -143,7 +146,7 @@ const processInboundEmail = async ({ recipients, from, text: rawText }) => {
             taskId: task._id,
             orgId,
             actorId: null,
-            tab: 'updates',
+            tab: 'client',
             boardId: task.board,
           });
         }
@@ -163,7 +166,7 @@ const processInboundEmail = async ({ recipients, from, text: rawText }) => {
       task,
       actor: String(author),
       type: 'update.added',
-      metadata: { updateSnippet: snippet, internal: isInternal },
+      metadata: { updateSnippet: snippet, thread },
     });
     // Team member replied by email → if this is a client task, email the client.
     // Never for an internal note: that reply is team-only by definition.

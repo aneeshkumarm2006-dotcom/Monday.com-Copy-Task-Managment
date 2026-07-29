@@ -14,6 +14,7 @@ import {
   X,
   Check,
   Lock,
+  Users,
 } from 'lucide-react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -60,22 +61,33 @@ const replyPreview = (parent) => {
 /**
  * UpdatesTab — full Updates panel mounted inside CommentPanel.
  *
- * Renders EITHER of the task's two threads, chosen by `visibility`. They are the
- * same feed and the same composer; only the audience differs, so this component
- * is shared rather than duplicated:
+ * Renders ONE of the task's threads, chosen by `audience`. They are the same feed
+ * and the same composer; only who can read it differs, so this component is
+ * shared rather than duplicated:
  *
- *   'shared'   — the thread a Client Portal client also reads and gets emailed.
- *   'internal' — team-only notes. Never rendered in the portal, never emailed to
- *                a client. See models/Update.js `visibility`.
+ *   'default' — a standard board. One thread, no client anywhere near it.
+ *   'team'    — the team thread on a CLIENT board. Stored `visibility: 'internal'`,
+ *               so the portal never renders it and the client is never emailed it.
+ *   'client'  — the client-facing thread on a client board. Stored
+ *               `visibility: 'shared'`; the client reads this in their portal and
+ *               is emailed every post. The one thread that needs a warning.
+ *
+ * The stored field describes CLIENT VISIBILITY, not which tab you are looking at —
+ * that is why 'team' maps to 'internal' and both other audiences map to 'shared'.
+ * See models/Update.js.
  *
  * Props:
  *   task — populated task
- *   visibility — 'shared' (default) | 'internal'
+ *   audience — 'default' (default) | 'team' | 'client'
  *   onCountChange(n) — bubbles the current count up so the tab badge stays in
  *                     sync as posts are added/removed
  */
-const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
+const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
   const taskId = task?._id || null;
+  const isClientThread = audience === 'client';
+  // Only the dedicated team thread is stored internal; 'default' and 'client'
+  // are both the shared thread.
+  const visibility = audience === 'team' ? 'internal' : 'shared';
   const isInternal = visibility === 'internal';
   const currentUser = useAuthStore((s) => s.user);
   const toast = useToastStore.getState();
@@ -196,7 +208,9 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
     async (updateId) => {
       if (!taskId) return;
       const ok = window.confirm(
-        isInternal ? 'Delete this internal note?' : 'Delete this update?'
+        isClientThread
+          ? 'Delete this message? The client may already have seen or been emailed it.'
+          : 'Delete this update?'
       );
       if (!ok) return;
       try {
@@ -209,7 +223,7 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
         );
       }
     },
-    [taskId, toast, isInternal]
+    [taskId, toast, isClientThread]
   );
 
   const handleEdit = useCallback(
@@ -319,14 +333,14 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
     try {
       await navigator.clipboard.writeText(taskEmail);
       toast.success(
-        isInternal
-          ? `Copied ${taskEmail} — email this address to add a team-only note.`
+        isClientThread
+          ? `Copied ${taskEmail} — email this address to reply to the client.`
           : `Copied ${taskEmail} — reply to this address to post an update.`
       );
     } catch {
       toast.info(taskEmail);
     }
-  }, [taskEmail, toast, isInternal]);
+  }, [taskEmail, toast, isClientThread]);
 
   const insertEmoji = useCallback((emoji) => {
     const editor = editorRef.current;
@@ -341,11 +355,12 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
 
   return (
     <div className="flex flex-col h-full" style={{ minHeight: 0 }}>
-      {/* Standing reminder of who can read this thread. The whole point of the
-          internal thread is confidence that the client is not in it, and that
-          confidence has to be visible at the moment of typing — not remembered
-          from whichever tab you clicked. */}
-      {isInternal && (
+      {/* Standing reminder of who can read this thread, because the risk is not
+          symmetric: posting to the client thread is the irreversible mistake, so
+          it gets the loud banner. The team thread gets a quiet reassurance — it
+          has to be visible at the moment of typing, not remembered from whichever
+          tab was clicked. */}
+      {isClientThread && (
         <div
           className="flex items-start gap-2 font-body"
           style={{
@@ -359,12 +374,26 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
             lineHeight: 1.45,
           }}
         >
-          <Lock size={13} style={{ flexShrink: 0, marginTop: 1 }} aria-hidden="true" />
+          <Users size={13} style={{ flexShrink: 0, marginTop: 1 }} aria-hidden="true" />
           <span>
-            <strong>Team only.</strong> Notes here never appear in the client
-            portal and are never emailed to the client.
+            <strong>The client sees this thread.</strong> They read it in their
+            portal and are emailed every message. For team-only discussion, use
+            the Updates tab.
           </span>
         </div>
+      )}
+      {isInternal && (
+        <p
+          className="flex items-center gap-1.5 font-body"
+          style={{
+            margin: '12px 24px 0 24px',
+            fontSize: 11.5,
+            color: 'var(--color-text-muted)',
+          }}
+        >
+          <Lock size={11} style={{ flexShrink: 0 }} aria-hidden="true" />
+          Team only &mdash; the client can&rsquo;t see this thread.
+        </p>
       )}
 
       {/* Updates feed */}
@@ -381,7 +410,7 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
               padding: '24px 0',
             }}
           >
-            {isInternal ? 'Loading notes…' : 'Loading updates…'}
+            {isClientThread ? 'Loading messages…' : 'Loading updates…'}
           </p>
         ) : updates.length === 0 ? (
           <p
@@ -392,8 +421,8 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
               padding: '32px 0',
             }}
           >
-            {isInternal
-              ? 'No internal notes yet. Anything you write here stays with the team.'
+            {isClientThread
+              ? 'No messages with the client yet. Anything you post here goes to them.'
               : 'No updates yet. Post the first one.'}
           </p>
         ) : (
@@ -445,13 +474,13 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
                   cursor: 'pointer',
                 }}
                 title={
-                  isInternal
-                    ? 'Email a team-only note to this task'
+                  isClientThread
+                    ? 'Email a reply to the client on this task'
                     : 'Email an update to this task'
                 }
               >
                 <Mail size={12} aria-hidden="true" />
-                {isInternal ? 'Note via email' : 'Update via email'}
+                {isClientThread ? 'Reply via email' : 'Update via email'}
               </button>
               {emailInfoOpen && (
                 <div
@@ -475,6 +504,12 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
                         Email this address from your work email and it posts here
                         within ~1&ndash;2 min. Only teammates who can open this
                         board can post &mdash; the client cannot.
+                      </>
+                    ) : isClientThread ? (
+                      <>
+                        Email this address and it posts to the client thread within
+                        ~1&ndash;2 min &mdash; <strong>the client will see it</strong>.
+                        Their own replies arrive here the same way.
                       </>
                     ) : (
                       <>
@@ -508,7 +543,7 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
                   </div>
                   <a
                     href={`mailto:${taskEmail}?subject=${encodeURIComponent(
-                      isInternal ? 'Internal note' : 'Update'
+                      isClientThread ? 'Re: your request' : 'Update'
                     )}`}
                     onClick={() => setEmailInfoOpen(false)}
                     className="inline-flex items-center gap-1"
@@ -520,7 +555,7 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
               )}
             </div>
           )}
-          {feedbackEmail && !isInternal && (
+          {feedbackEmail && !isClientThread && (
             <a
               href={`mailto:${feedbackEmail}?subject=Macan%20Updates%20Feedback`}
               className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
@@ -623,8 +658,8 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
 
         <RichEditor
           placeholder={
-            isInternal
-              ? 'Write a note for the team and mention others with @'
+            isClientThread
+              ? 'Write a message to the client…'
               : 'Write an update and mention others with @'
           }
           onChange={handleEditorChange}
@@ -765,12 +800,14 @@ const UpdatesTab = ({ task, visibility = 'shared', onCountChange }) => {
                 !bodyEmpty || attachments.length > 0 ? 'pointer' : 'not-allowed',
             }}
           >
-            {isInternal ? (
-              <Lock size={13} aria-hidden="true" />
-            ) : (
-              <Send size={13} aria-hidden="true" />
-            )}
-            {submitting ? 'Posting…' : isInternal ? 'Post note' : 'Update'}
+            <Send size={13} aria-hidden="true" />
+            {submitting
+              ? isClientThread
+                ? 'Sending…'
+                : 'Posting…'
+              : isClientThread
+                ? 'Send to client'
+                : 'Update'}
           </button>
         </div>
       </form>
