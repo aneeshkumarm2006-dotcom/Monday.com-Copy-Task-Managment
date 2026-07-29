@@ -523,6 +523,7 @@ const PortalDashboardPage = () => {
             {showWelcome && (
               <WelcomeHero
                 orgName={context.orgName}
+                hasIssues={issues.length > 0}
                 onDismiss={dismissWelcome}
                 onStart={() => { setComposerOpen(true); dismissWelcome(); }}
               />
@@ -678,7 +679,7 @@ const PortalDashboardPage = () => {
 };
 
 /* ---- Welcome hero --------------------------------------------------------- */
-const WelcomeHero = ({ orgName, onDismiss, onStart }) => {
+const WelcomeHero = ({ orgName, hasIssues, onDismiss, onStart }) => {
   const steps = [
     { icon: Plus, title: 'Raise a request', body: 'Describe a bug, idea, requirement, or question — attach a screenshot if it helps.' },
     { icon: Timer, title: 'We get to work', body: `The ${orgName || 'team'} picks it up and keeps the status up to date.` },
@@ -714,7 +715,7 @@ const WelcomeHero = ({ orgName, onDismiss, onStart }) => {
       </div>
       <button type="button" onClick={onStart} className="mcp-btn"
         style={{ position: 'relative', zIndex: 1, marginTop: 18, background: '#fff', color: '#2563eb' }}>
-        <Plus size={16} /> Raise your first request
+        <Plus size={16} /> {hasIssues ? 'Raise a request' : 'Raise your first request'}
       </button>
     </div>
   );
