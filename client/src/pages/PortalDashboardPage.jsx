@@ -11,6 +11,7 @@ import {
   getIssueThread, postThreadMessage, reopenIssue, rateIssue,
   getPortalToken, clearPortalToken,
 } from '../services/portalService';
+import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
 import '../styles/portal.css';
 
 /* ---- shared config -------------------------------------------------------- */
@@ -457,7 +458,6 @@ const PortalDashboardPage = () => {
     );
   }
 
-  const orgInitial = (context.orgName || 'S').trim().charAt(0).toUpperCase();
   const firstName = (context.contactName || '').trim().split(' ')[0];
 
   return (
@@ -465,9 +465,9 @@ const PortalDashboardPage = () => {
       <header className="mcp-topbar">
         <div className="mcp-container--wide" style={{ paddingTop: 14, paddingBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
-            <span className="mcp-brand-mark">{orgInitial}</span>
+            <span className="mcp-brand-mark">{PORTAL_BRAND_INITIAL}</span>
             <span style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.02em' }}>
-              {context.orgName || 'Support portal'}
+              {PORTAL_BRAND}
             </span>
           </div>
           <button type="button" onClick={logout} className="mcp-linkbtn"><LogOut size={15} /> Sign out</button>
@@ -480,7 +480,6 @@ const PortalDashboardPage = () => {
             <IssueDetail
               key={selected.id}
               issue={selected}
-              orgName={context.orgName}
               onBack={() => { setSelectedId(null); loadIssues(); }}
             />
           </div>
@@ -491,7 +490,7 @@ const PortalDashboardPage = () => {
               <div>
                 <h1 className="mcp-greet-name">{firstName ? `Welcome back, ${firstName}` : 'Welcome back'}</h1>
                 <p className="mcp-greet-sub" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <span>Here's everything you've raised with {context.orgName || 'us'}.</span>
+                  <span>Here's everything you've raised with the team.</span>
                   {context.companyName && <span className="mcp-company"><Building2 size={13} /> {context.companyName}</span>}
                 </p>
               </div>
@@ -516,7 +515,7 @@ const PortalDashboardPage = () => {
                     {flash.uploaded > 0 && <><Paperclip size={12} /> {plural(flash.uploaded, 'file')} uploaded and attached. </>}
                     {flash.failed > 0
                       ? `${plural(flash.failed, 'file')} didn’t upload — open the request to attach ${flash.failed === 1 ? 'it' : 'them'} again.`
-                      : `${context.orgName || 'The team'} has been notified and will reply here.`}
+                      : 'The team has been notified and will reply here.'}
                   </div>
                 </div>
                 <button type="button" onClick={() => setFlash(null)} aria-label="Dismiss" className="mcp-flash-x">
@@ -544,7 +543,6 @@ const PortalDashboardPage = () => {
             {/* Welcome hero (first visit) */}
             {showWelcome && (
               <WelcomeHero
-                orgName={context.orgName}
                 hasIssues={issues.length > 0}
                 onDismiss={dismissWelcome}
                 onStart={() => { setComposerOpen(true); dismissWelcome(); }}
@@ -701,10 +699,10 @@ const PortalDashboardPage = () => {
 };
 
 /* ---- Welcome hero --------------------------------------------------------- */
-const WelcomeHero = ({ orgName, hasIssues, onDismiss, onStart }) => {
+const WelcomeHero = ({ hasIssues, onDismiss, onStart }) => {
   const steps = [
     { icon: Plus, title: 'Raise a request', body: 'Describe a bug, idea, requirement, or question — attach a screenshot if it helps.' },
-    { icon: Timer, title: 'We get to work', body: `The ${orgName || 'team'} picks it up and keeps the status up to date.` },
+    { icon: Timer, title: 'The team looks into it', body: 'Someone picks it up and keeps the status up to date as it moves along.' },
     { icon: MessageSquare, title: 'Track & chat', body: 'Follow progress and message the team on each request until it’s resolved.' },
   ];
   return (
@@ -718,7 +716,7 @@ const WelcomeHero = ({ orgName, hasIssues, onDismiss, onStart }) => {
           <Hand size={15} /> Welcome to your support portal
         </div>
         <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em', margin: '0 0 6px', color: '#fff' }}>
-          One place for everything you need from {orgName || 'us'}.
+          One place for everything you need from the team.
         </h2>
         <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.8)', margin: 0, lineHeight: 1.55 }}>
           Raise requests, share requirements, attach files, and track every update through to done.
@@ -965,7 +963,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
 };
 
 /* ---- Issue detail + thread ------------------------------------------------ */
-const IssueDetail = ({ issue, orgName, onBack }) => {
+const IssueDetail = ({ issue, onBack }) => {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -1157,7 +1155,7 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
                   <MessageSquare size={22} />
                 </div>
                 <p style={{ fontSize: 13.5, color: '#64748B', margin: 0, lineHeight: 1.5 }}>
-                  No messages yet. Add a comment and {orgName || 'the team'} will reply right here.
+                  No messages yet. Add a comment and the team will reply right here.
                 </p>
               </div>
             )}

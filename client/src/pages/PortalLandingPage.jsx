@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Loader2, ShieldCheck, MessagesSquare, ListChecks, AlertCircle } from 'lucide-react';
 import { getPortalMeta, portalGoogleSignInUrl } from '../services/portalService';
+import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
 import '../styles/portal.css';
 
 /**
@@ -87,9 +88,7 @@ const PortalLandingPage = () => {
     );
   }
 
-  const orgName = meta.orgName || 'Client Portal';
   const company = meta.clientName || '';
-  const initial = (orgName || company || 'C').trim().charAt(0).toUpperCase();
 
   return (
     <div className="mcp mcp-split">
@@ -105,9 +104,9 @@ const PortalLandingPage = () => {
                 fontSize: 19, fontWeight: 800,
               }}
             >
-              {initial}
+              {PORTAL_BRAND_INITIAL}
             </div>
-            <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>{orgName}</span>
+            <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>{PORTAL_BRAND}</span>
           </div>
         </div>
 
@@ -116,8 +115,8 @@ const PortalLandingPage = () => {
             Your support,<br />all in one place.
           </h1>
           <p style={{ fontSize: 15.5, color: 'rgba(255,255,255,0.82)', lineHeight: 1.6, margin: '0 0 34px' }}>
-            Welcome to the {company ? <strong style={{ color: '#fff' }}>{company}</strong> : orgName} support
-            portal — raise requests, share screenshots, and follow every update through to done.
+            Welcome to the {company ? <><strong style={{ color: '#fff' }}>{company}</strong> support portal</> : 'support portal'} —
+            raise requests, share screenshots, and follow every update through to done.
           </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -134,7 +133,7 @@ const PortalLandingPage = () => {
         </div>
 
         <div style={{ position: 'relative', zIndex: 1, fontSize: 12.5, color: 'rgba(255,255,255,0.6)' }}>
-          Powered by {orgName}
+          Powered by {PORTAL_BRAND}
         </div>
       </aside>
 
@@ -143,9 +142,9 @@ const PortalLandingPage = () => {
         <div className="mcp-card-lg mcp-pop" style={{ width: '100%', maxWidth: 400, padding: '38px 34px' }}>
           {/* compact brand for mobile (brand panel is hidden < 860px) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 26 }}>
-            <span className="mcp-brand-mark" style={{ width: 42, height: 42 }}>{initial}</span>
+            <span className="mcp-brand-mark" style={{ width: 42, height: 42 }}>{PORTAL_BRAND_INITIAL}</span>
             <div>
-              <div style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.2 }}>{orgName}</div>
+              <div style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.2 }}>{PORTAL_BRAND}</div>
               {company && <div style={{ fontSize: 12.5, color: '#64748B' }}>{company} · Support portal</div>}
             </div>
           </div>
