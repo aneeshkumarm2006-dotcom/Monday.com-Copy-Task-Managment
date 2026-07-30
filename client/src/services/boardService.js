@@ -108,13 +108,44 @@ export const saveGroupPortalConfig = async (groupId, payload) => {
 };
 
 /**
- * POST /api/portal/groups/:groupId/invite — email the client the invitation link
- * (ensures the link is live first). Body: { email }. Returns { message, portal }.
+ * POST /api/portal/groups/:groupId/invite — invite a client (ensures the link is
+ * live first). Body: { email, authMethod }.
+ *
+ * `authMethod` decides which email goes out AND how this person may sign in:
+ *   'google'   — the shared portal link, "Accept invitation"
+ *   'password' — registers the address and mails a one-time set-password link
+ *
+ * Returns { message, portal, contacts }.
  */
-export const sendGroupInvite = async (groupId, email) => {
+export const sendGroupInvite = async (groupId, email, authMethod = 'google') => {
   const { data } = await api.post(
     `/api/portal/groups/${groupId}/invite`,
-    { email },
+    { email, authMethod },
+    { timeout: 20000 }
+  );
+  return data;
+};
+
+/**
+ * GET /api/portal/groups/:groupId/contacts — who has been invited to this
+ * group's portal and how far they've got. Returns { contacts }.
+ */
+export const getGroupPortalContacts = async (groupId) => {
+  const { data } = await api.get(`/api/portal/groups/${groupId}/contacts`, {
+    timeout: 20000,
+  });
+  return data.contacts;
+};
+
+/**
+ * POST /api/portal/groups/:groupId/contacts/:contactId/resend — re-send whatever
+ * this contact needs (Google invite, first set-password link, or a reset link).
+ * Returns { message, contacts }.
+ */
+export const resendPortalInvite = async (groupId, contactId) => {
+  const { data } = await api.post(
+    `/api/portal/groups/${groupId}/contacts/${contactId}/resend`,
+    {},
     { timeout: 20000 }
   );
   return data;

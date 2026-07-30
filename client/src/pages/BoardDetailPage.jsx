@@ -43,6 +43,7 @@ import TaskActionsMenu from '../components/board/TaskActionsMenu';
 import CommentPanel from '../components/board/CommentPanel';
 import GroupNotesPanel from '../components/board/GroupNotesPanel';
 import ClientPortalModal from '../components/board/ClientPortalModal';
+import ClientSignInMethodField from '../components/board/ClientSignInMethodField';
 import AutomationsModal from '../components/board/AutomationsModal';
 import LabelPicker from '../components/board/LabelPicker';
 import EditChipsModal from '../components/board/EditChipsModal';
@@ -194,6 +195,9 @@ const BoardDetailPage = () => {
   // Client-board only: the invited client's email, collected in the same step so
   // the link is minted and emailed the moment the group exists.
   const [newGroupClientEmail, setNewGroupClientEmail] = useState('');
+  // How the invited client signs in: 'google' or 'password'. Only sent when an
+  // email was entered.
+  const [newGroupClientAuth, setNewGroupClientAuth] = useState('google');
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [groupModalError, setGroupModalError] = useState(null);
   // Delete-group confirmation state
@@ -918,6 +922,7 @@ const BoardDetailPage = () => {
   const handleOpenGroupModal = () => {
     setNewGroupName('');
     setNewGroupClientEmail('');
+    setNewGroupClientAuth('google');
     setGroupModalError(null);
     setCreatingGroup(false);
     setGroupModalOpen(true);
@@ -946,7 +951,10 @@ const BoardDetailPage = () => {
       setCreatingGroup(true);
       setGroupModalError(null);
       const payload = { name: trimmed };
-      if (isClientBoard && clientEmail) payload.clientEmail = clientEmail;
+      if (isClientBoard && clientEmail) {
+        payload.clientEmail = clientEmail;
+        payload.clientAuthMethod = newGroupClientAuth;
+      }
       const { group: created, inviteSent } = await taskService.createGroup(boardId, payload);
       addGroupLocal(created);
       setGroupModalOpen(false);
@@ -956,7 +964,11 @@ const BoardDetailPage = () => {
         // Confirm the invite (createGroup returns whether the email went out) and
         // open the link manager so the link is right there to copy or resend.
         if (inviteSent) {
-          toastSuccess(`Client group created — invitation sent to ${clientEmail}.`);
+          toastSuccess(
+            newGroupClientAuth === 'password'
+              ? `Client group created — password set-up link sent to ${clientEmail}.`
+              : `Client group created — invitation sent to ${clientEmail}.`
+          );
         } else if (clientEmail) {
           toastError('Group created, but the invitation email could not be sent. Copy the link to share it manually.');
         } else {
@@ -1660,6 +1672,14 @@ const BoardDetailPage = () => {
                 value={newGroupClientEmail}
                 onChange={(e) => setNewGroupClientEmail(e.target.value)}
               />
+              {/* Only asked once there's someone to ask about. */}
+              {newGroupClientEmail.trim() && (
+                <ClientSignInMethodField
+                  value={newGroupClientAuth}
+                  onChange={setNewGroupClientAuth}
+                  disabled={creatingGroup}
+                />
+              )}
               <p
                 className="font-body text-xs"
                 style={{ color: 'var(--color-text-muted)', marginTop: -4 }}

@@ -1,14 +1,28 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { Loader2, ShieldCheck, MessagesSquare, ListChecks, AlertCircle } from 'lucide-react';
-import { getPortalMeta, portalGoogleSignInUrl } from '../services/portalService';
+import {
+  getPortalMeta,
+  portalGoogleSignInUrl,
+  portalPasswordLogin,
+  requestPortalPasswordLink,
+  setPortalToken,
+  rememberPortalLink,
+} from '../services/portalService';
 import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
 import '../styles/portal.css';
 
 /**
  * PortalLandingPage — `/portal/:portalToken`. Full-page split-screen sign-in an
  * external client sees when they open their invitation link. Left: branding +
- * value props. Right: a single "Continue with Google" card. No app chrome.
+ * value props. Right: the sign-in card. No app chrome.
+ *
+ * Two ways in, and a client only ever needs one of them:
+ *   - Continue with Google — a full-page redirect out to Google and back via
+ *     /portal/verify. Open to anyone holding this link.
+ *   - Email + password — a plain XHR that answers with the session token. Only
+ *     works for addresses the team invited as password clients; everyone else is
+ *     refused with the same wording as a wrong password.
  */
 
 const GoogleIcon = () => (
@@ -23,18 +37,31 @@ const GoogleIcon = () => (
 const FEATURES = [
   { icon: MessagesSquare, title: 'One place to talk to us', body: 'Raise a request and chat with the team in a single thread.' },
   { icon: ListChecks, title: 'Track everything', body: 'Follow each request from open, through in-progress, to resolved.' },
-  { icon: ShieldCheck, title: 'Private & secure', body: 'Your workspace is yours alone — secured with your Google account.' },
+  { icon: ShieldCheck, title: 'Private & secure', body: 'Your workspace is yours alone — signed in with Google or your own password.' },
 ];
 
 const PortalLandingPage = () => {
   const { portalToken } = useParams();
+  const navigate = useNavigate();
   const [meta, setMeta] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [loading, setLoading] = useState(true);
   const [accepting, setAccepting] = useState(false);
 
+  // Password sign-in
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [signingIn, setSigningIn] = useState(false);
+  const [formError, setFormError] = useState('');
+  // The "send me a link" panel, opened either by the client or automatically
+  // when the server says this address exists but has no password yet.
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [helpSending, setHelpSending] = useState(false);
+  const [helpMsg, setHelpMsg] = useState('');
+
   useEffect(() => {
     let alive = true;
+    rememberPortalLink(portalToken);
     getPortalMeta(portalToken)
       .then((data) => alive && setMeta(data))
       .catch((err) => {
@@ -58,6 +85,58 @@ const PortalLandingPage = () => {
   const handleAccept = () => {
     setAccepting(true);
     window.location.href = portalGoogleSignInUrl(portalToken);
+  };
+
+  const handlePasswordSignIn = async (e) => {
+    e?.preventDefault?.();
+    const addr = email.trim();
+    if (!addr || !password) {
+      setFormError('Enter your email address and password.');
+      return;
+    }
+    setSigningIn(true);
+    setFormError('');
+    setHelpMsg('');
+    try {
+      const { token } = await portalPasswordLogin(portalToken, addr, password);
+      setPortalToken(token);
+      navigate('/portal', { replace: true });
+    } catch (err) {
+      const data = err.response?.data;
+      // Invited, but never chose a password — open the "email me a link" panel
+      // rather than leaving them to guess a password that doesn't exist yet.
+      if (data?.code === 'NEEDS_SETUP') {
+        setHelpOpen(true);
+        setFormError(data.error);
+      } else if (err.response) {
+        setFormError(data?.error || 'Could not sign you in. Please try again.');
+      } else {
+        setFormError('Could not reach the server. Check your connection and try again.');
+      }
+      setPassword('');
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  const handleSendLink = async () => {
+    const addr = email.trim();
+    if (!addr) {
+      setFormError('Enter your email address first.');
+      return;
+    }
+    setHelpSending(true);
+    setFormError('');
+    try {
+      const { message } = await requestPortalPasswordLink(portalToken, addr);
+      setHelpMsg(message);
+    } catch (err) {
+      setFormError(
+        err.response?.data?.error || 'Could not send the link. Please try again.'
+      );
+    } finally {
+      setHelpSending(false);
+    }
   };
 
   if (loading) {
@@ -151,7 +230,7 @@ const PortalLandingPage = () => {
 
           <h2 style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em', margin: '0 0 6px' }}>Sign in</h2>
           <p style={{ fontSize: 14, color: '#64748B', margin: '0 0 24px', lineHeight: 1.55 }}>
-            Use your Google account to access your support portal.
+            Continue with Google, or use the email and password you set up.
           </p>
 
           <button type="button" onClick={handleAccept} disabled={accepting} className="mcp-btn mcp-btn--google">
@@ -162,10 +241,91 @@ const PortalLandingPage = () => {
             )}
           </button>
 
+          <div className="mcp-or">or</div>
+
+          <form onSubmit={handlePasswordSignIn} noValidate>
+            <div style={{ marginBottom: 14 }}>
+              <label className="mcp-label" htmlFor="portal-email">Email address</label>
+              <input
+                id="portal-email"
+                className="mcp-field"
+                type="email"
+                autoComplete="username"
+                placeholder="you@company.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label className="mcp-label" htmlFor="portal-password">Password</label>
+              <input
+                id="portal-password"
+                className="mcp-field"
+                type="password"
+                autoComplete="current-password"
+                placeholder="Your password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+
+            {formError && <p className="mcp-error" style={{ marginBottom: 14 }}>{formError}</p>}
+
+            <button
+              type="submit"
+              disabled={signingIn}
+              className="mcp-btn mcp-btn--primary mcp-btn--block"
+            >
+              {signingIn ? <><Loader2 size={17} className="mcp-spin" /> Signing in…</> : 'Sign in'}
+            </button>
+          </form>
+
+          {/* First-time setup and forgotten passwords are the same request: mail
+              this address a one-time link. */}
+          <div style={{ marginTop: 14 }}>
+            {helpOpen ? (
+              <div>
+                <p style={{ fontSize: 13, color: '#64748B', margin: '0 0 10px', lineHeight: 1.55 }}>
+                  We'll email <strong style={{ color: '#0F172A' }}>{email.trim() || 'your address'}</strong> a
+                  link to set a password. It only works if your address has portal access.
+                </p>
+                {helpMsg ? (
+                  <p className="mcp-note">{helpMsg}</p>
+                ) : (
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <button
+                      type="button"
+                      onClick={handleSendLink}
+                      disabled={helpSending}
+                      className="mcp-btn mcp-btn--primary"
+                      style={{ height: 38, flex: 1 }}
+                    >
+                      {helpSending ? <><Loader2 size={16} className="mcp-spin" /> Sending…</> : 'Email me a link'}
+                    </button>
+                    <button type="button" className="mcp-linkbtn" onClick={() => setHelpOpen(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="mcp-linkbtn"
+                onClick={() => {
+                  setHelpOpen(true);
+                  setHelpMsg('');
+                }}
+              >
+                First time here, or forgot your password?
+              </button>
+            )}
+          </div>
+
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '20px 0 0', color: '#94A3B8' }}>
             <ShieldCheck size={14} />
             <span style={{ fontSize: 12, lineHeight: 1.5 }}>
-              We only use your Google account to sign you in — nothing is posted on your behalf.
+              Your sign-in only identifies you — nothing is posted on your behalf.
             </span>
           </div>
         </div>

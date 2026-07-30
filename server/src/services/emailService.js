@@ -406,10 +406,14 @@ const buildPortalHtml = ({ orgName, title, intro, bodyCard, ctaLabel, ctaLink })
 };
 
 /**
- * Email a client their portal INVITATION link. Opening it lands them on the
- * portal landing page, where "Accept invitation" starts Google sign-in. The link
- * is the group's public portal URL (`/portal/:portalToken`) — no passcode, no
- * one-time token. Sends from the team's Gmail.
+ * Email a client their portal INVITATION link, for clients who sign in with
+ * GOOGLE. Opening it lands them on the portal landing page, where "Accept
+ * invitation" starts Google sign-in. The link is the group's public portal URL
+ * (`/portal/:portalToken`) — no passcode, no one-time token. Sends from the
+ * team's Gmail.
+ *
+ * Clients without a Google account get sendPortalPasswordInviteEmail instead.
+ *
  * @param {object} opts
  * @param {string} opts.to        — client email
  * @param {string} opts.orgName   — organisation name (branding)
@@ -430,6 +434,77 @@ const sendPortalInviteEmail = async ({ to, orgName, clientName, link }) => {
     from: portalFrom(),
     to,
     subject: `You're invited to the ${orgName || 'client'} support portal`,
+    html,
+  });
+};
+
+/**
+ * Email a client a ONE-TIME link to choose their portal password. This is the
+ * invitation for clients whose email isn't a Google account — the link carries a
+ * single-use token and drops them on the set-password page, after which they
+ * sign in with email + password like any normal login.
+ *
+ * Unlike the Google invite, this link is per-person and expires, so it must not
+ * be forwarded.
+ *
+ * @param {object} opts
+ * @param {string} opts.to        — client email
+ * @param {string} opts.orgName   — organisation name (branding)
+ * @param {string} opts.clientName— client/company label
+ * @param {string} opts.link      — full /portal/:portalToken/set-password?t=… URL
+ * @param {string} opts.expiresIn — human expiry, e.g. '7 days'
+ */
+const sendPortalPasswordInviteEmail = async ({ to, orgName, clientName, link, expiresIn = '7 days' }) => {
+  const html = buildPortalHtml({
+    orgName,
+    title: 'Set up your support portal',
+    intro: `You've been invited to the ${escapeHtml(
+      clientName || orgName || ''
+    )} support portal, where you can raise issues and track their progress. Choose a password below to get started — you'll use it with this email address to sign in from now on. This link works once and expires in ${escapeHtml(
+      expiresIn
+    )}.`,
+    bodyCard: `<div class="card"><p class="card-label">Signing in as</p><p class="card-text">${escapeHtml(
+      to
+    )}</p></div>`,
+    ctaLabel: 'Set my password',
+    ctaLink: link,
+  });
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
+    to,
+    subject: `Set up your ${orgName || 'client'} support portal`,
+    html,
+  });
+};
+
+/**
+ * Email a client a ONE-TIME link to replace a forgotten portal password.
+ * Same machinery as the invite above, shorter expiry, and worded so an
+ * unrequested one is obviously safe to ignore.
+ *
+ * @param {object} opts
+ * @param {string} opts.to, opts.orgName, opts.clientName, opts.link
+ * @param {string} opts.expiresIn — human expiry, e.g. '24 hours'
+ */
+const sendPortalPasswordResetEmail = async ({ to, orgName, clientName, link, expiresIn = '24 hours' }) => {
+  const html = buildPortalHtml({
+    orgName,
+    title: 'Reset your portal password',
+    intro: `Someone asked to reset the password for your ${escapeHtml(
+      clientName || orgName || ''
+    )} support portal account. Choose a new one below — the link works once and expires in ${escapeHtml(
+      expiresIn
+    )}. If this wasn't you, ignore this email and your current password stays as it is.`,
+    bodyCard: `<div class="card"><p class="card-label">Account</p><p class="card-text">${escapeHtml(
+      to
+    )}</p></div>`,
+    ctaLabel: 'Choose a new password',
+    ctaLink: link,
+  });
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
+    to,
+    subject: `Reset your ${orgName || 'client'} portal password`,
     html,
   });
 };
@@ -510,6 +585,8 @@ module.exports = {
   sendMentionEmail,
   sendUpdateEmail,
   sendPortalInviteEmail,
+  sendPortalPasswordInviteEmail,
+  sendPortalPasswordResetEmail,
   sendPortalReplyEmail,
   sendPortalResolvedEmail,
 };

@@ -8,12 +8,22 @@ import axios from 'axios';
  * "session expired" state. Same origin/baseURL as the app, so no CORS change.
  */
 const PORTAL_TOKEN_KEY = 'macan_portal_token';
+// The last group link this browser opened. Kept SEPARATELY from the session
+// token and deliberately NOT cleared on 401: it's a public link id, not a
+// credential, and remembering it is what lets the expired-session screen offer a
+// way back in instead of telling the client to go dig out their email.
+const PORTAL_LINK_KEY = 'macan_portal_link';
 
 export const getPortalToken = () => localStorage.getItem(PORTAL_TOKEN_KEY);
 export const setPortalToken = (token) =>
   localStorage.setItem(PORTAL_TOKEN_KEY, token);
 export const clearPortalToken = () =>
   localStorage.removeItem(PORTAL_TOKEN_KEY);
+
+export const getLastPortalLink = () => localStorage.getItem(PORTAL_LINK_KEY);
+export const rememberPortalLink = (portalToken) => {
+  if (portalToken) localStorage.setItem(PORTAL_LINK_KEY, portalToken);
+};
 
 const portalApi = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL,
@@ -52,6 +62,41 @@ export const portalGoogleSignInUrl = (portalToken) => {
   const base = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
   return `${base}/api/portal/${portalToken}/auth/google`;
 };
+
+/**
+ * Sign in a client who uses a password instead of Google. Unlike the Google
+ * flow (a full-page redirect that lands on /portal/verify), this is a plain XHR
+ * that answers with the portal JWT — the caller stores it and navigates.
+ *
+ * A 403 with `code: 'NEEDS_SETUP'` means the address was invited but hasn't
+ * chosen a password yet; the UI should point at requestPortalPasswordLink.
+ */
+export const portalPasswordLogin = (portalToken, email, password) =>
+  portalApi
+    .post(`/api/portal/${portalToken}/auth/password`, { email, password })
+    .then((r) => r.data);
+
+/**
+ * Ask for a one-time link to set or reset a password. Always resolves with the
+ * same message whether or not the address has access — don't try to infer
+ * anything from it.
+ */
+export const requestPortalPasswordLink = (portalToken, email) =>
+  portalApi
+    .post(`/api/portal/${portalToken}/auth/password/forgot`, { email })
+    .then((r) => r.data);
+
+/** Validate a one-time link before rendering the form → { email, purpose, … }. */
+export const checkPortalSetupToken = (portalToken, token) =>
+  portalApi
+    .get(`/api/portal/${portalToken}/auth/setup/${encodeURIComponent(token)}`)
+    .then((r) => r.data);
+
+/** Consume a one-time link: store the password and sign in → { token }. */
+export const completePortalPasswordSetup = (portalToken, token, password) =>
+  portalApi
+    .post(`/api/portal/${portalToken}/auth/setup/${encodeURIComponent(token)}`, { password })
+    .then((r) => r.data);
 
 // ---- Client dashboard (portal-authenticated) ----
 export const getMyIssues = () =>

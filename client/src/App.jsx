@@ -16,6 +16,7 @@ import LoginPage from './pages/LoginPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
 import PortalLandingPage from './pages/PortalLandingPage';
 import PortalVerifyPage from './pages/PortalVerifyPage';
+import PortalSetPasswordPage from './pages/PortalSetPasswordPage';
 import PortalDashboardPage from './pages/PortalDashboardPage';
 import OnboardingPage from './pages/OnboardingPage';
 import DashboardPage from './pages/DashboardPage';
@@ -163,10 +164,14 @@ function App() {
         {/* Client Portal — fully public, external-client surface. NOT behind
             ProtectedRoute and deliberately not using the app shell or app stores;
             it authenticates with its own portal token (see portalService). The
-            more specific /portal/verify must precede /portal/:portalToken. */}
+            more specific /portal/verify must precede /portal/:portalToken.
+            /portal/:portalToken/set-password is where a password client lands
+            from their one-time invite or reset email; it has two segments, so
+            the single-segment :portalToken route can't shadow it. */}
         <Route path="/portal" element={<PortalDashboardPage />} />
         <Route path="/portal/verify" element={<PortalVerifyPage />} />
         <Route path="/portal/:portalToken" element={<PortalLandingPage />} />
+        <Route path="/portal/:portalToken/set-password" element={<PortalSetPasswordPage />} />
 
         {/* Protected */}
         <Route element={<ProtectedRoute />}>

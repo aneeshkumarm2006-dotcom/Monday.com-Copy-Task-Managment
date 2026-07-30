@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Copy, Check, Link2, RefreshCw, Loader2, Mail, Send } from 'lucide-react';
+import { X, Copy, Check, Link2, RefreshCw, Loader2, Mail, Send, KeyRound, Users } from 'lucide-react';
 import {
   getGroupPortalConfig,
   saveGroupPortalConfig,
   sendGroupInvite,
+  getGroupPortalContacts,
+  resendPortalInvite,
 } from '../../services/boardService';
+import ClientSignInMethodField from './ClientSignInMethodField';
 
 /**
  * ClientPortalModal — manage the shareable client link for one group of a Client
@@ -41,6 +44,32 @@ const field = {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/** Relative "last seen", short enough for a table cell. */
+const timeAgo = (iso) => {
+  if (!iso) return '—';
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+};
+
+/**
+ * Where a contact is in the join process. Three states the team actually cares
+ * about: still outstanding, waiting on the client to pick a password, or in.
+ */
+const contactState = (c) => {
+  if (c.verified) return { label: `Active · ${timeAgo(c.lastSeenAt)}`, color: 'var(--color-success, #16a34a)' };
+  if (c.authMethod === 'password' && !c.hasPassword) {
+    return { label: 'Password not set', color: 'var(--color-status-stuck, #dc2626)' };
+  }
+  return { label: 'Invited', color: 'var(--color-text-muted)' };
+};
+
 const ClientPortalModal = ({ groupId, groupName, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState(null);
@@ -48,6 +77,9 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
   const [announcement, setAnnouncement] = useState('');
   const [faqs, setFaqs] = useState([]);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteMethod, setInviteMethod] = useState('google');
+  const [contacts, setContacts] = useState([]);
+  const [resendingId, setResendingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [inviting, setInviting] = useState(false);
   const [error, setError] = useState('');
@@ -56,11 +88,17 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
 
   const load = async () => {
     try {
-      const c = await getGroupPortalConfig(groupId);
+      // Both come from the same manage-gated endpoints; the contact list is
+      // secondary, so a failure there must not blank the whole modal.
+      const [c, people] = await Promise.all([
+        getGroupPortalConfig(groupId),
+        getGroupPortalContacts(groupId).catch(() => []),
+      ]);
       setConfig(c);
       setClientName(c.clientName || '');
       setAnnouncement(c.announcement || '');
       setFaqs(Array.isArray(c.faqs) ? c.faqs : []);
+      setContacts(Array.isArray(people) ? people : []);
     } catch (err) {
       setError(err.response?.data?.error || 'Could not load portal settings.');
     } finally {
@@ -110,14 +148,30 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
     setError('');
     setSavedMsg('');
     try {
-      const data = await sendGroupInvite(groupId, email);
+      const data = await sendGroupInvite(groupId, email, inviteMethod);
       if (data.portal) setConfig(data.portal);
+      if (Array.isArray(data.contacts)) setContacts(data.contacts);
       setInviteEmail('');
       flash(data.message || 'Invitation sent.');
     } catch (err) {
       setError(err.response?.data?.error || 'Could not send the invitation. Please try again.');
     } finally {
       setInviting(false);
+    }
+  };
+
+  const handleResend = async (contactId) => {
+    setResendingId(contactId);
+    setError('');
+    setSavedMsg('');
+    try {
+      const data = await resendPortalInvite(groupId, contactId);
+      if (Array.isArray(data.contacts)) setContacts(data.contacts);
+      flash(data.message || 'Email sent.');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Could not send the email. Please try again.');
+    } finally {
+      setResendingId(null);
     }
   };
 
@@ -210,6 +264,13 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
             {/* Email an invitation */}
             <div style={{ marginBottom: 16 }}>
               <label style={label}>Email an invitation</label>
+              <div style={{ marginBottom: 10 }}>
+                <ClientSignInMethodField
+                  value={inviteMethod}
+                  onChange={setInviteMethod}
+                  disabled={inviting}
+                />
+              </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <div style={{ ...field, flex: 1, display: 'flex', alignItems: 'center', gap: 8, padding: '0 12px', height: 40 }}>
                   <Mail size={14} color="var(--color-text-muted)" />
@@ -233,7 +294,95 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
                   <Send size={14} /> {inviting ? 'Sending…' : 'Send'}
                 </button>
               </div>
+              <p
+                className="font-body"
+                style={{ fontSize: 11.5, color: 'var(--color-text-muted)', margin: '6px 0 0', lineHeight: 1.5 }}
+              >
+                {inviteMethod === 'password'
+                  ? "They'll get a one-time link to choose a password, then sign in with their email."
+                  : "They'll get the portal link and sign in with Google."}
+              </p>
             </div>
+
+            {/* Who's been invited, and how far they've got */}
+            {contacts.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ ...label, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Users size={12} /> People with access
+                </label>
+                <div
+                  style={{
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 'var(--radius-md)',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {contacts.map((c, i) => {
+                    const state = contactState(c);
+                    const isPassword = c.authMethod === 'password';
+                    return (
+                      <div
+                        key={c.id}
+                        className="flex items-center gap-2"
+                        style={{
+                          padding: '9px 11px',
+                          borderTop: i === 0 ? 'none' : '1px solid var(--color-border)',
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            className="truncate"
+                            style={{ fontSize: 13, color: 'var(--color-text-primary)', fontWeight: 500 }}
+                            title={c.email}
+                          >
+                            {c.email}
+                          </div>
+                          <div
+                            className="flex items-center gap-1.5"
+                            style={{ fontSize: 11.5, color: state.color, marginTop: 1 }}
+                          >
+                            {isPassword ? <KeyRound size={11} /> : <Mail size={11} />}
+                            <span style={{ color: 'var(--color-text-muted)' }}>
+                              {isPassword ? 'Password' : 'Google'}
+                            </span>
+                            <span style={{ color: 'var(--color-border-strong, #C8C5BE)' }}>·</span>
+                            <span>{state.label}</span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleResend(c.id)}
+                          disabled={resendingId === c.id}
+                          title={
+                            isPassword && c.hasPassword
+                              ? 'Email a password reset link'
+                              : isPassword
+                              ? 'Re-send the set-password link'
+                              : 'Re-send the invitation'
+                          }
+                          className="shrink-0"
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: resendingId === c.id ? 'wait' : 'pointer',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: 'var(--color-accent)',
+                            padding: '4px 2px',
+                          }}
+                        >
+                          {resendingId === c.id
+                            ? 'Sending…'
+                            : isPassword && c.hasPassword
+                            ? 'Reset'
+                            : 'Resend'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Announcement banner shown to all clients on this board */}
             <div style={{ marginBottom: 16 }}>

@@ -8,7 +8,7 @@ const ClientContact = require('../models/ClientContact');
 const eventBus = require('../services/eventBus');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { generatePortalToken } = require('../utils/portalCrypto');
-const { sendGroupInvite } = require('../services/portalInviteService');
+const { inviteContact } = require('../services/portalInviteService');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -55,7 +55,7 @@ const createGroup = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { boardId } = req.params;
-    const { name, order, clientEmail, clientName } = req.body;
+    const { name, order, clientEmail, clientName, clientAuthMethod } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Group name is required' });
@@ -112,9 +112,22 @@ const createGroup = async (req, res) => {
     });
 
     // Send the invitation email (best-effort — never fails the create).
+    // `clientAuthMethod` says how this client signs in: 'google' (the shared
+    // link) or 'password' (register the address and mail a one-time set-password
+    // link). inviteContact writes the ClientContact row and picks the email.
     let inviteSent = false;
     if (isClientBoard && EMAIL_RE.test(inviteEmail)) {
-      inviteSent = await sendGroupInvite({ group, board: ctx.board, email: inviteEmail });
+      try {
+        const { ok } = await inviteContact({
+          group,
+          board: ctx.board,
+          email: inviteEmail,
+          authMethod: clientAuthMethod === 'password' ? 'password' : 'google',
+        });
+        inviteSent = ok;
+      } catch (inviteErr) {
+        console.error('createGroup invite error:', inviteErr);
+      }
     }
 
     // Fan out a group.created event so GROUP_CREATED automations can

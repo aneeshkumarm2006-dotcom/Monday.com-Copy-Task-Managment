@@ -250,6 +250,51 @@ textarea.mcp-field {
   line-height: 1.55;
 }
 
+/* Field label. Same values the dashboard forms were setting inline. */
+.mcp-label {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--p-ink-2);
+}
+
+/* Inline form error, e.g. under the sign-in fields. */
+.mcp-error {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--p-danger);
+}
+
+/* Inline form success / confirmation, same slot as .mcp-error. */
+.mcp-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--p-success);
+}
+
+/* "or" rule between two sign-in methods: a centred word with a line either side. */
+.mcp-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--p-muted);
+}
+.mcp-or::before,
+.mcp-or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--p-border);
+}
+
 /* ---- pills ---------------------------------------------------------------- */
 .mcp-pill {
   display: inline-flex;

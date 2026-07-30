@@ -9,7 +9,7 @@ import {
 import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
   getIssueThread, postThreadMessage, reopenIssue, rateIssue,
-  getPortalToken, clearPortalToken,
+  getPortalToken, clearPortalToken, getLastPortalLink,
 } from '../services/portalService';
 import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
 import '../styles/portal.css';
@@ -370,6 +370,9 @@ const AttachControl = ({ tray, disabled, variant = 'zone' }) => {
 const PortalDashboardPage = () => {
   const [loading, setLoading] = useState(true);
   const [expired, setExpired] = useState(false);
+  // Read once: it never changes while this page is mounted, and the expired
+  // screen is the only thing that reads it.
+  const [lastLink] = useState(getLastPortalLink);
   const [context, setContext] = useState({ orgName: '', companyName: '', contactName: '', categories: [] });
   const [issues, setIssues] = useState([]);
   const [filter, setFilter] = useState('all');
@@ -451,8 +454,22 @@ const PortalDashboardPage = () => {
           </div>
           <p style={{ fontSize: 17, fontWeight: 700, margin: '0 0 8px' }}>Your session has ended</p>
           <p style={{ fontSize: 14, color: '#64748B', margin: 0, lineHeight: 1.55 }}>
-            Please open your portal link again to sign back in.
+            {lastLink
+              ? 'Sign back in to pick up where you left off.'
+              : 'Please open your portal link again to sign back in.'}
           </p>
+          {/* The link id is remembered separately from the session token, so we
+              can usually offer the way back rather than sending them to hunt
+              through their email for it. */}
+          {lastLink && (
+            <a
+              href={`/portal/${lastLink}`}
+              className="mcp-btn mcp-btn--primary mcp-btn--block"
+              style={{ marginTop: 20, textDecoration: 'none' }}
+            >
+              Sign in again
+            </a>
+          )}
         </div>
       </div>
     );
