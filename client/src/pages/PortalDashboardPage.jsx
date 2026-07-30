@@ -162,6 +162,18 @@ const Avatar = ({ url, name }) =>
     ? <img className="mcp-avatar" src={url} alt="" />
     : <span className="mcp-avatar-fallback">{initialsOf(name)}</span>;
 
+/**
+ * Today as `YYYY-MM-DD`, in the client's OWN timezone — the format `<input
+ * type="date">` wants for `min`. Built from the local date parts rather than
+ * `toISOString()`, which converts to UTC first and so hands anyone west of
+ * Greenwich yesterday's date after their afternoon.
+ */
+const todayInputValue = () => {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+};
+
 /* ---- attachments ---------------------------------------------------------- */
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // mirrors the server's multer limit
 const MAX_FILES = 6;
@@ -172,8 +184,13 @@ let attachSeq = 0;
  * (`ready` → `uploading` → `done` | `error`). Both composers share it so a
  * picked file, its progress and — the point of all this — its confirmed
  * "Uploaded" state look and behave identically wherever you attach something.
+ *
+ * `context` ('request' | 'thread') travels with every upload and records where
+ * the file came in. The two composers must pass different values: it is what
+ * lets the original request keep showing its own screenshots and nothing else,
+ * here and on the team's side.
  */
-const useAttachmentTray = () => {
+const useAttachmentTray = (context = 'thread') => {
   const [items, setItems] = useState([]);
   const [notice, setNotice] = useState('');
   const previews = useRef([]);
@@ -244,7 +261,12 @@ const useAttachmentTray = () => {
       if (it.status === 'done' && it.attachment) { uploaded.push(it.attachment); continue; }
       patch(it.key, { status: 'uploading', progress: 0, error: '' });
       try {
-        const { attachment } = await uploadIssueAttachment(issueId, it.file, (p) => patch(it.key, { progress: p }));
+        const { attachment } = await uploadIssueAttachment(
+          issueId,
+          it.file,
+          (p) => patch(it.key, { progress: p }),
+          context
+        );
         patch(it.key, { status: 'done', progress: 100, attachment });
         uploaded.push(attachment);
       } catch (err) {
@@ -255,7 +277,7 @@ const useAttachmentTray = () => {
       }
     }
     return { uploaded, failures };
-  }, [patch]);
+  }, [patch, context]);
 
   return { items, notice, setNotice, addFiles, remove, reset, uploadAll };
 };
@@ -750,7 +772,8 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
   // idle → creating → uploading → (partial | done)
   const [phase, setPhase] = useState('idle');
   const [error, setError] = useState('');
-  const tray = useAttachmentTray();
+  // 'request' — these files are part of the request itself, and stay pinned to it.
+  const tray = useAttachmentTray('request');
   // Set once the issue exists, so retrying a failed upload never re-creates it.
   const [created, setCreated] = useState(null);
 
@@ -857,8 +880,14 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
         })}
       </div>
 
+      {/* "Needed by" can't be in the past — a deadline before the request was
+          even raised is never what anyone meant, so the picker greys those days
+          out rather than accepting one and quietly landing an overdue task on
+          the team's board. `min` is today, read at render so a form left open
+          overnight can't strand yesterday as a valid pick. */}
       <label style={label}>Needed by <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
       <input type="date" className="mcp-field" style={{ marginBottom: 16, cursor: 'pointer' }} disabled={locked}
+        min={todayInputValue()}
         value={dueDate} onChange={(e) => setDueDate(e.target.value)}
         onClick={(e) => { try { e.currentTarget.showPicker?.(); } catch { /* not supported / not allowed */ } }} />
 
@@ -946,7 +975,9 @@ const IssueDetail = ({ issue, orgName, onBack }) => {
   const [sentAt, setSentAt] = useState(0);
   const [busy, setBusy] = useState('');
   const [hoverStar, setHoverStar] = useState(0);
-  const tray = useAttachmentTray();
+  // 'thread' — files sent mid-conversation belong to their message, not to the
+  // original request block above it.
+  const tray = useAttachmentTray('thread');
   const scrollAnchor = useRef(null);
   const seenIds = useRef(new Set());
 

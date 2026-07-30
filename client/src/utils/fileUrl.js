@@ -1,5 +1,21 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 
+/** "1.4 MB" — empty string for a missing or zero size, so callers can render it raw. */
+export const formatBytes = (bytes) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, i);
+  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+};
+
+/**
+ * Does this attachment get a thumbnail? Images are the only kind we can show
+ * inline — and the only kind `downloadFile` opens directly rather than proxying.
+ */
+export const isImageAttachment = (attachment) =>
+  (attachment?.mime || '').startsWith('image/');
+
 /**
  * Programmatically download a file attachment.
  *

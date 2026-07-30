@@ -12,6 +12,10 @@ const { createNotificationsForUsers } = require('../services/notificationService
 const { logActivity } = require('../services/activityService');
 const { sendPortalReplyEmail } = require('../services/emailService');
 const { sendGroupInvite } = require('../services/portalInviteService');
+const {
+  loadRequestAttachments,
+  isClientVisibleAttachment,
+} = require('../utils/portalAttachments');
 
 const CLIENT_URL = () => process.env.CLIENT_URL || 'http://localhost:5173';
 const PORTAL_JWT_TTL = '7d';
@@ -74,6 +78,23 @@ const PORTAL_TYPES = [
 ];
 const PORTAL_PRIORITIES = ['low', 'medium', 'high', 'critical'];
 
+/**
+ * The earliest "needed by" date a client may submit.
+ *
+ * A date input posts a bare `YYYY-MM-DD`, which parses as UTC midnight, but the
+ * client picked it against THEIR calendar — and clients are spread across
+ * roughly a 26-hour span of local dates. Anchoring the floor on the server's own
+ * midnight would reject the genuine today of anyone far enough west, so it sits
+ * a day earlier. That is wide enough to cover every timezone and still narrow
+ * enough that nothing meaningfully in the past gets through.
+ */
+const earliestAllowedDueDate = () => {
+  const floor = new Date();
+  floor.setUTCHours(0, 0, 0, 0);
+  floor.setUTCDate(floor.getUTCDate() - 1);
+  return floor;
+};
+
 // Human-friendly ticket reference. Sequential (REQ-1042) once portalRef is set;
 // falls back to a stable id-suffix for legacy issues created before refs existed.
 const issueRef = (task) =>
@@ -93,8 +114,13 @@ const serializeIssue = (task, board) => {
     dueDate: task.dueDate || null,
     createdAt: task.createdAt,
     // Surfaced on the client's list card so an upload is visibly confirmed
-    // without having to open the request.
-    attachmentCount: Array.isArray(task.attachments) ? task.attachments.length : 0,
+    // without having to open the request. Counts only files the client can
+    // actually reach — the team's own Files-tab uploads live in the same array
+    // but are never rendered in the portal, and counting them would promise
+    // files that aren't there.
+    attachmentCount: (Array.isArray(task.attachments) ? task.attachments : []).filter(
+      isClientVisibleAttachment
+    ).length,
     state, // 'open' | 'ongoing' | 'resolved'
     statusLabel: label,
     statusColor: color,
@@ -299,12 +325,22 @@ const createMyIssue = async (req, res) => {
     const reqPriority = (req.body?.priority || '').toString().trim().toLowerCase();
     const priority = PORTAL_PRIORITIES.includes(reqPriority) ? reqPriority : 'medium';
 
-    // Optional "needed by" date the client sets → the task's due date.
+    // Optional "needed by" date the client sets → the task's due date. The date
+    // picker greys out past days, but `min` on an input is a hint, not a
+    // guarantee — a typed date or a direct POST walks straight through it — so
+    // the floor is enforced here too, where it actually holds.
     let dueDate;
     const rawDue = (req.body?.dueDate || '').toString().trim();
     if (rawDue) {
       const d = new Date(rawDue);
-      if (!Number.isNaN(d.getTime())) dueDate = d;
+      if (!Number.isNaN(d.getTime())) {
+        if (d < earliestAllowedDueDate()) {
+          return res.status(400).json({
+            error: 'The date you need this by can’t be in the past.',
+          });
+        }
+        dueDate = d;
+      }
     }
 
     const last = await Task.findOne({ group: groupId }).sort({ order: -1 }).select('order');
@@ -392,6 +428,13 @@ const loadOwnIssue = async (req, taskId) => {
 
 /**
  * POST /api/portal/me/issues/:id/attachments   (multipart, field: file)
+ * Body field `context`: 'request' (attached while raising the issue) | 'thread'
+ * (attached to a message). Both land in the task's one file drawer, so the
+ * context is what later tells the request's own screenshots apart from files
+ * sent weeks into the conversation — see utils/portalAttachments.js.
+ * Anything unrecognised is treated as a thread file: mislabelling a file as part
+ * of the original request is the more misleading of the two mistakes.
+ *
  * Attach a file/screenshot to one of the contact's own issues.
  */
 const uploadIssueAttachment = async (req, res) => {
@@ -400,6 +443,7 @@ const uploadIssueAttachment = async (req, res) => {
     const task = await loadOwnIssue(req, req.params.id);
     if (!task) return res.status(404).json({ error: 'Issue not found' });
 
+    const context = (req.body?.context || '').toString().trim();
     const attachment = {
       url: req.file.path,
       name: req.file.originalname || '',
@@ -407,6 +451,7 @@ const uploadIssueAttachment = async (req, res) => {
       size: req.file.size || 0,
       publicId: req.file.filename || '',
       uploadedBy: null,
+      source: context === 'request' ? 'request' : 'thread',
     };
     task.attachments.push(attachment);
     await task.save();
@@ -419,6 +464,10 @@ const uploadIssueAttachment = async (req, res) => {
         name: saved.name,
         mime: saved.mime,
         size: saved.size,
+        // Echoed back so that when the portal replays this attachment onto a
+        // thread message, the Update's copy carries the Cloudinary id too —
+        // without it, deleting that message leaves the asset stranded.
+        publicId: saved.publicId,
       },
     });
   } catch (err) {
@@ -481,6 +530,11 @@ const getIssueThread = async (req, res) => {
 
     // Include the original request itself (its description + any files the client
     // attached when raising it) so the detail view can show it above the replies.
+    // Only the files that came in WITH the request — the task's attachment array
+    // also holds thread uploads and the team's own, and repeating those here made
+    // the request block grow every time anyone attached anything.
+    const requestAttachments = await loadRequestAttachments(task);
+
     return res.json({
       issue: {
         id: String(task._id),
@@ -495,7 +549,7 @@ const getIssueThread = async (req, res) => {
         type: task.portalType || '',
         priority: task.priority || 'medium',
         rating: task.portalRating || null,
-        attachments: (task.attachments || []).map((a) => ({
+        attachments: requestAttachments.map((a) => ({
           url: a.url,
           name: a.name,
           mime: a.mime,

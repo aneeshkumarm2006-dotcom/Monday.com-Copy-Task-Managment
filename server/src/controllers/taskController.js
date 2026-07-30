@@ -24,6 +24,7 @@ const { resolveAccess } = require('../utils/permissions');
 const ClientContact = require('../models/ClientContact');
 const { isResolvedStatus } = require('../utils/doneStatus');
 const { sendPortalResolvedEmail } = require('../services/emailService');
+const { loadRequestAttachments } = require('../utils/portalAttachments');
 
 /**
  * Client Portal: when a client-submitted task moves to a "done" status, email
@@ -1903,6 +1904,69 @@ const getTaskAttachments = async (req, res) => {
 };
 
 /**
+ * GET /api/tasks/:id/client-request — the request as the client raised it.
+ *
+ * A Client Portal request arrives as a Task, not as an Update: its title, its
+ * description and — the part that kept going missing — the screenshots the client
+ * attached while raising it all live on the task document. The team's Client tab
+ * renders Updates, so none of that appeared in the thread the team actually reads,
+ * and the files were reachable only by clicking into the Files tab. This endpoint
+ * hands the whole request over so the thread can open with it.
+ *
+ * Read-gated exactly like the thread itself (board read), and 404s for any task
+ * that didn't come from a client — there is no request to show.
+ */
+const getClientRequest = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { id } = req.params;
+
+    const result = await loadTaskContext(id, userId);
+    if (result.error) {
+      return res.status(result.status).json({ error: result.error });
+    }
+    const { task } = result;
+    if (task.source !== 'client' || !task.portalSubmitter) {
+      return res.status(404).json({ error: 'Not a client request' });
+    }
+
+    const contact = await ClientContact.findById(task.portalSubmitter).select('name email');
+    const attachments = await loadRequestAttachments(task);
+
+    return res.json({
+      request: {
+        // Sequential ticket number where one was claimed; the id-suffix fallback
+        // matches what the client sees on their side for pre-ref requests.
+        ref: task.portalRef
+          ? `REQ-${task.portalRef}`
+          : `REQ-${String(task._id).slice(-5).toUpperCase()}`,
+        name: task.name,
+        note: task.note || '',
+        type: task.portalType || '',
+        category: task.portalCategory || '',
+        priority: task.priority || 'medium',
+        dueDate: task.dueDate || null,
+        createdAt: task.createdAt,
+        submitter: {
+          name: contact?.name || '',
+          email: contact?.email || '',
+        },
+        attachments: attachments.map((a) => ({
+          _id: String(a._id),
+          url: a.url,
+          name: a.name,
+          mime: a.mime,
+          size: a.size,
+        })),
+      },
+    });
+  } catch (err) {
+    console.error('getClientRequest error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
  * Delete an already-uploaded file that this request is not going to keep.
  *
  * `taskAttachmentUpload.single('file')` runs as route middleware, so multer and
@@ -1954,6 +2018,9 @@ const uploadTaskAttachment = async (req, res) => {
       size: req.file.size || 0,
       publicId: req.file.public_id || req.file.filename || '',
       uploadedBy: userId,
+      // The Files tab is the team's own upload path — never part of the client's
+      // request, even on a Client Portal board.
+      source: 'team',
     };
 
     const updated = await Task.findByIdAndUpdate(
@@ -2043,4 +2110,5 @@ module.exports = {
   getTaskAttachments,
   uploadTaskAttachment,
   deleteTaskAttachment,
+  getClientRequest,
 };

@@ -67,10 +67,16 @@ export const createMyIssue = (payload) =>
  * on slow connections otherwise stare at a spinner with no idea whether their
  * screenshot is going anywhere. The 20s default timeout is far too tight for a
  * 25MB file (the server's per-file limit), so uploads get their own.
+ *
+ * `context` says which composer sent the file — 'request' for the intake form,
+ * 'thread' for a message. Both end up in the same place on the task, so this is
+ * what keeps the request's own screenshots distinguishable from everything
+ * attached afterwards, on both this side and the team's.
  */
-export const uploadIssueAttachment = (issueId, file, onProgress) => {
+export const uploadIssueAttachment = (issueId, file, onProgress, context = 'thread') => {
   const form = new FormData();
   form.append('file', file);
+  form.append('context', context);
   return portalApi
     .post(`/api/portal/me/issues/${issueId}/attachments`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },

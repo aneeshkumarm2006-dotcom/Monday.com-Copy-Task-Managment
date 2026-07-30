@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { downloadFile } from '../../utils/fileUrl';
 import {
   AtSign,
   Paperclip,
@@ -8,7 +7,6 @@ import {
   Mail,
   MessageSquare,
   Trash2,
-  Download,
   Pencil,
   CornerDownLeft,
   X,
@@ -22,8 +20,10 @@ import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
 import Mention from '@tiptap/extension-mention';
 import RichEditor from './RichEditor';
+import AttachmentList from './AttachmentList';
 import { DriveChip, driveChipify } from './driveChipExtension';
 import * as updateService from '../../services/updateService';
+import * as taskAttachmentService from '../../services/taskAttachmentService';
 import useAuthStore from '../../store/authStore';
 import useToastStore from '../../store/toastStore';
 import useNotificationStore from '../../store/notificationStore';
@@ -33,6 +33,25 @@ import { timeAgo, formatDate } from '../../utils/dateUtils';
 const COMMON_EMOJIS = ['👍', '🎉', '🙌', '🔥', '❤️', '✅', '🚀', '😄', '👀', '💡', '🤔', '😅'];
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB — matches server limit
+
+// Request types + priorities a portal client can pick, labelled exactly as their
+// own portal labels them so both sides are talking about the same thing.
+const REQUEST_TYPES = {
+  meta_ads: { label: 'Meta Ads', color: '#1877F2' },
+  google_ads: { label: 'Google Ads', color: '#EA4335' },
+  email_marketing: { label: 'Email Marketing', color: '#059669' },
+  website_development: { label: 'Website Development', color: '#7C3AED' },
+  bug: { label: 'Bug', color: '#DC2626' },
+  feature: { label: 'Feature request', color: '#F59E0B' },
+  requirement: { label: 'Requirement', color: '#2563EB' },
+  question: { label: 'Question', color: '#0891B2' },
+};
+const REQUEST_PRIORITIES = {
+  low: { label: 'Low', color: '#64748B' },
+  medium: { label: 'Medium', color: '#2563EB' },
+  high: { label: 'High', color: '#EA580C' },
+  critical: { label: 'Urgent', color: '#DC2626' },
+};
 
 /**
  * Build a short preview of the update being replied to, so a reply shows *which*
@@ -96,7 +115,14 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
 
   const [updates, setUpdates] = useState([]);
   const [loading, setLoading] = useState(false);
+  // Distinct from `!loading`: true only after a fetch has actually returned, so
+  // the count is never reported from the empty pre-load state.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
+  // The Client Portal request this thread is about — title, details and the
+  // files the client attached when raising it. Only the client thread shows it;
+  // everywhere else there is no request, and the fetch is skipped.
+  const [clientRequest, setClientRequest] = useState(null);
 
   // Composer state
   const [bodyJson, setBodyJson] = useState(null);
@@ -114,23 +140,32 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  // Report the count only once the feed has actually come back. Before that
+  // `updates` is an empty array because nothing has loaded, not because there is
+  // nothing there, and forwarding that 0 puts a wrong number on the tab badge.
   useEffect(() => {
+    if (!loaded) return;
     onCountChange?.(updates.length);
-  }, [updates.length, onCountChange]);
+  }, [loaded, updates.length, onCountChange]);
 
   // Initial load + refetch when the task switches
   useEffect(() => {
     if (!taskId) {
       setUpdates([]);
+      setLoaded(false);
       return;
     }
     let cancelled = false;
     setLoading(true);
+    setLoaded(false);
     setError('');
     updateService
       .getUpdates(taskId, visibility)
       .then((list) => {
-        if (!cancelled) setUpdates(list || []);
+        if (!cancelled) {
+          setUpdates(list || []);
+          setLoaded(true);
+        }
       })
       .catch((err) => {
         console.error('Failed to load updates:', err);
@@ -148,6 +183,29 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
       cancelled = true;
     };
   }, [taskId, visibility]);
+
+  // The request that started the thread. Fetched separately because it isn't an
+  // Update — a portal request arrives as the Task itself, which is exactly why
+  // its screenshots were invisible here until now. Failure is silent: the thread
+  // is still perfectly usable without the opening card.
+  useEffect(() => {
+    if (!taskId || !isClientThread) {
+      setClientRequest(null);
+      return;
+    }
+    let cancelled = false;
+    taskAttachmentService
+      .getClientRequest(taskId)
+      .then((request) => {
+        if (!cancelled) setClientRequest(request);
+      })
+      .catch((err) => {
+        console.error('Failed to load the client request:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, isClientThread]);
 
   const handleEditorChange = useCallback(({ json, text, mentions, isEmpty }) => {
     setBodyJson(json);
@@ -412,39 +470,54 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
           >
             {isClientThread ? 'Loading messages…' : 'Loading updates…'}
           </p>
-        ) : updates.length === 0 ? (
-          <p
-            className="font-body text-center"
-            style={{
-              fontSize: 13,
-              color: 'var(--color-text-muted)',
-              padding: '32px 0',
-            }}
-          >
-            {isClientThread
-              ? 'No messages with the client yet. Anything you post here goes to them.'
-              : 'No updates yet. Post the first one.'}
-          </p>
         ) : (
-          <ul
-            className="flex flex-col"
-            style={{ padding: 0, margin: 0, listStyle: 'none', gap: 12 }}
-          >
-            {updates.map((u) => (
-              <li key={u._id} id={`update-${u._id}`}>
-                <UpdateCard
-                  update={u}
-                  currentUserId={currentUser?._id}
-                  highlighted={highlightId === u._id}
-                  onDelete={() => handleDelete(u._id)}
-                  onEdit={(payload) => handleEdit(u._id, payload)}
-                  onReply={() => handleReply(u)}
-                  onJumpToParent={handleJumpToParent}
-                  onToggleMentionRead={(read) => handleToggleRead(u._id, read)}
-                />
-              </li>
-            ))}
-          </ul>
+          <>
+            {updates.length === 0 && (
+              <p
+                className="font-body text-center"
+                style={{
+                  fontSize: 13,
+                  color: 'var(--color-text-muted)',
+                  padding: clientRequest ? '8px 0 16px' : '32px 0',
+                }}
+              >
+                {isClientThread
+                  ? 'No replies yet. Anything you post here goes to the client.'
+                  : 'No updates yet. Post the first one.'}
+              </p>
+            )}
+
+            {updates.length > 0 && (
+              <ul
+                className="flex flex-col"
+                style={{ padding: 0, margin: 0, listStyle: 'none', gap: 12 }}
+              >
+                {updates.map((u) => (
+                  <li key={u._id} id={`update-${u._id}`}>
+                    <UpdateCard
+                      update={u}
+                      currentUserId={currentUser?._id}
+                      highlighted={highlightId === u._id}
+                      onDelete={() => handleDelete(u._id)}
+                      onEdit={(payload) => handleEdit(u._id, payload)}
+                      onReply={() => handleReply(u)}
+                      onJumpToParent={handleJumpToParent}
+                      onToggleMentionRead={(read) => handleToggleRead(u._id, read)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* The request that started all this, pinned at the foot of the feed
+                — the feed runs newest-first, so oldest-last puts it exactly where
+                it belongs. */}
+            {clientRequest && (
+              <div style={{ marginTop: updates.length > 0 ? 12 : 0 }}>
+                <ClientRequestCard request={clientRequest} />
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -816,6 +889,195 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
 };
 
 /**
+ * ClientRequestCard — the request as the client actually raised it, sitting at
+ * the foot of the Client thread as its opening message.
+ *
+ * A portal request is a Task, not an Update, so none of it — not the details the
+ * client typed, and not the screenshots they attached — was ever part of the
+ * feed the team reads. The files were reachable only by remembering to click
+ * into the Files tab, which meant that in practice nobody saw them. This card is
+ * where they surface, and it carries the whole intake: reference, type, priority,
+ * needed-by date, the description, and the attachments.
+ *
+ * Styled apart from the reply cards (tinted, left rule) so it reads as the thing
+ * being discussed rather than as another message in the discussion.
+ */
+const ClientRequestCard = ({ request }) => {
+  const type = REQUEST_TYPES[request.type];
+  const priority = REQUEST_PRIORITIES[request.priority];
+  const submitterName = request.submitter?.name || 'Client';
+  const attachments = Array.isArray(request.attachments) ? request.attachments : [];
+
+  return (
+    <article
+      aria-label="The client's original request"
+      style={{
+        background: 'var(--color-bg-subtle, #F9FAFB)',
+        border: '1px solid var(--color-border)',
+        borderLeft: '3px solid var(--color-accent)',
+        borderRadius: 'var(--radius-md)',
+        padding: 12,
+      }}
+    >
+      <div className="flex items-center gap-2 flex-wrap" style={{ marginBottom: 8 }}>
+        <span
+          className="font-body"
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+            color: 'var(--color-text-muted)',
+          }}
+        >
+          Original request
+        </span>
+        {request.ref && (
+          <span
+            className="font-body"
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: 'var(--color-accent)',
+              background: 'var(--color-accent-light, #EFF6FF)',
+              padding: '1px 6px',
+              borderRadius: 'var(--radius-full)',
+            }}
+          >
+            {request.ref}
+          </span>
+        )}
+      </div>
+
+      <header className="flex items-center gap-2" style={{ marginBottom: 8 }}>
+        <Avatar user={{ name: submitterName }} size={26} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className="font-body"
+              style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}
+            >
+              {submitterName}
+            </span>
+            {request.submitter?.email && (
+              <span
+                className="font-body"
+                style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
+                title={request.submitter.email}
+              >
+                {request.submitter.email}
+              </span>
+            )}
+            <span
+              className="font-body"
+              title={formatDate(request.createdAt)}
+              style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
+            >
+              {timeAgo(request.createdAt)}
+            </span>
+          </div>
+        </div>
+      </header>
+
+      {/* The heading the client gave it — the task name can be renamed by the
+          team later, so this is the request as it was submitted. */}
+      <h4
+        className="font-body"
+        style={{
+          fontSize: 14.5,
+          fontWeight: 700,
+          color: 'var(--color-text-primary)',
+          margin: '0 0 6px 0',
+          lineHeight: 1.35,
+          wordBreak: 'break-word',
+        }}
+      >
+        {request.name}
+      </h4>
+
+      {(type || priority || request.category || request.dueDate) && (
+        <div className="flex items-center gap-1.5 flex-wrap" style={{ marginBottom: 8 }}>
+          {type && <RequestChip label={type.label} color={type.color} />}
+          {priority && (
+            <RequestChip label={`${priority.label} priority`} color={priority.color} />
+          )}
+          {request.category && (
+            <RequestChip label={request.category} color="var(--color-text-secondary)" />
+          )}
+          {request.dueDate && (
+            <RequestChip
+              label={`Needed by ${formatDate(request.dueDate)}`}
+              color="var(--color-text-secondary)"
+            />
+          )}
+        </div>
+      )}
+
+      {request.note ? (
+        <p
+          className="font-body"
+          style={{
+            fontSize: 13,
+            lineHeight: 1.55,
+            color: 'var(--color-text-secondary)',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            margin: 0,
+          }}
+        >
+          {request.note}
+        </p>
+      ) : (
+        <p
+          className="font-body"
+          style={{ fontSize: 12.5, color: 'var(--color-text-muted)', fontStyle: 'italic', margin: 0 }}
+        >
+          No further details were given.
+        </p>
+      )}
+
+      {attachments.length > 0 && (
+        <>
+          <p
+            className="flex items-center gap-1.5 font-body"
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: 'var(--color-text-muted)',
+              margin: '12px 0 0 0',
+            }}
+          >
+            <Paperclip size={11} aria-hidden="true" />
+            {attachments.length === 1
+              ? '1 file attached to this request'
+              : `${attachments.length} files attached to this request`}
+          </p>
+          <AttachmentList attachments={attachments} />
+        </>
+      )}
+    </article>
+  );
+};
+
+/** A small labelled pill for one facet of the request (type, priority, …). */
+const RequestChip = ({ label, color }) => (
+  <span
+    className="font-body"
+    style={{
+      fontSize: 11,
+      fontWeight: 600,
+      color,
+      border: `1px solid ${color}`,
+      borderRadius: 'var(--radius-full)',
+      padding: '1px 8px',
+      whiteSpace: 'nowrap',
+    }}
+  >
+    {label}
+  </span>
+);
+
+/**
  * Single update card — author, timestamp, rich body, attachments, edit, delete.
  *
  * Author can toggle edit mode, which swaps the read-only body for a RichEditor
@@ -1148,41 +1410,10 @@ const UpdateCard = ({ update, currentUserId, highlighted, onDelete, onEdit, onRe
         )}
       </div>
 
-      {Array.isArray(update.attachments) && update.attachments.length > 0 ? (
-        <ul
-          className="flex flex-wrap gap-2"
-          style={{
-            listStyle: 'none',
-            margin: '8px 0 0',
-            padding: 0,
-          }}
-        >
-          {update.attachments.map((a, i) => (
-            <li key={`${a.url}-${i}`}>
-              <button
-                type="button"
-                onClick={() => downloadFile(a.url, a.mime || '', a.name || 'file')}
-                className="inline-flex items-center gap-1 font-body transition-colors hover:bg-[color:var(--color-bg-subtle)]"
-                style={{
-                  fontSize: 12,
-                  color: 'var(--color-text-secondary)',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 'var(--radius-md)',
-                  padding: '4px 8px',
-                  background: 'transparent',
-                  cursor: 'pointer',
-                }}
-                title={a.name || 'attachment'}
-              >
-                <Download size={11} aria-hidden="true" />
-                <span style={{ maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {a.name || 'attachment'}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+      {/* Files render as thumbnails, not filename chips — a client sending a
+          screenshot is showing you something, and a bare "Screenshot.png" button
+          buried the whole point of the message. */}
+      <AttachmentList attachments={update.attachments} compact />
     </article>
   );
 };

@@ -17,6 +17,7 @@ const {
   getTaskAttachments,
   uploadTaskAttachment,
   deleteTaskAttachment,
+  getClientRequest,
 } = require('../controllers/taskController');
 const {
   linkTask,
@@ -91,5 +92,10 @@ router.post(
   uploadTaskAttachment
 );
 router.delete('/:id/attachments/:attachmentId', deleteTaskAttachment);
+
+// GET /api/tasks/:id/client-request — the Client Portal request behind this task
+// (title, details, and the files the client attached when raising it), shown as
+// the opening message of the Client thread.
+router.get('/:id/client-request', getClientRequest);
 
 module.exports = router;

@@ -25,6 +25,22 @@ export const uploadAttachment = async (taskId, file) => {
 };
 
 /**
+ * GET /api/tasks/:taskId/client-request — the Client Portal request behind a
+ * task: what the client titled it, the details they gave, and the files they
+ * attached while raising it. Returns null for tasks that weren't raised by a
+ * client (the server 404s — that isn't an error worth surfacing).
+ */
+export const getClientRequest = async (taskId) => {
+  try {
+    const { data } = await api.get(`/api/tasks/${taskId}/client-request`);
+    return data.request || null;
+  } catch (err) {
+    if (err?.response?.status === 404) return null;
+    throw err;
+  }
+};
+
+/**
  * DELETE /api/tasks/:taskId/attachments/:attachmentId
  */
 export const deleteAttachment = async (taskId, attachmentId) => {

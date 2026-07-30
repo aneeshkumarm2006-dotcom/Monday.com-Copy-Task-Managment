@@ -1,54 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Paperclip,
-  UploadCloud,
-  Download,
-  Trash2,
-  File as FileIcon,
-  FileText,
-  FileImage,
-  FileVideo,
-  FileAudio,
-  FileArchive,
-} from 'lucide-react';
+import { UploadCloud, Download, Trash2 } from 'lucide-react';
 import * as taskAttachmentService from '../../services/taskAttachmentService';
-import { downloadFile } from '../../utils/fileUrl';
+import { downloadFile, formatBytes, isImageAttachment } from '../../utils/fileUrl';
+import { FileTypeIcon } from './AttachmentList';
 import useToastStore from '../../store/toastStore';
 import useAuthStore from '../../store/authStore';
 import { timeAgo } from '../../utils/dateUtils';
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB — matches server limit
-
-/**
- * Pick a Lucide icon based on the file's MIME type. Falls back to a generic
- * file icon when the mime is missing or unrecognised.
- */
-const iconForMime = (mime = '') => {
-  if (mime.startsWith('image/')) return FileImage;
-  if (mime.startsWith('video/')) return FileVideo;
-  if (mime.startsWith('audio/')) return FileAudio;
-  if (mime === 'application/pdf') return FileText;
-  if (
-    mime.includes('zip') ||
-    mime.includes('rar') ||
-    mime.includes('tar') ||
-    mime.includes('7z')
-  ) {
-    return FileArchive;
-  }
-  if (mime.startsWith('text/') || mime.includes('document') || mime.includes('word'))
-    return FileText;
-  return FileIcon;
-};
-
-
-const formatBytes = (bytes) => {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = bytes / Math.pow(1024, i);
-  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-};
 
 /**
  * FilesTab — list, upload, and delete files attached to a task. Mounted under
@@ -61,11 +20,16 @@ const FilesTab = ({ task, onCountChange }) => {
   const currentUser = useAuthStore((s) => s.user);
 
   const [attachments, setAttachments] = useState([]);
+  // True only once the list has actually come back. Reporting the count before
+  // then would badge the tab "0" while the files are still in flight — which is
+  // how a task with client screenshots on it ended up advertising none.
+  const [loaded, setLoaded] = useState(false);
 
   // Keep parent tab count in sync
   useEffect(() => {
+    if (!loaded) return;
     onCountChange?.(attachments.length);
-  }, [attachments.length, onCountChange]);
+  }, [loaded, attachments.length, onCountChange]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -77,15 +41,20 @@ const FilesTab = ({ task, onCountChange }) => {
   useEffect(() => {
     if (!taskId) {
       setAttachments([]);
+      setLoaded(false);
       return;
     }
     let cancelled = false;
     setLoading(true);
+    setLoaded(false);
     setError('');
     taskAttachmentService
       .getAttachments(taskId)
       .then((list) => {
-        if (!cancelled) setAttachments(list || []);
+        if (!cancelled) {
+          setAttachments(list || []);
+          setLoaded(true);
+        }
       })
       .catch((err) => {
         console.error('Failed to load attachments:', err);
@@ -287,14 +256,13 @@ const FilesTab = ({ task, onCountChange }) => {
 };
 
 const AttachmentRow = ({ attachment, canDelete, onDelete }) => {
-  const Icon = iconForMime(attachment.mime || '');
   const uploader = attachment.uploadedBy;
   const uploaderName =
     (uploader && typeof uploader === 'object' && uploader.name) || '';
   const [hovered, setHovered] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const isImage = (attachment.mime || '').startsWith('image/');
+  const isImage = isImageAttachment(attachment);
   const handleDownload = () =>
     downloadFile(attachment.url, attachment.mime || '', attachment.name || 'file');
 
@@ -350,7 +318,7 @@ const AttachmentRow = ({ attachment, canDelete, onDelete }) => {
             flexShrink: 0,
           }}
         >
-          <Icon size={18} />
+          <FileTypeIcon mime={attachment.mime || ''} size={18} />
         </span>
       )}
 

@@ -146,6 +146,13 @@ const taskSchema = new mongoose.Schema(
     },
     // Files attached directly to the task (uploaded via the Files tab).
     // Mirrors the Update.attachments shape so the FE can share UI.
+    //
+    // Every file a Client Portal client uploads also lands here, whichever way
+    // they sent it — so this array is the task's single file drawer, and `source`
+    // is the only thing that says where a given file came in from. That matters
+    // because the client's ORIGINAL REQUEST is rendered from this array (its
+    // screenshots are not an Update), and it must not swallow files that arrived
+    // later in the thread or from the team's own Files tab.
     attachments: {
       type: [
         new mongoose.Schema(
@@ -158,6 +165,23 @@ const taskSchema = new mongoose.Schema(
             uploadedBy: {
               type: mongoose.Schema.Types.ObjectId,
               ref: 'User',
+            },
+            // Where the file entered the task:
+            //   'request' — the client attached it while raising the request
+            //   'thread'  — the client attached it to a portal thread message
+            //               (also mirrored onto that Update's own attachments)
+            //   'team'    — a team member uploaded it via the Files tab
+            //
+            // DELIBERATELY has no `default`. Mongoose applies schema defaults when
+            // it hydrates a document, not just when one is created, so a default
+            // here would hand every pre-existing row a confident answer — and the
+            // rows that predate this field are precisely the client screenshots
+            // this exists to find. Left undefined, they fall through to the
+            // evidence-based fallback in utils/portalAttachments.js. Both writers
+            // (the portal upload and the Files tab upload) set it explicitly.
+            source: {
+              type: String,
+              enum: ['request', 'thread', 'team'],
             },
           },
           { _id: true, timestamps: { createdAt: true, updatedAt: false } }

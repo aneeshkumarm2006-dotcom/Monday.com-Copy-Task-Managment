@@ -80,9 +80,13 @@ const CommentPanel = ({
 }) => {
   // Tabs (Updates / Client / Files / Activity Log)
   const [activeTab, setActiveTab] = useState('updates');
-  const [updatesCount, setUpdatesCount] = useState(0);
-  const [clientCount, setClientCount] = useState(0);
-  const [filesCount, setFilesCount] = useState(0);
+  // null = not counted yet. The badge is hidden until its tab has actually
+  // loaded, because a placeholder 0 is not a neutral "loading" state — it is a
+  // confident, wrong answer, and "Files / 0" on a task with three client
+  // screenshots is precisely the reason nobody opened the tab.
+  const [updatesCount, setUpdatesCount] = useState(null);
+  const [clientCount, setClientCount] = useState(null);
+  const [filesCount, setFilesCount] = useState(null);
 
   // A separate Client thread only exists where there IS a client: a Client Portal
   // board. Everywhere else Updates is the only thread, and splitting it would be
@@ -127,9 +131,9 @@ const CommentPanel = ({
   // task's count is never shown against a newly-opened one (UpdatesTab and
   // FilesTab re-report their live counts as soon as they load).
   useEffect(() => {
-    setUpdatesCount(0);
-    setClientCount(0);
-    setFilesCount(0);
+    setUpdatesCount(null);
+    setClientCount(null);
+    setFilesCount(null);
   }, [taskId]);
 
   // Return to the default tab when the panel fully closes. activeTab is
@@ -154,6 +158,9 @@ const CommentPanel = ({
   // count reported by UpdatesTab while the panel is open.
   useEffect(() => {
     if (!isOpen || !taskId) return;
+    // Skip the pre-load null — the row already shows a count, and overwriting it
+    // with "unknown" every time the panel opens would make it flicker.
+    if (updatesCount === null) return;
     onUpdatesCountChange?.(taskId, updatesCount);
   }, [isOpen, taskId, updatesCount, onUpdatesCountChange]);
 
@@ -662,18 +669,20 @@ const CommentPanel = ({
               </div>
             )}
 
-            {activeTab === 'files' && (
-              <div
-                style={{
-                  flex: 1,
-                  minHeight: 0,
-                  display: 'flex',
-                  flexDirection: 'column',
-                }}
-              >
-                <FilesTab task={task} onCountChange={setFilesCount} />
-              </div>
-            )}
+            {/* Mounted like the threads rather than on first click: the count is
+                the only hint that a client attached screenshots to this task, and
+                a tab that has to be opened before it will admit it has anything
+                in it is a tab nobody opens. */}
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                display: activeTab === 'files' ? 'flex' : 'none',
+                flexDirection: 'column',
+              }}
+            >
+              <FilesTab task={task} onCountChange={setFilesCount} />
+            </div>
 
             {activeTab === 'activity' && (
               <div
