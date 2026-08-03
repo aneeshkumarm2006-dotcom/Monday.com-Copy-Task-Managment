@@ -1,4 +1,15 @@
-import { ChevronDown, ChevronRight, StickyNote, Trash2, Link2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ChevronDown,
+  ChevronRight,
+  Pencil,
+  StickyNote,
+  Trash2,
+  Link2,
+} from 'lucide-react';
+
+/** Mirrors MAX_GROUP_NAME in the server's groupController. */
+const MAX_NAME_LENGTH = 60;
 
 /**
  * TaskGroupHeader — collapsible header for a group within a board.
@@ -15,6 +26,7 @@ import { ChevronDown, ChevronRight, StickyNote, Trash2, Link2 } from 'lucide-rea
  *   doneCount     — done tasks in group
  *   collapsed     — whether the group is currently collapsed
  *   onToggle      — called when chevron (or the header) is clicked
+ *   onRename      — async (name) => {}; its presence shows the pencil button
  */
 const TaskGroupHeader = ({
   name,
@@ -23,6 +35,7 @@ const TaskGroupHeader = ({
   doneCount = 0,
   collapsed = false,
   onToggle,
+  onRename,
   onDeleteGroup,
   onOpenNotes,
   onOpenClientPortal,
@@ -32,6 +45,54 @@ const TaskGroupHeader = ({
   const Chevron = collapsed ? ChevronRight : ChevronDown;
   const progressPct =
     totalCount === 0 ? 0 : Math.round((doneCount / totalCount) * 100);
+
+  // --- Inline rename ------------------------------------------------------
+  // Mirrors the column-header rename in DataGrid: Enter commits, Escape
+  // reverts, blur commits. `name` stays the source of truth — the draft is
+  // reseeded from it whenever we're not editing, so both the optimistic store
+  // update and a failed rename's rollback land correctly.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name || '');
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef(null);
+  // Enter-then-blur would otherwise fire commit twice against the same draft.
+  const committingRef = useRef(false);
+
+  useEffect(() => {
+    if (!editing) setDraft(name || '');
+  }, [name, editing]);
+
+  useEffect(() => {
+    if (editing && inputRef.current) inputRef.current.select();
+  }, [editing]);
+
+  const startRename = () => {
+    setDraft(name || '');
+    setEditing(true);
+  };
+
+  const commitRename = async () => {
+    if (committingRef.current) return;
+    const next = draft.trim();
+    // Nothing to save: an empty name is a cancel, and an unchanged one needs no
+    // round trip. Note a case-only change ("To Do" → "TO DO") IS a change.
+    if (!next || next === name) {
+      setEditing(false);
+      return;
+    }
+    committingRef.current = true;
+    setSaving(true);
+    try {
+      await onRename?.(next);
+    } catch {
+      // The caller toasts and the store rolls the name back; drop out of edit
+      // mode so the header shows the restored name rather than the rejected one.
+    } finally {
+      committingRef.current = false;
+      setSaving(false);
+      setEditing(false);
+    }
+  };
 
   return (
     <div
@@ -49,7 +110,9 @@ const TaskGroupHeader = ({
         borderBottom: collapsed ? 'none' : '1px solid var(--color-border)',
       }}
     >
-      {dragHandle}
+      {/* Withheld while renaming so a pointer-drag on the header can't hijack
+          text selection inside the input. */}
+      {editing ? null : dragHandle}
       {/* Chevron toggle */}
       <button
         type="button"
@@ -78,19 +141,64 @@ const TaskGroupHeader = ({
         }}
       />
 
-      {/* Group name */}
-      <h3
-        className="font-display truncate"
-        style={{
-          fontSize: 14,
-          fontWeight: 600,
-          letterSpacing: '0.05em',
-          textTransform: 'uppercase',
-          color: 'var(--color-text-primary)',
-        }}
-      >
-        {name}
-      </h3>
+      {/* Group name — swaps for an input while renaming. Both share the same
+          typography so the row doesn't jump between the two states. */}
+      {editing ? (
+        <input
+          ref={inputRef}
+          type="text"
+          value={draft}
+          autoFocus
+          disabled={saving}
+          maxLength={MAX_NAME_LENGTH}
+          aria-label="Group name"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              e.stopPropagation();
+              commitRename();
+            }
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              setEditing(false);
+            }
+          }}
+          className="font-display"
+          style={{
+            // Sized for editing rather than to the old name's length, but still
+            // allowed to shrink so a narrow board doesn't push the badges out.
+            width: 240,
+            minWidth: 0,
+            maxWidth: '100%',
+            fontSize: 14,
+            fontWeight: 600,
+            letterSpacing: '0.05em',
+            textTransform: 'uppercase',
+            color: 'var(--color-text-primary)',
+            background: 'var(--color-surface, #FFFFFF)',
+            border: '1px solid var(--color-accent)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '2px 6px',
+            outline: 'none',
+            opacity: saving ? 0.6 : 1,
+          }}
+        />
+      ) : (
+        <h3
+          className="font-display truncate"
+          style={{
+            fontSize: 14,
+            fontWeight: 600,
+            letterSpacing: '0.05em',
+            textTransform: 'uppercase',
+            color: 'var(--color-text-primary)',
+          }}
+        >
+          {name}
+        </h3>
+      )}
 
       {/* Item count badge */}
       <span
@@ -193,6 +301,28 @@ const TaskGroupHeader = ({
           style={{ width: 28, height: 28, borderRadius: 'var(--radius-sm)' }}
         >
           <Link2 size={14} color="var(--color-text-secondary)" aria-hidden="true" />
+        </button>
+      )}
+
+      {/* Rename group (admin only). Stays mounted but inert while editing, so
+          the button row doesn't shift under the cursor mid-rename — clicking it
+          then just blurs the input, which commits. */}
+      {onRename && (
+        <button
+          type="button"
+          onClick={startRename}
+          disabled={editing}
+          aria-label={`Rename group ${name}`}
+          title="Rename group"
+          className="inline-flex items-center justify-center transition-colors duration-150 hover:bg-[color:var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 'var(--radius-sm)',
+            opacity: editing ? 0.4 : 1,
+          }}
+        >
+          <Pencil size={14} color="var(--color-text-secondary)" aria-hidden="true" />
         </button>
       )}
 

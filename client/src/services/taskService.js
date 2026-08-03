@@ -96,6 +96,17 @@ export const createGroup = async (boardId, payload) => {
 };
 
 /**
+ * PUT /api/groups/:id — update a group's `name` and/or `order` (admin only).
+ * Rejects a name that duplicates another group on the same board with a 409.
+ * Never touches `portalClientName` — the client-facing label on a client board
+ * is owned by the portal config screen, not by the group's internal name.
+ */
+export const updateGroup = async (groupId, payload) => {
+  const { data } = await api.put(`/api/groups/${groupId}`, payload);
+  return data.group;
+};
+
+/**
  * DELETE /api/groups/:id — delete a group and all its tasks (admin only).
  */
 export const deleteGroup = async (groupId) => {

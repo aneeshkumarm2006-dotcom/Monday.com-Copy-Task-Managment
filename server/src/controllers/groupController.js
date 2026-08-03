@@ -12,11 +12,53 @@ const { inviteContact } = require('../services/portalInviteService');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Longest a group name may be. Matches the clamp already used for board labels
+// and statuses (boardController `sanitizeName`) so every user-authored label on
+// a board obeys the same ceiling.
+const MAX_GROUP_NAME = 60;
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /**
  * Every group mutation on this board — create, rename, reorder, delete — is one
  * capability: `group.manage`. Restructuring a board's groups is a single power,
  * so it is a single gate.
  */
+
+/**
+ * Normalise and validate a user-supplied group name, then check it against the
+ * rest of the board. Shared by create and rename so a board can never end up
+ * with two groups the user can't tell apart — renaming used to be able to
+ * produce exactly the collision create refuses.
+ *
+ * `excludeId` is the group being renamed: without it, saving a group under its
+ * own unchanged name would collide with itself.
+ *
+ * Returns `{ name }` on success, or `{ error, status }` to hand straight back.
+ */
+const resolveGroupName = async (rawName, boardId, excludeId = null) => {
+  // Trim again after the clamp: slicing can land mid-gap and leave a trailing space.
+  const name = String(rawName).trim().slice(0, MAX_GROUP_NAME).trim();
+  if (!name) {
+    return { error: 'Group name is required', status: 400 };
+  }
+
+  const filter = {
+    board: boardId,
+    name: new RegExp(`^${escapeRegExp(name)}$`, 'i'),
+  };
+  if (excludeId) filter._id = { $ne: excludeId };
+
+  const duplicate = await TaskGroup.findOne(filter).select('_id').lean();
+  if (duplicate) {
+    return {
+      error: `A group named "${name}" already exists on this board. Please choose a different name.`,
+      status: 409,
+    };
+  }
+
+  return { name };
+};
 
 /**
  * GET /api/boards/:boardId/groups
@@ -57,7 +99,7 @@ const createGroup = async (req, res) => {
     const { boardId } = req.params;
     const { name, order, clientEmail, clientName, clientAuthMethod } = req.body;
 
-    if (!name || !name.trim()) {
+    if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'Group name is required' });
     }
 
@@ -70,20 +112,12 @@ const createGroup = async (req, res) => {
     );
     if (denied) return res.status(denied.status).json({ error: denied.error });
 
-    // Reject a duplicate group name on the same board (case-insensitive) so a
-    // board never carries two groups the user can't tell apart.
-    const trimmedName = name.trim();
-    const duplicate = await TaskGroup.findOne({
-      board: boardId,
-      name: new RegExp(`^${trimmedName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
-    })
-      .select('_id')
-      .lean();
-    if (duplicate) {
-      return res.status(409).json({
-        error: `A group named "${trimmedName}" already exists on this board. Please choose a different name.`,
-      });
+    // Trim, clamp, and reject a duplicate name on this board (case-insensitive).
+    const resolved = await resolveGroupName(name, boardId);
+    if (resolved.error) {
+      return res.status(resolved.status).json({ error: resolved.error });
     }
+    const groupName = resolved.name;
 
     let resolvedOrder = order;
     if (typeof resolvedOrder !== 'number') {
@@ -100,12 +134,12 @@ const createGroup = async (req, res) => {
       ? {
           portalToken: generatePortalToken(),
           portalEnabled: true,
-          portalClientName: (clientName || '').trim() || name.trim(),
+          portalClientName: (clientName || '').trim() || groupName,
         }
       : {};
 
     const group = await TaskGroup.create({
-      name: name.trim(),
+      name: groupName,
       board: boardId,
       order: resolvedOrder,
       ...portalFields,
@@ -151,6 +185,13 @@ const createGroup = async (req, res) => {
  * PUT /api/groups/:id
  *
  * Requires `group.manage`. Updates name or order.
+ *
+ * A rename runs the same trim/clamp/duplicate checks as create (excluding this
+ * group, so re-saving an unchanged name is not a self-collision). It
+ * deliberately leaves `portalClientName` alone: on a client board that field is
+ * the client-facing company label, seeded from the name at creation but owned
+ * from then on by the portal config screen. Renaming the group internally must
+ * not rewrite what the client sees.
  */
 const updateGroup = async (req, res) => {
   try {
@@ -174,7 +215,11 @@ const updateGroup = async (req, res) => {
       if (!name.trim()) {
         return res.status(400).json({ error: 'Group name cannot be empty' });
       }
-      group.name = name.trim();
+      const resolved = await resolveGroupName(name, group.board, group._id);
+      if (resolved.error) {
+        return res.status(resolved.status).json({ error: resolved.error });
+      }
+      group.name = resolved.name;
     }
     if (typeof order === 'number') {
       group.order = order;

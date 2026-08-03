@@ -359,6 +359,30 @@ const useTaskStore = create((set, get) => ({
   },
 
   /**
+   * Optimistically rename a group. Reverts on API failure — the server rejects
+   * a name that collides with another group on the board (409), so the header
+   * must be able to snap back to the old name.
+   *
+   * The optimistic step patch-merges (`{...g, name}`) rather than going through
+   * `updateGroupLocal`, which replaces the group wholesale — we only have the
+   * new name here, not a full doc. The server's doc reconciles it on success.
+   */
+  renameGroup: async (groupId, name) => {
+    const prev = get().groups;
+    set({
+      groups: prev.map((g) => (g._id === groupId ? { ...g, name } : g)),
+    });
+    try {
+      const group = await taskService.updateGroup(groupId, { name });
+      if (group) get().updateGroupLocal(group);
+      return group;
+    } catch (err) {
+      set({ groups: prev });
+      throw err;
+    }
+  },
+
+  /**
    * Optimistically reorder groups on the board. Reverts on API failure.
    */
   reorderGroups: async (boardId, orderedIds) => {

@@ -112,6 +112,7 @@ const BoardDetailPage = () => {
   const deleteTaskLocal = useTaskStore((s) => s.deleteTask);
   const addGroupLocal = useTaskStore((s) => s.addGroup);
   const removeGroupLocal = useTaskStore((s) => s.removeGroup);
+  const renameGroupAction = useTaskStore((s) => s.renameGroup);
   const reorderGroupsAction = useTaskStore((s) => s.reorderGroups);
   const reorderTasksAction = useTaskStore((s) => s.reorderTasks);
   const boardRefreshSignal = useTaskStore((s) => s.boardRefreshSignal);
@@ -987,6 +988,25 @@ const BoardDetailPage = () => {
     }
   };
 
+  // --- Group rename -------------------------------------------------------
+
+  /**
+   * The store applies the new name optimistically and rolls it back if the API
+   * rejects it — most often a 409 because another group on this board already
+   * carries that name, whose message we surface verbatim.
+   */
+  const handleRenameGroup = async (group, name) => {
+    try {
+      await renameGroupAction(group._id, name);
+    } catch (err) {
+      console.error('Failed to rename group:', err);
+      toastError(
+        err?.response?.data?.error ||
+          'Failed to rename group. Please try again.'
+      );
+    }
+  };
+
   // --- Group deletion -----------------------------------------------------
 
   const handleDeleteGroup = (group) => {
@@ -1397,6 +1417,9 @@ const BoardDetailPage = () => {
                           doneCount={doneCount}
                           collapsed={isCollapsed}
                           onToggle={() => toggleGroup(group._id)}
+                          onRename={
+                            canEdit ? (next) => handleRenameGroup(group, next) : undefined
+                          }
                           onDeleteGroup={canEdit ? () => handleDeleteGroup(group) : undefined}
                           onOpenNotes={() => handleOpenNotes(group)}
                           onOpenClientPortal={
