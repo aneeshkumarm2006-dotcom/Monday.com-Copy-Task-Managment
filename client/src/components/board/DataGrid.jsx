@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react';
-import { Plus, MoreHorizontal } from 'lucide-react';
+import { Plus, MoreHorizontal, Pin } from 'lucide-react';
 import { cellComponentFor } from './columns';
 import AddColumnButton from './AddColumnButton';
 import useBoardStore from '../../store/boardStore';
 import useTaskStore from '../../store/taskStore';
 import useToastStore from '../../store/toastStore';
+import { isTaskPinned } from '../../utils/taskPins';
 
 /**
  * DataGrid — generic grid driven by `board.columns` and a flat `tasks`
@@ -16,11 +17,16 @@ import useToastStore from '../../store/toastStore';
  * Each body row is a task; cells render via the cellComponentFor registry.
  *
  * Props:
- *   board    — current board doc (with `columns`)
- *   tasks    — array of tasks to render (already filtered to the right group)
- *   readOnly — disables every cell + hides the AddColumn button
+ *   board        — current board doc (with `columns`)
+ *   tasks        — array of tasks to render (already filtered to the right
+ *                  group, and already sorted pinned-first by BoardDetailPage)
+ *   personalPins — Set of task ids this user pinned privately
+ *   readOnly     — disables every cell + hides the AddColumn button
+ *
+ * Note: this grid has no row action menu, so pinning can only be *shown* here,
+ * not toggled. Pins are set from the fixed-column TaskTable.
  */
-const DataGrid = ({ board, tasks = [], readOnly = false }) => {
+const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) => {
   const [headerMenu, setHeaderMenu] = useState(null); // { columnId, anchor }
   const [renamingId, setRenamingId] = useState(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -260,7 +266,16 @@ const DataGrid = ({ board, tasks = [], readOnly = false }) => {
 
         {/* Body rows */}
         {tasks.map((task, ri) => (
-          <Row key={task._id} columns={columns} task={task} ri={ri} onChange={onCellChange} valueFor={valueFor} readOnly={readOnly} />
+          <Row
+            key={task._id}
+            columns={columns}
+            task={task}
+            ri={ri}
+            onChange={onCellChange}
+            valueFor={valueFor}
+            readOnly={readOnly}
+            pinned={isTaskPinned(task, personalPins)}
+          />
         ))}
         {tasks.length === 0 && (
           <div
@@ -383,11 +398,11 @@ const MobileCard = ({ columns, task, valueFor, onChange, readOnly }) => (
   </div>
 );
 
-const Row = ({ columns, task, ri, onChange, valueFor, readOnly }) => {
+const Row = ({ columns, task, ri, onChange, valueFor, readOnly, pinned = false }) => {
   const stripe = ri % 2 === 1 ? 'var(--color-bg-subtle)' : 'transparent';
   return (
     <>
-      {columns.map((col) => {
+      {columns.map((col, ci) => {
         const Cell = cellComponentFor(col.type);
         const value = col.key === 'lead_name' ? (task.name || valueFor(task, col._id)) : valueFor(task, col._id);
         return (
@@ -401,6 +416,18 @@ const Row = ({ columns, task, ri, onChange, valueFor, readOnly }) => {
               alignItems: 'stretch',
             }}
           >
+            {/* Pinned rows sit at the top of the group — say why, once, in the
+                first column. This grid has no row menu, so it's display-only. */}
+            {ci === 0 && pinned && (
+              <span
+                className="inline-flex items-center shrink-0"
+                title="Pinned to the top of this group"
+                style={{ color: 'var(--color-accent)', paddingLeft: 6 }}
+              >
+                <Pin size={12} fill="currentColor" aria-hidden="true" />
+                <span className="sr-only">Pinned to top</span>
+              </span>
+            )}
             <Cell
               value={value}
               column={col}

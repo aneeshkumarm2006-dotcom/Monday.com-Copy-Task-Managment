@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MoreHorizontal, Calendar as CalendarIcon } from 'lucide-react';
+import { MoreHorizontal, Calendar as CalendarIcon, Pin } from 'lucide-react';
 
 const NAVBAR_HEIGHT = 56;
 import Chip from '../ui/Chip';
@@ -18,6 +18,9 @@ import { formatShortDate, isOverdue } from '../../utils/dateUtils';
  */
 const TaskCardList = ({
   tasks = [],
+  // Set of task ids this user pinned privately; combined with `task.pinned`
+  // (the team pin) to decide which cards show the pin marker.
+  personalPins = null,
   board = null,
   onOpenTask,
   onStatusClick,
@@ -60,6 +63,8 @@ const TaskCardList = ({
           board={board}
           highlighted={highlightedTaskId === task._id}
           isLast={i === tasks.length - 1}
+          pinnedForAll={task.pinned === true}
+          pinnedForMe={personalPins?.has(task._id) || false}
           onOpenTask={onOpenTask}
           onStatusClick={onStatusClick}
           onPriorityClick={onPriorityClick}
@@ -78,6 +83,8 @@ const TaskCardItem = ({
   board,
   highlighted,
   isLast,
+  pinnedForAll,
+  pinnedForMe,
   onOpenTask,
   onStatusClick,
   onPriorityClick,
@@ -108,6 +115,8 @@ const TaskCardItem = ({
       <TaskCard
         task={task}
         board={board}
+        pinnedForAll={pinnedForAll}
+        pinnedForMe={pinnedForMe}
         onOpen={onOpenTask}
         onStatusClick={onStatusClick}
         onPriorityClick={onPriorityClick}
@@ -123,7 +132,7 @@ const TaskCardItem = ({
  * opens the comment panel; tapping the status chip (or the ⋯ button for
  * admins) opens the corresponding menu.
  */
-const TaskCard = ({ task, board, onOpen, onStatusClick, onPriorityClick, onLabelsClick, onActionsClick }) => {
+const TaskCard = ({ task, board, pinnedForAll = false, pinnedForMe = false, onOpen, onStatusClick, onPriorityClick, onLabelsClick, onActionsClick }) => {
   const assignees = Array.isArray(task.assignedTo) ? task.assignedTo : [];
   const statusIsDone = (() => {
     if (board && Array.isArray(board.statuses) && task.status != null) {
@@ -144,6 +153,23 @@ const TaskCard = ({ task, board, onOpen, onStatusClick, onPriorityClick, onLabel
     >
       {/* Top row — task name + actions menu */}
       <div className="flex items-start justify-between gap-2">
+        {/* Why this card is sitting at the top of its group. */}
+        {(pinnedForAll || pinnedForMe) && (
+          <span
+            className="shrink-0 inline-flex items-center"
+            title={
+              pinnedForAll && pinnedForMe
+                ? 'Pinned for the team, and by you'
+                : pinnedForAll
+                  ? 'Pinned for the team'
+                  : 'Pinned for you only'
+            }
+            style={{ color: 'var(--color-accent)', marginTop: 3 }}
+          >
+            <Pin size={14} fill="currentColor" aria-hidden="true" />
+            <span className="sr-only">Pinned to top</span>
+          </span>
+        )}
         <button
           type="button"
           onClick={() => onOpen?.(task)}

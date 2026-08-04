@@ -65,6 +65,12 @@ import {
   taskMatchesFilters,
 } from '../utils/taskFilters';
 import { isStatusDone } from '../utils/statusUtils';
+import {
+  loadPersonalPins,
+  savePersonalPins,
+  isTaskPinned,
+  sortPinnedFirst,
+} from '../utils/taskPins';
 
 /**
  * Group color cycle — reuses the stat-card palette so groups are visually
@@ -141,6 +147,11 @@ const BoardDetailPage = () => {
     } catch {
       setSortCompletedLast(false);
     }
+  }, [boardId]);
+
+  // Load this board's personal ("pin for me only") task pins.
+  useEffect(() => {
+    setPersonalPins(loadPersonalPins(boardId));
   }, [boardId]);
 
   // Flip the group sort and persist the new value for this board.
@@ -220,6 +231,13 @@ const BoardDetailPage = () => {
   // TaskGroup.order — it's applied only to the render order. Remembered per
   // board in localStorage.
   const [sortCompletedLast, setSortCompletedLast] = useState(false);
+
+  // --- Task pins ---------------------------------------------------------
+  // "Pin for me only" — task ids this user floated to the top of their group,
+  // private to this browser. The team-wide counterpart is `task.pinned` on the
+  // server; a task floats if either is set. Neither ever writes `Task.order`,
+  // so unpinning drops the row back into its real slot. See utils/taskPins.js.
+  const [personalPins, setPersonalPins] = useState(() => new Set());
 
   // --- Bulk selection ----------------------------------------------------
   // Aggregated across every group on the board so the floating BulkActionBar
@@ -417,6 +435,26 @@ const BoardDetailPage = () => {
     }
     return out;
   }, [tasksByGroup, filters, filtersActive, board]);
+
+  // Render order within each group: pinned tasks float to the top, everything
+  // else keeps its persisted `order`. Purely a display transform — Task.order
+  // is never rewritten, which is exactly what lets an unpin drop the row back
+  // into its real slot. Same contract as `orderedGroups` below.
+  //
+  // This lives here rather than in TaskTable because `groupTasks` (below) is the
+  // single feed into BOTH render paths, so flexible-column boards (DataGrid) and
+  // the mobile card list inherit the ordering for free.
+  const displayTasksByGroup = useMemo(() => {
+    const out = {};
+    let changed = false;
+    for (const [gid, list] of Object.entries(filteredTasksByGroup)) {
+      out[gid] = sortPinnedFirst(list, personalPins);
+      if (out[gid] !== list) changed = true;
+    }
+    // Nothing pinned anywhere: hand back the original object so boards without
+    // pins skip the re-render entirely.
+    return changed ? out : filteredTasksByGroup;
+  }, [filteredTasksByGroup, personalPins]);
 
   const matchedTaskCount = useMemo(
     () =>
@@ -818,6 +856,46 @@ const BoardDetailPage = () => {
     setTaskPendingDelete(task);
   };
 
+  // --- Pinning ----------------------------------------------------------
+  // Two independent pins, unioned at render time by utils/taskPins.js. Neither
+  // writes `order`, so unpinning restores the row's real position for free.
+
+  // Team pin — persisted on the task, visible to everyone on the board. Same
+  // optimistic sandwich as the field mutations above.
+  const handleMenuPinTeam = async () => {
+    if (!actionsMenu) return;
+    const task = actionsMenu.task;
+    setActionsMenu(null);
+    const next = !task.pinned;
+    updateTaskLocal({ ...task, pinned: next });
+    try {
+      const updated = await taskService.setTaskPinned(task._id, next);
+      updateTaskLocal(updated);
+    } catch (err) {
+      console.error('Failed to pin task:', err);
+      updateTaskLocal(task);
+      toastError(
+        err?.response?.data?.error ||
+          `Failed to ${next ? 'pin' : 'unpin'} task. Please try again.`
+      );
+    }
+  };
+
+  // Personal pin — localStorage only, private to this browser. No network call,
+  // so there's nothing to revert.
+  const handleMenuPinPersonal = () => {
+    if (!actionsMenu) return;
+    const taskId = actionsMenu.task._id;
+    setActionsMenu(null);
+    setPersonalPins((prev) => {
+      const next = new Set(prev);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      savePersonalPins(boardId, next);
+      return next;
+    });
+  };
+
   const handleConfirmDelete = async () => {
     if (!taskPendingDelete) return;
     const task = taskPendingDelete;
@@ -1094,16 +1172,34 @@ const BoardDetailPage = () => {
       else if (overData.type === 'group-dropzone') targetGroupId = overData.groupId;
       if (!targetGroupId) return;
 
+      // These are the PERSISTED lists (order asc), which is what `reorderTasks`
+      // writes back. Pinned rows are shown at the top of the group instead, so
+      // the displayed order and these arrays diverge — every index below is
+      // resolved against the persisted list, never against what's on screen.
       const sourceTasks = tasksByGroup[sourceGroupId] || [];
       const targetTasks = tasksByGroup[targetGroupId] || [];
+      const isPinned = (t) => isTaskPinned(t, personalPins);
 
       // Intra-group reorder
       if (sourceGroupId === targetGroupId) {
         if (active.id === over.id) return;
-        const oldIndex = sourceTasks.findIndex((t) => t._id === active.id);
-        const newIndex = sourceTasks.findIndex((t) => t._id === over.id);
+        // Pinned rows have no drag handle, so `active` is always unpinned. We
+        // reorder only the unpinned subsequence and then splice it back into
+        // the persisted list, leaving every pinned task on its original index.
+        // That's what keeps "unpin returns it to its own place" true after a
+        // neighbour has been dragged around.
+        const unpinned = sourceTasks.filter((t) => !isPinned(t));
+        const oldIndex = unpinned.findIndex((t) => t._id === active.id);
+        const overTask = sourceTasks.find((t) => t._id === over.id);
+        // Dropping onto a pinned row reads as "put it above everything movable".
+        const newIndex =
+          overTask && isPinned(overTask)
+            ? 0
+            : unpinned.findIndex((t) => t._id === over.id);
         if (oldIndex < 0 || newIndex < 0) return;
-        const next = arrayMove(sourceTasks, oldIndex, newIndex);
+        const moved = arrayMove(unpinned, oldIndex, newIndex);
+        let k = 0;
+        const next = sourceTasks.map((t) => (isPinned(t) ? t : moved[k++]));
         reorderTasksAction(targetGroupId, next.map((t) => t._id)).catch((err) => {
           console.error('Failed to reorder tasks:', err);
           toastError('Could not reorder tasks');
@@ -1118,7 +1214,9 @@ const BoardDetailPage = () => {
       let insertAt = targetTasks.length;
       if (overData.type === 'task') {
         const idx = targetTasks.findIndex((t) => t._id === over.id);
-        if (idx >= 0) insertAt = idx;
+        // Landing on a pinned row means the top of the group, not that row's
+        // persisted slot — which could be anywhere in the list.
+        if (idx >= 0) insertAt = isPinned(targetTasks[idx]) ? 0 : idx;
       }
       const nextTargetIds = targetTasks.map((t) => t._id);
       nextTargetIds.splice(insertAt, 0, movingTask._id);
@@ -1359,7 +1457,9 @@ const BoardDetailPage = () => {
           >
             <SortableContext items={orderedGroupIds} strategy={verticalListSortingStrategy}>
               {orderedGroups.map((group, idx) => {
-                const groupTasks = filteredTasksByGroup[group._id] || [];
+                // Pinned-first render order. The progress math below reads the
+                // unsorted filtered bucket, since it's order-independent.
+                const groupTasks = displayTasksByGroup[group._id] || [];
                 // While filtering, groups with no surviving tasks drop out of
                 // the view entirely to cut noise.
                 if (filtersActive && groupTasks.length === 0) return null;
@@ -1462,11 +1562,13 @@ const BoardDetailPage = () => {
                             <DataGrid
                               board={board}
                               tasks={groupTasks}
+                              personalPins={personalPins}
                               readOnly={!canEdit}
                             />
                           ) : (
                             <TaskTable
                               tasks={groupTasks}
+                              personalPins={personalPins}
                               board={board}
                               members={members}
                               editingTaskId={editingTaskId}
@@ -1574,10 +1676,17 @@ const BoardDetailPage = () => {
         />
       )}
 
-      {/* Row actions menu (Edit / Delete) */}
+      {/* Row actions menu (Pin / Edit / Delete) */}
       {actionsMenu && (
         <TaskActionsMenu
           anchorEl={actionsMenu.anchor}
+          pinnedForAll={actionsMenu.task.pinned === true}
+          pinnedForMe={personalPins.has(actionsMenu.task._id)}
+          // A team pin moves the row for everyone, so it answers to `task.move`
+          // — the same capability the server gates the endpoint on. The personal
+          // pin never leaves this browser, so it's always offered.
+          onPinTeam={canOnBoard('task.move') ? handleMenuPinTeam : undefined}
+          onPinPersonal={handleMenuPinPersonal}
           onEdit={handleMenuEdit}
           onDelete={handleMenuDelete}
           onClose={() => setActionsMenu(null)}

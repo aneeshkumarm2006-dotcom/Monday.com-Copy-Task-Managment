@@ -6,6 +6,7 @@ import TaskEditRow from './TaskEditRow';
 import TaskCardList from './TaskCardList';
 import SortableItem from '../dnd/SortableItem';
 import useTaskStore from '../../store/taskStore';
+import { isTaskPinned, sortPinnedFirst } from '../../utils/taskPins';
 
 /**
  * TaskTable — the core spreadsheet-style table used inside a board group.
@@ -19,7 +20,8 @@ import useTaskStore from '../../store/taskStore';
  * a blank TaskEditRow is appended at the bottom.
  *
  * Props:
- *   tasks            — array of populated Task objects
+ *   tasks            — array of populated Task objects, already pinned-first
+ *   personalPins     — Set of task ids this user pinned privately
  *   members          — org members (passed into TaskEditRow)
  *   editingTaskId    — id of the task currently being edited (or null)
  *   isCreating       — if true, renders the trailing "new task" edit row
@@ -94,6 +96,7 @@ const sortTasks = (tasks, key, dir, board) => {
 
 const TaskTable = ({
   tasks = [],
+  personalPins = null,
   board = null,
   members = [],
   editingTaskId = null,
@@ -141,9 +144,11 @@ const TaskTable = ({
     });
   }, [sortDir]);
 
+  // Column-header sort, then re-float the pins. Sorting by Due Date shouldn't
+  // drop a pinned row back into the pile — the pin outranks the column.
   const sortedTasks = useMemo(
-    () => sortTasks(tasks, sortKey, sortDir, board),
-    [tasks, sortKey, sortDir, board]
+    () => sortPinnedFirst(sortTasks(tasks, sortKey, sortDir, board), personalPins),
+    [tasks, sortKey, sortDir, board, personalPins]
   );
 
   const fetchSubitems = useTaskStore((s) => s.fetchSubitems);
@@ -233,6 +238,7 @@ const TaskTable = ({
         <div className="md:hidden">
           <TaskCardList
             tasks={tasks}
+            personalPins={personalPins}
             board={board}
             onOpenTask={onOpenTask}
             onStatusClick={onStatusClick}
@@ -381,12 +387,16 @@ const TaskTable = ({
                 }
 
                 const isExpanded = expanded.has(task._id);
+                // A pinned row's persisted slot is frozen — that freeze is
+                // exactly what lets an unpin put it back where it was, so the
+                // row gets no drag handle until it's unpinned.
+                const pinned = isTaskPinned(task, personalPins);
                 return (
                   <SortableItem
                     key={task._id}
                     id={task._id}
                     data={{ type: 'task', groupId }}
-                    disabled={dndDisabled || !groupId}
+                    disabled={dndDisabled || !groupId || pinned}
                   >
                     {({ ref, setActivatorNodeRef, style, attributes, listeners, isDragging }) => (
                       <Fragment>
@@ -412,7 +422,9 @@ const TaskTable = ({
                           dragHandleRef={setActivatorNodeRef}
                           dragHandleListeners={listeners}
                           isDragging={isDragging}
-                          dndDisabled={dndDisabled || !groupId}
+                          dndDisabled={dndDisabled || !groupId || pinned}
+                          pinnedForAll={task.pinned === true}
+                          pinnedForMe={personalPins?.has(task._id) || false}
                         />
                         {isExpanded ? (
                           <SubtaskSection

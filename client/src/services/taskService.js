@@ -67,6 +67,16 @@ export const updateTask = async (id, payload) => {
 };
 
 /**
+ * PUT /api/tasks/:id/pin — team pin/unpin. `value` is explicit rather than a
+ * toggle so a double-click can't race itself into the wrong state. Returns the
+ * updated task.
+ */
+export const setTaskPinned = async (id, value) => {
+  const { data } = await api.put(`/api/tasks/${id}/pin`, { value });
+  return data.task;
+};
+
+/**
  * DELETE /api/tasks/:id — delete a task.
  */
 export const deleteTask = async (id) => {

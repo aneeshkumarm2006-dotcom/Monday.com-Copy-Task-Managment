@@ -10,6 +10,7 @@ const {
   updateTask,
   deleteTask,
   reorderTasks,
+  setTaskPinned,
   addChecklistItem,
   updateChecklistItem,
   deleteChecklistItem,
@@ -62,6 +63,12 @@ router.delete('/:id', deleteTask);
 
 // GET /api/tasks/:id/subitems — fetch direct children of a task
 router.get('/:id/subitems', getSubitems);
+
+// PUT /api/tasks/:id/pin — team pin/unpin. Floats the task to the top of its
+// group for everyone on the board; never writes `order`, so an unpin returns
+// the row to its real position. Requires `task.move` (same authority as
+// reordering, since it changes where the row sits for other people).
+router.put('/:id/pin', setTaskPinned);
 
 // Follow / watch a task — opt into its activity notifications.
 router.get('/:id/follow', getFollowState);

@@ -8,6 +8,7 @@ import {
   CornerDownRight,
   GripVertical,
   ListTree,
+  Pin,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
@@ -59,6 +60,10 @@ const TaskRow = ({
   expanded = false,
   isLast = false,
   highlighted = false,
+  // Pin state, split so the tooltip can say who the pin is for. Either one
+  // floats the row to the top of its group; see utils/taskPins.js.
+  pinnedForAll = false,
+  pinnedForMe = false,
   // When true this row is a subtask rendered beneath an expanded parent: the
   // name cell is indented with a connector, the drag handle + select checkbox
   // are suppressed, and the row carries a subtle tinted background so the
@@ -266,6 +271,23 @@ const TaskRow = ({
             )
           ) : null}
           <ChecklistBadge checklist={task.checklist} />
+          {/* Why this row is sitting at the top of its group. */}
+          {(pinnedForAll || pinnedForMe) && (
+            <span
+              className="shrink-0 inline-flex items-center"
+              title={
+                pinnedForAll && pinnedForMe
+                  ? 'Pinned for the team, and by you'
+                  : pinnedForAll
+                    ? 'Pinned for the team'
+                    : 'Pinned for you only'
+              }
+              style={{ color: 'var(--color-accent)' }}
+            >
+              <Pin size={14} fill="currentColor" aria-hidden="true" />
+              <span className="sr-only">Pinned to top</span>
+            </span>
+          )}
           <button
             type="button"
             onClick={() => onOpen?.(task)}

@@ -1,17 +1,34 @@
 import { useEffect, useRef } from 'react';
-import { Pencil, Trash2 } from 'lucide-react';
+import { Pencil, Trash2, Pin, PinOff } from 'lucide-react';
 
 /**
  * TaskActionsMenu — small popover shown when the ⋯ button on a task row
- * is clicked. Exposes Edit and Delete actions. Click-outside + Escape close.
+ * is clicked. Exposes Pin, Edit and Delete actions. Click-outside + Escape close.
+ *
+ * The two pin rows are deliberately separate rather than one row plus a dialog:
+ * pinning for the team and pinning for yourself are different acts, and either
+ * is one click away. A task floats if either is set.
  *
  * Props:
- *   anchorEl — DOM element the menu is positioned below
- *   onEdit   — callback when Edit is clicked
- *   onDelete — callback when Delete is clicked
- *   onClose  — callback to close the menu
+ *   anchorEl       — DOM element the menu is positioned below
+ *   pinnedForAll   — task is pinned for everyone on the board
+ *   pinnedForMe    — task is pinned in this browser only
+ *   onPinTeam      — callback to toggle the team pin
+ *   onPinPersonal  — callback to toggle the personal pin
+ *   onEdit         — callback when Edit is clicked
+ *   onDelete       — callback when Delete is clicked
+ *   onClose        — callback to close the menu
  */
-const TaskActionsMenu = ({ anchorEl, onEdit, onDelete, onClose }) => {
+const TaskActionsMenu = ({
+  anchorEl,
+  pinnedForAll = false,
+  pinnedForMe = false,
+  onPinTeam,
+  onPinPersonal,
+  onEdit,
+  onDelete,
+  onClose,
+}) => {
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -34,7 +51,8 @@ const TaskActionsMenu = ({ anchorEl, onEdit, onDelete, onClose }) => {
   if (!anchorEl) return null;
 
   const rect = anchorEl.getBoundingClientRect();
-  const MENU_WIDTH = 160;
+  // Wide enough for the longest label ("Unpin for everyone") without truncating.
+  const MENU_WIDTH = 190;
   const top = rect.bottom + 6;
   // Clamp horizontally so the menu never spills past the viewport edge on
   // small screens. On desktop the anchored position is already in-bounds, so
@@ -59,6 +77,20 @@ const TaskActionsMenu = ({ anchorEl, onEdit, onDelete, onClose }) => {
         animation: 'macan-dropdown-enter 150ms ease-out',
       }}
     >
+      {onPinTeam && (
+        <MenuItem
+          icon={pinnedForAll ? PinOff : Pin}
+          label={pinnedForAll ? 'Unpin for everyone' : 'Pin for everyone'}
+          onClick={onPinTeam}
+        />
+      )}
+      {onPinPersonal && (
+        <MenuItem
+          icon={pinnedForMe ? PinOff : Pin}
+          label={pinnedForMe ? 'Unpin for me' : 'Pin for me only'}
+          onClick={onPinPersonal}
+        />
+      )}
       <MenuItem icon={Pencil} label="Edit" onClick={onEdit} />
       <MenuItem icon={Trash2} label="Delete" onClick={onDelete} danger />
       <style>{`

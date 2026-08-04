@@ -1804,6 +1804,77 @@ const reorderTasks = async (req, res) => {
 };
 
 /**
+ * PUT /api/tasks/:id/pin
+ * Body: { value: boolean }
+ *
+ * Team pin — floats the task to the top of its group for everyone on the board.
+ *
+ * Two deliberate choices here:
+ *  - `value` is explicit rather than a blind toggle, so a double-click can't
+ *    race itself into the wrong state (same reasoning as notification bookmarks).
+ *  - `order` is never touched. Pinning is a display transform the client applies
+ *    on render, which is what lets an unpin drop the row straight back into its
+ *    real slot with no bookkeeping.
+ */
+const setTaskPinned = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { id } = req.params;
+    const { value } = req.body || {};
+
+    if (typeof value !== 'boolean') {
+      return res.status(400).json({ error: 'value must be a boolean' });
+    }
+
+    const task = await Task.findById(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (task.isPersonal) {
+      return res.status(400).json({ error: 'Personal tasks cannot be pinned' });
+    }
+    if (task.parent) {
+      return res.status(400).json({ error: 'Subitems cannot be pinned' });
+    }
+
+    const ctx = await loadTaskBoardContext(task.board, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    // A team pin changes where the row sits for everyone — the same authority
+    // `reorderTasks` gates on, so it answers to the same capability.
+    const denied = requireCapability(
+      ctx,
+      'task.move',
+      'You do not have permission to pin tasks'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    const prevPinned = task.pinned === true;
+    if (prevPinned !== value) {
+      task.pinned = value;
+      await task.save();
+      logActivity({
+        task,
+        actor: userId,
+        type: 'task.field_changed',
+        field: 'pinned',
+        oldValue: prevPinned,
+        newValue: value,
+        metadata: { taskName: task.name },
+      });
+      eventBus.emit('task.updated', { taskId: task._id, boardId: task.board });
+      await Board.updateOne(
+        { _id: task.board },
+        { $set: { updatedAt: new Date() } }
+      );
+    }
+
+    const populated = await populateTask(Task.findById(task._id));
+    return res.json({ task: populated });
+  } catch (err) {
+    console.error('setTaskPinned error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
  * DELETE /api/tasks/:id
  */
 const deleteTask = async (req, res) => {
@@ -2103,6 +2174,7 @@ module.exports = {
   updateTask,
   deleteTask,
   reorderTasks,
+  setTaskPinned,
   addChecklistItem,
   updateChecklistItem,
   deleteChecklistItem,

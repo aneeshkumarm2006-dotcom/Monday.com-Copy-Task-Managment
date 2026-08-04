@@ -29,6 +29,7 @@ const FIELD_KEYS = [
   'labels',
   'note',
   'group',
+  'pinned',
 ];
 
 const activityLogSchema = new mongoose.Schema({

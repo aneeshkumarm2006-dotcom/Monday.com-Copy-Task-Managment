@@ -20,6 +20,11 @@ const taskSchema = new mongoose.Schema(
       default: 'medium',
     },
     order: { type: Number, default: 0, index: true },
+    // Team pin: floats this task to the top of its group for everyone viewing
+    // the board. Deliberately does NOT touch `order` — unpinning must restore
+    // the row to its real position, so pinning stays a pure display transform.
+    // Personal ("pin for me only") pins live client-side in localStorage.
+    pinned: { type: Boolean, default: false },
     // Board tasks: ObjectId referencing Board.statuses._id.
     // Personal tasks: legacy enum string ('not_started', 'working_on_it',
     // 'done', 'stuck') — kept as strings because personal tasks don't have

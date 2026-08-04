@@ -14,6 +14,7 @@ import {
   MessageSquare,
   FileText,
   ArrowRight,
+  Pin,
   Activity as ActivityIcon,
 } from 'lucide-react';
 import { timeAgo, formatDate } from '../../utils/dateUtils';
@@ -34,6 +35,7 @@ const FIELD_LABELS = {
   labels: 'labels',
   note: 'notes',
   group: 'group',
+  pinned: 'pin',
 };
 
 const formatDateValue = (value) => {
@@ -123,6 +125,10 @@ const renderScalarValue = (field, value) => {
     return <Quoted>{value.toString().slice(-6)}</Quoted>;
   }
 
+  if (field === 'pinned') {
+    return <Quoted>{value ? 'pinned' : 'not pinned'}</Quoted>;
+  }
+
   return <Quoted>{String(value)}</Quoted>;
 };
 
@@ -151,6 +157,7 @@ const iconFor = (entry) => {
     if (entry.field === 'labels') return Tag;
     if (entry.field === 'note') return StickyNote;
     if (entry.field === 'name') return Pencil;
+    if (entry.field === 'pinned') return Pin;
     return Pencil;
   }
   if (entry.type === 'checklist.added') return Plus;
