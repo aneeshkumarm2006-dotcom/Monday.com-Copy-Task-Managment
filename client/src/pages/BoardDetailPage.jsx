@@ -58,7 +58,7 @@ import useNotificationStore from '../store/notificationStore';
 import useToastStore from '../store/toastStore';
 import usePermissions, { useBoardPermissions } from '../hooks/usePermissions';
 import * as taskService from '../services/taskService';
-import { formatDate } from '../utils/dateUtils';
+import { formatDate, dateInputToISO } from '../utils/dateUtils';
 import {
   EMPTY_FILTERS,
   hasActiveFilters,
@@ -821,7 +821,7 @@ const BoardDetailPage = () => {
 
   const handleDueDateChange = async (task, newVal) => {
     if (!currentUser) return;
-    const nextIso = newVal ? new Date(newVal + 'T00:00:00').toISOString() : null;
+    const nextIso = dateInputToISO(newVal);
     const prev = task;
     updateTaskLocal({ ...task, dueDate: nextIso });
     try {

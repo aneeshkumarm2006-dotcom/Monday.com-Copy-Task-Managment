@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { cellInputStyle, cellWrapperStyle, formatDateInput } from './cellShared';
+import { dateInputToISO } from '../../../utils/dateUtils';
 
 /**
  * TimelineCell — a span between two dates. Renders both inputs inline.
@@ -20,8 +21,8 @@ const TimelineCell = ({ value, readOnly, onChange }) => {
 
   const commit = () => {
     const next = {};
-    if (start) next.start = new Date(start).toISOString();
-    if (end) next.end = new Date(end).toISOString();
+    if (start) next.start = dateInputToISO(start);
+    if (end) next.end = dateInputToISO(end);
     const payload = Object.keys(next).length ? next : null;
     const prev = value || null;
     if (JSON.stringify(payload) !== JSON.stringify(prev)) onChange?.(payload);

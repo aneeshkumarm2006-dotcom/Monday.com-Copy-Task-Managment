@@ -4,6 +4,7 @@ import Input from '../ui/Input';
 import Button from '../ui/Button';
 import DatePickerPopover from '../ui/DatePickerPopover';
 import { createTask, updateTask } from '../../services/taskService';
+import { dateInputToISO } from '../../utils/dateUtils';
 
 /**
  * PersonalTaskModal — simplified create/edit form for personal (non-board) tasks.
@@ -127,7 +128,7 @@ const PersonalTaskModal = ({ isOpen, onClose, onCreated, task, onUpdated }) => {
         name: form.name.trim(),
         priority: form.priority,
         status: form.status,
-        dueDate: form.dueDate || null,
+        dueDate: dateInputToISO(form.dueDate),
         note: form.note.trim() || '',
       };
       if (isEdit) {

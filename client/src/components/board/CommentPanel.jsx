@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
-import { formatDate } from '../../utils/dateUtils';
+import { formatDate, dateInputToISO } from '../../utils/dateUtils';
 import useOrgStore from '../../store/orgStore';
 import {
   getColorPair,
@@ -269,8 +269,8 @@ const CommentPanel = ({
     async (e) => {
       if (!task || !onUpdateTask) return;
       const raw = e.target.value;
-      const nextIso = raw ? new Date(raw).toISOString() : null;
-      const prevIso = task.dueDate ? new Date(task.dueDate).toISOString() : null;
+      const nextIso = dateInputToISO(raw);
+      const prevIso = dateInputToISO(task.dueDate);
       if (nextIso === prevIso) return;
       setSavingDueDate(true);
       try {

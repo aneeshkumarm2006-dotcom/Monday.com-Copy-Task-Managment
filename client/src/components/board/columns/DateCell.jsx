@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { focusedInputStyle, cellWrapperStyle, formatDateInput } from './cellShared';
+import { dateInputToISO } from '../../../utils/dateUtils';
 
 const DateCell = ({ value, readOnly, onChange }) => {
   const [editing, setEditing] = useState(false);
@@ -15,7 +16,7 @@ const DateCell = ({ value, readOnly, onChange }) => {
     if (draft === '') {
       if (value) onChange?.(null);
     } else {
-      const iso = new Date(draft).toISOString();
+      const iso = dateInputToISO(draft);
       if (iso !== (value ? new Date(value).toISOString() : null)) onChange?.(iso);
     }
     setEditing(false);

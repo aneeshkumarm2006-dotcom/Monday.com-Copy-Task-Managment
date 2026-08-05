@@ -12,6 +12,7 @@ import {
   getPortalToken, clearPortalToken, getLastPortalLink,
 } from '../services/portalService';
 import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
+import { dateInputToISO } from '../utils/dateUtils';
 import '../styles/portal.css';
 
 /* ---- shared config -------------------------------------------------------- */
@@ -810,7 +811,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
         const { issue } = await createMyIssue({
           name: name.trim(), note: note.trim(),
           type: type || undefined, priority,
-          dueDate: dueDate || undefined,
+          dueDate: dateInputToISO(dueDate) || undefined,
           category: category || undefined,
         });
         issueInfo = { id: issue.id, ref: issue.ref };

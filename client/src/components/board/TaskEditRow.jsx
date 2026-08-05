@@ -5,6 +5,7 @@ import StatusMenu from './StatusMenu';
 import PriorityMenu from './PriorityMenu';
 import AssigneePicker from './AssigneePicker';
 import DatePickerPopover from '../ui/DatePickerPopover';
+import { dateInputToISO } from '../../utils/dateUtils';
 
 const sameStringSet = (a, b) => {
   if (a.length !== b.length) return false;
@@ -94,7 +95,7 @@ const TaskEditRow = ({
     setStatusError('');
 
     const trimmedName = name.trim();
-    const isoDue = dueDate ? new Date(dueDate).toISOString() : null;
+    const isoDue = dateInputToISO(dueDate);
 
     let payload;
     if (!initialTask) {
@@ -117,7 +118,7 @@ const TaskEditRow = ({
       );
       if (!sameStringSet(prevAssignees, assignedTo)) payload.assignedTo = assignedTo;
 
-      const prevIso = initialTask.dueDate ? new Date(initialTask.dueDate).toISOString() : null;
+      const prevIso = dateInputToISO(initialTask.dueDate);
       if (isoDue !== prevIso) payload.dueDate = isoDue;
 
       if (Object.keys(payload).length === 0) {

@@ -20,6 +20,30 @@ const toDate = (input) => {
 };
 
 /**
+ * Convert a date-picker value to the ISO string we persist for a due date.
+ *
+ * A due date is a calendar DAY, and every display helper here (formatDate,
+ * toDateInputValue, isOverdue…) reads it back with LOCAL getters. So a plain
+ * `new Date('2026-08-07')` is wrong: JS parses a bare "YYYY-MM-DD" as UTC
+ * midnight, which in any timezone behind UTC reads back as the PREVIOUS day
+ * (pick Aug 7 → shows Aug 6). We instead build LOCAL midnight so the write and
+ * the read agree in every timezone. Full ISO strings pass through unchanged.
+ *
+ * @param {string} value - "YYYY-MM-DD" from a picker, or a full ISO string
+ * @returns {string|null} ISO string, or null when empty/invalid
+ */
+export const dateInputToISO = (value) => {
+  if (!value) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (m) {
+    const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return Number.isNaN(dt.getTime()) ? null : dt.toISOString();
+  }
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
+/**
  * Format a date as "Apr 10, 2026". Returns empty string if invalid/nullish.
  */
 export const formatDate = (input) => {
@@ -76,6 +100,7 @@ export const isDueSoon = (input) => {
 };
 
 export default {
+  dateInputToISO,
   formatDate,
   formatShortDate,
   timeAgo,
