@@ -80,7 +80,11 @@ const AssigneePicker = ({
           'disabled:opacity-60 disabled:cursor-not-allowed',
         ].join(' ')}
         style={{
-          height: 32,
+          // Grow to fit wrapped assignee chips (showNames mode) instead of a
+          // fixed height that clips the "+N more" onto a hidden second line.
+          minHeight: 32,
+          paddingTop: 4,
+          paddingBottom: 4,
           border: open
             ? '1.5px solid var(--color-accent)'
             : '1.5px solid var(--color-border)',
@@ -239,19 +243,33 @@ const AssigneePicker = ({
 
 /**
  * Avatar + name display for the CommentPanel trigger (showNames mode).
- * Shows up to 2 members by name; collapses the rest to "+N more".
+ * Each assignee is a compact rounded chip (avatar + name); beyond two they
+ * collapse into a matching "+N more" pill. Chips wrap onto new rows with even
+ * spacing, and the trigger grows to fit them (see the trigger's minHeight) so
+ * nothing is clipped.
  */
 const AssigneeAvatarsWithNames = ({ assignees }) => {
   const visible = assignees.slice(0, 2);
   const remaining = assignees.length - visible.length;
   return (
-    <div className="flex items-center gap-2 flex-wrap">
+    <div className="flex items-center flex-wrap" style={{ gap: 6 }}>
       {visible.map((u) => (
-        <span key={u._id} className="inline-flex items-center gap-1.5">
-          <MemberAvatar user={u} />
+        <span
+          key={u._id}
+          className="inline-flex items-center gap-1.5"
+          style={{
+            paddingRight: 8,
+            paddingLeft: 3,
+            height: 26,
+            borderRadius: 9999,
+            background: 'var(--color-bg-subtle)',
+            border: '1px solid var(--color-border)',
+          }}
+        >
+          <MemberAvatar user={u} style={{ width: 20, height: 20 }} />
           <span
             className="font-body font-medium truncate"
-            style={{ fontSize: 13, color: 'var(--color-text-primary)', maxWidth: 120 }}
+            style={{ fontSize: 12.5, color: 'var(--color-text-primary)', maxWidth: 110 }}
           >
             {u.name || u.email || 'Unknown'}
           </span>
@@ -259,8 +277,17 @@ const AssigneeAvatarsWithNames = ({ assignees }) => {
       ))}
       {remaining > 0 && (
         <span
-          className="font-body"
-          style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+          className="inline-flex items-center font-body font-semibold"
+          style={{
+            height: 26,
+            paddingLeft: 10,
+            paddingRight: 10,
+            borderRadius: 9999,
+            fontSize: 12,
+            color: 'var(--color-text-secondary)',
+            background: 'var(--color-bg-subtle)',
+            border: '1px solid var(--color-border)',
+          }}
         >
           +{remaining} more
         </span>
