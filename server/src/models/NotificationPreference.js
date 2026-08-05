@@ -21,6 +21,11 @@ const channelSchema = new mongoose.Schema(
  * user sees it later in the bell.
  *
  * A user with no document has all categories on and DND off.
+ *
+ * On top of the per-category channels, three email-only mute switches let a user
+ * quiet the inbox without touching in-app: `emailMasterOff` (pause ALL email),
+ * `mutedBoards` (no email from these boards), and `mutedActors` (no email for
+ * actions by these people). These are applied by filterByEmailPreference.
  */
 const notificationPreferenceSchema = new mongoose.Schema(
   {
@@ -40,6 +45,18 @@ const notificationPreferenceSchema = new mongoose.Schema(
       taskMoves: { type: channelSchema, default: () => ({}) },
       invites: { type: channelSchema, default: () => ({}) },
     },
+    // ---- Email mute switches (email channel only; in-app is unaffected) ----
+    // Master kill-switch: when true, NO email notifications are sent to this
+    // user, regardless of per-category settings. In-app notifications still land.
+    emailMasterOff: { type: Boolean, default: false },
+    // Silence email for anything happening on these specific boards.
+    mutedBoards: [
+      { type: mongoose.Schema.Types.ObjectId, ref: 'Board' },
+    ],
+    // Silence email for anything triggered by these specific people (the actor).
+    mutedActors: [
+      { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    ],
     // Do-Not-Disturb quiet hours, expressed as minutes from midnight in the
     // server's local time. An end < start denotes an overnight window
     // (e.g. 1320 → 420 == 22:00 → 07:00).

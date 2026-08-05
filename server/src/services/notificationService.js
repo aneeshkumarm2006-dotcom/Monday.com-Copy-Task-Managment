@@ -231,11 +231,43 @@ const notifyTaskAudience = async (task, args) => {
 };
 
 /**
- * Given recipient user ids and a notification type, return the subset whose
- * email channel is enabled for that category AND who are not currently in DND.
- * Email trigger sites filter their recipient list through this.
+ * Does this preference doc mute email for the given board / actor context?
+ * These are email-only kill-switches layered on top of the per-category channel:
+ *   - emailMasterOff → mute everything
+ *   - mutedBoards    → mute email for events on that board
+ *   - mutedActors    → mute email for events triggered by that person
+ * A null/absent doc mutes nothing.
  */
-const filterByEmailPreference = async (userIds, type, { now } = {}) => {
+const isEmailMuted = (pref, { boardId, actorId } = {}) => {
+  if (!pref) return false;
+  if (pref.emailMasterOff) return true;
+  if (boardId && Array.isArray(pref.mutedBoards)) {
+    const b = String(boardId);
+    if (pref.mutedBoards.some((id) => String(id) === b)) return true;
+  }
+  if (actorId && Array.isArray(pref.mutedActors)) {
+    const a = String(actorId);
+    if (pref.mutedActors.some((id) => String(id) === a)) return true;
+  }
+  return false;
+};
+
+/**
+ * Given recipient user ids and a notification type, return the subset whose
+ * email channel is enabled for that category, who are not currently in DND, and
+ * who have not muted this board or actor. Email trigger sites filter their
+ * recipient list through this.
+ *
+ * @param {Object} [ctx]
+ * @param {Date}             [ctx.now]     - reference time for the DND check
+ * @param {string|ObjectId}  [ctx.boardId] - board the event happened on (for mutedBoards)
+ * @param {string|ObjectId}  [ctx.actorId] - who triggered it (for mutedActors)
+ */
+const filterByEmailPreference = async (
+  userIds,
+  type,
+  { now, boardId, actorId } = {}
+) => {
   const ids = [...new Set((userIds || []).filter(Boolean).map(String))];
   if (!ids.length) return new Set();
   const prefs = await NotificationPreference.find({ user: { $in: ids } });
@@ -243,7 +275,13 @@ const filterByEmailPreference = async (userIds, type, { now } = {}) => {
   const allowed = new Set();
   for (const id of ids) {
     const p = prefMap.get(id) || null;
-    if (isEmailEnabled(p, type) && !isInDnd(p, now)) allowed.add(id);
+    if (
+      isEmailEnabled(p, type) &&
+      !isInDnd(p, now) &&
+      !isEmailMuted(p, { boardId, actorId })
+    ) {
+      allowed.add(id);
+    }
   }
   return allowed;
 };

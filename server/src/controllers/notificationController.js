@@ -496,6 +496,23 @@ const updatePreferences = async (req, res) => {
       }
     }
 
+    // ---- Email mute switches (email-only) ----
+    if (typeof body.emailMasterOff === 'boolean') {
+      update.emailMasterOff = body.emailMasterOff;
+    }
+    // mutedBoards / mutedActors are full-replacement arrays of ObjectId strings.
+    // Keep only valid, unique ids so a malformed body can't corrupt the doc.
+    if (Array.isArray(body.mutedBoards)) {
+      update.mutedBoards = [...new Set(body.mutedBoards.map(String))].filter(
+        (id) => mongoose.Types.ObjectId.isValid(id)
+      );
+    }
+    if (Array.isArray(body.mutedActors)) {
+      update.mutedActors = [...new Set(body.mutedActors.map(String))].filter(
+        (id) => mongoose.Types.ObjectId.isValid(id)
+      );
+    }
+
     const pref = await NotificationPreference.findOneAndUpdate(
       { user: userId },
       { $set: update, $setOnInsert: { user: userId } },

@@ -18,6 +18,7 @@ const eventBus = require('../services/eventBus');
 const { logActivity } = require('../services/activityService');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const { getColumnType } = require('../utils/columnTypes');
+const { buildTaskDeepLink } = require('../utils/taskDeepLink');
 const { embedMirrorValues } = require('../services/mirrorRefresh');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { resolveAccess } = require('../utils/permissions');
@@ -1059,9 +1060,12 @@ const createTask = async (req, res) => {
     }
 
     if (assigneeIds.length > 0) {
-      const taskLink = `${process.env.CLIENT_URL}/boards/${boardId}`;
+      const taskLink = buildTaskDeepLink(task, { boardId });
       const assigneeUsers = await User.find({ _id: { $in: assigneeIds } }).select('email').lean();
-      const emailAllowed = await filterByEmailPreference(assigneeIds, 'assigned');
+      const emailAllowed = await filterByEmailPreference(assigneeIds, 'assigned', {
+        boardId,
+        actorId: userId,
+      });
       const emailResults = await Promise.allSettled(
         assigneeUsers
           .filter((u) => u.email && emailAllowed.has(u._id.toString()))
@@ -1462,9 +1466,12 @@ const updateTask = async (req, res) => {
     }
 
     if (newAssigneeIds && newAssigneeIds.length > 0) {
-      const taskLink = `${process.env.CLIENT_URL}/boards/${task.board}`;
+      const taskLink = buildTaskDeepLink(task);
       const assigneeUsers = await User.find({ _id: { $in: newAssigneeIds } }).select('email').lean();
-      const emailAllowed = await filterByEmailPreference(newAssigneeIds, 'assigned');
+      const emailAllowed = await filterByEmailPreference(newAssigneeIds, 'assigned', {
+        boardId: task.board,
+        actorId: userId,
+      });
       const emailResults = await Promise.allSettled(
         assigneeUsers
           .filter((u) => u.email && emailAllowed.has(u._id.toString()))

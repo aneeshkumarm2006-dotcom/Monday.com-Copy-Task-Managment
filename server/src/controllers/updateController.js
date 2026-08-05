@@ -13,6 +13,7 @@ const { logActivity } = require('../services/activityService');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const { loadBoardContext } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
+const { buildTaskDeepLink } = require('../utils/taskDeepLink');
 const { sendPortalReplyEmailForTask } = require('./portalController');
 
 /**
@@ -313,10 +314,10 @@ const addUpdate = async (req, res) => {
       );
       const mentionEmailAllowed = await filterByEmailPreference(
         mentionIds,
-        'mentioned'
+        'mentioned',
+        { boardId: task.board, actorId: userId }
       );
-      const boardId = task.board?.toString?.() || task.board;
-      const taskLink = `${process.env.CLIENT_URL || 'http://localhost:5173'}/boards/${boardId}`;
+      const taskLink = buildTaskDeepLink(task, { tab: 'updates' });
       const previewText = (bodyText || '').toString().trim().slice(0, 280);
       const emailResults = await Promise.allSettled(
         mentionedUsers
@@ -354,15 +355,17 @@ const addUpdate = async (req, res) => {
           (id) => id !== userId && !mentionSet.has(id)
         );
         if (audienceIds.length) {
-          const emailAllowed = await filterByEmailPreference(audienceIds, 'commented');
+          const emailAllowed = await filterByEmailPreference(audienceIds, 'commented', {
+            boardId: task.board,
+            actorId: userId,
+          });
           const recipients = await User.find(
             { _id: { $in: [...emailAllowed] } },
             'email name'
           );
           if (recipients.length) {
             const authorName = populated.author?.name || 'Someone';
-            const boardId = task.board?.toString?.() || task.board;
-            const taskLink = `${process.env.CLIENT_URL || 'http://localhost:5173'}/boards/${boardId}`;
+            const taskLink = buildTaskDeepLink(task, { tab: 'updates' });
             const previewText = (bodyText || '').toString().trim().slice(0, 280) || '(rich update)';
             const results = await Promise.allSettled(
               recipients.map((u) =>

@@ -16,6 +16,7 @@ const {
 const { resolveBoardAccess } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
+const { buildTaskDeepLink } = require('../utils/taskDeepLink');
 
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -389,10 +390,14 @@ const notifyAssignees = async (task, boardId, assigneeIds, orgId) => {
   // The manual assignment path (taskController) filters email recipients through
   // notification preferences + DND; this one used to skip that entirely, so a user
   // who had turned assignment emails off still got mailed by automations.
-  const emailAllowed = await filterByEmailPreference(recipients, 'assigned');
+  // Automation has no human actor, so mutedActors never applies here; board mute
+  // and the master switch still do.
+  const emailAllowed = await filterByEmailPreference(recipients, 'assigned', {
+    boardId,
+  });
   if (!emailAllowed.size) return;
 
-  const taskLink = `${process.env.CLIENT_URL}/boards/${boardId}`;
+  const taskLink = buildTaskDeepLink(task, { boardId });
   const assigneeUsers = await User.find({
     _id: { $in: recipients.filter((id) => emailAllowed.has(String(id))) },
   })
