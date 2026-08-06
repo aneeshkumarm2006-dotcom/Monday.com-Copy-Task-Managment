@@ -6,7 +6,9 @@ import {
   StickyNote,
   Trash2,
   Link2,
+  Tags,
 } from 'lucide-react';
+import { getColorPair } from '../../utils/priorityColors';
 
 /** Mirrors MAX_GROUP_NAME in the server's groupController. */
 const MAX_NAME_LENGTH = 60;
@@ -27,6 +29,10 @@ const MAX_NAME_LENGTH = 60;
  *   collapsed     — whether the group is currently collapsed
  *   onToggle      — called when chevron (or the header) is clicked
  *   onRename      — async (name) => {}; its presence shows the pencil button
+ *   tags          — resolved [{ _id, name, color }] to render as chips. Empty
+ *                   unless the viewer has the `groupTags` extra feature on, so
+ *                   the header is byte-identical to before for everyone else.
+ *   onOpenTags    — (event) => {}; its presence shows the tag button
  */
 const TaskGroupHeader = ({
   name,
@@ -40,11 +46,20 @@ const TaskGroupHeader = ({
   onOpenNotes,
   onOpenClientPortal,
   noteCount = 0,
+  tags = [],
+  onOpenTags,
   dragHandle = null,
 }) => {
   const Chevron = collapsed ? ChevronRight : ChevronDown;
   const progressPct =
     totalCount === 0 ? 0 : Math.round((doneCount / totalCount) * 100);
+
+  // Cap the chips so a heavily-tagged group can't push the progress bar and the
+  // action buttons off the right edge of a 48px header. The overflow count is
+  // titled with the full list, so nothing becomes unreachable.
+  const VISIBLE_TAGS = 3;
+  const shownTags = tags.slice(0, VISIBLE_TAGS);
+  const hiddenTags = tags.slice(VISIBLE_TAGS);
 
   // --- Inline rename ------------------------------------------------------
   // Mirrors the column-header rename in DataGrid: Enter commits, Escape
@@ -216,6 +231,52 @@ const TaskGroupHeader = ({
         {totalCount} {totalCount === 1 ? 'item' : 'items'}
       </span>
 
+      {/* Group tag chips. Rendered only when the viewer has the `groupTags`
+          extra feature on — the caller resolves the ids and passes an empty
+          array otherwise, so this whole block collapses to nothing. */}
+      {shownTags.length > 0 && (
+        <span className="hidden md:flex items-center gap-1 shrink-0">
+          {shownTags.map((tag) => {
+            const pair = getColorPair(tag.color);
+            return (
+              <span
+                key={tag._id}
+                className="inline-flex items-center font-body truncate"
+                title={tag.name}
+                style={{
+                  maxWidth: 120,
+                  fontSize: 11,
+                  fontWeight: 500,
+                  padding: '2px 8px',
+                  borderRadius: 'var(--radius-full)',
+                  background: pair.bg,
+                  color: pair.text,
+                }}
+              >
+                {tag.name}
+              </span>
+            );
+          })}
+          {hiddenTags.length > 0 && (
+            <span
+              className="inline-flex items-center font-body"
+              title={hiddenTags.map((t) => t.name).join(', ')}
+              style={{
+                fontSize: 11,
+                fontWeight: 500,
+                padding: '2px 6px',
+                borderRadius: 'var(--radius-full)',
+                background: 'var(--color-surface, #FFFFFF)',
+                color: 'var(--color-text-muted)',
+                border: '1px solid var(--color-border)',
+              }}
+            >
+              +{hiddenTags.length}
+            </span>
+          )}
+        </span>
+      )}
+
       {/* Progress bar — hidden on small screens to save horizontal space */}
       <div
         className="shrink-0 hidden sm:block"
@@ -247,6 +308,21 @@ const TaskGroupHeader = ({
 
       {/* Spacer pushes the add button to the right */}
       <div className="flex-1" />
+
+      {/* Group tags — opens the tag picker. Present only for editors who have
+          the extra feature switched on; the server re-checks both. */}
+      {onOpenTags && (
+        <button
+          type="button"
+          onClick={onOpenTags}
+          aria-label={`Tags for group ${name}`}
+          title="Group tags"
+          className="inline-flex items-center justify-center transition-colors duration-150 hover:bg-[color:var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{ width: 28, height: 28, borderRadius: 'var(--radius-sm)' }}
+        >
+          <Tags size={14} color="var(--color-text-secondary)" aria-hidden="true" />
+        </button>
+      )}
 
       {/* Group notes — opens the notes side panel. Shown to everyone with read
           access; the create/edit affordances inside are gated by canEdit. */}

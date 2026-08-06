@@ -15,6 +15,28 @@ const labelSchema = new mongoose.Schema(
 );
 
 /**
+ * Per-board GROUP tag. The vocabulary a board's groups may be tagged with —
+ * the same shape as `labelSchema`, and deliberately a separate collection from
+ * it: labels file individual tasks, group tags file whole groups, and sharing
+ * one list would force every task label into the group picker.
+ *
+ * Groups reference these by `_id` (`TaskGroup.tags`), so renaming or recolouring
+ * a tag never breaks the link. Deleting one detaches it from every group.
+ *
+ * This is the catalog only — it exists on every board regardless of who has the
+ * `groupTags` extra feature switched on. The feature flag gates who may WRITE
+ * to it and who sees the chips, not whether the field is present.
+ */
+const groupTagSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    color: { type: String, default: '#6B7280' },
+    order: { type: Number, default: 0 },
+  },
+  { _id: true, timestamps: false }
+);
+
+/**
  * Per-board status. `key` is an optional stable handle preserved from the
  * legacy 4-status enum (`not_started`, `working_on_it`, `done`, `stuck`).
  * Analytics and automation code keys off `key` to resolve the "done"
@@ -214,6 +236,10 @@ const boardSchema = new mongoose.Schema(
     },
     labels: { type: [labelSchema], default: [] },
     statuses: { type: [statusSchema], default: [] },
+    // The tag vocabulary this board's GROUPS may be filed under. Empty on every
+    // existing board — nothing seeds it, so a board only grows group tags once
+    // somebody with the extra feature on adds one.
+    groupTags: { type: [groupTagSchema], default: [] },
     // Flexible columns engine (F1). Empty until the board is migrated or
     // created from a template.
     columns: { type: [columnSchema], default: [] },

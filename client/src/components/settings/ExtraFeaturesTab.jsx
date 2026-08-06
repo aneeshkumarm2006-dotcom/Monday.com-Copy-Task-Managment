@@ -1,38 +1,25 @@
-import { useState } from 'react';
-import { FileDown } from 'lucide-react';
+import { useMemo, useState } from 'react';
 import Switch from '../ui/Switch';
 import useAuthStore from '../../store/authStore';
 import useToastStore from '../../store/toastStore';
+import usePermissions from '../../hooks/usePermissions';
 import { updateFeatures } from '../../services/profileService';
+import { availableExtraFeatures } from '../../utils/extraFeatures';
 
 /**
- * Extra features — opt-in tools that stay off until someone asks for them.
- *
- * These are not permissions. Reaching this tab already means you hold the
- * capability; the switch records that you actually want the thing. The two are
- * deliberately separate, and BOTH are re-checked on the server, so flipping a
- * switch here can never grant anything a role did not already allow.
- *
- * To add a feature: append to FEATURES, add the key to FEATURE_KEYS in
- * server/src/controllers/profileController.js, and add the field to
- * `User.features`. Everything else here is generic.
+ * Extra features — the switches for the opt-in tools catalogued in
+ * [extraFeatures.js](../../utils/extraFeatures.js). Everything specific to a
+ * given feature lives in that table; this component is generic over it, and only
+ * renders the ones the viewer's role actually permits.
  */
-const FEATURES = [
-  {
-    key: 'activityExport',
-    icon: FileDown,
-    label: 'Board activity export',
-    hint:
-      'Adds an Export button to boards you can open, for downloading everything ' +
-      'that happened on the board over a date range as a CSV or PDF.',
-  },
-];
-
 const ExtraFeaturesTab = () => {
   const user = useAuthStore((s) => s.user);
   const fetchCurrentUser = useAuthStore((s) => s.fetchCurrentUser);
   const toastError = useToastStore((s) => s.error);
   const toastSuccess = useToastStore((s) => s.success);
+  const { can } = usePermissions();
+
+  const features = useMemo(() => availableExtraFeatures(can), [can]);
 
   // Optimistic local overlay on top of the store's user, so the switch responds
   // immediately instead of waiting on the round-trip plus the /auth/me refetch.
@@ -83,7 +70,7 @@ const ExtraFeaturesTab = () => {
           overflow: 'hidden',
         }}
       >
-        {FEATURES.map((feature, i) => {
+        {features.map((feature, i) => {
           const Icon = feature.icon;
           const checked = valueOf(feature.key);
           return (

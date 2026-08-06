@@ -8,6 +8,7 @@ import Input from '../components/ui/Input';
 import Modal from '../components/ui/Modal';
 import NotificationPreferences from '../components/notifications/NotificationPreferences';
 import ExtraFeaturesTab from '../components/settings/ExtraFeaturesTab';
+import { hasAnyExtraFeature } from '../utils/extraFeatures';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import usePermissionStore from '../store/permissionStore';
@@ -728,8 +729,9 @@ const SettingsPage = () => {
   // The Organisation tab is nothing but org settings — the invite code lives there.
   const canManageOrg = can('org.manage_settings');
   // Extra features only exists if at least one opt-in tool is available to you.
-  // Today that is the board activity export; add to this OR as more land.
-  const canExtraFeatures = can('board.export_activity');
+  // Derived from the feature table itself, so a new entry brings its own audience
+  // with it rather than needing a capability added to a list over here too.
+  const canExtraFeatures = hasAnyExtraFeature(can);
   const permissionsResolved =
     !!currentOrg && !permissionsLoading && loadedForOrg === currentOrg._id;
 

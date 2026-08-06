@@ -207,6 +207,44 @@ export const reorderStatuses = async (boardId, orderedIds) => {
   return data.statuses;
 };
 
+// --- Group tags (extra feature) ---------------------------------------------
+// The board-level catalog of tags its GROUPS may be filed under — the same shape
+// as labels, and a separate list on purpose. Listing is open to anyone who can
+// read the board; every write needs `column.manage` plus the caller's own
+// `features.groupTags` opt-in, both re-checked server-side.
+
+export const listGroupTags = async (boardId) => {
+  const { data } = await api.get(`/api/boards/${boardId}/group-tags`);
+  return data.groupTags;
+};
+
+export const addGroupTag = async (boardId, payload) => {
+  const { data } = await api.post(`/api/boards/${boardId}/group-tags`, payload);
+  return data.groupTags;
+};
+
+export const updateGroupTag = async (boardId, tagId, payload) => {
+  const { data } = await api.put(
+    `/api/boards/${boardId}/group-tags/${tagId}`,
+    payload
+  );
+  return data.groupTags;
+};
+
+export const deleteGroupTag = async (boardId, tagId) => {
+  const { data } = await api.delete(
+    `/api/boards/${boardId}/group-tags/${tagId}`
+  );
+  return data.groupTags;
+};
+
+export const reorderGroupTags = async (boardId, orderedIds) => {
+  const { data } = await api.put(`/api/boards/${boardId}/group-tags/reorder`, {
+    orderedIds,
+  });
+  return data.groupTags;
+};
+
 /**
  * Every activity event recorded on a board between two dates (inclusive,
  * `YYYY-MM-DD`). Returns the raw payload — board, range, rows and the

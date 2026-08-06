@@ -7,25 +7,34 @@ const VIEWPORT_MARGIN = 16;
 const DEFAULT_MENU_HEIGHT = 300;
 
 /**
- * LabelPicker — popover anchored to a task's Labels cell. Shows every label
- * configured on the board as a toggleable chip; checked chips indicate the
- * label is currently applied to the task. An "Edit Labels" footer link
- * opens the EditChipsModal in label mode (admin only).
+ * LabelPicker — a toggleable-chip popover anchored to a cell or button. Shows
+ * every chip in a board vocabulary; checked ones are currently applied. An
+ * "Edit …" footer link opens the EditChipsModal (admin only).
+ *
+ * Used for two vocabularies. `board.labels` on a task is the default; pass
+ * `chips` to drive it from another list — group tags do exactly that — rather
+ * than cloning the positioning and dismissal logic for each new one.
  *
  * Props:
  *   anchorEl    — DOM element the popover is anchored to
- *   board       — current board doc (reads board.labels)
- *   selectedIds — array of label ids currently applied to the task
- *   onToggle    — (labelId, nextChecked) => void
- *   onEditChips — optional: () => void — render an admin "Edit Labels" footer
+ *   board       — current board doc (source of `board.labels` when `chips` is omitted)
+ *   chips       — optional: explicit [{ _id, name, color, order }] to render instead
+ *   selectedIds — array of chip ids currently applied
+ *   onToggle    — (chipId, nextChecked) => void
+ *   onEditChips — optional: () => void — render an admin edit footer
+ *   editLabel   — footer text (default 'Edit Labels')
+ *   emptyLabel  — text shown when the vocabulary is empty (default 'No labels yet')
  *   onClose     — () => void
  */
 const LabelPicker = ({
   anchorEl,
   board,
+  chips,
   selectedIds = [],
   onToggle,
   onEditChips,
+  editLabel = 'Edit Labels',
+  emptyLabel = 'No labels yet',
   onClose,
 }) => {
   const ref = useRef(null);
@@ -71,9 +80,10 @@ const LabelPicker = ({
   }, [anchorEl, onClose]);
 
   const labels = useMemo(() => {
-    if (!board || !Array.isArray(board.labels)) return [];
-    return [...board.labels].sort((a, b) => (a.order || 0) - (b.order || 0));
-  }, [board]);
+    const list = Array.isArray(chips) ? chips : board?.labels;
+    if (!Array.isArray(list)) return [];
+    return [...list].sort((a, b) => (a.order || 0) - (b.order || 0));
+  }, [board, chips]);
 
   const selectedSet = useMemo(
     () => new Set((selectedIds || []).map((id) => id.toString())),
@@ -110,7 +120,7 @@ const LabelPicker = ({
             padding: '12px 8px',
           }}
         >
-          No labels yet
+          {emptyLabel}
         </p>
       )}
       {labels.map((label) => {
@@ -181,7 +191,7 @@ const LabelPicker = ({
           }}
         >
           <SettingsIcon size={12} aria-hidden="true" />
-          Edit Labels
+          {editLabel}
         </button>
       )}
       <style>{`

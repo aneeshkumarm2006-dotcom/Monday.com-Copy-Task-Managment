@@ -3,14 +3,20 @@ import { Plus, Trash2, Star } from 'lucide-react';
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import useBoardStore from '../../store/boardStore';
+import useTaskStore from '../../store/taskStore';
 import useToastStore from '../../store/toastStore';
 
 /**
- * EditChipsModal — admin-only modal for editing the labels OR statuses on
- * a board. `kind` toggles which collection is being managed:
+ * EditChipsModal — admin-only modal for editing one of a board's chip
+ * vocabularies. `kind` picks which:
  *
- *   <EditChipsModal kind="labels"   boardId={id} ... />
- *   <EditChipsModal kind="statuses" boardId={id} ... />
+ *   <EditChipsModal kind="labels"    boardId={id} ... />   task labels
+ *   <EditChipsModal kind="statuses"  boardId={id} ... />   task statuses
+ *   <EditChipsModal kind="groupTags" boardId={id} ... />   group tags (extra feature)
+ *
+ * All three are the same editor over a different collection, so `KINDS` holds
+ * everything that actually differs — the board field, the store actions, and the
+ * copy — and the component below stays generic.
  *
  * The board doc is read from useBoardStore so it stays in sync with
  * optimistic updates triggered elsewhere (StatusMenu, LabelPicker, etc.).
@@ -28,26 +34,66 @@ const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 const isValidHex = (v) => typeof v === 'string' && HEX_RE.test(v.trim());
 const DEFAULT_NEW_COLOR = '#6B7280';
 
+/** Everything that differs between the three vocabularies. */
+const KINDS = {
+  labels: {
+    field: 'labels',
+    title: 'Edit Labels',
+    addPlaceholder: 'New label name…',
+    deleteTitle: 'Delete label?',
+    noun: 'label',
+    deleteEffect: 'It will be removed from every task on this board.',
+    add: (s) => s.addLabel,
+    update: (s) => s.updateLabel,
+    remove: (s) => s.deleteLabel,
+  },
+  statuses: {
+    field: 'statuses',
+    title: 'Edit Statuses',
+    addPlaceholder: 'New status name…',
+    deleteTitle: 'Delete status?',
+    noun: 'status',
+    deleteEffect:
+      'Tasks currently using this status will be moved to the default status.',
+    add: (s) => s.addStatus,
+    update: (s) => s.updateStatusChip,
+    remove: (s) => s.deleteStatus,
+  },
+  groupTags: {
+    field: 'groupTags',
+    title: 'Edit Group Tags',
+    addPlaceholder: 'New tag name…',
+    deleteTitle: 'Delete group tag?',
+    noun: 'tag',
+    deleteEffect: 'It will be removed from every group on this board.',
+    add: (s) => s.addGroupTag,
+    update: (s) => s.updateGroupTag,
+    remove: (s) => s.deleteGroupTag,
+  },
+};
+
 const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
-  const isLabels = kind === 'labels';
-  const title = isLabels ? 'Edit Labels' : 'Edit Statuses';
+  const spec = KINDS[kind] || KINDS.labels;
+  // Statuses alone carry a default flag, so they alone get the star column and
+  // the "can't delete the default" rule.
+  const isStatuses = spec.field === 'statuses';
 
   const board = useBoardStore((s) => s.getBoardById(boardId));
-  const addLabel = useBoardStore((s) => s.addLabel);
-  const updateLabel = useBoardStore((s) => s.updateLabel);
-  const deleteLabel = useBoardStore((s) => s.deleteLabel);
-  const addStatus = useBoardStore((s) => s.addStatus);
+  const addChip = useBoardStore(spec.add);
+  const updateChip = useBoardStore(spec.update);
+  const deleteChip = useBoardStore(spec.remove);
   const updateStatusChip = useBoardStore((s) => s.updateStatusChip);
-  const deleteStatus = useBoardStore((s) => s.deleteStatus);
+  // Deleting a group tag detaches it server-side from every group; mirror that
+  // in the cached groups so no header is left holding a dead id.
+  const detachGroupTag = useTaskStore((s) => s.detachGroupTag);
 
   const toastError = useToastStore((s) => s.error);
 
   const collection = useMemo(() => {
-    if (!board) return [];
-    const list = isLabels ? board.labels : board.statuses;
+    const list = board?.[spec.field];
     if (!Array.isArray(list)) return [];
     return [...list].sort((a, b) => (a.order || 0) - (b.order || 0));
-  }, [board, isLabels]);
+  }, [board, spec.field]);
 
   // Local draft buffer so name/color edits don't fire a network call on
   // every keystroke. Flushed onBlur.
@@ -103,11 +149,7 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
     }
     try {
       const payload = { [field]: field === 'name' ? draft.trim() : draft };
-      if (isLabels) {
-        await updateLabel(boardId, item._id, payload);
-      } else {
-        await updateStatusChip(boardId, item._id, payload);
-      }
+      await updateChip(boardId, item._id, payload);
       clearDraft(item._id, field);
     } catch (err) {
       console.error('Failed to update chip:', err);
@@ -123,11 +165,7 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
     setSubmitting(true);
     try {
       const color = isValidHex(newColor) ? newColor : DEFAULT_NEW_COLOR;
-      if (isLabels) {
-        await addLabel(boardId, { name: trimmed, color });
-      } else {
-        await addStatus(boardId, { name: trimmed, color });
-      }
+      await addChip(boardId, { name: trimmed, color });
       setNewName('');
       setNewColor(DEFAULT_NEW_COLOR);
     } catch (err) {
@@ -152,11 +190,8 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
     const item = pendingDelete;
     setPendingDelete(null);
     try {
-      if (isLabels) {
-        await deleteLabel(boardId, item._id);
-      } else {
-        await deleteStatus(boardId, item._id);
-      }
+      await deleteChip(boardId, item._id);
+      if (spec.field === 'groupTags') detachGroupTag(item._id);
     } catch (err) {
       console.error('Failed to delete:', err);
       toastError(err?.response?.data?.error || 'Failed to delete');
@@ -168,7 +203,7 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={title}
+      title={spec.title}
       maxWidth={520}
       footer={
         <Button variant="secondary" onClick={onClose}>Done</Button>
@@ -194,7 +229,7 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
               const colorDraft = draftFor(item._id, 'color');
               const displayName = nameDraft != null ? nameDraft : item.name;
               const displayColor = colorDraft != null ? colorDraft : item.color;
-              const isDefault = !isLabels && item.isDefault;
+              const isDefault = isStatuses && item.isDefault;
               return (
                 <li
                   key={item._id}
@@ -242,7 +277,7 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
                       color: 'var(--color-text-primary)',
                     }}
                   />
-                  {!isLabels && (
+                  {isStatuses && (
                     <button
                       type="button"
                       onClick={() => !isDefault && handleMarkDefault(item._id)}
@@ -267,7 +302,7 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
                   <button
                     type="button"
                     onClick={() => setPendingDelete(item)}
-                    disabled={!isLabels && item.isDefault}
+                    disabled={isDefault}
                     aria-label={`Delete ${item.name}`}
                     className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] disabled:opacity-30 disabled:cursor-not-allowed"
                     style={{
@@ -275,7 +310,7 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
                       height: 28,
                       background: 'transparent',
                       border: 'none',
-                      cursor: !isLabels && item.isDefault ? 'not-allowed' : 'pointer',
+                      cursor: isDefault ? 'not-allowed' : 'pointer',
                       color: 'var(--color-text-muted)',
                     }}
                   >
@@ -311,7 +346,7 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
             type="text"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder={isLabels ? 'New label name…' : 'New status name…'}
+            placeholder={spec.addPlaceholder}
             aria-label="New chip name"
             className="flex-1 font-body focus:outline-none"
             style={{
@@ -339,7 +374,7 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
     <Modal
       isOpen={!!pendingDelete}
       onClose={() => setPendingDelete(null)}
-      title={isLabels ? 'Delete label?' : 'Delete status?'}
+      title={spec.deleteTitle}
       footer={
         <>
           <Button variant="secondary" onClick={() => setPendingDelete(null)}>
@@ -355,24 +390,11 @@ const EditChipsModal = ({ isOpen, onClose, boardId, kind = 'labels' }) => {
         className="font-body"
         style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}
       >
-        {isLabels ? (
-          <>
-            Delete the label{' '}
-            <strong style={{ color: 'var(--color-text-primary)' }}>
-              {pendingDelete?.name}
-            </strong>
-            ? It will be removed from every task on this board.
-          </>
-        ) : (
-          <>
-            Delete the status{' '}
-            <strong style={{ color: 'var(--color-text-primary)' }}>
-              {pendingDelete?.name}
-            </strong>
-            ? Tasks currently using this status will be moved to the default
-            status.
-          </>
-        )}
+        Delete the {spec.noun}{' '}
+        <strong style={{ color: 'var(--color-text-primary)' }}>
+          {pendingDelete?.name}
+        </strong>
+        ? {spec.deleteEffect}
       </p>
     </Modal>
     </>

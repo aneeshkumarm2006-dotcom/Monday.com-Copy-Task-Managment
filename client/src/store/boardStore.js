@@ -160,6 +160,34 @@ const useBoardStore = create((set, get) => ({
     return statuses;
   },
 
+  // --- Group tags (extra feature) ------------------------------------------
+  // The board-level catalog. Which tags a given GROUP carries lives on the group
+  // itself, in taskStore — this is only the vocabulary.
+
+  addGroupTag: async (boardId, payload) => {
+    const groupTags = await boardService.addGroupTag(boardId, payload);
+    set((s) => ({ boards: replaceBoardChips(s.boards, boardId, 'groupTags', groupTags) }));
+    return groupTags;
+  },
+
+  updateGroupTag: async (boardId, tagId, payload) => {
+    const groupTags = await boardService.updateGroupTag(boardId, tagId, payload);
+    set((s) => ({ boards: replaceBoardChips(s.boards, boardId, 'groupTags', groupTags) }));
+    return groupTags;
+  },
+
+  deleteGroupTag: async (boardId, tagId) => {
+    const groupTags = await boardService.deleteGroupTag(boardId, tagId);
+    set((s) => ({ boards: replaceBoardChips(s.boards, boardId, 'groupTags', groupTags) }));
+    return groupTags;
+  },
+
+  reorderGroupTags: async (boardId, orderedIds) => {
+    const groupTags = await boardService.reorderGroupTags(boardId, orderedIds);
+    set((s) => ({ boards: replaceBoardChips(s.boards, boardId, 'groupTags', groupTags) }));
+    return groupTags;
+  },
+
   // --- Columns (flexible-columns engine, F1) -------------------------------
 
   /**

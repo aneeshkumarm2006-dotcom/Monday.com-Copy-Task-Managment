@@ -41,7 +41,7 @@ const updateProfile = async (req, res) => {
  * `organisations`, so an unfiltered `$set` here would be a write primitive into
  * the identity record.
  */
-const FEATURE_KEYS = ['activityExport'];
+const FEATURE_KEYS = ['activityExport', 'groupTags'];
 
 /**
  * PUT /api/profile/features — toggle the current user's opt-in extras.
@@ -52,8 +52,8 @@ const FEATURE_KEYS = ['activityExport'];
  *
  * A feature being ON here does NOT grant permission — it only records that the
  * user asked for it. Every feature still checks its own capability at the point
- * of use (`board.export_activity` for the export). A member who somehow sets
- * this flag gains nothing.
+ * of use (`board.export_activity` for the export, `column.manage` / `group.manage`
+ * for group tags). A member who somehow sets this flag gains nothing.
  */
 const updateFeatures = async (req, res) => {
   try {

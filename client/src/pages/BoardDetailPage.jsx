@@ -121,6 +121,7 @@ const BoardDetailPage = () => {
   const addGroupLocal = useTaskStore((s) => s.addGroup);
   const removeGroupLocal = useTaskStore((s) => s.removeGroup);
   const renameGroupAction = useTaskStore((s) => s.renameGroup);
+  const setGroupTagsAction = useTaskStore((s) => s.setGroupTags);
   const reorderGroupsAction = useTaskStore((s) => s.reorderGroups);
   const reorderTasksAction = useTaskStore((s) => s.reorderTasks);
   const boardRefreshSignal = useTaskStore((s) => s.boardRefreshSignal);
@@ -189,8 +190,10 @@ const BoardDetailPage = () => {
   const [ownerMenu, setOwnerMenu] = useState(null); // { task, anchor }
   // Labels picker popover state
   const [labelMenu, setLabelMenu] = useState(null); // { task, anchor }
-  // Edit-chips modal — `kind` is 'labels' | 'statuses'
-  const [editChipsModal, setEditChipsModal] = useState(null); // 'labels' | 'statuses' | null
+  // Group tags picker popover state (extra feature)
+  const [groupTagMenu, setGroupTagMenu] = useState(null); // { groupId, anchor }
+  // Edit-chips modal — `kind` is 'labels' | 'statuses' | 'groupTags'
+  const [editChipsModal, setEditChipsModal] = useState(null);
   // Row actions menu state
   const [actionsMenu, setActionsMenu] = useState(null); // { task, anchor }
   // Delete confirmation
@@ -294,6 +297,31 @@ const BoardDetailPage = () => {
   // are re-checked by the endpoint — this only decides whether to draw a button.
   const canExportActivity =
     canOnBoard('board.export_activity') && !!currentUser?.features?.activityExport;
+
+  // Group tags follow the same two-condition shape. Note this one also hides the
+  // CHIPS, not just the button: with the feature off you see the header exactly
+  // as it was before group tags existed, even if a teammate has tagged the group.
+  const groupTagsOn = !!currentUser?.features?.groupTags;
+  const canTagGroups = groupTagsOn && canEdit && canOnBoard('column.manage');
+
+  // The board's tag catalog, keyed by id, for resolving each group's `tags`.
+  // Empty unless the feature is on, which is what makes the chips disappear.
+  const groupTagsById = useMemo(() => {
+    if (!groupTagsOn) return new Map();
+    const list = Array.isArray(board?.groupTags) ? board.groupTags : [];
+    return new Map(list.map((t) => [t._id.toString(), t]));
+  }, [groupTagsOn, board?.groupTags]);
+
+  // Resolve a group's tag ids into chips, dropping any that no longer exist in
+  // the catalog — a tag someone else deleted leaves a dangling id until the next
+  // fetch, and a missing chip beats a broken one.
+  const resolveGroupTags = useCallback(
+    (group) =>
+      (group?.tags || [])
+        .map((id) => groupTagsById.get(id?.toString()))
+        .filter(Boolean),
+    [groupTagsById]
+  );
 
   // Client Portal boards expose a per-group shareable client link, managed only
   // by board managers. `clientPortalGroup` holds the group whose link modal is open.
@@ -1096,6 +1124,34 @@ const BoardDetailPage = () => {
     }
   };
 
+  // --- Group tags (extra feature) -----------------------------------------
+
+  const handleOpenGroupTags = (group, event) => {
+    setGroupTagMenu({ groupId: group._id, anchor: event.currentTarget });
+  };
+
+  const handleGroupTagToggle = async (tagId, nextChecked) => {
+    if (!groupTagMenu || !canTagGroups) return;
+    const group = groups.find((g) => g._id === groupTagMenu.groupId);
+    if (!group) return;
+    const current = (group.tags || []).map((id) => id.toString());
+    const next = nextChecked
+      ? Array.from(new Set([...current, tagId.toString()]))
+      : current.filter((id) => id !== tagId.toString());
+    try {
+      // The store patches optimistically and rolls back on failure, so the
+      // popover's checked state — which reads straight off `groups` — follows
+      // both the optimistic write and the revert without extra bookkeeping.
+      await setGroupTagsAction(group._id, next);
+    } catch (err) {
+      console.error('Failed to update group tags:', err);
+      toastError(
+        err?.response?.data?.error ||
+          'Failed to update group tags. Please try again.'
+      );
+    }
+  };
+
   // --- Group deletion -----------------------------------------------------
 
   const handleDeleteGroup = (group) => {
@@ -1550,6 +1606,12 @@ const BoardDetailPage = () => {
                               ? () => setClientPortalGroup(group)
                               : undefined
                           }
+                          tags={resolveGroupTags(group)}
+                          onOpenTags={
+                            canTagGroups
+                              ? (event) => handleOpenGroupTags(group, event)
+                              : undefined
+                          }
                           noteCount={notesCountByGroup[group._id] ?? 0}
                           dragHandle={
                             !groupDndDisabled && (
@@ -1666,6 +1728,26 @@ const BoardDetailPage = () => {
         />
       )}
 
+      {/* Group tags picker (extra feature) — same popover as the label picker,
+          pointed at the board's group-tag catalog instead of its labels. */}
+      {groupTagMenu && canTagGroups && (
+        <LabelPicker
+          anchorEl={groupTagMenu.anchor}
+          chips={board?.groupTags || []}
+          selectedIds={
+            groups.find((g) => g._id === groupTagMenu.groupId)?.tags || []
+          }
+          onToggle={handleGroupTagToggle}
+          onEditChips={() => {
+            setGroupTagMenu(null);
+            setEditChipsModal('groupTags');
+          }}
+          editLabel="Edit Group Tags"
+          emptyLabel="No group tags yet"
+          onClose={() => setGroupTagMenu(null)}
+        />
+      )}
+
       {/* Inline owner picker */}
       {ownerMenu && (
         <InlineAssigneeMenu
@@ -1679,15 +1761,18 @@ const BoardDetailPage = () => {
         />
       )}
 
-      {/* Edit chips (labels / statuses) modal */}
-      {canEdit && editChipsModal && (
-        <EditChipsModal
-          isOpen={!!editChipsModal}
-          onClose={() => setEditChipsModal(null)}
-          boardId={boardId}
-          kind={editChipsModal}
-        />
-      )}
+      {/* Edit chips (labels / statuses / group tags) modal. Group tags carry the
+          extra-feature gate on top of canEdit; the other two do not. */}
+      {canEdit &&
+        editChipsModal &&
+        (editChipsModal !== 'groupTags' || canTagGroups) && (
+          <EditChipsModal
+            isOpen={!!editChipsModal}
+            onClose={() => setEditChipsModal(null)}
+            boardId={boardId}
+            kind={editChipsModal}
+          />
+        )}
 
       {/* Priority chip menu */}
       {priorityMenu && (

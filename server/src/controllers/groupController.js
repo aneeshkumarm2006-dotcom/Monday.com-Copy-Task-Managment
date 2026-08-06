@@ -7,6 +7,7 @@ const ItemFollow = require('../models/ItemFollow');
 const ClientContact = require('../models/ClientContact');
 const eventBus = require('../services/eventBus');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const { requireFeature } = require('../utils/userFeatures');
 const { generatePortalToken } = require('../utils/portalCrypto');
 const { inviteContact } = require('../services/portalInviteService');
 
@@ -184,7 +185,7 @@ const createGroup = async (req, res) => {
 /**
  * PUT /api/groups/:id
  *
- * Requires `group.manage`. Updates name or order.
+ * Requires `group.manage`. Updates name, order, or tags.
  *
  * A rename runs the same trim/clamp/duplicate checks as create (excluding this
  * group, so re-saving an unchanged name is not a self-collision). It
@@ -192,12 +193,18 @@ const createGroup = async (req, res) => {
  * the client-facing company label, seeded from the name at creation but owned
  * from then on by the portal config screen. Renaming the group internally must
  * not rewrite what the client sees.
+ *
+ * `tags` carries a SECOND gate beyond `group.manage`: the caller's own
+ * `features.groupTags` opt-in, since group tags are an extra feature that is off
+ * for everyone by default. It is checked only when `tags` is actually present,
+ * so a plain rename or reorder never pays for the lookup — or trips over a flag
+ * that has nothing to do with it.
  */
 const updateGroup = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { id } = req.params;
-    const { name, order } = req.body;
+    const { name, order, tags } = req.body;
 
     const group = await TaskGroup.findById(id);
     if (!group) return res.status(404).json({ error: 'Group not found' });
@@ -223,6 +230,35 @@ const updateGroup = async (req, res) => {
     }
     if (typeof order === 'number') {
       group.order = order;
+    }
+
+    if (tags !== undefined) {
+      if (!Array.isArray(tags)) {
+        return res.status(400).json({ error: 'tags must be an array' });
+      }
+      const off = await requireFeature(
+        userId,
+        'groupTags',
+        'Group tags are off. Turn them on in Settings → Extra features.'
+      );
+      if (off) {
+        return res.status(off.status).json({ error: off.error, code: off.code });
+      }
+      // Only ids that exist in the board's catalog survive, de-duped. An unknown
+      // id is dropped rather than 400'd: a tag the picker showed can be deleted
+      // by someone else between render and save, and losing that one chip is a
+      // better outcome than rejecting the whole edit.
+      const known = new Set(
+        (ctx.board.groupTags || []).map((t) => t._id.toString())
+      );
+      const seen = new Set();
+      group.tags = tags
+        .map((t) => (t == null ? '' : t.toString()))
+        .filter((t) => {
+          if (!known.has(t) || seen.has(t)) return false;
+          seen.add(t);
+          return true;
+        });
     }
 
     await group.save();

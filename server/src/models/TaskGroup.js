@@ -13,6 +13,19 @@ const taskGroupSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // Group tags — ids into the parent board's `groupTags` catalog, the group-level
+  // counterpart of a task's tags. Stored as ids rather than names so a rename or
+  // recolour on the board propagates without touching a single group.
+  //
+  // An id that no longer exists in the catalog is not an error, just noise: the
+  // delete endpoint $pulls it from every group, and the client skips anything it
+  // cannot resolve. Writes are gated on BOTH `group.manage` and the writer's own
+  // `features.groupTags` opt-in — see utils/userFeatures.js.
+  tags: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+    },
+  ],
   // ---- Client Portal fields (only meaningful when the parent board is a
   // 'client' board — the controller gates every write on board.boardType). A
   // group in a client board represents one client company; the link is minted

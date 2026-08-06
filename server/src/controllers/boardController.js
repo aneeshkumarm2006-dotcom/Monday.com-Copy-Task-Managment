@@ -12,6 +12,7 @@ const { loadBoardContext, requireCapability } = require('../utils/boardContext')
 const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
 const { BOARD_LEVELS } = require('../utils/capabilities');
 const { createNotification } = require('../services/notificationService');
+const { requireFeature } = require('../utils/userFeatures');
 
 const VALID_VISIBILITIES = ['public', 'private'];
 
@@ -593,7 +594,7 @@ const deleteBoard = async (req, res) => {
  * are board STRUCTURE — the vocabulary every task is filed under — so they ride
  * on `column.manage`, the same capability that gates the columns they configure.
  */
-const requireChipManage = async (req, res) => {
+const requireChipManage = async (req, res, what = 'labels and statuses') => {
   const ctx = await loadBoard(req.params.id, req.user.userId);
   if (ctx.error) {
     res.status(ctx.status).json({ error: ctx.error });
@@ -602,7 +603,7 @@ const requireChipManage = async (req, res) => {
   const denied = requireCapability(
     ctx,
     'column.manage',
-    "You do not have permission to manage this board's labels and statuses"
+    `You do not have permission to manage this board's ${what}`
   );
   if (denied) {
     res.status(denied.status).json({ error: denied.error });
@@ -838,6 +839,132 @@ const reorderStatuses = async (req, res) => {
     return res.json({ statuses: serializeBoardChips(board).statuses });
   } catch (err) {
     console.error('reorderStatuses error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+// --- Group tags (extra feature) ---------------------------------------------
+
+/**
+ * Write guard for the group-tag catalog. TWO gates, in this order:
+ *
+ *   1. `column.manage` — the tag vocabulary is board structure, exactly like
+ *      labels and statuses, so it rides on the same capability they do.
+ *   2. `features.groupTags` — the writer's own opt-in. Group tags are an EXTRA
+ *      FEATURE, off for everyone until they switch it on, and a switch honoured
+ *      only by hiding a button is decorative.
+ *
+ * Capability first on purpose: someone whose role cannot manage the board's
+ * vocabulary is refused for that reason and never learns the feature exists.
+ *
+ * READS are not gated here at all. `board.groupTags` ships inside the ordinary
+ * board payload — the client simply doesn't draw the chips while the feature is
+ * off — so there is nothing to withhold and no extra round trip to add.
+ */
+const requireGroupTagManage = async (req, res) => {
+  const ctx = await requireChipManage(req, res, 'group tags');
+  if (!ctx) return null;
+  const off = await requireFeature(
+    req.user.userId,
+    'groupTags',
+    'Group tags are off. Turn them on in Settings → Extra features.'
+  );
+  if (off) {
+    res.status(off.status).json({ error: off.error, code: off.code });
+    return null;
+  }
+  return ctx;
+};
+
+const sortedGroupTags = (board) =>
+  (board.groupTags || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+
+const listGroupTags = async (req, res) => {
+  try {
+    const ctx = await loadBoard(req.params.id, req.user.userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    return res.json({ groupTags: sortedGroupTags(ctx.board) });
+  } catch (err) {
+    console.error('listGroupTags error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+const addGroupTag = async (req, res) => {
+  try {
+    const ctx = await requireGroupTagManage(req, res);
+    if (!ctx) return;
+    const { board } = ctx;
+    const name = sanitizeName(req.body?.name);
+    if (!name) return res.status(400).json({ error: 'Tag name is required' });
+    board.groupTags.push({ name, color: sanitizeColor(req.body?.color), order: nextOrder(board.groupTags) });
+    await board.save();
+    return res.status(201).json({ groupTags: sortedGroupTags(board) });
+  } catch (err) {
+    console.error('addGroupTag error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+const updateGroupTag = async (req, res) => {
+  try {
+    const ctx = await requireGroupTagManage(req, res);
+    if (!ctx) return;
+    const { board } = ctx;
+    const tag = board.groupTags.id(req.params.gtid);
+    if (!tag) return res.status(404).json({ error: 'Tag not found' });
+    if (typeof req.body?.name === 'string') {
+      const name = sanitizeName(req.body.name);
+      if (!name) return res.status(400).json({ error: 'Tag name cannot be empty' });
+      tag.name = name;
+    }
+    if (typeof req.body?.color === 'string') {
+      tag.color = sanitizeColor(req.body.color, tag.color);
+    }
+    await board.save();
+    return res.json({ groupTags: sortedGroupTags(board) });
+  } catch (err) {
+    console.error('updateGroupTag error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+const deleteGroupTag = async (req, res) => {
+  try {
+    const ctx = await requireGroupTagManage(req, res);
+    if (!ctx) return;
+    const { board } = ctx;
+    const { gtid } = req.params;
+    if (!board.groupTags.id(gtid)) {
+      return res.status(404).json({ error: 'Tag not found' });
+    }
+    board.groupTags.pull({ _id: gtid });
+    await board.save();
+    // Detach the dead id from every group, so nothing on the board still points
+    // at a tag that no longer exists.
+    await TaskGroup.updateMany({ board: board._id }, { $pull: { tags: gtid } });
+    return res.json({ groupTags: sortedGroupTags(board) });
+  } catch (err) {
+    console.error('deleteGroupTag error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+const reorderGroupTags = async (req, res) => {
+  try {
+    const ctx = await requireGroupTagManage(req, res);
+    if (!ctx) return;
+    const { board } = ctx;
+    const orderedIds = Array.isArray(req.body?.orderedIds) ? req.body.orderedIds : [];
+    const lookup = new Map(orderedIds.map((id, i) => [id.toString(), i]));
+    for (const tag of board.groupTags) {
+      const idx = lookup.get(tag._id.toString());
+      if (idx !== undefined) tag.order = idx;
+    }
+    await board.save();
+    return res.json({ groupTags: sortedGroupTags(board) });
+  } catch (err) {
+    console.error('reorderGroupTags error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -1194,6 +1321,12 @@ module.exports = {
   updateStatus,
   deleteStatus,
   reorderStatuses,
+  // group tags
+  listGroupTags,
+  addGroupTag,
+  updateGroupTag,
+  deleteGroupTag,
+  reorderGroupTags,
   // exported for analytics/dashboard
   findDoneStatusIdsForOrg,
 };

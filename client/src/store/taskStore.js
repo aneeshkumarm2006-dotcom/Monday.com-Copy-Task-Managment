@@ -383,6 +383,46 @@ const useTaskStore = create((set, get) => ({
   },
 
   /**
+   * Optimistically set a group's tags (extra feature). Same shape as
+   * `renameGroup`: patch-merge, then reconcile with the server's doc.
+   *
+   * `tags` is the FULL desired list, not a delta — the server replaces the array
+   * and drops any id missing from the board's catalog, so a tag someone else
+   * deleted mid-edit silently falls away instead of failing the whole save.
+   */
+  setGroupTags: async (groupId, tags) => {
+    const prev = get().groups;
+    set({
+      groups: prev.map((g) => (g._id === groupId ? { ...g, tags } : g)),
+    });
+    try {
+      const group = await taskService.updateGroup(groupId, { tags });
+      if (group) get().updateGroupLocal(group);
+      return group;
+    } catch (err) {
+      set({ groups: prev });
+      throw err;
+    }
+  },
+
+  /**
+   * Drop a deleted group tag from every cached group. The server already
+   * $pulled it board-wide; this keeps the local copies from carrying an id that
+   * no longer resolves, which would otherwise linger until the next board fetch.
+   */
+  detachGroupTag: (tagId) =>
+    set((s) => {
+      const target = tagId?.toString();
+      return {
+        groups: s.groups.map((g) =>
+          (g.tags || []).some((t) => t?.toString() === target)
+            ? { ...g, tags: g.tags.filter((t) => t?.toString() !== target) }
+            : g
+        ),
+      };
+    }),
+
+  /**
    * Optimistically reorder groups on the board. Reverts on API failure.
    */
   reorderGroups: async (boardId, orderedIds) => {

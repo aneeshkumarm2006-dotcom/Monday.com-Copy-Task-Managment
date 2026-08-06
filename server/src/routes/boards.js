@@ -16,6 +16,11 @@ const {
   updateStatus,
   deleteStatus,
   reorderStatuses,
+  listGroupTags,
+  addGroupTag,
+  updateGroupTag,
+  deleteGroupTag,
+  reorderGroupTags,
   getConnectableBoards,
   getBoardAccess,
   setBoardAccess,
@@ -64,6 +69,16 @@ router.post('/:id/statuses',         addStatus);
 router.put('/:id/statuses/reorder',  reorderStatuses);
 router.put('/:id/statuses/:sid',     updateStatus);
 router.delete('/:id/statuses/:sid',  deleteStatus);
+
+// --- Group tags (per board, extra feature) --------------------------------
+// The tag vocabulary a board's GROUPS may be filed under. Listing is open to
+// anyone who can read the board; every write needs `column.manage` AND the
+// caller's own `features.groupTags` opt-in. reorder before /:gtid, as above.
+router.get('/:id/group-tags',           listGroupTags);
+router.post('/:id/group-tags',          addGroupTag);
+router.put('/:id/group-tags/reorder',   reorderGroupTags);
+router.put('/:id/group-tags/:gtid',     updateGroupTag);
+router.delete('/:id/group-tags/:gtid',  deleteGroupTag);
 
 // --- Columns (per board, flexible-columns engine, F1) ---------------------
 // reorder must come BEFORE the /:cid routes so it isn't parsed as a column id

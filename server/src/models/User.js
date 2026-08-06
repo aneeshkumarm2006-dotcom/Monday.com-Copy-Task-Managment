@@ -32,6 +32,11 @@ const userSchema = new mongoose.Schema({
   // rather than assuming the default has been written.
   features: {
     activityExport: { type: Boolean, default: false },
+    // Group tags — the per-group equivalent of a task's tags column. Off means
+    // the board header draws no tag chips and no tag button, and every group-tag
+    // WRITE is refused server-side. Tags already set by someone else stay on the
+    // group documents untouched; they are simply not shown to you.
+    groupTags: { type: Boolean, default: false },
   },
   createdAt: {
     type: Date,
