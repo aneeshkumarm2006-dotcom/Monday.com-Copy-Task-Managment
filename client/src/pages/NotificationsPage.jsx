@@ -19,6 +19,10 @@ const NotificationsPage = () => {
   const markAllRead = useNotificationStore((s) => s.markAllRead);
   const clearRead = useNotificationStore((s) => s.clearRead);
   const unreadCount = useNotificationStore((s) => s.unreadCount);
+  // Whether anything currently loaded is already read — gates "Clear read".
+  const hasRead = useNotificationStore((s) =>
+    s.notifications.some((n) => n.isRead)
+  );
 
   // Refresh the list (preserving the active filter) when the page mounts or the
   // active org changes.
@@ -67,7 +71,16 @@ const NotificationsPage = () => {
             <button
               type="button"
               onClick={() => clearRead(currentOrgId || undefined)}
-              className="font-body text-[13px] text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-primary)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
+              disabled={!hasRead}
+              title="Delete every notification you've already read"
+              className="font-body text-[13px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
+              style={{
+                color: hasRead
+                  ? 'var(--color-text-secondary)'
+                  : 'var(--color-text-muted)',
+                fontWeight: 500,
+                cursor: hasRead ? 'pointer' : 'default',
+              }}
             >
               Clear read
             </button>

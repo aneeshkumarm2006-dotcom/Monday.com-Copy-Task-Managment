@@ -494,6 +494,10 @@ const NotificationBell = () => {
   const navigate = useNavigate();
   const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
   const unreadCount = useNotificationStore((s) => s.unreadCount);
+  // Whether anything currently loaded is already read — gates "Clear read".
+  const hasRead = useNotificationStore((s) =>
+    s.notifications.some((n) => n.isRead)
+  );
   const fetchNotifications = useNotificationStore((s) => s.fetchNotifications);
   const markRead = useNotificationStore((s) => s.markRead);
   const markAllRead = useNotificationStore((s) => s.markAllRead);
@@ -611,6 +615,22 @@ const NotificationBell = () => {
               </button>
               <button
                 type="button"
+                onClick={() => clearRead(currentOrgId || undefined)}
+                disabled={!hasRead}
+                title="Delete every notification you've already read"
+                className="font-body text-[12px] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
+                style={{
+                  color: hasRead
+                    ? 'var(--color-text-secondary)'
+                    : 'var(--color-text-muted)',
+                  fontWeight: 500,
+                  cursor: hasRead ? 'pointer' : 'default',
+                }}
+              >
+                Clear read
+              </button>
+              <button
+                type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close notifications"
                 className="inline-flex items-center justify-center rounded-md transition-colors hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
@@ -630,16 +650,9 @@ const NotificationBell = () => {
 
           {/* Footer */}
           <div
-            className="flex items-center justify-between px-4 py-2 shrink-0"
+            className="flex items-center justify-end px-4 py-2 shrink-0"
             style={{ borderTop: '1px solid var(--color-border)' }}
           >
-            <button
-              type="button"
-              onClick={() => clearRead(currentOrgId || undefined)}
-              className="font-body text-[12px] text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-primary)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
-            >
-              Clear read
-            </button>
             <button
               type="button"
               onClick={() => {

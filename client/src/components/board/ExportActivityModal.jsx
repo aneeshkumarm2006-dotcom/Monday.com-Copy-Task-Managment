@@ -32,6 +32,7 @@ const daysAgo = (n) => {
 };
 
 const PRESETS = [
+  { key: 'today', label: 'Today', range: () => [new Date(), new Date()] },
   { key: '7d', label: 'Last 7 days', range: () => [daysAgo(6), new Date()] },
   { key: '30d', label: 'Last 30 days', range: () => [daysAgo(29), new Date()] },
   {
@@ -105,7 +106,8 @@ const ExportActivityModal = ({ isOpen, onClose, board }) => {
     try {
       const payload = await getActivityExport(board._id, { from, to });
       setResult(payload);
-      if (payload.totalCount === 0) return; // Nothing to write — say so instead.
+      // A quiet window still produces a file. "Nothing happened on this board
+      // today" is a result worth filing, and the report says so in writing.
       downloadExport(payload, format);
     } catch (err) {
       // The endpoint distinguishes "you lack the capability" from "the feature
@@ -272,7 +274,9 @@ const ExportActivityModal = ({ isOpen, onClose, board }) => {
       {/* Outcome */}
       {result && result.totalCount === 0 && (
         <p className="font-body text-[13px] text-[color:var(--color-text-muted)] mt-5">
-          No activity was recorded on this board between {from} and {to}.
+          No activity was recorded on this board{' '}
+          {from === to ? `on ${from}` : `between ${from} and ${to}`} — downloaded
+          an empty report saying so.
         </p>
       )}
       {result && result.totalCount > 0 && (

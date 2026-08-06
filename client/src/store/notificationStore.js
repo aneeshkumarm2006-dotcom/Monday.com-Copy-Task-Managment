@@ -250,15 +250,36 @@ const useNotificationStore = create((set, get) => ({
 
   /**
    * Delete all already-read notifications (optimistic).
+   *
+   * The server deletes every read row, not just the ones we hold, so the keyset
+   * cursor we're carrying may point at a now-deleted _id. After the delete lands
+   * we quietly re-pull page one (no `loading` flip, so the list doesn't flash)
+   * to get a valid cursor and an accurate count back.
    */
   clearRead: async (orgId) => {
     const prev = get().notifications;
+    const filter = get().filter;
+    if (!prev.some((n) => n.isRead)) return;
     set({ notifications: prev.filter((n) => !n.isRead) });
     try {
       await notificationService.clearRead(orgId);
     } catch (err) {
       set({ notifications: prev });
       throw err;
+    }
+    try {
+      const res = await notificationService.getNotifications(orgId, { filter });
+      // Guard against a tab switch landing mid-flight.
+      if (get().filter !== filter) return;
+      set({
+        notifications: res.notifications || [],
+        unreadCount: res.unreadCount ?? get().unreadCount,
+        nextCursor: res.nextCursor || null,
+        stale: false,
+      });
+    } catch {
+      // The delete succeeded; a failed resync just leaves the optimistic list.
+      set({ nextCursor: null });
     }
   },
 

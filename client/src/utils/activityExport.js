@@ -18,21 +18,47 @@ import { saveBlob } from './fileUrl';
  */
 
 /**
- * The report's columns, in order, for both formats.
+ * The report's columns, in order.
+ *
+ * Every row carries the full field snapshot of its task, so the sheet can be
+ * filtered and pivoted on status, owner or due date without joining anything
+ * back in. A field the task never had is blank, never absent.
+ *
+ * `csvOnly` is the release valve for that: the CSV is a dataset and can be as
+ * wide as it needs to be, but the PDF is a printed page. Nineteen columns on A4
+ * landscape squeezes Activity into a two-word ribbon, so the long-form and
+ * rarely-printed fields (notes, timestamps, portal metadata) stay out of it.
  *
  * `width` is millimetres in the PDF. A4 landscape is 297mm wide and the table
- * takes 14mm margins either side, so the fixed widths must total at most 269 —
- * autoTable warns and squeezes columns when they do not. Activity is left
- * unset so it absorbs whatever is left over.
+ * takes 14mm margins either side, so the printed widths must total at most 269 —
+ * autoTable warns and squeezes columns when they do not. Activity is left unset
+ * so it absorbs whatever is left over.
  */
 const COLUMNS = [
-  { key: 'when', header: 'Date & time', width: 32 },
-  { key: 'groupName', header: 'Group', width: 28 },
-  { key: 'taskName', header: 'Task', width: 44 },
-  { key: 'actorName', header: 'Who', width: 28 },
-  { key: 'eventLabel', header: 'Event', width: 28 },
+  { key: 'when', header: 'Date & time', width: 24 },
+  { key: 'groupName', header: 'Group', width: 20 },
+  { key: 'taskName', header: 'Task', width: 32 },
+  { key: 'isSubitem', header: 'Subitem', csvOnly: true },
+  { key: 'status', header: 'Status', width: 18 },
+  { key: 'priority', header: 'Priority', width: 14 },
+  { key: 'assignees', header: 'Assignees', width: 26 },
+  { key: 'dueDate', header: 'Due date', width: 18 },
+  { key: 'labels', header: 'Labels', width: 22 },
+  { key: 'checklist', header: 'Checklist', width: 14 },
+  { key: 'note', header: 'Task notes', csvOnly: true },
+  { key: 'taskSource', header: 'Task source', csvOnly: true },
+  { key: 'portalRef', header: 'Ticket #', csvOnly: true },
+  { key: 'portalType', header: 'Request type', csvOnly: true },
+  { key: 'taskCreatedAt', header: 'Task created', csvOnly: true },
+  { key: 'taskUpdatedAt', header: 'Task last updated', csvOnly: true },
+  { key: 'actorName', header: 'Who', width: 20 },
+  { key: 'eventLabel', header: 'Event', width: 20 },
+  { key: 'field', header: 'Field changed', csvOnly: true },
   { key: 'description', header: 'Activity' },
 ];
+
+/** The PDF's subset, in the same order. */
+const PDF_COLUMNS = COLUMNS.filter((c) => !c.csvOnly);
 
 /** "12 Mar 2026, 14:05" — sortable-ish, unambiguous, and locale-independent. */
 const MONTHS = [
@@ -48,15 +74,56 @@ const formatWhen = (iso) => {
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}, ${hh}:${mm}`;
 };
 
+/** A `YYYY-MM-DD` range boundary as prose: "6 Aug 2026". */
+const prettyDay = (yyyyMmDd) => {
+  const [y, m, d] = String(yyyyMmDd).split('-').map(Number);
+  if (!y || !m || !d) return yyyyMmDd;
+  return `${d} ${MONTHS[m - 1]} ${y}`;
+};
+
+/** Date only — a due date has no meaningful time of day. */
+const formatDay = (iso) => {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+};
+
+/** 'meta_ads' → 'Meta ads', 'dueDate' → 'Due date'. */
+const humanize = (value) => {
+  const s = String(value || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim();
+  return s ? s.charAt(0).toUpperCase() + s.slice(1).toLowerCase() : '';
+};
+
 /** Subitems are tasks too; mark them so the report doesn't read as duplicates. */
 const displayTask = (row) => (row.isSubitem ? `↳ ${row.taskName}` : row.taskName);
 
+const list = (values) => (Array.isArray(values) ? values.join(', ') : '');
+
 const toCells = (row) => ({
   when: formatWhen(row.at),
-  groupName: row.groupName || '—',
+  groupName: row.groupName,
   taskName: displayTask(row),
+  isSubitem: row.isSubitem ? 'Yes' : '',
+  status: row.status || '',
+  priority: humanize(row.priority),
+  assignees: list(row.assignees),
+  dueDate: row.dueDate ? formatDay(row.dueDate) : '',
+  labels: list(row.labels),
+  // A task with no checklist reports blank, not "0/0" — the distinction between
+  // "nothing ticked" and "no checklist" is the one a reader actually needs.
+  checklist: row.checklistTotal ? `${row.checklistDone}/${row.checklistTotal}` : '',
+  note: row.note || '',
+  taskSource: humanize(row.taskSource),
+  portalRef: row.portalRef ? `#${row.portalRef}` : '',
+  portalType: humanize(row.portalType),
+  taskCreatedAt: row.taskCreatedAt ? formatWhen(row.taskCreatedAt) : '',
+  taskUpdatedAt: row.taskUpdatedAt ? formatWhen(row.taskUpdatedAt) : '',
   actorName: row.actorType === 'client' ? `${row.actorName} (client)` : row.actorName,
   eventLabel: row.eventLabel,
+  field: humanize(row.field),
   description: row.description,
 });
 
@@ -68,8 +135,12 @@ const slug = (name) =>
     .replace(/^-+|-+$/g, '')
     .slice(0, 40) || 'board';
 
-export const exportFilename = (payload, extension) =>
-  `${slug(payload.board?.name)}-activity-${payload.range.from}-to-${payload.range.to}.${extension}`;
+export const exportFilename = (payload, extension) => {
+  const { from, to } = payload.range;
+  // A single-day export ("Today") would otherwise repeat the same date twice.
+  const window = from === to ? from : `${from}-to-${to}`;
+  return `${slug(payload.board?.name)}-activity-${window}.${extension}`;
+};
 
 // ---------------------------------------------------------------------------
 // CSV
@@ -87,8 +158,31 @@ const csvField = (value) => {
 
 const BOM = '\uFEFF';
 
+/**
+ * What an empty window says.
+ *
+ * A quiet day is a finding, not an error: "nobody touched this board today" is
+ * the answer to a real question, and a report that refuses to exist cannot be
+ * filed, attached to an email or diffed against yesterday's. So the file is
+ * always written, and it names the board and the window it found nothing in.
+ */
+const emptyNotice = (payload) => {
+  const { from, to } = payload.range;
+  const when = from === to ? `on ${prettyDay(from)}` : `between ${prettyDay(from)} and ${prettyDay(to)}`;
+  return `No activity was recorded on ${payload.board?.name || 'this board'} ${when}.`;
+};
+
 export const rowsToCsv = (payload) => {
   const lines = [COLUMNS.map((c) => csvField(c.header)).join(',')];
+  if (!payload.rows.length) {
+    // One row, so the sheet still parses as a single table rather than as a
+    // header stranded above nothing.
+    const blank = Object.fromEntries(COLUMNS.map((c) => [c.key, '']));
+    blank.when = prettyDay(payload.range.from);
+    blank.description = emptyNotice(payload);
+    lines.push(COLUMNS.map((c) => csvField(blank[c.key])).join(','));
+    return `${BOM}${lines.join('\r\n')}\r\n`;
+  }
   for (const row of payload.rows) {
     const cells = toCells(row);
     lines.push(COLUMNS.map((c) => csvField(cells[c.key])).join(','));
@@ -108,15 +202,9 @@ export const downloadCsv = (payload) => {
 // PDF
 // ---------------------------------------------------------------------------
 
-const prettyDay = (yyyyMmDd) => {
-  const [y, m, d] = String(yyyyMmDd).split('-').map(Number);
-  if (!y || !m || !d) return yyyyMmDd;
-  return `${d} ${MONTHS[m - 1]} ${y}`;
-};
-
 export const downloadPdf = (payload) => {
-  // Landscape: six columns of prose do not fit portrait without wrapping the
-  // description into an unreadable ribbon.
+  // Landscape: this many columns of prose do not fit portrait without wrapping
+  // the description into an unreadable ribbon.
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
@@ -129,7 +217,9 @@ export const downloadPdf = (payload) => {
   doc.setFontSize(9.5);
   doc.setTextColor(110);
   doc.text(
-    `${prettyDay(payload.range.from)} to ${prettyDay(payload.range.to)}` +
+    (payload.range.from === payload.range.to
+      ? prettyDay(payload.range.from)
+      : `${prettyDay(payload.range.from)} to ${prettyDay(payload.range.to)}`) +
       `   ·   ${payload.totalCount} event${payload.totalCount === 1 ? '' : 's'}` +
       `   ·   generated ${formatWhen(payload.generatedAt)}`,
     14,
@@ -145,19 +235,32 @@ export const downloadPdf = (payload) => {
   }
   doc.setTextColor(0);
 
+  if (!payload.rows.length) {
+    // The title and the range line above already name the board and the window;
+    // this is the sentence that stops a one-line PDF reading as a failed export.
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(11);
+    doc.setTextColor(90);
+    doc.text(emptyNotice(payload), 14, 40);
+    saveBlob(doc.output('blob'), exportFilename(payload, 'pdf'));
+    return;
+  }
+
   autoTable(doc, {
     startY: payload.truncated ? 32 : 27,
-    head: [COLUMNS.map((c) => c.header)],
+    head: [PDF_COLUMNS.map((c) => c.header)],
     body: payload.rows.map((row) => {
       const cells = toCells(row);
-      return COLUMNS.map((c) => cells[c.key]);
+      // An empty cell in a printed grid reads as a rendering fault; on screen in
+      // a spreadsheet it reads as "not set", which is why only the PDF dashes.
+      return PDF_COLUMNS.map((c) => cells[c.key] || '—');
     }),
-    styles: { fontSize: 8, cellPadding: 1.8, overflow: 'linebreak', valign: 'top' },
+    styles: { fontSize: 7, cellPadding: 1.4, overflow: 'linebreak', valign: 'top' },
     headStyles: { fillColor: [45, 55, 72], textColor: 255, fontStyle: 'bold' },
     alternateRowStyles: { fillColor: [247, 248, 250] },
     columnStyles: Object.fromEntries(
-      COLUMNS.filter((c) => c.width).map((c) => [
-        COLUMNS.indexOf(c),
+      PDF_COLUMNS.filter((c) => c.width).map((c) => [
+        PDF_COLUMNS.indexOf(c),
         { cellWidth: c.width },
       ])
     ),

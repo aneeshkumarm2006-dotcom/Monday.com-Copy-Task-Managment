@@ -44,6 +44,27 @@ const MAX_RANGE_DAYS = 366;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * The task-field columns for a row whose task no longer exists. Deleted tasks
+ * keep their events — that is half of what an audit export is for — so the row
+ * stays and reports blanks rather than being dropped or left ragged.
+ */
+const EMPTY_TASK_FIELDS = {
+  status: '',
+  priority: '',
+  assignees: [],
+  dueDate: '',
+  labels: [],
+  checklistDone: 0,
+  checklistTotal: 0,
+  note: '',
+  taskSource: '',
+  portalRef: '',
+  portalType: '',
+  taskCreatedAt: '',
+  taskUpdatedAt: '',
+};
+
+/**
  * Parse a `YYYY-MM-DD` (or any Date-parseable) query value into a Date.
  * `endOfDay` makes `to` inclusive — a user asking for "1st to 5th" means through
  * the end of the 5th, not 00:00 on it.
@@ -139,12 +160,6 @@ const getActivityExport = async (req, res) => {
     const entries = truncated ? raw.slice(0, MAX_ROWS) : raw;
 
     // ── Hydrate, all in batch ───────────────────────────────────────────────
-    const userIds = collectUserIds(entries);
-    const users = userIds.length
-      ? await User.find({ _id: { $in: userIds } }).select('name profilePic').lean()
-      : [];
-    const userMap = new Map(users.map((u) => [u._id.toString(), u]));
-
     const groups = await TaskGroup.find({ board: boardId }).select('name').lean();
     const groupMap = new Map(groups.map((g) => [g._id.toString(), g.name]));
     // Groups drive what is visible on a board, so a task whose group was deleted
@@ -156,10 +171,58 @@ const getActivityExport = async (req, res) => {
     const taskIds = [...new Set(entries.map((e) => e.task?.toString()).filter(Boolean))];
     const tasks = taskIds.length
       ? await Task.find({ _id: { $in: taskIds } })
-          .select('name group parent isPersonal')
+          .select(
+            'name group parent isPersonal status priority assignedTo dueDate '
+            + 'labels checklist note source portalRef portalType createdAt updatedAt'
+          )
           .lean()
       : [];
     const taskMap = new Map(tasks.map((t) => [t._id.toString(), t]));
+
+    // Users referenced by the log AND by the assignee snapshot below, resolved in
+    // one query — the assignees of a task are frequently nobody who appears in
+    // the window's events, so the log's own ids are not enough.
+    const userIds = new Set(collectUserIds(entries));
+    for (const t of tasks) {
+      for (const id of t.assignedTo || []) userIds.add(id.toString());
+    }
+    const users = userIds.size
+      ? await User.find({ _id: { $in: [...userIds] } }).select('name profilePic').lean()
+      : [];
+    const userMap = new Map(users.map((u) => [u._id.toString(), u]));
+
+    /**
+     * The task's fields as they stand NOW, repeated on every row for that task.
+     *
+     * Deliberately the current values, not the values at the moment of the event:
+     * the log records changes, not snapshots, so an as-of reconstruction would be
+     * a guess for any field whose history starts before the window. A task that
+     * has never had a due date simply reports an empty one, which is the point —
+     * every column is present on every row so the sheet can be filtered and
+     * pivoted, and blank means "not set" rather than "not exported".
+     */
+    const taskFields = (task) => {
+      if (!task) return EMPTY_TASK_FIELDS;
+      const status = resolveFieldValue('status', task.status, ctx.board, userMap);
+      const labels = resolveFieldValue('labels', task.labels, ctx.board, userMap);
+      const assignees = resolveFieldValue('assignees', task.assignedTo, ctx.board, userMap);
+      const checklist = task.checklist || [];
+      return {
+        status: (status && status.name) || '',
+        priority: task.priority || '',
+        assignees: (assignees || []).map((a) => a.name),
+        dueDate: task.dueDate ? new Date(task.dueDate).toISOString() : '',
+        labels: (labels || []).map((l) => l.name),
+        checklistDone: checklist.filter((c) => c.done).length,
+        checklistTotal: checklist.length,
+        note: task.note || '',
+        taskSource: task.source || 'internal',
+        portalRef: task.portalRef || '',
+        portalType: task.portalType || '',
+        taskCreatedAt: task.createdAt ? new Date(task.createdAt).toISOString() : '',
+        taskUpdatedAt: task.updatedAt ? new Date(task.updatedAt).toISOString() : '',
+      };
+    };
 
     const rows = [];
     for (const e of entries) {
@@ -202,6 +265,7 @@ const getActivityExport = async (req, res) => {
         eventLabel: eventLabel(e.type),
         field: e.field || '',
         description: describeActivity(hydrated, groupNames),
+        ...taskFields(task),
       });
     }
 
