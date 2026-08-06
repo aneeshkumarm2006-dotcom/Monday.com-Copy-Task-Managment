@@ -17,6 +17,25 @@ export const isImageAttachment = (attachment) =>
   (attachment?.mime || '').startsWith('image/');
 
 /**
+ * Hand a Blob to the browser as a download.
+ *
+ * The anchor-click dance is the only way to name a downloaded blob, and it has
+ * to revoke the object URL afterwards or the blob is pinned in memory for the
+ * life of the document. Split out so locally-generated files (the board
+ * activity export's CSV and PDF) and proxied attachments share one copy of it.
+ */
+export const saveBlob = (blob, name = 'download') => {
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(objectUrl);
+};
+
+/**
  * Programmatically download a file attachment.
  *
  * Images open in a new tab directly (no auth needed, Cloudinary serves them).
@@ -43,15 +62,7 @@ export const downloadFile = async (url, mime = '', name = 'file') => {
     });
     if (!res.ok) throw new Error(`Server returned ${res.status}`);
 
-    const blob = await res.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = objectUrl;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(objectUrl);
+    saveBlob(await res.blob(), name);
   } catch (err) {
     console.error('File download failed:', err);
   }

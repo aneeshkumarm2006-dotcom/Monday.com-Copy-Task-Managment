@@ -36,6 +36,58 @@ const updateProfile = async (req, res) => {
 };
 
 /**
+ * The opt-in extras a user may switch on for themselves. Whitelisted rather than
+ * spread from the body: `features` sits on the User document next to `email` and
+ * `organisations`, so an unfiltered `$set` here would be a write primitive into
+ * the identity record.
+ */
+const FEATURE_KEYS = ['activityExport'];
+
+/**
+ * PUT /api/profile/features — toggle the current user's opt-in extras.
+ *
+ * Partial body: { activityExport: true }. Unknown keys and non-booleans are
+ * ignored, so a client sending a wider object cannot flip anything it was not
+ * offered.
+ *
+ * A feature being ON here does NOT grant permission — it only records that the
+ * user asked for it. Every feature still checks its own capability at the point
+ * of use (`board.export_activity` for the export). A member who somehow sets
+ * this flag gains nothing.
+ */
+const updateFeatures = async (req, res) => {
+  try {
+    const body = req.body || {};
+    const update = {};
+
+    for (const key of FEATURE_KEYS) {
+      if (typeof body[key] === 'boolean') {
+        update[`features.${key}`] = body[key];
+      }
+    }
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'No valid feature flags supplied' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.userId,
+      { $set: update },
+      { new: true }
+    ).select('-__v');
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.json({ user });
+  } catch (err) {
+    console.error('updateFeatures error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
  * POST /api/profile/upload-avatar — Upload a new profile picture.
  * Multer + Cloudinary have already uploaded and transformed the image.
  * Here we just persist the resulting URL to the user record.
@@ -130,6 +182,7 @@ const deleteAccount = async (req, res) => {
 
 module.exports = {
   updateProfile,
+  updateFeatures,
   uploadAvatar,
   deleteAccount,
 };

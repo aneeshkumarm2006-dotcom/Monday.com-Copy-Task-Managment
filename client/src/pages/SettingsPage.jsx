@@ -7,6 +7,7 @@ import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
 import Modal from '../components/ui/Modal';
 import NotificationPreferences from '../components/notifications/NotificationPreferences';
+import ExtraFeaturesTab from '../components/settings/ExtraFeaturesTab';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import usePermissionStore from '../store/permissionStore';
@@ -726,6 +727,9 @@ const SettingsPage = () => {
 
   // The Organisation tab is nothing but org settings — the invite code lives there.
   const canManageOrg = can('org.manage_settings');
+  // Extra features only exists if at least one opt-in tool is available to you.
+  // Today that is the board activity export; add to this OR as more land.
+  const canExtraFeatures = can('board.export_activity');
   const permissionsResolved =
     !!currentOrg && !permissionsLoading && loadedForOrg === currentOrg._id;
 
@@ -741,10 +745,10 @@ const SettingsPage = () => {
   // have actually resolved for this org. Capabilities start empty, so deciding
   // early would strand a manager on Profile and never send them back.
   useEffect(() => {
-    if (permissionsResolved && !canManageOrg && activeTab === 'organisation') {
-      setActiveTab('profile');
-    }
-  }, [permissionsResolved, canManageOrg, activeTab]);
+    if (!permissionsResolved) return;
+    if (!canManageOrg && activeTab === 'organisation') setActiveTab('profile');
+    if (!canExtraFeatures && activeTab === 'features') setActiveTab('profile');
+  }, [permissionsResolved, canManageOrg, canExtraFeatures, activeTab]);
 
   // Fetch org details (with inviteCode) for Organisation tab
   useEffect(() => {
@@ -814,6 +818,11 @@ const SettingsPage = () => {
         </div>
       );
     }
+    if (activeTab === 'features' && canExtraFeatures) {
+      return <ExtraFeaturesTab />;
+    }
+    // Deliberate fall-through: anything unrecognised lands on Profile, which is
+    // the one tab every member can always see.
     return (
       <ProfileTab
         user={user}
@@ -852,11 +861,13 @@ const SettingsPage = () => {
             activeTab={activeTab}
             onTabChange={setActiveTab}
             showAdminTabs={canManageOrg}
+            canExtraFeatures={canExtraFeatures}
           />
           <SettingsTabBar
             activeTab={activeTab}
             onTabChange={setActiveTab}
             showAdminTabs={canManageOrg}
+            canExtraFeatures={canExtraFeatures}
           />
           <div className="flex-1 p-5 md:p-8">
             {renderTab()}

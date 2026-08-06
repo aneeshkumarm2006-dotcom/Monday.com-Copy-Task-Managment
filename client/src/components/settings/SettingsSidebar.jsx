@@ -1,22 +1,40 @@
-import { Building2, UserCircle2, Bell } from 'lucide-react';
+import { Building2, UserCircle2, Bell, FlaskConical } from 'lucide-react';
 
 /**
  * SettingsSidebar — left-rail tab nav used exclusively by the Settings page.
  * See Macan_Design.md Section 6.14 and 7.8.
  *
  * Props:
- *   activeTab: 'organisation' | 'members' | 'profile'
+ *   activeTab: 'organisation' | 'profile' | 'notifications' | 'features'
  *   onTabChange: (tab) => void
  *   showAdminTabs: boolean — hide Organisation tab for non-admins
+ *   canExtraFeatures: boolean — hide Extra features unless the caller holds a
+ *     capability for at least one opt-in tool. Kept as its own flag rather than
+ *     folded into `showAdminTabs`, because the two answer different questions:
+ *     one is "may you run the workspace", the other is "is there anything in
+ *     here for you".
  */
 const TABS = [
   { key: 'organisation', label: 'Organisation', icon: Building2, adminOnly: true },
   { key: 'profile', label: 'Profile', icon: UserCircle2, adminOnly: false },
   { key: 'notifications', label: 'Notifications', icon: Bell, adminOnly: false },
+  { key: 'features', label: 'Extra features', icon: FlaskConical, featureTab: true },
 ];
 
-const SettingsSidebar = ({ activeTab, onTabChange, showAdminTabs = true }) => {
-  const tabs = TABS.filter((t) => showAdminTabs || !t.adminOnly);
+const visibleTabs = (showAdminTabs, canExtraFeatures) =>
+  TABS.filter(
+    (t) =>
+      (showAdminTabs || !t.adminOnly) &&
+      (!t.featureTab || canExtraFeatures)
+  );
+
+const SettingsSidebar = ({
+  activeTab,
+  onTabChange,
+  showAdminTabs = true,
+  canExtraFeatures = false,
+}) => {
+  const tabs = visibleTabs(showAdminTabs, canExtraFeatures);
 
   return (
     <aside
@@ -77,8 +95,13 @@ const SettingsSidebar = ({ activeTab, onTabChange, showAdminTabs = true }) => {
  * Horizontal tab bar version for mobile (<768px).
  * Stacked above content instead of left rail.
  */
-export const SettingsTabBar = ({ activeTab, onTabChange, showAdminTabs = true }) => {
-  const tabs = TABS.filter((t) => showAdminTabs || !t.adminOnly);
+export const SettingsTabBar = ({
+  activeTab,
+  onTabChange,
+  showAdminTabs = true,
+  canExtraFeatures = false,
+}) => {
+  const tabs = visibleTabs(showAdminTabs, canExtraFeatures);
   return (
     <div
       className="md:hidden flex items-center gap-1 overflow-x-auto"

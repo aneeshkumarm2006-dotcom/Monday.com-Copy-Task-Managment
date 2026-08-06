@@ -32,6 +32,15 @@ const FIELD_KEYS = [
   'pinned',
 ];
 
+/**
+ * Flexible-column field keys: `column:<column.key>`. Column keys are slugs of
+ * the user-typed column name — `[a-z0-9_]` today, see `slugify` in
+ * controllers/columnController.js. The class here is a little wider so a future
+ * slug format does not silently start failing validation; what it must reject
+ * is whitespace and the empty key.
+ */
+const COLUMN_FIELD_RE = /^column:[\w.-]+$/;
+
 const activityLogSchema = new mongoose.Schema({
   task: {
     type: mongoose.Schema.Types.ObjectId,
@@ -73,10 +82,23 @@ const activityLogSchema = new mongoose.Schema({
     index: true,
   },
   // Only set when type === 'task.field_changed'.
+  //
+  // Two shapes live here: one of the fixed FIELD_KEYS above, or `column:<key>`
+  // for a flexible column, whose keys are created by users at runtime and so can
+  // never be enumerated. This used to be a plain `enum: FIELD_KEYS`, which
+  // rejected every `column:*` write — and because `logActivity` swallows its own
+  // errors, connect-column link/unlink events were silently never recorded at
+  // all. A validator rather than an enum is what makes both shapes storable.
   field: {
     type: String,
-    enum: FIELD_KEYS,
     default: null,
+    validate: {
+      validator: function validateField(v) {
+        if (v === null || v === undefined) return true;
+        return FIELD_KEYS.includes(v) || COLUMN_FIELD_RE.test(v);
+      },
+      message: (props) => `${props.value} is not a valid activity field`,
+    },
   },
   // Raw ObjectId, string, date, or array. Resolved to display values in the GET response.
   oldValue: { type: mongoose.Schema.Types.Mixed, default: null },
@@ -93,8 +115,13 @@ const activityLogSchema = new mongoose.Schema({
 // Compound index: paginated reads filter by task and sort by createdAt desc.
 activityLogSchema.index({ task: 1, createdAt: -1 });
 
+// The board activity export reads one board over one date range, ordered by
+// time. The single-field `board` index alone would leave that sort in memory.
+activityLogSchema.index({ board: 1, createdAt: -1 });
+
 const Model = mongoose.model('ActivityLog', activityLogSchema);
 Model.ACTIVITY_TYPES = ACTIVITY_TYPES;
 Model.FIELD_KEYS = FIELD_KEYS;
+Model.COLUMN_FIELD_RE = COLUMN_FIELD_RE;
 
 module.exports = Model;

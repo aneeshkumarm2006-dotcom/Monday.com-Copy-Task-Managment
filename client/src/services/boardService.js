@@ -206,3 +206,20 @@ export const reorderStatuses = async (boardId, orderedIds) => {
   });
   return data.statuses;
 };
+
+/**
+ * Every activity event recorded on a board between two dates (inclusive,
+ * `YYYY-MM-DD`). Returns the raw payload — board, range, rows and the
+ * `truncated` flag — which utils/activityExport.js turns into a CSV or PDF.
+ *
+ * 403s when the caller lacks `board.export_activity` OR has not switched the
+ * feature on in Settings → Extra features; the modal surfaces the server's own
+ * message, which distinguishes the two.
+ */
+export const getActivityExport = async (boardId, { from, to }) => {
+  const { data } = await api.get(`/api/boards/${boardId}/activity-export`, {
+    params: { from, to },
+    suppressErrorToast: true,
+  });
+  return data;
+};

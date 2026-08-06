@@ -11,6 +11,7 @@ import {
   SearchX,
   UserPlus,
   ArrowDownUp,
+  Download,
 } from 'lucide-react';
 import {
   DndContext,
@@ -45,6 +46,7 @@ import GroupNotesPanel from '../components/board/GroupNotesPanel';
 import ClientPortalModal from '../components/board/ClientPortalModal';
 import ClientSignInMethodField from '../components/board/ClientSignInMethodField';
 import AutomationsModal from '../components/board/AutomationsModal';
+import ExportActivityModal from '../components/board/ExportActivityModal';
 import LabelPicker from '../components/board/LabelPicker';
 import EditChipsModal from '../components/board/EditChipsModal';
 import BulkActionBar from '../components/board/BulkActionBar';
@@ -219,6 +221,8 @@ const BoardDetailPage = () => {
   const [automationsOpen, setAutomationsOpen] = useState(false);
   // Board access ("Share") modal — creator-only
   const [accessModalOpen, setAccessModalOpen] = useState(false);
+  // Activity export modal — opt-in feature, see canExportActivity below
+  const [exportOpen, setExportOpen] = useState(false);
 
   // --- Filtering ---------------------------------------------------------
   // Filter bar at the top of the board narrows the visible tasks by name,
@@ -283,6 +287,13 @@ const BoardDetailPage = () => {
   // "May I restructure this board" — the old `canEdit` bit, now derived from the
   // capabilities rather than re-guessed.
   const canEdit = canOnBoard('task.edit_any') && canOnBoard('group.manage');
+
+  // Activity export is TWO conditions, not one. `board.export_activity` says the
+  // role permits it; `features.activityExport` says this person switched it on
+  // in Settings → Extra features, which is off for everyone until they do. Both
+  // are re-checked by the endpoint — this only decides whether to draw a button.
+  const canExportActivity =
+    canOnBoard('board.export_activity') && !!currentUser?.features?.activityExport;
 
   // Client Portal boards expose a per-group shareable client link, managed only
   // by board managers. `clientPortalGroup` holds the group whose link modal is open.
@@ -1300,7 +1311,10 @@ const BoardDetailPage = () => {
           </p>
         </div>
 
-        {(canEdit || isBoardCreator) && (
+        {/* `canExportActivity` widens this row deliberately: export is not an
+            editing right, so an admin with read-only access to a board must
+            still get the button. Every control inside carries its own gate. */}
+        {(canEdit || isBoardCreator || canExportActivity) && (
           <div className="flex items-center gap-2 shrink-0">
             {canViewAccess && !isPublic && (
               <Button
@@ -1318,6 +1332,15 @@ const BoardDetailPage = () => {
                 onClick={() => setAutomationsOpen(true)}
               >
                 Automations
+              </Button>
+            )}
+            {canExportActivity && (
+              <Button
+                variant="secondary"
+                icon={Download}
+                onClick={() => setExportOpen(true)}
+              >
+                Export
               </Button>
             )}
             {canEdit && (
@@ -1986,6 +2009,15 @@ const BoardDetailPage = () => {
           groups={groups}
           members={members}
           isAdmin={canOnBoard('automation.manage')}
+        />
+      )}
+
+      {/* Activity export (opt-in feature + capability, both re-checked server-side) */}
+      {canExportActivity && (
+        <ExportActivityModal
+          isOpen={exportOpen}
+          onClose={() => setExportOpen(false)}
+          board={board}
         />
       )}
 

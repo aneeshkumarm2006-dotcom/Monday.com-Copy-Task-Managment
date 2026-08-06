@@ -3,6 +3,9 @@ const ActivityLog = require('../models/ActivityLog');
 const Task = require('../models/Task');
 const User = require('../models/User');
 const { loadBoardContext } = require('../utils/boardContext');
+// Value resolution is shared with the board activity export so the timeline and
+// the exported report can never describe the same row differently.
+const { resolveFieldValue, collectUserIds } = require('../services/activityFormat');
 
 /**
  * Who may read a task's history.
@@ -30,69 +33,6 @@ const checkTaskAccess = async (task, userId) => {
   const ctx = await loadBoardContext(task.board, userId);
   if (ctx.error) return { status: ctx.status, error: ctx.error };
   return { ok: true, board: ctx.board };
-};
-
-/**
- * Resolve a single value (or array of values) for a given field into a shape
- * the frontend can render directly without extra round-trips.
- *
- * Resolution map:
- *   - status  → { id, name, color } from board.statuses
- *   - labels  → [{ id, name, color }] from board.labels
- *   - assignees → [{ id, name, profilePic }] from userMap
- *   - others (name, note, priority, dueDate, group) → raw value
- */
-const resolveFieldValue = (field, value, board, userMap) => {
-  if (value === null || value === undefined) return null;
-
-  if (field === 'status') {
-    if (!board) return value;
-    const idStr = value.toString();
-    const found = board.statuses?.find((s) => s._id.toString() === idStr);
-    if (!found) return { id: idStr, name: 'Unknown', color: null };
-    return { id: idStr, name: found.name, color: found.color };
-  }
-
-  if (field === 'labels') {
-    if (!Array.isArray(value)) return [];
-    if (!board) return value;
-    return value.map((id) => {
-      const idStr = id.toString();
-      const found = board.labels?.find((l) => l._id.toString() === idStr);
-      return found
-        ? { id: idStr, name: found.name, color: found.color }
-        : { id: idStr, name: 'Unknown', color: null };
-    });
-  }
-
-  if (field === 'assignees') {
-    if (!Array.isArray(value)) return [];
-    return value.map((id) => {
-      const idStr = id.toString();
-      const u = userMap.get(idStr);
-      return u
-        ? { id: idStr, name: u.name, profilePic: u.profilePic }
-        : { id: idStr, name: 'Unknown', profilePic: null };
-    });
-  }
-
-  return value;
-};
-
-/**
- * Collect every user id referenced across a batch of activity entries so we
- * can fetch them all in one go (avoids N+1).
- */
-const collectUserIds = (entries) => {
-  const ids = new Set();
-  for (const e of entries) {
-    if (e.actor) ids.add(e.actor.toString());
-    if (e.field === 'assignees') {
-      if (Array.isArray(e.oldValue)) e.oldValue.forEach((id) => id && ids.add(id.toString()));
-      if (Array.isArray(e.newValue)) e.newValue.forEach((id) => id && ids.add(id.toString()));
-    }
-  }
-  return Array.from(ids);
 };
 
 /**

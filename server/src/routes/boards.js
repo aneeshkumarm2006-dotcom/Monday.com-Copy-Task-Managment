@@ -27,6 +27,7 @@ const {
   reorderColumns,
   deleteColumn,
 } = require('../controllers/columnController');
+const { getActivityExport } = require('../controllers/boardExportController');
 
 const router = express.Router();
 
@@ -81,5 +82,11 @@ router.get('/:id/connectable',        getConnectableBoards);
 // members the owner gave full access. All enforced in the controller.
 router.get('/:id/access',             getBoardAccess);
 router.put('/:id/access',             setBoardAccess);
+
+// --- Activity export -------------------------------------------------------
+// Every event recorded on the board within a date range. Gated three ways in
+// the controller: board read access, `board.export_activity`, and the caller's
+// own `features.activityExport` opt-in.
+router.get('/:id/activity-export',    getActivityExport);
 
 module.exports = router;

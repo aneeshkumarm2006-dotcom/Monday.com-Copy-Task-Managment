@@ -95,6 +95,7 @@ const CAPABILITY_GROUPS = [
     capabilities: [
       ['analytics.view', 'Board analytics and dashboards'],
       ['productivity.view_others', "See other people's productivity"],
+      ['board.export_activity', "Export a board's activity log"],
     ],
   },
 ];
@@ -117,6 +118,12 @@ const isCapability = (key) => CAPABILITY_SET.has(key);
  * board-visibility capabilities (`board.view_public`, `board.manage_public`,
  * `board.view_all_private) — those decide *whether* and *how far* you reach a
  * board in the first place, so gating them on board access would be circular.
+ *
+ * `board.export_activity` is deliberately org-scoped too, for the same reason
+ * `analytics.view` is: no rung of LEVEL_ADDS confers it, so board-scoping it
+ * would AND it away for everyone except the board's own creator. The export
+ * endpoint still runs through `loadBoardContext`, so board READ access gates
+ * which boards it reaches — which is the whole ceiling it needs.
  */
 const BOARD_SCOPED = new Set([
   'board.rename',
@@ -320,9 +327,20 @@ const SYSTEM_ROLES = [
       'automation.manage',
       'analytics.view',
       'productivity.view_others',
+      // Holding this only makes the export *possible*. Each admin still has to
+      // switch `features.activityExport` on for themselves in Settings → Extra
+      // features before the button appears or the endpoint answers.
+      'board.export_activity',
     ],
     // NOT granted by default, on purpose: `board.view_all_private` (private
     // stays private until you say otherwise).
+    //
+    // NOTE for existing workspaces: `ensureSystemRoles` only seeds MISSING
+    // ROLES, never missing capabilities on roles that already exist. So an org
+    // created before this capability landed keeps its stored admin permission
+    // list, and an admin there has to tick `board.export_activity` on once in
+    // Members → Permissions. The owner is unaffected — the resolver
+    // short-circuits them to the full catalog.
   },
   {
     key: 'member',

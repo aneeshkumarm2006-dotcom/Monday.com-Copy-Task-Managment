@@ -200,6 +200,29 @@ const renderBody = (entry) => {
   }
 
   if (entry.type === 'task.field_changed') {
+    // Flexible columns log `column:<key>`, which is a storage key and not a
+    // name. The writer carries the column's label in metadata, so use that
+    // rather than showing the user "column:owner_2".
+    if (typeof entry.field === 'string' && entry.field.startsWith('column:')) {
+      const colLabel = entry.metadata?.columnLabel || 'a column';
+      const before = Array.isArray(entry.oldValue) ? entry.oldValue.length : null;
+      const after = Array.isArray(entry.newValue) ? entry.newValue.length : null;
+      if (before !== null && after !== null && before !== after) {
+        const n = Math.abs(after - before);
+        return (
+          <span>
+            {Actor} {after > before ? 'linked' : 'unlinked'} {n} item{n === 1 ? '' : 's'} in{' '}
+            <Quoted>{colLabel}</Quoted>.
+          </span>
+        );
+      }
+      return (
+        <span>
+          {Actor} updated <Quoted>{colLabel}</Quoted>.
+        </span>
+      );
+    }
+
     const label = FIELD_LABELS[entry.field] || entry.field;
 
     if (entry.field === 'assignees') {

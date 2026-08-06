@@ -153,7 +153,9 @@ const linkTask = async (req, res) => {
       field: `column:${column.key}`,
       oldValue: current,
       newValue: serialized.links,
-      metadata: { taskName: task.name },
+      // `column:<key>` is not a human-readable field name, so carry the column's
+      // display name for the activity feed and the board export to render.
+      metadata: { taskName: task.name, columnLabel: column.name },
     });
 
     return res.json({ value: serialized, links: serialized.links });
@@ -215,7 +217,7 @@ const unlinkTask = async (req, res) => {
       field: `column:${column.key}`,
       oldValue: current,
       newValue: serialized.links,
-      metadata: { taskName: task.name },
+      metadata: { taskName: task.name, columnLabel: column.name },
     });
 
     return res.json({ value: serialized, links: serialized.links });
