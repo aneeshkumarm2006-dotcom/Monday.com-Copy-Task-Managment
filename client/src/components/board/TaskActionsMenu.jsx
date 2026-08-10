@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Pencil, Trash2, Pin, PinOff } from 'lucide-react';
+import { Pencil, Trash2, Pin, PinOff, Eye, EyeOff } from 'lucide-react';
 
 /**
  * TaskActionsMenu — small popover shown when the ⋯ button on a task row
@@ -10,14 +10,16 @@ import { Pencil, Trash2, Pin, PinOff } from 'lucide-react';
  * is one click away. A task floats if either is set.
  *
  * Props:
- *   anchorEl       — DOM element the menu is positioned below
- *   pinnedForAll   — task is pinned for everyone on the board
- *   pinnedForMe    — task is pinned in this browser only
- *   onPinTeam      — callback to toggle the team pin
- *   onPinPersonal  — callback to toggle the personal pin
- *   onEdit         — callback when Edit is clicked
- *   onDelete       — callback when Delete is clicked
- *   onClose        — callback to close the menu
+ *   anchorEl          — DOM element the menu is positioned below
+ *   pinnedForAll      — task is pinned for everyone on the board
+ *   pinnedForMe       — task is pinned in this browser only
+ *   onPinTeam         — callback to toggle the team pin
+ *   onPinPersonal     — callback to toggle the personal pin
+ *   sharedWithClient  — task is currently visible in the client's portal
+ *   onSharePortal     — callback to toggle client visibility (omit to hide the row)
+ *   onEdit            — callback when Edit is clicked
+ *   onDelete          — callback when Delete is clicked
+ *   onClose           — callback to close the menu
  */
 const TaskActionsMenu = ({
   anchorEl,
@@ -25,6 +27,8 @@ const TaskActionsMenu = ({
   pinnedForMe = false,
   onPinTeam,
   onPinPersonal,
+  sharedWithClient = false,
+  onSharePortal,
   onEdit,
   onDelete,
   onClose,
@@ -51,8 +55,9 @@ const TaskActionsMenu = ({
   if (!anchorEl) return null;
 
   const rect = anchorEl.getBoundingClientRect();
-  // Wide enough for the longest label ("Unpin for everyone") without truncating.
-  const MENU_WIDTH = 190;
+  // Wide enough for the longest label ("Hide from client portal") without
+  // truncating.
+  const MENU_WIDTH = 210;
   const top = rect.bottom + 6;
   // Clamp horizontally so the menu never spills past the viewport edge on
   // small screens. On desktop the anchored position is already in-bounds, so
@@ -89,6 +94,13 @@ const TaskActionsMenu = ({
           icon={pinnedForMe ? PinOff : Pin}
           label={pinnedForMe ? 'Unpin for me' : 'Pin for me only'}
           onClick={onPinPersonal}
+        />
+      )}
+      {onSharePortal && (
+        <MenuItem
+          icon={sharedWithClient ? EyeOff : Eye}
+          label={sharedWithClient ? 'Hide from client' : 'Show to client'}
+          onClick={onSharePortal}
         />
       )}
       <MenuItem icon={Pencil} label="Edit" onClick={onEdit} />

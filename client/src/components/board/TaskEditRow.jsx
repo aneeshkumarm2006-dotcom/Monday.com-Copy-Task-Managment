@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Check, X } from 'lucide-react';
+import { Check, X, Eye, EyeOff } from 'lucide-react';
 import Chip from '../ui/Chip';
 import StatusMenu from './StatusMenu';
 import PriorityMenu from './PriorityMenu';
 import AssigneePicker from './AssigneePicker';
 import DatePickerPopover from '../ui/DatePickerPopover';
+import Modal from '../ui/Modal';
+import Button from '../ui/Button';
 import { dateInputToISO } from '../../utils/dateUtils';
 
 const sameStringSet = (a, b) => {
@@ -28,6 +30,8 @@ const sameStringSet = (a, b) => {
  *   onSave       — async (payload) => void
  *   onCancel     — () => void
  *   isLast       — removes bottom border when this is the last row
+ *   askPortalShare — Client Portal boards only: on save, ask whether the new
+ *                  task should also appear in the client's portal
  */
 
 const toDateInputValue = (d) => {
@@ -52,6 +56,7 @@ const TaskEditRow = ({
   // When true the name field is indented to align with subtask rows rendered
   // beneath an expanded parent (see TaskTable's SubtaskSection).
   isSubtask = false,
+  askPortalShare = false,
 }) => {
   // Resolve initial status. If the task has one, use it; otherwise pick the
   // first board status (or the legacy `not_started` enum for boardless rows).
@@ -77,6 +82,10 @@ const TaskEditRow = ({
     toDateInputValue(initialTask?.dueDate)
   );
   const [saving, setSaving] = useState(false);
+  // Client Portal: the audience question, asked between "save" and the actual
+  // write. Nothing is created while this is open, so backing out of it returns
+  // the user to a row that still has everything they typed.
+  const [askingShare, setAskingShare] = useState(false);
   const [statusError, setStatusError] = useState('');
   const [statusMenuAnchor, setStatusMenuAnchor] = useState(null);
   const [priorityMenuAnchor, setPriorityMenuAnchor] = useState(null);
@@ -89,8 +98,22 @@ const TaskEditRow = ({
 
   const canSave = name.trim().length > 0 && !saving;
 
-  const handleSave = async () => {
+  // On a Client Portal board the audience of a new task is a real decision, so
+  // it is asked once, at the moment of saving, rather than left to a checkbox
+  // nobody notices in a row of six other controls. Editing an existing task
+  // skips it — the row menu and the task panel own that flip.
+  const handleSave = () => {
     if (!canSave) return;
+    if (!initialTask && askPortalShare) {
+      setAskingShare(true);
+      return;
+    }
+    return commitSave(false);
+  };
+
+  const commitSave = async (portalShared) => {
+    if (!canSave) return;
+    setAskingShare(false);
     setSaving(true);
     setStatusError('');
 
@@ -106,6 +129,9 @@ const TaskEditRow = ({
         assignedTo,
         dueDate: isoDue,
         sendEmailNotification: true,
+        // Only sent when the board actually has a portal to share into; the
+        // server refuses the flag anywhere else rather than quietly ignoring it.
+        ...(askPortalShare ? { portalShared } : {}),
       };
     } else {
       payload = {};
@@ -144,6 +170,7 @@ const TaskEditRow = ({
   };
 
   const handleCancel = () => {
+    setAskingShare(false);
     if (!initialTask) {
       setName('');
       setPriority('medium');
@@ -335,6 +362,64 @@ const TaskEditRow = ({
         onClose={() => setStatusMenuAnchor(null)}
       />
     )}
+    {/* Closing without choosing creates nothing — the row keeps its values so
+        the user can carry on editing. That is why the two real answers are both
+        buttons in the footer and neither is the dialog's dismiss action. */}
+    <Modal
+      isOpen={askingShare}
+      onClose={() => setAskingShare(false)}
+      title="Show this in the client portal?"
+      maxWidth={470}
+      footer={
+        <>
+          <Button
+            variant="secondary"
+            icon={EyeOff}
+            onClick={() => commitSave(false)}
+            disabled={saving}
+          >
+            Keep internal
+          </Button>
+          <Button
+            variant="primary"
+            icon={Eye}
+            onClick={() => commitSave(true)}
+            disabled={saving}
+          >
+            Show to client
+          </Button>
+        </>
+      }
+    >
+      <p
+        className="font-body"
+        style={{
+          fontSize: 14,
+          lineHeight: 1.6,
+          color: 'var(--color-text-secondary)',
+          margin: 0,
+        }}
+      >
+        <strong style={{ color: 'var(--color-text-primary)' }}>
+          {name.trim()}
+        </strong>{' '}
+        is on a client board. Show it in the portal when it&rsquo;s something you
+        need <em>from</em> the client — they&rsquo;ll see its name, status and due
+        date, and can reply on it.
+      </p>
+      <p
+        className="font-body"
+        style={{
+          fontSize: 13,
+          lineHeight: 1.6,
+          color: 'var(--color-text-muted)',
+          margin: '10px 0 0',
+        }}
+      >
+        Assignees, priority and your team&rsquo;s Updates thread stay private
+        either way. You can change this later from the row&rsquo;s ⋯ menu.
+      </p>
+    </Modal>
     </>
   );
 };

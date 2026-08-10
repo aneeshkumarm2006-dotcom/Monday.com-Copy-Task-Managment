@@ -26,6 +26,7 @@ const ClientContact = require('../models/ClientContact');
 const { isResolvedStatus } = require('../utils/doneStatus');
 const { sendPortalResolvedEmail } = require('../services/emailService');
 const { loadRequestAttachments } = require('../utils/portalAttachments');
+const { isClientVisibleTask } = require('../utils/portalVisibility');
 
 /**
  * Client Portal: when a client-submitted task moves to a "done" status, email
@@ -52,12 +53,18 @@ const emailClientOnResolve = async (task, board) => {
 
 /**
  * Client Portal: record a status change as a 'system' timeline event on the
- * task's thread so the client sees "Status changed to X" in their portal. No-op
- * for internal tasks. Best-effort — never blocks the status change.
+ * task's thread so the client sees "Status changed to X" in their portal.
+ * No-op for tasks the client cannot see. Best-effort — never blocks the change.
+ *
+ * Fires for a team-SHARED task too, unlike the resolve email above. The two are
+ * not the same promise: this writes into a thread the client has to come and
+ * look at, and a shared item with a silent status is exactly the "is anyone
+ * looking at this?" the portal exists to answer. Pushing mail to every contact
+ * on the group is the louder act, and stays opt-in work for later.
  */
 const logClientStatusChange = async (task, statusName) => {
   try {
-    if (!task || task.source !== 'client' || !task.portalSubmitter || !statusName) return;
+    if (!isClientVisibleTask(task) || !statusName) return;
     await Update.create({
       task: task._id,
       authorType: 'system',
@@ -66,6 +73,61 @@ const logClientStatusChange = async (task, statusName) => {
     });
   } catch (err) {
     console.error('logClientStatusChange error:', err);
+  }
+};
+
+/**
+ * The gate on publishing an internal task to a client's portal. Shared by the
+ * create path and the standalone toggle so the two can never drift. Returns
+ * `{ status, error }` to refuse, or null to allow.
+ *
+ * `task` may be a not-yet-created draft — only `parent` and `portalSubmitter`
+ * are read.
+ */
+const denyPortalShare = (ctx, task) => {
+  if (ctx.board.boardType !== 'client') {
+    return { status: 400, error: 'This board has no client portal' };
+  }
+  if (task.parent) {
+    // The portal renders a flat list, so a shared subitem would arrive as a
+    // stray top-level card with none of its parent's context.
+    return { status: 400, error: 'Subitems cannot be shared with the client' };
+  }
+  if (task.portalSubmitter) {
+    // A client-raised ticket already reaches the person who raised it. Sharing
+    // is group-wide, so flipping it here would hand one contact's ticket to
+    // everyone else at their company — a disclosure, not a convenience.
+    return {
+      status: 400,
+      error: 'This request came from a client and is already visible to them',
+    };
+  }
+  // Publishing to an outside party is a stronger act than adding a row, so it
+  // answers to the `edit` rung rather than to `task.create`.
+  return requireCapability(
+    ctx,
+    'task.edit_any',
+    'You do not have permission to share tasks with the client'
+  );
+};
+
+/**
+ * Claim the next human-friendly ticket number for a board, so a shared task can
+ * be quoted by the same "REQ-1042" the client sees on client-raised ones.
+ * Mirrors portalController.createMyIssue. Best-effort: a task with no ref still
+ * renders, it just falls back to an id-derived reference.
+ */
+const claimPortalRef = async (boardId) => {
+  try {
+    const bumped = await Board.findByIdAndUpdate(
+      boardId,
+      { $inc: { portalTicketSeq: 1 } },
+      { new: true, select: 'portalTicketSeq' }
+    );
+    return bumped?.portalTicketSeq || null;
+  } catch (err) {
+    console.error('claimPortalRef error:', err);
+    return null;
   }
 };
 
@@ -847,6 +909,7 @@ const createTask = async (req, res) => {
       isPersonal,
       labels,
       parent: parentId,
+      portalShared,
     } = req.body;
 
     if (!name || !name.trim()) {
@@ -965,6 +1028,20 @@ const createTask = async (req, res) => {
       }
     }
 
+    // Client Portal: the creator can publish the task to the client's portal in
+    // the same keystroke ("we need X from you"). Same gate as the standalone
+    // toggle, run against the task we are about to build.
+    const wantsPortalShare = portalShared === true;
+    if (wantsPortalShare) {
+      const shareDenied = denyPortalShare(ctx, {
+        parent: resolvedParent,
+        portalSubmitter: null,
+      });
+      if (shareDenied) {
+        return res.status(shareDenied.status).json({ error: shareDenied.error });
+      }
+    }
+
     // Assign the next order so new tasks land at the end of their group
     // (or end of their parent's subitem list).
     const orderScope = resolvedParent
@@ -990,6 +1067,9 @@ const createTask = async (req, res) => {
       parent: resolvedParent,
       order: nextTaskOrder,
       createdBy: userId,
+      portalShared: wantsPortalShare,
+      portalSharedAt: wantsPortalShare ? new Date() : null,
+      portalRef: wantsPortalShare ? await claimPortalRef(boardId) : null,
     });
 
     await Board.updateOne({ _id: boardId }, { $set: { updatedAt: new Date() } });
@@ -998,7 +1078,11 @@ const createTask = async (req, res) => {
       task,
       actor: userId,
       type: 'task.created',
-      metadata: { taskName: task.name, isSubitem: !!resolvedParent },
+      metadata: {
+        taskName: task.name,
+        isSubitem: !!resolvedParent,
+        portalShared: wantsPortalShare,
+      },
     });
 
     // Fan out an item.created event for ITEM_CREATED automations. Subitems
@@ -1882,6 +1966,80 @@ const setTaskPinned = async (req, res) => {
 };
 
 /**
+ * PUT /api/tasks/:id/portal-share   Body: { value: boolean }
+ *
+ * Publish an internal task to (or pull it back from) the client's portal. This
+ * is the ONLY way a team-created row becomes readable by an outside party, so
+ * it is a route of its own rather than a field on updateTask: the audience of a
+ * task is not the same kind of edit as its due date, and it deserves its own
+ * capability check, its own refusals, and its own line in the activity log.
+ *
+ * `value` is explicit rather than a toggle so a double-click can't race itself
+ * into showing a client something the user just hid.
+ */
+const setTaskPortalShared = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { id } = req.params;
+    const { value } = req.body || {};
+
+    if (typeof value !== 'boolean') {
+      return res.status(400).json({ error: 'value must be a boolean' });
+    }
+
+    const task = await Task.findById(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    if (task.isPersonal) {
+      return res
+        .status(400)
+        .json({ error: 'Personal tasks cannot be shared with a client' });
+    }
+
+    const ctx = await loadTaskBoardContext(task.board, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const denied = denyPortalShare(ctx, task);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    const prevShared = task.portalShared === true;
+    if (prevShared !== value) {
+      task.portalShared = value;
+      // Re-stamped on every share, not just the first: unsharing and resharing
+      // makes the card appear on the client's list again, and dating it to the
+      // first time would file it under work they had already looked past.
+      task.portalSharedAt = value ? new Date() : null;
+      // Claimed once and then kept. The client may already have quoted the
+      // reference in an email, so a task that comes back must come back as the
+      // same ticket.
+      if (value && !task.portalRef) {
+        task.portalRef = await claimPortalRef(task.board);
+      }
+      await task.save();
+
+      logActivity({
+        task,
+        actor: userId,
+        type: 'task.field_changed',
+        field: 'portalShared',
+        oldValue: prevShared,
+        newValue: value,
+        metadata: { taskName: task.name },
+      });
+      eventBus.emit('task.updated', { taskId: task._id, boardId: task.board });
+      await Board.updateOne(
+        { _id: task.board },
+        { $set: { updatedAt: new Date() } }
+      );
+    }
+
+    const populated = await populateTask(Task.findById(task._id));
+    return res.json({ task: populated });
+  } catch (err) {
+    console.error('setTaskPortalShared error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
  * DELETE /api/tasks/:id
  */
 const deleteTask = async (req, res) => {
@@ -1991,8 +2149,13 @@ const getTaskAttachments = async (req, res) => {
  * and the files were reachable only by clicking into the Files tab. This endpoint
  * hands the whole request over so the thread can open with it.
  *
+ * Serves a team-SHARED task too, where the same block is the team's own ask
+ * rather than the client's complaint. The team is answering in a thread the
+ * client is reading; without this they were replying under a blank space with
+ * no sight of the opening message the client sees above their own replies.
+ *
  * Read-gated exactly like the thread itself (board read), and 404s for any task
- * that didn't come from a client — there is no request to show.
+ * the client cannot see — there is no shared opening block to show.
  */
 const getClientRequest = async (req, res) => {
   try {
@@ -2004,15 +2167,23 @@ const getClientRequest = async (req, res) => {
       return res.status(result.status).json({ error: result.error });
     }
     const { task } = result;
-    if (task.source !== 'client' || !task.portalSubmitter) {
+    if (!isClientVisibleTask(task)) {
       return res.status(404).json({ error: 'Not a client request' });
     }
 
-    const contact = await ClientContact.findById(task.portalSubmitter).select('name email');
+    // Only a client-raised task has an external author to name.
+    const fromTeam = !task.portalSubmitter;
+    const contact = fromTeam
+      ? null
+      : await ClientContact.findById(task.portalSubmitter).select('name email');
     const attachments = await loadRequestAttachments(task);
 
     return res.json({
       request: {
+        // Says which of the two blocks this is, so the card can stop calling the
+        // team's own ask "the client's original request".
+        fromTeam,
+        sharedAt: task.portalSharedAt || null,
         // Sequential ticket number where one was claimed; the id-suffix fallback
         // matches what the client sees on their side for pre-ref requests.
         ref: task.portalRef
@@ -2182,6 +2353,7 @@ module.exports = {
   deleteTask,
   reorderTasks,
   setTaskPinned,
+  setTaskPortalShared,
   addChecklistItem,
   updateChecklistItem,
   deleteChecklistItem,

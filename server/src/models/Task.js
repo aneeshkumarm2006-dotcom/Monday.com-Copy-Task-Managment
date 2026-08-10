@@ -111,6 +111,29 @@ const taskSchema = new mongoose.Schema(
       ref: 'ClientContact',
       default: null,
     },
+    // Client Portal: the team deliberately published THIS internal task to the
+    // client's portal ("here's what we need from your end"). Off by default —
+    // living on a client board never implies the client can read the row; only
+    // this flag does.
+    //
+    // It is group-wide, not per-contact: the group IS the client company, so
+    // every contact on it sees a shared task. Client-raised tasks never set it
+    // (they are already visible to whoever raised them, and flipping it would
+    // show one contact's ticket to their colleagues) — enforced in
+    // taskController.setTaskPortalShared.
+    portalShared: {
+      type: Boolean,
+      default: false,
+    },
+    // When the task was first published to the portal. Kept separate from
+    // `createdAt` because the portal dates the card by when the CLIENT could
+    // first see it — a task written three weeks ago and shared today is "Shared
+    // today" to them, and saying "Raised 3 weeks ago" would read as an item
+    // they had missed.
+    portalSharedAt: {
+      type: Date,
+      default: null,
+    },
     // Optional client-chosen category from the board's `portalCategories`
     // (client tasks only). Free string mirror kept simple; the team triages on it.
     portalCategory: {

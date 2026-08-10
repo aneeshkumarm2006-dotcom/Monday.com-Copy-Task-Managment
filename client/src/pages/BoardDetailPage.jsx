@@ -291,6 +291,13 @@ const BoardDetailPage = () => {
   // capabilities rather than re-guessed.
   const canEdit = canOnBoard('task.edit_any') && canOnBoard('group.manage');
 
+  // Client Portal: may this person put a task in front of the client? Board type
+  // and capability, matching the server's `denyPortalShare` exactly — a standard
+  // board has no portal to share into, and publishing to an outside party is the
+  // `edit` rung's call rather than every contributor's.
+  const canSharePortal =
+    board?.boardType === 'client' && canOnBoard('task.edit_any');
+
   // Activity export is TWO conditions, not one. `board.export_activity` says the
   // role permits it; `features.activityExport` says this person switched it on
   // in Settings → Extra features, which is off for everyone until they do. Both
@@ -918,6 +925,39 @@ const BoardDetailPage = () => {
           `Failed to ${next ? 'pin' : 'unpin'} task. Please try again.`
       );
     }
+  };
+
+  // --- Client Portal sharing --------------------------------------------
+  // Flipping who can READ a task, so it never runs optimistically the way the
+  // pin does: an optimistic "visible to client" chip that the server then
+  // refuses would tell the team the client can see something they cannot, and
+  // that mistake is only discovered by the client not replying.
+  const handleSharePortal = useCallback(
+    async (task, next) => {
+      try {
+        const updated = await taskService.setTaskPortalShared(task._id, next);
+        updateTaskLocal(updated);
+        toastSuccess(
+          next
+            ? 'Shared — the client can now see this in their portal.'
+            : 'Hidden — this is no longer in the client portal.'
+        );
+      } catch (err) {
+        console.error('Failed to change client visibility:', err);
+        toastError(
+          err?.response?.data?.error ||
+            'Failed to change client visibility. Please try again.'
+        );
+      }
+    },
+    [updateTaskLocal, toastSuccess, toastError]
+  );
+
+  const handleMenuSharePortal = () => {
+    if (!actionsMenu) return;
+    const task = actionsMenu.task;
+    setActionsMenu(null);
+    handleSharePortal(task, !task.portalShared);
   };
 
   // Personal pin — localStorage only, private to this browser. No network call,
@@ -1677,6 +1717,7 @@ const BoardDetailPage = () => {
                               selectedIds={selectedTaskIds}
                               onToggleSelect={handleToggleSelectTask}
                               onToggleSelectAll={handleToggleSelectGroup}
+                              askPortalShare={canSharePortal}
                             />
                           )
                         )}
@@ -1795,6 +1836,17 @@ const BoardDetailPage = () => {
           // pin never leaves this browser, so it's always offered.
           onPinTeam={canOnBoard('task.move') ? handleMenuPinTeam : undefined}
           onPinPersonal={handleMenuPinPersonal}
+          // Offered only where it can actually do something: a client board, a
+          // top-level row, and not a request the client raised themselves (that
+          // one is already theirs — see the server's denyPortalShare).
+          sharedWithClient={actionsMenu.task.portalShared === true}
+          onSharePortal={
+            canSharePortal &&
+            !actionsMenu.task.parent &&
+            !actionsMenu.task.portalSubmitter
+              ? handleMenuSharePortal
+              : undefined
+          }
           onEdit={handleMenuEdit}
           onDelete={handleMenuDelete}
           onClose={() => setActionsMenu(null)}
@@ -2009,6 +2061,7 @@ const BoardDetailPage = () => {
         initialTab={initialPanelTab}
         onClose={handleCloseTask}
         isAdmin={canEdit}
+        onSharePortal={canSharePortal ? handleSharePortal : undefined}
         onUpdateTask={async (taskId, payload) => {
           // Locate the task in the store so we can roll back on failure.
           // Search both the board buckets and the subitem cache — the panel

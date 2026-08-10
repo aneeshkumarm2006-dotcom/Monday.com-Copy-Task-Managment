@@ -15,6 +15,8 @@ import {
   FileText,
   ArrowRight,
   Pin,
+  Eye,
+  EyeOff,
   Activity as ActivityIcon,
 } from 'lucide-react';
 import { timeAgo, formatDate } from '../../utils/dateUtils';
@@ -36,6 +38,7 @@ const FIELD_LABELS = {
   note: 'notes',
   group: 'group',
   pinned: 'pin',
+  portalShared: 'client visibility',
 };
 
 const formatDateValue = (value) => {
@@ -158,6 +161,7 @@ const iconFor = (entry) => {
     if (entry.field === 'note') return StickyNote;
     if (entry.field === 'name') return Pencil;
     if (entry.field === 'pinned') return Pin;
+    if (entry.field === 'portalShared') return entry.newValue ? Eye : EyeOff;
     return Pencil;
   }
   if (entry.type === 'checklist.added') return Plus;
@@ -289,6 +293,21 @@ const renderBody = (entry) => {
       return (
         <span>
           {Actor} {parts.length > 0 ? parts : <>updated labels</>}.
+        </span>
+      );
+    }
+
+    // Who can READ the task deserves a sentence, not a from → to. This is the
+    // one entry someone scrolls the log to find ("when did the client get
+    // this?"), and "changed client visibility from false → true" buries it.
+    if (entry.field === 'portalShared') {
+      return (
+        <span>
+          {Actor}{' '}
+          {entry.newValue
+            ? 'shared this with the client — it is now in their portal'
+            : 'removed this from the client portal'}
+          .
         </span>
       );
     }

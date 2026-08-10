@@ -9,6 +9,9 @@ import {
   Check,
   Lock,
   Users,
+  Eye,
+  EyeOff,
+  Loader2,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
@@ -77,6 +80,9 @@ const CommentPanel = ({
   // tasks straight from the detail panel. Board context leaves this off so
   // its existing admin-gated permission model is unchanged.
   editableStatusPriority = false,
+  // Client Portal: async (task, nextValue) => void. Omitted where the viewer may
+  // not publish to the client, which is what hides the control entirely.
+  onSharePortal = null,
 }) => {
   // Tabs (Updates / Client / Files / Activity Log)
   const [activeTab, setActiveTab] = useState('updates');
@@ -102,12 +108,24 @@ const CommentPanel = ({
     boardTypeOf(task?.board) === 'client' ||
     !!task?.portalSubmitter;
 
+  // Being ON a client board is not the same as being READABLE by the client, and
+  // the tab must follow the second. Most rows on a client board are the team's
+  // own work; before shared tasks existed, every one of them still drew a Client
+  // tab, so a reply typed into it went nowhere and nobody was told.
+  const isClientVisible =
+    !!task?.portalSubmitter || task?.portalShared === true;
+
   // A notification's `tab: 'client'` hint is itself evidence the task has a client
   // thread, so honour it even if none of the signals above resolved (the board doc
   // hasn't landed yet, or it was since converted back to a standard board).
   // Otherwise the hint would select a tab that isn't rendered and the pane would
   // be blank.
-  const showClientTab = isClientTask || activeTab === 'client';
+  const showClientTab = isClientVisible || activeTab === 'client';
+
+  // The share control belongs to internal rows on a client board: a request the
+  // client raised is already theirs, and a subitem cannot be shared at all.
+  const canOfferShare =
+    !!onSharePortal && isClientTask && !task?.portalSubmitter && !task?.parent;
 
   // On a client board Updates is the TEAM thread; everywhere else it is the single
   // ordinary thread. Only the former is stored as internal — see UpdatesTab.
@@ -487,6 +505,12 @@ const CommentPanel = ({
                   board={board}
                 />
               </>
+            )}
+            {canOfferShare && (
+              <PortalShareToggle
+                task={task}
+                onSharePortal={onSharePortal}
+              />
             )}
           </div>
 
@@ -1304,6 +1328,65 @@ const InlineSelectChip = ({ value, current, options, onSelect, ariaLabel }) => {
 /**
  * Priority dropdown — the four fixed severity levels.
  */
+/**
+ * PortalShareToggle — the "can the client see this?" switch, sitting in the
+ * badge row next to priority and status because that is where the task's other
+ * facts live.
+ *
+ * Rendered as a two-state chip rather than a checkbox: the resting state has to
+ * ANSWER the question, not merely offer it. Someone opening a task on a client
+ * board needs to know whether they are writing in front of the client before
+ * they type, and an unticked box reads as "not set" rather than "private".
+ */
+const PortalShareToggle = ({ task, onSharePortal }) => {
+  const [busy, setBusy] = useState(false);
+  const shared = task.portalShared === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onSharePortal(task, !shared);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const Icon = busy ? Loader2 : shared ? Eye : EyeOff;
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={busy}
+      aria-pressed={shared}
+      title={
+        shared
+          ? 'The client can see this in their portal — click to hide it'
+          : 'Only your team can see this — click to show it in the client portal'
+      }
+      className="font-body inline-flex items-center gap-1.5 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] disabled:cursor-wait"
+      style={{
+        height: 24,
+        padding: '0 10px',
+        fontSize: 12,
+        fontWeight: 600,
+        borderRadius: 'var(--radius-full)',
+        cursor: busy ? 'wait' : 'pointer',
+        border: shared ? '1px solid #A7F3D0' : '1px solid var(--color-border)',
+        background: shared ? '#D1FAE5' : 'var(--color-bg-subtle)',
+        color: shared ? '#047857' : 'var(--color-text-secondary)',
+      }}
+    >
+      <Icon
+        size={12}
+        aria-hidden="true"
+        className={busy ? 'animate-spin' : undefined}
+      />
+      {shared ? 'Client can see this' : 'Team only'}
+    </button>
+  );
+};
+
 const PriorityEditor = ({ task, onUpdateTask }) => {
   const value = task.priority || 'low';
   const cur = PRIORITY_COLORS[value] || PRIORITY_COLORS.low;

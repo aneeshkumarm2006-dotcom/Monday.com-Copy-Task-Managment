@@ -77,6 +77,17 @@ export const setTaskPinned = async (id, value) => {
 };
 
 /**
+ * PUT /api/tasks/:id/portal-share — show this task in the client's portal, or
+ * take it back out. Client Portal boards only. `value` is explicit for the same
+ * reason as the pin: a double-click must not be able to land on "visible to the
+ * client" by accident. Returns the updated task.
+ */
+export const setTaskPortalShared = async (id, value) => {
+  const { data } = await api.put(`/api/tasks/${id}/portal-share`, { value });
+  return data.task;
+};
+
+/**
  * DELETE /api/tasks/:id — delete a task.
  */
 export const deleteTask = async (id) => {

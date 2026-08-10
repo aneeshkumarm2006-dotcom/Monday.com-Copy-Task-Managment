@@ -123,6 +123,10 @@ const TaskTable = ({
   selectedIds = null,
   onToggleSelect,
   onToggleSelectAll,
+  // Client Portal boards: ask, when a top-level task is created, whether the
+  // client should see it. Never offered on the subitem rows — a subitem cannot
+  // be shared (the portal list is flat), so asking would promise nothing.
+  askPortalShare = false,
 }) => {
   const [expanded, setExpanded] = useState(() => new Set());
   const [sortKey, setSortKey] = useState(null);
@@ -464,6 +468,7 @@ const TaskTable = ({
               isLast
               isAdmin={isAdmin}
               autoFocus={false}
+              askPortalShare={askPortalShare}
               onSave={onSaveNew}
               onCancel={onCancelEdit}
             />

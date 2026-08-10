@@ -11,6 +11,7 @@ const {
   deleteTask,
   reorderTasks,
   setTaskPinned,
+  setTaskPortalShared,
   addChecklistItem,
   updateChecklistItem,
   deleteChecklistItem,
@@ -69,6 +70,13 @@ router.get('/:id/subitems', getSubitems);
 // the row to its real position. Requires `task.move` (same authority as
 // reordering, since it changes where the row sits for other people).
 router.put('/:id/pin', setTaskPinned);
+
+// PUT /api/tasks/:id/portal-share — publish an internal task to the client's
+// portal, or pull it back. Client Portal boards only, top-level tasks only, and
+// never a task the client raised (already visible to them). Requires
+// `task.edit_any`: showing a row to an outside party is the `edit` rung's call,
+// not something every contributor can do by adding a task.
+router.put('/:id/portal-share', setTaskPortalShared);
 
 // Follow / watch a task — opt into its activity notifications.
 router.get('/:id/follow', getFollowState);

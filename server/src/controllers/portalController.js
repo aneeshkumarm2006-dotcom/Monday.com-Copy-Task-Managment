@@ -26,6 +26,7 @@ const {
   loadRequestAttachments,
   isClientVisibleAttachment,
 } = require('../utils/portalAttachments');
+const { portalTaskFilter, isTeamAuthoredIssue } = require('../utils/portalVisibility');
 
 const CLIENT_URL = () => process.env.CLIENT_URL || 'http://localhost:5173';
 const PORTAL_JWT_TTL = '7d';
@@ -144,6 +145,12 @@ const serializeIssue = (task, board) => {
   return {
     id: String(task._id),
     ref: issueRef(task),
+    // Who put this on the client's list. A team-shared item is the team asking
+    // something OF the client, which is the opposite of a support ticket — the
+    // portal has to say so or the client reads their own to-do list as a log of
+    // complaints they never made.
+    fromTeam: isTeamAuthoredIssue(task),
+    sharedAt: task.portalSharedAt || null,
     name: task.name,
     note: task.note || '',
     category: task.portalCategory || '',
@@ -496,7 +503,7 @@ const getMyIssues = async (req, res) => {
       .select('statuses portalCategories organisation portalAnnouncement portalFaqs');
     if (!board) return res.status(404).json({ error: 'Board not found' });
 
-    const tasks = await Task.find({ group: groupId, portalSubmitter: contactId })
+    const tasks = await Task.find(portalTaskFilter({ groupId, contactId }))
       .sort({ createdAt: -1 });
 
     const org = await Organisation.findById(board.organisation).select('name');
@@ -676,15 +683,19 @@ const createMyIssue = async (req, res) => {
 };
 
 /**
- * Load an issue that MUST belong to the signed-in contact. Returns the task or
- * null — the caller 404s so we never confirm the existence of others' tasks.
+ * Load an issue the signed-in contact is allowed to see — one they raised, or
+ * one the team shared with their group (see utils/portalVisibility.js). Returns
+ * the task or null; the caller 404s so we never confirm the existence of a task
+ * outside that set.
+ *
+ * Every mutating portal endpoint funnels through here, which is what gives a
+ * shared task the same rights as the client's own: reply, attach, reopen, rate.
  */
-const loadOwnIssue = async (req, taskId) => {
+const loadVisibleIssue = async (req, taskId) => {
   if (!taskId) return null;
   const task = await Task.findOne({
     _id: taskId,
-    group: req.portal.groupId,
-    portalSubmitter: req.portal.contactId,
+    ...portalTaskFilter(req.portal),
   });
   return task || null;
 };
@@ -703,7 +714,7 @@ const loadOwnIssue = async (req, taskId) => {
 const uploadIssueAttachment = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const task = await loadOwnIssue(req, req.params.id);
+    const task = await loadVisibleIssue(req, req.params.id);
     if (!task) return res.status(404).json({ error: 'Issue not found' });
 
     const context = (req.body?.context || '').toString().trim();
@@ -752,7 +763,7 @@ const uploadIssueAttachment = async (req, res) => {
  */
 const getIssueThread = async (req, res) => {
   try {
-    const task = await loadOwnIssue(req, req.params.id);
+    const task = await loadVisibleIssue(req, req.params.id);
     if (!task) return res.status(404).json({ error: 'Issue not found' });
 
     const board = await Board.findById(task.board).select('statuses organisation');
@@ -804,7 +815,13 @@ const getIssueThread = async (req, res) => {
         name: task.name,
         note: task.note || '',
         createdAt: task.createdAt,
-        authorLabel: myName,
+        // The opening block is the client's own words on a ticket they raised,
+        // and the team's on one the team shared. Crediting a shared item to the
+        // client would have them reading their own name over a request they are
+        // being asked to answer.
+        fromTeam: isTeamAuthoredIssue(task),
+        sharedAt: task.portalSharedAt || null,
+        authorLabel: isTeamAuthoredIssue(task) ? orgName : myName,
         state: cls.state,
         statusLabel: cls.label,
         statusColor: cls.color,
@@ -833,7 +850,7 @@ const getIssueThread = async (req, res) => {
  */
 const postIssueThreadMessage = async (req, res) => {
   try {
-    const task = await loadOwnIssue(req, req.params.id);
+    const task = await loadVisibleIssue(req, req.params.id);
     if (!task) return res.status(404).json({ error: 'Issue not found' });
 
     const bodyText = (req.body?.bodyText || '').toString().trim();
@@ -924,7 +941,7 @@ const notifyTeam = async ({ orgId, type, message, taskId, boardId, tab }) => {
  */
 const reopenIssue = async (req, res) => {
   try {
-    const task = await loadOwnIssue(req, req.params.id);
+    const task = await loadVisibleIssue(req, req.params.id);
     if (!task) return res.status(404).json({ error: 'Issue not found' });
 
     const board = await Board.findById(task.board).select('statuses organisation');
@@ -974,7 +991,7 @@ const reopenIssue = async (req, res) => {
  */
 const rateIssue = async (req, res) => {
   try {
-    const task = await loadOwnIssue(req, req.params.id);
+    const task = await loadVisibleIssue(req, req.params.id);
     if (!task) return res.status(404).json({ error: 'Issue not found' });
 
     const rating = Number(req.body?.rating);

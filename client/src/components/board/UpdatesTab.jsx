@@ -907,14 +907,19 @@ const ClientRequestCard = ({ request }) => {
   const priority = REQUEST_PRIORITIES[request.priority];
   const submitterName = request.submitter?.name || 'Client';
   const attachments = Array.isArray(request.attachments) ? request.attachments : [];
+  // Two blocks share this card: the client's complaint, and the team's own ask
+  // on a task they shared. Only the first has an outside author to name.
+  const fromTeam = request.fromTeam === true;
 
   return (
     <article
-      aria-label="The client's original request"
+      aria-label={
+        fromTeam ? 'What the client sees at the top of this thread' : "The client's original request"
+      }
       style={{
         background: 'var(--color-bg-subtle, #F9FAFB)',
         border: '1px solid var(--color-border)',
-        borderLeft: '3px solid var(--color-accent)',
+        borderLeft: `3px solid ${fromTeam ? '#059669' : 'var(--color-accent)'}`,
         borderRadius: 'var(--radius-md)',
         padding: 12,
       }}
@@ -930,7 +935,7 @@ const ClientRequestCard = ({ request }) => {
             color: 'var(--color-text-muted)',
           }}
         >
-          Original request
+          {fromTeam ? 'Shared with the client' : 'Original request'}
         </span>
         {request.ref && (
           <span
@@ -950,14 +955,14 @@ const ClientRequestCard = ({ request }) => {
       </div>
 
       <header className="flex items-center gap-2" style={{ marginBottom: 8 }}>
-        <Avatar user={{ name: submitterName }} size={26} />
+        {!fromTeam && <Avatar user={{ name: submitterName }} size={26} />}
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span
               className="font-body"
               style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}
             >
-              {submitterName}
+              {fromTeam ? 'Visible to the client since' : submitterName}
             </span>
             {request.submitter?.email && (
               <span
@@ -970,17 +975,23 @@ const ClientRequestCard = ({ request }) => {
             )}
             <span
               className="font-body"
-              title={formatDate(request.createdAt)}
+              title={formatDate(
+                fromTeam ? request.sharedAt || request.createdAt : request.createdAt
+              )}
               style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
             >
-              {timeAgo(request.createdAt)}
+              {timeAgo(
+                fromTeam ? request.sharedAt || request.createdAt : request.createdAt
+              )}
             </span>
           </div>
         </div>
       </header>
 
       {/* The heading the client gave it — the task name can be renamed by the
-          team later, so this is the request as it was submitted. */}
+          team later, so this is the request as it was submitted. On a shared
+          task it is the team's own title, which is exactly what the client is
+          reading in their portal. */}
       <h4
         className="font-body"
         style={{

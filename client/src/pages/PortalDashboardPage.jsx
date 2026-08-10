@@ -165,6 +165,19 @@ const Avatar = ({ url, name }) =>
     : <span className="mcp-avatar-fallback">{initialsOf(name)}</span>;
 
 /**
+ * Marks an item the TEAM put on this list rather than one the client raised —
+ * an ask pointed at the client ("send us the logo files"), not a ticket of
+ * theirs. Without it the two are indistinguishable on the card, and a client
+ * skimming their list would read the team's asks as their own open complaints
+ * and wait for someone else to act on them.
+ */
+const FromTeamBadge = ({ orgName }) => (
+  <span className="mcp-badge" style={{ '--bc': '#7C3AED' }}>
+    <Building2 size={12} /> From {orgName || 'the team'}
+  </span>
+);
+
+/**
  * Today as `YYYY-MM-DD`, in the client's OWN timezone — the format `<input
  * type="date">` wants for `min`. Built from the local date parts rather than
  * `toISOString()`, which converts to UTC first and so hands anyone west of
@@ -498,6 +511,7 @@ const PortalDashboardPage = () => {
             <IssueDetail
               key={selected.id}
               issue={selected}
+              orgName={context.orgName}
               onBack={() => { setSelectedId(null); loadIssues(); }}
             />
           </div>
@@ -508,7 +522,10 @@ const PortalDashboardPage = () => {
               <div>
                 <h1 className="mcp-greet-name">{firstName ? `Welcome back, ${firstName}` : 'Welcome back'}</h1>
                 <p className="mcp-greet-sub" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <span>Here's everything you've raised with the team.</span>
+                  {/* The list is no longer only the client's own tickets — the
+                      team shares items onto it too — so the greeting can't
+                      promise "everything you've raised". */}
+                  <span>Everything you and the team are tracking together.</span>
                   {context.companyName && <span className="mcp-company"><Building2 size={13} /> {context.companyName}</span>}
                 </p>
               </div>
@@ -660,6 +677,7 @@ const PortalDashboardPage = () => {
                     <div style={{ flex: 1 }} />
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 12 }}>
+                      {issue.fromTeam && <FromTeamBadge orgName={context.orgName} />}
                       <TypeBadge type={issue.type} />
                       <PriorityBadge priority={issue.priority} />
                       {issue.category && <span className="mcp-tag">{issue.category}</span>}
@@ -678,7 +696,10 @@ const PortalDashboardPage = () => {
                     <div className="mcp-tcard-foot">
                       <span>
                         {issue.ref && <span style={{ fontWeight: 700, color: '#64748B' }}>{issue.ref}</span>}
-                        {issue.ref && ' · '}Raised {formatShortDate(issue.createdAt)}
+                        {issue.ref && ' · '}
+                        {issue.fromTeam
+                          ? `Shared ${formatShortDate(issue.sharedAt || issue.createdAt)}`
+                          : `Raised ${formatShortDate(issue.createdAt)}`}
                       </span>
                       <ChevronRight size={16} className="mcp-item-chev" />
                     </div>
@@ -981,7 +1002,7 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
 };
 
 /* ---- Issue detail + thread ------------------------------------------------ */
-const IssueDetail = ({ issue, onBack }) => {
+const IssueDetail = ({ issue, onBack, orgName = '' }) => {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -1012,6 +1033,9 @@ const IssueDetail = ({ issue, onBack }) => {
   }, [issue.id, applyMessages]);
 
   const hasRequestBlock = !!(detail && (detail.note || (detail.attachments && detail.attachments.length)));
+  // Falls back to the list card's copy of the flag so the header reads right on
+  // the first frame, before the thread request has landed.
+  const fromTeam = detail ? detail.fromTeam : issue.fromTeam;
 
   useEffect(() => { load({ initial: true }); }, [load]);
 
@@ -1112,6 +1136,7 @@ const IssueDetail = ({ issue, onBack }) => {
           {issue.ref && <div style={{ fontSize: 12, fontWeight: 700, color: '#94A3B8', marginBottom: 3 }}>{issue.ref}</div>}
           <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.02em' }}>{issue.name}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, flexWrap: 'wrap' }}>
+            {fromTeam && <FromTeamBadge orgName={orgName} />}
             <TypeBadge type={detail?.type ?? issue.type} />
             <PriorityBadge priority={detail?.priority ?? issue.priority} />
             {issue.dueDate && (
@@ -1129,15 +1154,34 @@ const IssueDetail = ({ issue, onBack }) => {
           <div style={{ textAlign: 'center', padding: 24 }}><Loader2 size={22} color="#2563EB" className="mcp-spin" /></div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 15, marginBottom: 18 }}>
-            {/* Original request */}
+            {/* The opening block. On a request the client raised it is their own
+                words, right-aligned like the rest of their messages; on an item
+                the team shared it is the team's, and has to sit on the team's
+                side or the client reads their own name over an ask they never
+                made. */}
             {hasRequestBlock && (
-              <div className="mcp-msg-row mine">
-                <span className="mcp-msg-author">{detail.authorLabel || 'You'} · original request</span>
-                <div className="mcp-bubble mine">
-                  {detail.note}
-                  {renderAttachments(detail.attachments)}
+              fromTeam ? (
+                <div className="mcp-msg-row">
+                  <div className="mcp-msg-head">
+                    <Avatar name={detail.authorLabel} />
+                    <span className="mcp-msg-author" style={{ margin: 0 }}>
+                      {detail.authorLabel} · what we need from you
+                    </span>
+                  </div>
+                  <div className="mcp-bubble them">
+                    {detail.note}
+                    {renderAttachments(detail.attachments)}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="mcp-msg-row mine">
+                  <span className="mcp-msg-author">{detail.authorLabel || 'You'} · original request</span>
+                  <div className="mcp-bubble mine">
+                    {detail.note}
+                    {renderAttachments(detail.attachments)}
+                  </div>
+                </div>
+              )
             )}
 
             {messages.map((m) => (

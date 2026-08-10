@@ -9,6 +9,7 @@ import {
   GripVertical,
   ListTree,
   Pin,
+  Eye,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
@@ -322,6 +323,29 @@ const TaskRow = ({
               }}
             >
               Client
+            </span>
+          )}
+          {/* The mirror image: an internal task the team published to the portal.
+              A row the client can read has to say so ON the row — the team edits
+              names and statuses here, not in the panel, and "who is watching
+              this" is not something anyone should have to open a task to learn. */}
+          {task.portalShared && (
+            <span
+              className="font-body shrink-0 inline-flex items-center gap-1"
+              title="Visible to the client in their portal"
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                color: '#047857',
+                background: '#D1FAE5',
+                padding: '1px 6px',
+                borderRadius: 'var(--radius-full)',
+              }}
+            >
+              <Eye size={10} aria-hidden="true" />
+              Client sees
             </span>
           )}
           {/* The client-chosen request type + category, so the team can triage
