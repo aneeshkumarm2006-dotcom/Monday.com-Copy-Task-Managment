@@ -11,3 +11,5 @@ require('./Notification');
 require('./NotificationPreference');
 require('./ItemFollow');
 require('./Automation');
+require('./Tracker');
+require('./TrackerEntry');

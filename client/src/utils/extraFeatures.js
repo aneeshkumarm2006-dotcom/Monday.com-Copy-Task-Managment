@@ -1,4 +1,4 @@
-import { FileDown, Tags } from 'lucide-react';
+import { CalendarCheck, FileDown, Tags } from 'lucide-react';
 
 /**
  * The catalog of EXTRA FEATURES — opt-in tools that stay off until someone asks
@@ -45,6 +45,20 @@ export const EXTRA_FEATURES = [
       'Tags for whole groups, the way tasks already have them. Adds a tag ' +
       'button to each group header on boards you can edit. Tags set by others ' +
       'stay hidden until you turn this on.',
+  },
+  {
+    key: 'trackers',
+    icon: CalendarCheck,
+    // Gated on the VIEW capability, not manage: the switch governs the thing you
+    // see, and someone with read-only access to a board still needs to be able
+    // to turn the view on. (Contrast groupTags, which keys off `column.manage`
+    // because its primary act is a write.)
+    capability: 'tracker.view',
+    label: 'Recurring trackers',
+    hint:
+      'Adds a Delivery view to boards you can open, showing whether each group ' +
+      'is keeping its recurring commitments — a task every working day, a ' +
+      'report every month, or whatever cadence you define.',
   },
 ];
 

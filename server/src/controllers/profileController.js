@@ -41,7 +41,7 @@ const updateProfile = async (req, res) => {
  * `organisations`, so an unfiltered `$set` here would be a write primitive into
  * the identity record.
  */
-const FEATURE_KEYS = ['activityExport', 'groupTags'];
+const FEATURE_KEYS = ['activityExport', 'groupTags', 'trackers'];
 
 /**
  * PUT /api/profile/features — toggle the current user's opt-in extras.

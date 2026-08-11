@@ -48,6 +48,7 @@ app.use('/api/portal', require('./routes/portal'));
 app.use('/api/inbound', require('./routes/inbound'));
 app.use('/api', require('./routes/groups'));
 app.use('/api', require('./routes/automations'));
+app.use('/api', require('./routes/trackers'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api', require('./routes/updates'));
 app.use('/api', require('./routes/notes'));

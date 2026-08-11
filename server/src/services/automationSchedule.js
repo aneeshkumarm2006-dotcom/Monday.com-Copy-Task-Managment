@@ -1,65 +1,17 @@
+// The timezone primitives below used to live in this file. They moved to
+// utils/tzDay.js when the tracker feature needed the same wall-clock day math —
+// they are pure calendar helpers, and `services/` is for side effects. Behaviour
+// is unchanged; tzDay additionally memoizes the Intl formatters.
+const {
+  DAY_MS,
+  getTzParts,
+  getTzWeekday,
+  isValidTimezone,
+  localToUtcMs,
+  getLastDayOfMonth,
+} = require('../utils/tzDay');
+
 const VALID_FREQUENCIES = ['daily', 'weekly', 'monthly'];
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-const WEEKDAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-
-const getTzParts = (date, timeZone) => {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  });
-  const map = {};
-  for (const p of fmt.formatToParts(date)) {
-    if (p.type !== 'literal') map[p.type] = p.value;
-  }
-  return {
-    year: parseInt(map.year, 10),
-    month: parseInt(map.month, 10),
-    day: parseInt(map.day, 10),
-    hour: parseInt(map.hour, 10),
-    minute: parseInt(map.minute, 10),
-    second: parseInt(map.second, 10),
-  };
-};
-
-const getTzWeekday = (date, timeZone) => {
-  const fmt = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short' });
-  const str = fmt.format(date);
-  return WEEKDAY_INDEX[str] ?? 0;
-};
-
-const isValidTimezone = (tz) => {
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: tz });
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-// Convert wall-clock time in a target tz to a UTC instant. We first guess the
-// instant by treating the components as UTC, then measure how that guess
-// renders in the target tz to derive the offset, and shift by it.
-const localToUtcMs = (year, month, day, hour, minute, second, timeZone) => {
-  const guess = Date.UTC(year, month - 1, day, hour, minute, second);
-  const guessParts = getTzParts(new Date(guess), timeZone);
-  const localAsUtc = Date.UTC(
-    guessParts.year,
-    guessParts.month - 1,
-    guessParts.day,
-    guessParts.hour,
-    guessParts.minute,
-    guessParts.second
-  );
-  const offset = localAsUtc - guess;
-  return guess - offset;
-};
 
 /**
  * Validate a schedule object. Returns { valid, error? }.
@@ -106,12 +58,6 @@ const validateSchedule = (schedule) => {
     }
   }
   return { valid: true };
-};
-
-const getLastDayOfMonth = (year, monthOneBased) => {
-  // monthOneBased is 1–12. new Date(Date.UTC(y, m, 0)) gives the last day of
-  // month m-1 (i.e. month m here, since m is 1-based for our callers).
-  return new Date(Date.UTC(year, monthOneBased, 0)).getUTCDate();
 };
 
 /**

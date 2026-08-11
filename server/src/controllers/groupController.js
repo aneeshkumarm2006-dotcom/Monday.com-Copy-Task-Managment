@@ -5,6 +5,8 @@ const Note = require('../models/Note');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
 const ClientContact = require('../models/ClientContact');
+const Tracker = require('../models/Tracker');
+const TrackerEntry = require('../models/TrackerEntry');
 const eventBus = require('../services/eventBus');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { requireFeature } = require('../utils/userFeatures');
@@ -304,6 +306,30 @@ const deleteGroup = async (req, res) => {
     // Client Portal cleanup: a group can be a client's portal, so drop its
     // external contacts with it.
     await ClientContact.deleteMany({ group: id });
+    // Tracker cleanup: drop this group's confirmations/waivers, and take it out
+    // of any tracker that named it explicitly.
+    //
+    // The subtle part is the last step. On a Tracker, `groups: []` means EVERY
+    // group — so a tracker that only watched this one group would, after the
+    // $pull, silently widen to the whole board. We collect the trackers that
+    // named it BEFORE pulling (a tracker already on "all groups" never matches
+    // this query, so it is never touched) and disable only the ones the pull
+    // actually emptied.
+    await TrackerEntry.deleteMany({ group: id });
+    const scopedTrackerIds = await Tracker.distinct('_id', {
+      board: group.board,
+      groups: id,
+    });
+    if (scopedTrackerIds.length > 0) {
+      await Tracker.updateMany(
+        { _id: { $in: scopedTrackerIds } },
+        { $pull: { groups: id } }
+      );
+      await Tracker.updateMany(
+        { _id: { $in: scopedTrackerIds }, groups: { $size: 0 } },
+        { $set: { enabled: false } }
+      );
+    }
     await TaskGroup.deleteOne({ _id: id });
 
     return res.json({ success: true });

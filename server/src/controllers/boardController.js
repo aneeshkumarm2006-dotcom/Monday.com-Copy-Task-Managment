@@ -6,6 +6,8 @@ const Update = require('../models/Update');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
 const Automation = require('../models/Automation');
+const Tracker = require('../models/Tracker');
+const TrackerEntry = require('../models/TrackerEntry');
 const Organisation = require('../models/Organisation');
 const { isBoardCreator } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
@@ -574,6 +576,8 @@ const deleteBoard = async (req, res) => {
     // forever, spawning tasks against a board that no longer exists and emailing
     // their assignees. (orgCascade already deletes these on org teardown.)
     await Automation.deleteMany({ board: id });
+    await Tracker.deleteMany({ board: id });
+    await TrackerEntry.deleteMany({ board: id });
     await Task.deleteMany({ board: id });
     await TaskGroup.deleteMany({ board: id });
     await Board.deleteOne({ _id: id });

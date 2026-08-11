@@ -274,4 +274,9 @@ taskSchema.pre('save', async function syncLegacyFieldsFromColumnValues() {
   }
 });
 
+// "Tasks on this board within a date window" — the tracker grid's main read, and
+// also the shape analytics and every board load already used. Neither `board`
+// nor `createdAt` was indexed before, so all of them were collection scans.
+taskSchema.index({ board: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Task', taskSchema);

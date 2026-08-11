@@ -64,4 +64,8 @@ const taskGroupSchema = new mongoose.Schema({
 // Unique only among groups that actually carry a token; null tokens are exempt.
 taskGroupSchema.index({ portalToken: 1 }, { unique: true, sparse: true });
 
+// Every "the groups on this board" read — board load, analytics' live-group
+// filter, the tracker grid — was scanning the whole collection without this.
+taskGroupSchema.index({ board: 1 });
+
 module.exports = mongoose.model('TaskGroup', taskGroupSchema);

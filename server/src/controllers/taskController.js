@@ -24,7 +24,11 @@ const { loadBoardContext, requireCapability } = require('../utils/boardContext')
 const { resolveAccess } = require('../utils/permissions');
 const ClientContact = require('../models/ClientContact');
 const { isResolvedStatus } = require('../utils/doneStatus');
-const { sendPortalResolvedEmail } = require('../services/emailService');
+const {
+  sendPortalResolvedEmail,
+  sendPortalSharedTaskEmail,
+} = require('../services/emailService');
+const { portalLink, clientLabel } = require('../services/portalInviteService');
 const { loadRequestAttachments } = require('../utils/portalAttachments');
 const { isClientVisibleTask } = require('../utils/portalVisibility');
 
@@ -52,6 +56,81 @@ const emailClientOnResolve = async (task, board) => {
 };
 
 /**
+ * Human-friendly ticket reference, matching what the client sees in the portal:
+ * sequential once a `portalRef` was claimed, id-derived for pre-ref tasks.
+ * Mirrors portalController.issueRef.
+ */
+const portalRefLabel = (task) =>
+  task.portalRef
+    ? `REQ-${task.portalRef}`
+    : `REQ-${String(task._id).slice(-5).toUpperCase()}`;
+
+/**
+ * Client Portal: email the group's client contacts when the team PUBLISHES a
+ * task to their portal. A shared item is the team asking something of the
+ * client, so it can't wait to be discovered on a page nobody was told to open.
+ *
+ * Every contact on the group is mailed, not one submitter, because a shared task
+ * belongs to the whole client company — the same audience that can already read
+ * it in the portal, so this discloses nothing new.
+ *
+ * Only for team-shared items: a client-raised ticket (`portalSubmitter`) is
+ * already theirs, and a subitem never reaches the portal at all. Silent when the
+ * group's portal is off — mailing a link that refuses them is worse than nothing.
+ *
+ * Fire-and-forget: swallows its own errors so sharing never fails on the mail.
+ */
+const emailClientsOnPortalShare = async (task, board) => {
+  try {
+    if (!task || !board || board.boardType !== 'client') return;
+    if (!task.portalShared || task.parent || task.portalSubmitter) return;
+
+    const group = await TaskGroup.findById(task.group).select(
+      'name portalClientName portalEnabled portalToken'
+    );
+    if (!group?.portalEnabled || !group.portalToken) return;
+
+    const contacts = await ClientContact.find({ group: group._id })
+      .select('email')
+      .lean();
+    const recipients = contacts.map((c) => c.email).filter(Boolean);
+    if (recipients.length === 0) return;
+
+    const org = await Organisation.findById(board.organisation).select('name');
+    // The group's own portal URL rather than the bare /portal dashboard: an
+    // invited contact who has never signed in on this device needs the landing
+    // page, and one who has is a click from the same list either way.
+    const link = portalLink(group);
+
+    const results = await Promise.allSettled(
+      recipients.map((to) =>
+        sendPortalSharedTaskEmail({
+          to,
+          orgName: org?.name || '',
+          clientName: clientLabel(group),
+          taskName: task.name,
+          ref: portalRefLabel(task),
+          dueDate: task.dueDate || null,
+          note: task.note || '',
+          link,
+          taskId: String(task._id),
+        })
+      )
+    );
+    results.forEach((result, i) => {
+      if (result.status === 'rejected') {
+        console.error(
+          `[email] Failed to send shared-task mail to ${recipients[i]}:`,
+          result.reason?.message || result.reason
+        );
+      }
+    });
+  } catch (err) {
+    console.error('emailClientsOnPortalShare error:', err);
+  }
+};
+
+/**
  * Client Portal: record a status change as a 'system' timeline event on the
  * task's thread so the client sees "Status changed to X" in their portal.
  * No-op for tasks the client cannot see. Best-effort — never blocks the change.
@@ -59,8 +138,9 @@ const emailClientOnResolve = async (task, board) => {
  * Fires for a team-SHARED task too, unlike the resolve email above. The two are
  * not the same promise: this writes into a thread the client has to come and
  * look at, and a shared item with a silent status is exactly the "is anyone
- * looking at this?" the portal exists to answer. Pushing mail to every contact
- * on the group is the louder act, and stays opt-in work for later.
+ * looking at this?" the portal exists to answer. Only the share itself pushes
+ * mail to the whole group (see emailClientsOnPortalShare); every status hop
+ * after it stays in the thread.
  */
 const logClientStatusChange = async (task, statusName) => {
   try {
@@ -1085,6 +1165,12 @@ const createTask = async (req, res) => {
       },
     });
 
+    // Created already visible to the client — tell them, same as flipping the
+    // toggle later would. Fire-and-forget; the helper swallows its own errors.
+    if (wantsPortalShare) {
+      emailClientsOnPortalShare(task, ctx.board);
+    }
+
     // Fan out an item.created event for ITEM_CREATED automations. Subitems
     // are excluded to avoid recursion (a CREATE_SUBITEM action could otherwise
     // re-trigger itself). Personal tasks never enter this branch.
@@ -2029,6 +2115,11 @@ const setTaskPortalShared = async (req, res) => {
         { _id: task.board },
         { $set: { updatedAt: new Date() } }
       );
+
+      // Only on the false → true edge, which this branch already is: unsharing
+      // is silent, and a re-share is a deliberate second ask, so it mails again
+      // for the same reason portalSharedAt is re-stamped.
+      if (value) emailClientsOnPortalShare(task, ctx.board);
     }
 
     const populated = await populateTask(Task.findById(task._id));
@@ -2186,9 +2277,7 @@ const getClientRequest = async (req, res) => {
         sharedAt: task.portalSharedAt || null,
         // Sequential ticket number where one was claimed; the id-suffix fallback
         // matches what the client sees on their side for pre-ref requests.
-        ref: task.portalRef
-          ? `REQ-${task.portalRef}`
-          : `REQ-${String(task._id).slice(-5).toUpperCase()}`,
+        ref: portalRefLabel(task),
         name: task.name,
         note: task.note || '',
         type: task.portalType || '',

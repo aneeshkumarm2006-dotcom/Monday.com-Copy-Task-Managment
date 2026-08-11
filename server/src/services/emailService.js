@@ -557,6 +557,82 @@ const sendPortalReplyEmail = async ({ to, orgName, taskName, snippet, link, task
 };
 
 /**
+ * Email the client when the team publishes a task to their portal — the team
+ * asking something OF the client, so the copy frames it as a request rather than
+ * as progress on a ticket they raised.
+ *
+ * Reply-To is the task's plain (non-`-int`) address: the inbound poller resolves
+ * a sender against the group's contacts, so the client can answer from their
+ * mail client and land in the shared thread.
+ *
+ * @param {object} opts
+ * @param {string} opts.to        — client email
+ * @param {string} opts.orgName   — organisation name (branding)
+ * @param {string} opts.clientName— client/company label
+ * @param {string} opts.taskName  — the request title
+ * @param {string} opts.ref       — human reference, e.g. "REQ-1042"
+ * @param {Date|string|null} opts.dueDate — optional date the team needs it by
+ * @param {string} opts.note      — optional details (the same note the portal shows)
+ * @param {string} opts.link      — full portal URL
+ * @param {string} opts.taskId    — for the Reply-To address
+ */
+const sendPortalSharedTaskEmail = async ({
+  to,
+  orgName,
+  clientName,
+  taskName,
+  ref,
+  dueDate,
+  note,
+  link,
+  taskId,
+}) => {
+  const dueStr = dueDate
+    ? new Date(dueDate).toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      })
+    : '';
+  const bodyCard = `<div class="card">
+        <p class="card-label">${escapeHtml(ref || 'Request')}</p>
+        <p class="card-text">${escapeHtml(taskName)}</p>
+        ${
+          dueStr
+            ? `<p class="card-label" style="margin-top:16px">Needed by</p><p class="card-text">${escapeHtml(
+                dueStr
+              )}</p>`
+            : ''
+        }
+        ${
+          note
+            ? `<p class="card-label" style="margin-top:16px">Details</p><p class="card-text">${escapeHtml(
+                note
+              )}</p>`
+            : ''
+        }
+      </div>`;
+  const html = buildPortalHtml({
+    orgName,
+    title: 'A new request needs you',
+    intro: `The ${escapeHtml(
+      clientName || orgName || ''
+    )} team added a request to your portal. Open it to see the details and upload anything they need — or just reply to this email.`,
+    bodyCard,
+    ctaLabel: 'Open my portal',
+    ctaLink: link,
+  });
+  const replyTo = taskReplyAddress(taskId);
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
+    ...(replyTo ? { replyTo } : {}),
+    to,
+    subject: `New request: "${taskName}"`,
+    html,
+  });
+};
+
+/**
  * Email the client when their issue is marked resolved.
  * @param {object} opts
  * @param {string} opts.to, opts.orgName, opts.taskName, opts.link
@@ -588,5 +664,6 @@ module.exports = {
   sendPortalPasswordInviteEmail,
   sendPortalPasswordResetEmail,
   sendPortalReplyEmail,
+  sendPortalSharedTaskEmail,
   sendPortalResolvedEmail,
 };

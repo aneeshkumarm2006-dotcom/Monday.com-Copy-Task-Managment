@@ -90,6 +90,19 @@ const CAPABILITY_GROUPS = [
     ],
   },
   {
+    key: 'trackers',
+    name: 'Trackers',
+    // Deliberately its own group rather than folded into `insights`. Insights
+    // holds org-wide, cross-board reporting — `analytics.view` reads every board
+    // in the org, `productivity.view_others` names individuals. A tracker is
+    // per-board configuration that lives on the board, so its true peer is
+    // `automation.view` / `automation.manage` directly above.
+    capabilities: [
+      ['tracker.view', "See a board's trackers and its Delivery view"],
+      ['tracker.manage', 'Create, edit and delete trackers'],
+    ],
+  },
+  {
     key: 'insights',
     name: 'Insights',
     capabilities: [
@@ -144,6 +157,12 @@ const BOARD_SCOPED = new Set([
   'update.delete_any',
   'automation.view',
   'automation.manage',
+  // Board-scoped is only SAFE because LEVEL_ADDS confers both below — `view`
+  // grants tracker.view and `edit` grants tracker.manage. That is the actual
+  // rule the analytics.view note above encodes: board-scope a capability no rung
+  // confers and the AND strips it from everyone except the board's creator.
+  'tracker.view',
+  'tracker.manage',
 ]);
 
 /**
@@ -159,8 +178,10 @@ const BOARD_SCOPED = new Set([
 const BOARD_LEVELS = ['view', 'comment', 'contribute', 'edit'];
 
 const LEVEL_ADDS = {
-  // Read the board. (The old `read`, renamed.)
-  view: [],
+  // Read the board. (The old `read`, renamed.) Seeing whether the board is
+  // meeting its commitments is reading it — a missed day the team cannot see is
+  // a missed day nobody fixes.
+  view: ['tracker.view'],
   // + weigh in without touching the data.
   comment: ['update.create'],
   // + do your own work, without being able to restructure the board.
@@ -177,6 +198,7 @@ const LEVEL_ADDS = {
     'update.delete_any',
     'automation.view',
     'automation.manage',
+    'tracker.manage',
     'board.rename',
   ],
 };
@@ -325,6 +347,8 @@ const SYSTEM_ROLES = [
       'update.delete_any',
       'automation.view',
       'automation.manage',
+      'tracker.view',
+      'tracker.manage',
       'analytics.view',
       'productivity.view_others',
       // Holding this only makes the export *possible*. Each admin still has to
@@ -378,6 +402,8 @@ const SYSTEM_ROLES = [
       'update.delete_any',
       'automation.view',
       'automation.manage',
+      'tracker.view',
+      'tracker.manage',
     ],
     // NOT granted, on purpose: `analytics.view`. The analytics and productivity
     // pages were admin-only before this system existed, and quietly opening them
@@ -391,7 +417,10 @@ const SYSTEM_ROLES = [
     isSystem: true,
     color: '#6B7280',
     description: 'Read-only across the workspace.',
-    permissions: ['org.view_members', 'board.view_public'],
+    // `tracker.view` is a read. A viewer who can open a board should be able to
+    // see whether that board is keeping its promises; they still cannot create a
+    // tracker, confirm a period or excuse a miss.
+    permissions: ['org.view_members', 'board.view_public', 'tracker.view'],
   },
   {
     key: 'guest',

@@ -12,6 +12,8 @@ import {
   UserPlus,
   ArrowDownUp,
   Download,
+  CalendarCheck,
+  LayoutList,
 } from 'lucide-react';
 import {
   DndContext,
@@ -52,6 +54,8 @@ import EditChipsModal from '../components/board/EditChipsModal';
 import BulkActionBar from '../components/board/BulkActionBar';
 import BoardFilterBar from '../components/board/BoardFilterBar';
 import BoardAccessModal from '../components/board/BoardAccessModal';
+import DeliveryTab from '../components/board/delivery/DeliveryTab';
+import TrackersModal from '../components/board/delivery/TrackersModal';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
@@ -90,6 +94,17 @@ const GROUP_DOT_CYCLE = [
  * The full board id is appended so each board remembers its own choice.
  */
 const GROUP_SORT_KEY = 'board:groupSortCompletedLast:';
+
+/**
+ * Board views. `board` is the default and renders exactly what this page always
+ * rendered; `delivery` swaps the filter bar and group list for the tracker grid.
+ * The tab bar only appears when there is more than one view to choose from, so a
+ * user without the Trackers feature sees the page unchanged.
+ */
+const VIEW_TABS = [
+  { value: 'board', label: 'Board', icon: LayoutList },
+  { value: 'delivery', label: 'Delivery', icon: CalendarCheck },
+];
 
 const BoardDetailPage = () => {
   const { id: boardId } = useParams();
@@ -226,6 +241,7 @@ const BoardDetailPage = () => {
   const [accessModalOpen, setAccessModalOpen] = useState(false);
   // Activity export modal — opt-in feature, see canExportActivity below
   const [exportOpen, setExportOpen] = useState(false);
+  const [trackersOpen, setTrackersOpen] = useState(false);
 
   // --- Filtering ---------------------------------------------------------
   // Filter bar at the top of the board narrows the visible tasks by name,
@@ -311,6 +327,27 @@ const BoardDetailPage = () => {
   const groupTagsOn = !!currentUser?.features?.groupTags;
   const canTagGroups = groupTagsOn && canEdit && canOnBoard('column.manage');
 
+  // Trackers, same two-condition shape again. With the feature off there is no
+  // Delivery tab and no tab bar at all, so the page looks exactly as it did
+  // before this feature existed.
+  const canViewDelivery =
+    canOnBoard('tracker.view') && !!currentUser?.features?.trackers;
+  const canManageTrackers = canViewDelivery && canOnBoard('tracker.manage');
+
+  // Derived from the URL rather than mirrored into state — two sources of truth
+  // for "which view am I on" is the classic bug here, and `?view=delivery` is
+  // also the thing worth pasting to a colleague.
+  const view = canViewDelivery && searchParams.get('view') === 'delivery' ? 'delivery' : 'board';
+  const setView = useCallback(
+    (next) => {
+      const params = new URLSearchParams(searchParams);
+      if (next === 'board') params.delete('view');
+      else params.set('view', next);
+      setSearchParams(params, { replace: true });
+    },
+    [searchParams, setSearchParams]
+  );
+
   // The board's tag catalog, keyed by id, for resolving each group's `tags`.
   // Empty unless the feature is on, which is what makes the chips disappear.
   const groupTagsById = useMemo(() => {
@@ -371,6 +408,14 @@ const BoardDetailPage = () => {
     const taskId = searchParams.get('highlightTask');
     if (!taskId || loading || groups.length === 0) return;
 
+    // A notification can land while the Delivery view is open. Everything below
+    // expands a group and scrolls to a row that isn't rendered in that view, so
+    // it would silently do nothing — send the user back to the board first.
+    if (view === 'delivery') {
+      setView('board');
+      return;
+    }
+
     // Optional tab hint (from a reply notification) — opens the task detail
     // panel on that tab once we confirm the task lives on this board.
     const openTab = searchParams.get('openTab');
@@ -427,7 +472,7 @@ const BoardDetailPage = () => {
       setInitialPanelTab(openTab);
       setSelectedTaskStack([taskId]);
     }
-  }, [searchParams, loading, groups, tasksByGroup, setSearchParams]);
+  }, [searchParams, loading, groups, tasksByGroup, setSearchParams, view, setView]);
 
   // --- Auto-remove highlight after animation completes -------------------
   useEffect(() => {
@@ -1410,7 +1455,7 @@ const BoardDetailPage = () => {
         {/* `canExportActivity` widens this row deliberately: export is not an
             editing right, so an admin with read-only access to a board must
             still get the button. Every control inside carries its own gate. */}
-        {(canEdit || isBoardCreator || canExportActivity) && (
+        {(canEdit || isBoardCreator || canExportActivity || canManageTrackers) && (
           <div className="flex items-center gap-2 shrink-0">
             {canViewAccess && !isPublic && (
               <Button
@@ -1428,6 +1473,15 @@ const BoardDetailPage = () => {
                 onClick={() => setAutomationsOpen(true)}
               >
                 Automations
+              </Button>
+            )}
+            {canManageTrackers && (
+              <Button
+                variant="secondary"
+                icon={CalendarCheck}
+                onClick={() => setTrackersOpen(true)}
+              >
+                Trackers
               </Button>
             )}
             {canExportActivity && (
@@ -1471,8 +1525,65 @@ const BoardDetailPage = () => {
         )}
       </header>
 
+      {/* View tabs. Only drawn when there is a second view to switch to, so a
+          user without the Trackers feature sees the page exactly as before. */}
+      {canViewDelivery && (
+        <div
+          className="mt-5 flex items-center gap-1 overflow-x-auto"
+          role="tablist"
+          aria-label="Board views"
+          style={{ borderBottom: '1px solid var(--color-border)' }}
+        >
+          {VIEW_TABS.map((tab) => {
+            const active = view === tab.value;
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.value}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setView(tab.value)}
+                className="inline-flex items-center gap-1.5 font-body shrink-0 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+                style={{
+                  height: 38,
+                  padding: '0 12px',
+                  fontSize: 13.5,
+                  fontWeight: active ? 600 : 500,
+                  color: active ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+                  background: 'transparent',
+                  border: 'none',
+                  borderBottom: active
+                    ? '2px solid var(--color-accent)'
+                    : '2px solid transparent',
+                  marginBottom: -1,
+                  cursor: 'pointer',
+                }}
+              >
+                <Icon size={14} aria-hidden="true" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {view === 'delivery' && (
+        <DeliveryTab
+          boardId={boardId}
+          groups={groups}
+          canManage={canManageTrackers}
+          onOpenTask={(taskId) => {
+            // Reuse the existing deep-link machinery rather than inventing a
+            // second way to reveal a task.
+            setView('board');
+            setSearchParams({ highlightTask: taskId }, { replace: true });
+          }}
+        />
+      )}
+
       {/* Filter bar + group sort toggle */}
-      {hasGroups && board && (
+      {view === 'board' && hasGroups && board && (
         <div className="flex items-start gap-2">
           <div className="flex-1 min-w-0">
             <BoardFilterBar
@@ -1519,6 +1630,7 @@ const BoardDetailPage = () => {
       )}
 
       {/* Task groups */}
+      {view === 'board' && (
       <section className="mt-6 flex flex-col gap-4">
         {loading && !hasGroups ? (
           <div
@@ -1730,6 +1842,7 @@ const BoardDetailPage = () => {
           </DndContext>
         )}
       </section>
+      )}
 
       {/* Status chip menu */}
       {statusMenu && (
@@ -2156,6 +2269,20 @@ const BoardDetailPage = () => {
           isOpen={exportOpen}
           onClose={() => setExportOpen(false)}
           board={board}
+        />
+      )}
+
+      {/* Trackers config, reachable from the header without leaving the board
+          view. The Delivery tab mounts its own copy for the same reason the
+          board header carries one: whichever surface you are on, the rules are
+          one click away. */}
+      {canManageTrackers && trackersOpen && (
+        <TrackersModal
+          isOpen
+          onClose={() => setTrackersOpen(false)}
+          boardId={boardId}
+          groups={groups}
+          canManage={canManageTrackers}
         />
       )}
 
