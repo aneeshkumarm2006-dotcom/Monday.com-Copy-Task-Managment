@@ -1,0 +1,7 @@
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - generic [ref=e6]: M
+    - heading "Macan" [level=1] [ref=e8]
+    - paragraph [ref=e9]: Task management for Davnoot Digital
+  - button "Sign in with Google" [ref=e11] [cursor=pointer]
+  - paragraph [ref=e17]: By signing in you agree to internal usage terms.

@@ -249,6 +249,10 @@ const DeliveryTab = ({ boardId, groups = [], canManage, onOpenTask }) => {
 
       {popover && (
         <DeliveryCellPopover
+          // Remount per cell: the position hook only recomputes when it opens,
+          // and the confirm/excuse draft state must not carry over from the last
+          // cell someone looked at.
+          key={`${popover.tracker._id}:${popover.row.groupId}:${popover.cell.p}`}
           anchorEl={popover.anchor}
           tracker={popover.tracker}
           period={popover.period}

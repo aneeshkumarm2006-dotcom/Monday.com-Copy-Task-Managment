@@ -30,7 +30,13 @@ const DENSITY = {
 
 const MAX_TRACK = 96;
 
-/** Wide columns when there are few periods, fixed small ones when there are many. */
+/**
+ * Wide columns when there are few periods, tight ones when there are many —
+ * but always a FIXED width, never `1fr`. A fractional track makes a short window
+ * stretch its handful of columns across the whole card, which reads as a broken
+ * layout with one lonely tick floating in the middle rather than as "there is
+ * only one period here".
+ */
 const trackWidth = (count, d) =>
   count > 20 ? d.cell + d.gutter : Math.min(MAX_TRACK, Math.max(d.cell + d.gutter, 640 / count));
 
@@ -116,7 +122,8 @@ const DeliveryGrid = ({ tracker, periods, rows, density: densityKey = 'comfortab
         onKeyDown={onKeyDown}
         style={{
           display: 'grid',
-          gridTemplateColumns: `${d.nameCol}px repeat(${periods.length}, minmax(${track}px, 1fr))`,
+          gridTemplateColumns: `${d.nameCol}px repeat(${periods.length}, ${track}px)`,
+          justifyContent: 'start',
           minWidth: 'fit-content',
           alignItems: 'center',
           rowGap: 0,

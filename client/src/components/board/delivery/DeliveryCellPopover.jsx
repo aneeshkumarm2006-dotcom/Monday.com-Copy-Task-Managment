@@ -21,6 +21,13 @@ import useDropdownPosition from '../../../utils/useDropdownPosition';
 
 const POPOVER_WIDTH = 300;
 
+// Module scope on purpose. useDropdownPosition memoises its recompute on
+// (triggerRef, menuHeight), so a fresh object here every render would invalidate
+// that callback, re-run its layout effect, setRect a new object, and re-render —
+// an infinite loop that blanks the page. Same reason the anchor below is a real
+// useRef rather than an inline `{ current: anchorEl }`.
+const POSITION_OPTIONS = { menuHeight: 300 };
+
 const RequirementRow = ({ type, satisfied }) => {
   const meta = requirementMeta(type);
   if (!meta) return null;
@@ -63,11 +70,12 @@ const DeliveryCellPopover = ({
   onClearEntry,
   onOpenTask,
 }) => {
-  const anchorRef = useRef({ current: anchorEl });
+  // A stable ref object whose .current we point at the clicked cell. The hook
+  // reads .current inside its effect, so assigning during render is fine and
+  // keeps the ref identity — and therefore the memoised recompute — constant.
+  const anchorRef = useRef(null);
   anchorRef.current = anchorEl;
-  const { top, left, openUpward } = useDropdownPosition({ current: anchorEl }, !!anchorEl, {
-    menuHeight: 300,
-  });
+  const { top, left, openUpward } = useDropdownPosition(anchorRef, !!anchorEl, POSITION_OPTIONS);
 
   const [mode, setMode] = useState(null); // null | 'confirm' | 'excuse'
   const [link, setLink] = useState(cell?.entry?.link || '');
