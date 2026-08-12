@@ -46,13 +46,13 @@ const {
  *
  * Gate 3 replaced a `requireFeature('trackers', …)` check. Delivery used to be a
  * per-user opt-in listed in Settings → Extra features; it is now a view of the
- * monthly board type, so the question is about the BOARD, not the person. It
+ * tracker board type, so the question is about the BOARD, not the person. It
  * answers 404 rather than 403 because on a standard board the resource does not
  * exist — there is nothing here to be refused access to.
  */
 
-const NOT_MONTHLY_MESSAGE =
-  'Delivery is only available on monthly boards.';
+const NOT_TRACKER_MESSAGE =
+  'Delivery is only available on tracker boards.';
 
 /**
  * The response is groups x periods cells. A year of daily periods across fifty
@@ -305,8 +305,8 @@ const gate = async (req, res, capability) => {
     return null;
   }
 
-  if (ctx.board?.boardType !== 'monthly') {
-    res.status(404).json({ error: NOT_MONTHLY_MESSAGE, code: 'NOT_MONTHLY_BOARD' });
+  if (ctx.board?.boardType !== 'tracker') {
+    res.status(404).json({ error: NOT_TRACKER_MESSAGE, code: 'NOT_TRACKER_BOARD' });
     return null;
   }
 
@@ -536,7 +536,7 @@ const deleteTrackerEntry = async (req, res) => {
  * purpose: a shared dashboard everyone reads the same way beats one everyone
  * configures differently.
  *
- * The anchor is normally today. On a monthly board it is the last day of the
+ * The anchor is normally today. On a tracker board it is the last day of the
  * SELECTED month instead, so the grid ends where the month picker says it does
  * — pick July and the last column is July, not whatever month it happens to be
  * now. The window token still controls the window's LENGTH; the month controls

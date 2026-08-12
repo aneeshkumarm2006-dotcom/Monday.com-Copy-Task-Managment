@@ -1,5 +1,5 @@
 /**
- * The shared goal COLUMN schema on a monthly board.
+ * The shared goal COLUMN schema on a tracker board.
  *
  * Every group's goals table on a board renders the same columns, so an agency
  * comparing two clients is comparing like with like. That makes the column list
@@ -58,8 +58,8 @@ const gateColumns = async (req, res, { write = true } = {}) => {
     res.status(ctx.status).json({ error: ctx.error });
     return null;
   }
-  if (ctx.board?.boardType !== 'monthly') {
-    res.status(404).json({ error: 'This board is not organised by month.' });
+  if (ctx.board?.boardType !== 'tracker') {
+    res.status(404).json({ error: 'This board is not a tracker board.' });
     return null;
   }
   if (write && !ctx.can('org.manage_settings')) {

@@ -1,10 +1,10 @@
 /**
  * migrateMonthlyBoards.js
  *
- * Converts existing boards to the monthly board type, filing every task into
+ * Converts existing boards to the tracker board type, filing every task into
  * the calendar month it was created in.
  *
- * WHY THIS EXISTS: monthly boards partition tasks by `Task.monthKey`, and every
+ * WHY THIS EXISTS: tracker boards partition tasks by `Task.monthKey`, and every
  * board that predates the feature has none. Without a backfill a converted
  * board looks empty in every single month — the tasks are all still there, they
  * are just filed nowhere.
@@ -59,10 +59,10 @@ require('../models'); // register all schemas
 const Board = require('../models/Board');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
-const { checkConversion } = require('../utils/monthlyConvert');
+const { checkConversion } = require('../utils/trackerBoardConvert');
 const {
   applyMonthKeys, buildPreview, convertBoard, countUnfiled,
-} = require('../services/monthlyConvert');
+} = require('../services/trackerBoardConvert');
 
 const args = process.argv.slice(2);
 const flag = (name) => {
@@ -132,7 +132,7 @@ const runTrackerReport = async () => {
 
   console.log(`\n${rows.length} board(s) have Trackers configured:\n`);
   for (const { board, g, entries } of rows) {
-    const affected = board && board.boardType !== 'monthly';
+    const affected = board && board.boardType !== 'tracker';
     console.log(`  ${affected ? '⚠ ' : '  '}${board?.name ?? '(deleted board)'}  [${board?.boardType ?? '?'}]`);
     console.log(`      board:     ${g._id}`);
     console.log(`      trackers:  ${g.trackers} — ${g.names.join(', ')}`);
@@ -147,7 +147,7 @@ const runTrackerReport = async () => {
 };
 
 const convertOne = async (board) => {
-  const to = revert ? 'standard' : 'monthly';
+  const to = revert ? 'standard' : 'tracker';
   const verdict = checkConversion({ board, to, timezone: timezoneArg });
 
   console.log(`  ${board.name}  [${board.boardType}]  ${board._id}`);
@@ -156,10 +156,10 @@ const convertOne = async (board) => {
     for (const r of verdict.refusals) console.log(`      REFUSED: ${r}`);
     return 'refused';
   }
-  // An already-monthly board is normally a no-op — UNLESS we are refiling,
+  // An already-tracker board is normally a no-op — UNLESS we are refiling,
   // which is the whole point of that flag: the board type is already right and
   // it is the timezone underneath it that changed.
-  if (verdict.noop && !(refile && to === 'monthly')) {
+  if (verdict.noop && !(refile && to === 'tracker')) {
     console.log(`      already ${to} — nothing to do`);
     return 'noop';
   }
@@ -197,9 +197,9 @@ const convertOne = async (board) => {
     return 'converted';
   }
 
-  // A refile on an already-monthly board: the type is right, so only the stored
+  // A refile on an already-tracker board: the type is right, so only the stored
   // timezone and every task's month need rewriting.
-  if (refile && board.boardType === 'monthly') {
+  if (refile && board.boardType === 'tracker') {
     board.monthTimezone = verdict.timezone;
     await board.save();
     const sim = await applyMonthKeys(board._id, verdict.timezone, { refile: true });

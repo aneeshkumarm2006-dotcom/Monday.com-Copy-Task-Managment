@@ -55,28 +55,28 @@ const BoardFormModal = ({
   }, [isOpen, initialValues]);
 
   const isClient = values.boardType === 'client';
-  const isMonthly = values.boardType === 'monthly';
+  const isTracker = values.boardType === 'tracker';
 
   // Edit mode only: is the user actually changing the board's type, and which
   // way? `initialValues.boardType` is what it is now; `values.boardType` is what
   // they have selected.
   const originalType = initialValues?.boardType || 'standard';
   const typeChanging = mode === 'edit' && values.boardType !== originalType;
-  const toMonthly = typeChanging && values.boardType === 'monthly';
+  const toTracker = typeChanging && values.boardType === 'tracker';
 
   // The browser's own zone, sent when converting. It decides where months begin
   // and end; changeable afterwards from the board's month picker.
   const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-  // Price the conversion as soon as Monthly is selected, so the user sees the
+  // Price the conversion as soon as Tracker is selected, so the user sees the
   // real month split before committing rather than after.
   useEffect(() => {
-    if (!toMonthly || !initialValues?._id) return undefined;
+    if (!toTracker || !initialValues?._id) return undefined;
     let cancelled = false;
     setConvertPreview(null);
     setConvertError(null);
     previewBoardConversion(initialValues._id, {
-      to: 'monthly',
+      to: 'tracker',
       timezone: browserTimezone,
     })
       .then((p) => { if (!cancelled) setConvertPreview(p); })
@@ -87,21 +87,21 @@ const BoardFormModal = ({
         );
       });
     return () => { cancelled = true; };
-  }, [toMonthly, initialValues?._id, browserTimezone]);
+  }, [toTracker, initialValues?._id, browserTimezone]);
   // In the create dialog the user picks one of four: Public, Private, Client
-  // Portal, or Monthly. The last two are board TYPES; Public/Private are
+  // Portal, or Tracker. The last two are board TYPES; Public/Private are
   // visibilities on a standard board. `kind` collapses these into one radio
   // group.
   //
-  // A monthly board is pinned to private the same way a client board is —
-  // not because the type requires it (a monthly board is an ordinary internal
+  // A tracker board is pinned to private the same way a client board is —
+  // not because the type requires it (a tracker board is an ordinary internal
   // board that happens to be partitioned) but because retainer boards are
   // client work by default and defaulting them public would be a surprise.
-  const kind = isClient ? 'client' : isMonthly ? 'monthly' : values.visibility;
+  const kind = isClient ? 'client' : isTracker ? 'tracker' : values.visibility;
   const setKind = (next) => {
     setValues((v) => {
       if (next === 'client') return { ...v, boardType: 'client', visibility: 'private' };
-      if (next === 'monthly') return { ...v, boardType: 'monthly', visibility: 'private' };
+      if (next === 'tracker') return { ...v, boardType: 'tracker', visibility: 'private' };
       return { ...v, boardType: 'standard', visibility: next };
     });
   };
@@ -119,7 +119,7 @@ const BoardFormModal = ({
       await onSubmit({
         // Converting an EXISTING board must not silently change who can see it,
         // so visibility is only pinned when the type is chosen at create time.
-        visibility: mode === 'create' && (isClient || isMonthly)
+        visibility: mode === 'create' && (isClient || isTracker)
           ? 'private'
           : values.visibility,
         name: trimmed,
@@ -128,11 +128,11 @@ const BoardFormModal = ({
         // Only meaningful when the type is actually changing; the caller uses it
         // to decide whether to run a conversion alongside the plain update.
         typeChanged: typeChanging,
-        // A monthly board must know whose calendar defines its months. Sending
+        // A tracker board must know whose calendar defines its months. Sending
         // the browser's resolved zone is exactly what TrackersModal already does
         // for a tracker, and for the same reason: a board silently on UTC while
         // the team is on IST files every month-boundary task in the wrong month.
-        monthTimezone: isMonthly ? browserTimezone : undefined,
+        monthTimezone: isTracker ? browserTimezone : undefined,
         portalCategories: isClient
           ? values.portalCategoriesText
               .split(',')
@@ -153,15 +153,15 @@ const BoardFormModal = ({
   // action that re-files every task on the board.
   const submitLabel = mode === 'create'
     ? 'Create Board →'
-    : toMonthly
-      ? 'Make it monthly'
+    : toTracker
+      ? 'Make it a tracker board'
       : typeChanging
         ? 'Make it standard'
         : 'Save Changes';
 
   // Don't let someone commit a conversion the server has already said it will
   // refuse, or one whose preview has not arrived yet.
-  const blocked = toMonthly && (!convertPreview || !convertPreview.canConvert);
+  const blocked = toTracker && (!convertPreview || !convertPreview.canConvert);
 
   return (
     <Modal
@@ -235,7 +235,7 @@ const BoardFormModal = ({
                     { value: 'public', label: 'Public' },
                     { value: 'private', label: 'Private' },
                     { value: 'client', label: 'Client Portal' },
-                    { value: 'monthly', label: 'Monthly' },
+                    { value: 'tracker', label: 'Tracker' },
                   ]
                 : [
                     { value: 'public', label: 'Public' },
@@ -244,7 +244,7 @@ const BoardFormModal = ({
               ).map((opt) => {
                 // In EDIT mode this group is visibility only — the board type
                 // has its own section below, because for an existing board the
-                // two are genuinely separate questions (a monthly board can be
+                // two are genuinely separate questions (a tracker board can be
                 // public). In create mode they stay collapsed into one choice.
                 const checked =
                   mode === 'create' ? kind === opt.value : values.visibility === opt.value;
@@ -315,7 +315,7 @@ const BoardFormModal = ({
                 shareable link per group so clients can raise issues.
               </p>
             )}
-            {mode === 'create' && isMonthly && (
+            {mode === 'create' && isTracker && (
               <p
                 className="font-body mt-2"
                 style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
@@ -342,7 +342,7 @@ const BoardFormModal = ({
             <div className="flex items-center gap-5 flex-wrap">
               {[
                 { value: 'standard', label: 'Standard' },
-                { value: 'monthly', label: 'Monthly' },
+                { value: 'tracker', label: 'Tracker' },
               ].map((opt) => {
                 const checked = values.boardType === opt.value;
                 return (
@@ -397,7 +397,7 @@ const BoardFormModal = ({
             {/* Nothing below renders unless the type is actually changing. */}
             {typeChanging && (
               <div className="mt-3 flex flex-col gap-3">
-                {toMonthly ? (
+                {toTracker ? (
                   <>
                     <p
                       className="font-body"

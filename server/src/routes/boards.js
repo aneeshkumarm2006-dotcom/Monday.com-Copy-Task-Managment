@@ -35,7 +35,7 @@ const {
 const { getActivityExport } = require('../controllers/boardExportController');
 const {
   convertBoardType, getBoardMonths, setMonthTimezone,
-} = require('../controllers/monthlyController');
+} = require('../controllers/trackerBoardController');
 
 const router = express.Router();
 
@@ -58,7 +58,7 @@ router.put('/:id', updateBoard);
 // DELETE /api/boards/:id — delete a board + cascade (admin-only)
 router.delete('/:id', deleteBoard);
 
-// --- Monthly boards -------------------------------------------------------
+// --- Tracker boards -------------------------------------------------------
 // POST with { dryRun: true } returns the month-split preview and writes nothing.
 router.post('/:id/convert', convertBoardType);
 router.get('/:id/months', getBoardMonths);

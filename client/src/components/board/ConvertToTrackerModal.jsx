@@ -17,7 +17,7 @@ import MonthSplitPreview from './MonthSplitPreview';
  * created on 31 July for August's work will land in July and somebody has to
  * know to move it.
  */
-const ConvertToMonthlyModal = ({ boardId, boardName, onClose, onConverted }) => {
+const ConvertToTrackerModal = ({ boardId, boardName, onClose, onConverted }) => {
   const [preview, setPreview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -29,7 +29,7 @@ const ConvertToMonthlyModal = ({ boardId, boardName, onClose, onConverted }) => 
     let cancelled = false;
     (async () => {
       try {
-        const data = await previewBoardConversion(boardId, { to: 'monthly', timezone });
+        const data = await previewBoardConversion(boardId, { to: 'tracker', timezone });
         if (!cancelled) setPreview(data);
       } catch (err) {
         if (!cancelled) {
@@ -46,7 +46,7 @@ const ConvertToMonthlyModal = ({ boardId, boardName, onClose, onConverted }) => 
     setSaving(true);
     setError(null);
     try {
-      const result = await convertBoard(boardId, { to: 'monthly', timezone });
+      const result = await convertBoard(boardId, { to: 'tracker', timezone });
       onConverted?.(result);
     } catch (err) {
       setError(err?.response?.data?.error || 'Could not convert this board.');
@@ -58,7 +58,7 @@ const ConvertToMonthlyModal = ({ boardId, boardName, onClose, onConverted }) => 
     <Modal
       isOpen
       onClose={saving ? undefined : onClose}
-      title={`Make “${boardName}” a monthly board`}
+      title={`Make “${boardName}” a tracker board`}
       maxWidth={560}
     >
       {loading ? (
@@ -161,7 +161,7 @@ const ConvertToMonthlyModal = ({ boardId, boardName, onClose, onConverted }) => 
             </Button>
             {preview?.canConvert && (
               <Button onClick={handleConvert} disabled={saving}>
-                {saving ? 'Converting…' : 'Make it monthly'}
+                {saving ? 'Converting…' : 'Make it a tracker board'}
               </Button>
             )}
           </div>
@@ -171,4 +171,4 @@ const ConvertToMonthlyModal = ({ boardId, boardName, onClose, onConverted }) => 
   );
 };
 
-export default ConvertToMonthlyModal;
+export default ConvertToTrackerModal;

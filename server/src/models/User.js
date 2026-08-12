@@ -38,7 +38,7 @@ const userSchema = new mongoose.Schema({
     // group documents untouched; they are simply not shown to you.
     groupTags: { type: Boolean, default: false },
     // `trackers` used to live here and was removed when the Delivery view became
-    // part of the monthly board type. Stale `features.trackers` values may still
+    // part of the tracker board type. Stale `features.trackers` values may still
     // sit on existing user documents; Mongoose ignores an unmapped path on read
     // and strict mode drops it on the next save, so no migration is required.
   },

@@ -35,7 +35,7 @@ const FIELD_KEYS = [
   'note',
   'group',
   'pinned',
-  // Monthly boards: which calendar month the task is filed under.
+  // Tracker boards: which calendar month the task is filed under.
   'monthKey',
 ];
 

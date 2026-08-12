@@ -42,7 +42,7 @@ const updateProfile = async (req, res) => {
  * the identity record.
  */
 // `trackers` was removed from this list when the Delivery view became part of
-// the monthly board type rather than a personal opt-in. A client still sending
+// the tracker board type rather than a personal opt-in. A client still sending
 // it is ignored rather than rejected — the loop below is a whitelist.
 const FEATURE_KEYS = ['activityExport', 'groupTags'];
 

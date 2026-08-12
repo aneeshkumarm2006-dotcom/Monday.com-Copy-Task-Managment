@@ -3,7 +3,7 @@ import { CalendarDays } from 'lucide-react';
 import Dropdown from '../ui/Dropdown';
 
 /**
- * The board-level month picker for a monthly board.
+ * The board-level month picker for a tracker board.
  *
  * One control scopes all three views — Board, Delivery and Goals — so it sits
  * under the board title with the board's identity, rather than in the header's

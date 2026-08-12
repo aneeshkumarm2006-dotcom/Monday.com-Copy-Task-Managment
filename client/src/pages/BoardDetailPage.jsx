@@ -58,7 +58,7 @@ import BoardFilterBar from '../components/board/BoardFilterBar';
 import BoardAccessModal from '../components/board/BoardAccessModal';
 import DeliveryTab from '../components/board/delivery/DeliveryTab';
 import BoardTypePill from '../components/board/BoardTypePill';
-import ConvertToMonthlyModal from '../components/board/ConvertToMonthlyModal';
+import ConvertToTrackerModal from '../components/board/ConvertToTrackerModal';
 import BoardTimezoneModal from '../components/board/BoardTimezoneModal';
 import GoalsTab from '../components/board/goals/GoalsTab';
 import MonthSelector from '../components/board/MonthSelector';
@@ -113,7 +113,7 @@ const GROUP_SORT_KEY = 'board:groupSortCompletedLast:';
  *
  * The tab bar only appears when there is more than one view to choose from, so
  * a standard or client board — where Delivery and Goals both belong to the
- * monthly board type and are therefore hidden — sees the page exactly as it was
+ * tracker board type and are therefore hidden — sees the page exactly as it was
  * before any of this existed.
  *
  * Each tab carries its own `visible` predicate rather than the bar keying off
@@ -357,19 +357,19 @@ const BoardDetailPage = () => {
 
   // The month-partitioned board type. Mutually exclusive with 'client' and
   // 'standard'; the server enforces that, this only decides what to draw.
-  const isMonthlyBoard = board?.boardType === 'monthly';
+  const isTrackerBoard = board?.boardType === 'tracker';
 
   // Delivery is no longer a per-user opt-in feature — it is a surface OF the
-  // monthly board type, so it appears for anyone who can read one. The
+  // tracker board type, so it appears for anyone who can read one. The
   // `features.trackers` switch it used to need has been removed entirely.
-  const canViewDelivery = isMonthlyBoard && canOnBoard('tracker.view');
+  const canViewDelivery = isTrackerBoard && canOnBoard('tracker.view');
   const canManageTrackers = canViewDelivery && canOnBoard('tracker.manage');
 
   // Goals: the same board-type-plus-capability shape. Editing the shared column
   // SCHEMA is an org-admin act rather than a board one, which is why that last
   // one reads `canOrg` — the goal columns are the organisation's reporting
   // vocabulary, not one board owner's preference.
-  const canViewGoals = isMonthlyBoard && canOnBoard('goal.view');
+  const canViewGoals = isTrackerBoard && canOnBoard('goal.view');
   const canTrackGoals = canViewGoals && canOnBoard('goal.track');
   const canManageGoals = canViewGoals && canOnBoard('goal.manage');
   const canManageGoalColumns = canViewGoals && canOrg('org.manage_settings');
@@ -377,14 +377,14 @@ const BoardDetailPage = () => {
   // Converting a board changes what it IS, so it answers to the same capability
   // as flipping public/private rather than to an ordinary edit right. Client
   // boards are refused by the server and get no button here.
-  const canConvertToMonthly =
+  const canConvertToTracker =
     board?.boardType === 'standard' && canOnBoard('board.change_visibility');
 
   // The board-level month. URL is the source of truth; see the hook.
   const {
     monthKey, setMonth, months, selectedMonth, monthsLoading, refreshMonths,
     timezone: monthTimezone,
-  } = useBoardMonths(boardId, { enabled: isMonthlyBoard });
+  } = useBoardMonths(boardId, { enabled: isTrackerBoard });
 
   // Which tabs exist on this board, resolved once so the bar and the view
   // validation below cannot disagree about it.
@@ -449,10 +449,10 @@ const BoardDetailPage = () => {
 
   // Fetch groups + tasks for this board.
   //
-  // On a monthly board this waits for the month to resolve — the task read is
+  // On a tracker board this waits for the month to resolve — the task read is
   // month-scoped and the server refuses an unscoped one, so firing before the
   // month list has loaded would just 400.
-  const monthReady = !isMonthlyBoard || !!monthKey;
+  const monthReady = !isTrackerBoard || !!monthKey;
 
   useEffect(() => {
     if (!boardId || !monthReady) return undefined;
@@ -471,7 +471,7 @@ const BoardDetailPage = () => {
   // run, which the effect above already covers.
   const loadedMonthRef = useRef(null);
   useEffect(() => {
-    if (!boardId || !isMonthlyBoard || !monthKey) return;
+    if (!boardId || !isTrackerBoard || !monthKey) return;
     if (loadedMonthRef.current === null) {
       loadedMonthRef.current = monthKey;
       return;
@@ -480,7 +480,7 @@ const BoardDetailPage = () => {
     loadedMonthRef.current = monthKey;
     refreshBoardTasks(boardId, { month: monthKey });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monthKey, boardId, isMonthlyBoard]);
+  }, [monthKey, boardId, isTrackerBoard]);
 
   // Reset the month tracker when the board changes, or the next board's first
   // month would look like a switch and double-fetch.
@@ -554,7 +554,7 @@ const BoardDetailPage = () => {
     // row that was never rendered is a silent failure, so say what happened
     // instead. Deep links from notifications carry `?month=` and land correctly;
     // this is the fallback for an older link or a hand-typed one.
-    if (!found && isMonthlyBoard && monthKey) {
+    if (!found && isTrackerBoard && monthKey) {
       toastInfo(
         `That task isn’t in ${selectedMonth?.label || 'this month'} — try another month.`
       );
@@ -582,7 +582,7 @@ const BoardDetailPage = () => {
     }
   }, [
     searchParams, loading, groups, tasksByGroup, setSearchParams, view, setView,
-    isMonthlyBoard, monthKey, selectedMonth, toastInfo,
+    isTrackerBoard, monthKey, selectedMonth, toastInfo,
   ]);
 
   // --- Auto-remove highlight after animation completes -------------------
@@ -832,7 +832,7 @@ const BoardDetailPage = () => {
           board: boardId,
           group: groupId,
           // The SELECTED month, not today's — adding a task while looking at
-          // July must file it in July. Null on non-monthly boards, where the
+          // July must file it in July. Null on non-tracker boards, where the
           // server ignores it.
           monthKey: monthKey || undefined,
         });
@@ -1594,14 +1594,14 @@ const BoardDetailPage = () => {
           >
             {board
               ? `Created ${formatDate(board.createdAt)} · ${totalTaskCount} ${totalTaskCount === 1 ? 'task' : 'tasks'}`
-                + (isMonthlyBoard && selectedMonth ? ` in ${selectedMonth.label}` : '')
+                + (isTrackerBoard && selectedMonth ? ` in ${selectedMonth.label}` : '')
               : 'Loading board details…'}
           </p>
           {/* The month scopes all three views, so it sits with the board's
               identity rather than in the action row on the right — which
               already wraps at six controls, and would make a scope control
               look like an action. */}
-          {isMonthlyBoard && (
+          {isTrackerBoard && (
             <MonthSelector
               months={months}
               value={monthKey}
@@ -1627,7 +1627,7 @@ const BoardDetailPage = () => {
             phones and iPad portrait. Letting it shrink is what allows the buttons
             to wrap. At desktop widths it still fits on one line, unchanged. */}
         {(canEdit || isBoardCreator || canExportActivity || canManageTrackers
-          || canConvertToMonthly) && (
+          || canConvertToTracker) && (
           <div className="flex items-center gap-2 flex-wrap justify-end">
             {canViewAccess && !isPublic && (
               <Button
@@ -1656,13 +1656,13 @@ const BoardDetailPage = () => {
                 Trackers
               </Button>
             )}
-            {canConvertToMonthly && (
+            {canConvertToTracker && (
               <Button
                 variant="secondary"
                 icon={CalendarRange}
                 onClick={() => setConvertOpen(true)}
               >
-                Make monthly
+                Make it a tracker
               </Button>
             )}
             {canExportActivity && (
@@ -2155,10 +2155,10 @@ const BoardDetailPage = () => {
               ? handleMenuSharePortal
               : undefined
           }
-          // Monthly boards only, top-level rows only — subitems follow their
+          // Tracker boards only, top-level rows only — subitems follow their
           // parent's month server-side and cannot be refiled on their own.
           onMoveToMonth={
-            isMonthlyBoard && canOnBoard('task.move') && !actionsMenu.task.parent
+            isTrackerBoard && canOnBoard('task.move') && !actionsMenu.task.parent
               ? () => {
                 setMonthMoveTargets([actionsMenu.task._id]);
                 setActionsMenu(null);
@@ -2191,7 +2191,7 @@ const BoardDetailPage = () => {
       )}
 
       {convertOpen && (
-        <ConvertToMonthlyModal
+        <ConvertToTrackerModal
           boardId={boardId}
           boardName={board?.name}
           onClose={() => setConvertOpen(false)}
@@ -2384,7 +2384,7 @@ const BoardDetailPage = () => {
           onAssign={handleBulkAssign}
           onMoveToGroup={handleBulkMoveToGroup}
           onMoveToMonth={
-            isMonthlyBoard && canOnBoard('task.move')
+            isTrackerBoard && canOnBoard('task.move')
               ? () => setMonthMoveTargets(Array.from(selectedTaskIds))
               : undefined
           }

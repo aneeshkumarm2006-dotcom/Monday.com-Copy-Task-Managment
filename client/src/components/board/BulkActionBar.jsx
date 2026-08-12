@@ -222,7 +222,7 @@ const BulkActionBar = ({
         <BarButton
           ref={moveBtnRef}
           icon={FolderInput}
-          // "Move to group", not "Move to": on a monthly board there are two
+          // "Move to group", not "Move to": on a tracker board there are two
           // move actions in this bar and a bare "Move to" is ambiguous.
           label="Move to group"
           trailing={ChevronDown}
@@ -291,7 +291,7 @@ const BulkActionBar = ({
         )}
       </div>
 
-      {/* Move to month (monthly boards only). Opens the same modal the row menu
+      {/* Move to month (tracker boards only). Opens the same modal the row menu
           uses rather than a second popover — one month picker, one confirmation
           sentence, whether you got here from one row or twenty. */}
       {onMoveToMonth && (

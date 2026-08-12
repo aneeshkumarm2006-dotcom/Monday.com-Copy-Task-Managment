@@ -1,5 +1,5 @@
 /**
- * The rules for turning a board into a monthly board, and back.
+ * The rules for turning a board into a tracker board, and back.
  *
  * PURE — takes plain objects, touches no database, throws nothing. Same
  * discipline as [trackerEvaluate.js](./trackerEvaluate.js): the decision about
@@ -15,7 +15,7 @@
 
 const { isValidTimezone } = require('./tzDay');
 
-const CONVERTIBLE_TO = ['monthly', 'standard'];
+const CONVERTIBLE_TO = ['tracker', 'standard'];
 
 /**
  * May this board convert, and what should the user be warned about?
@@ -23,7 +23,7 @@ const CONVERTIBLE_TO = ['monthly', 'standard'];
  * @param {Object}  args
  * @param {Object}  args.board     - a board doc or plain object; reads
  *                                   `boardType`, `monthTimezone`, `useFlexibleColumns`
- * @param {string}  args.to        - 'monthly' | 'standard'
+ * @param {string}  args.to        - 'tracker' | 'standard'
  * @param {string} [args.timezone] - IANA zone, required when converting TO monthly
  *                                   unless the board already carries one
  * @returns {{ ok, noop, refusals: string[], warnings: string[], timezone: string|null }}
@@ -50,7 +50,7 @@ const checkConversion = ({ board, to, timezone } = {}) => {
   // rolled over — the client would see their request vanish, not move.
   if (board.boardType === 'client') {
     refusals.push(
-      'Client Portal boards cannot become monthly boards. A client would lose sight '
+      'Client Portal boards cannot become tracker boards. A client would lose sight '
       + 'of their own open requests as soon as the month changed.'
     );
     return { ok: false, noop: false, refusals, warnings, timezone: null };
@@ -64,13 +64,13 @@ const checkConversion = ({ board, to, timezone } = {}) => {
     // replacing. Returning `board.monthTimezone` here made a refile silently
     // recompute every month against the very timezone being changed away from,
     // which looks exactly like "nothing needed changing".
-    const requested = to === 'monthly' && timezone && isValidTimezone(timezone)
+    const requested = to === 'tracker' && timezone && isValidTimezone(timezone)
       ? timezone
       : board.monthTimezone || null;
     return { ok: true, noop: true, refusals, warnings, timezone: requested };
   }
 
-  if (to === 'monthly') {
+  if (to === 'tracker') {
     const tz = timezone || board.monthTimezone || null;
     if (!isValidTimezone(tz)) {
       refusals.push(
@@ -108,7 +108,7 @@ const checkConversion = ({ board, to, timezone } = {}) => {
  * `warnings` on purpose: these are consequences the user WANTS, not caveats.
  */
 const describeEffects = (to) =>
-  to === 'monthly'
+  to === 'tracker'
     ? [
       'The board will show one month at a time, with a month picker at the top.',
       'A Delivery tab will appear for recurring commitments.',

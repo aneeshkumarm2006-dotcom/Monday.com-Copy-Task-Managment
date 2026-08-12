@@ -1,7 +1,7 @@
 import api from './api';
 
 /**
- * GET /api/boards/:boardId/months — the month dropdown for a monthly board.
+ * GET /api/boards/:boardId/months — the month dropdown for a tracker board.
  *
  * Every month from the board's earliest task through the current month, plus
  * one ahead for planning. Newest first, with labels already formatted.
@@ -14,7 +14,7 @@ import api from './api';
  */
 export const listBoardMonths = async (boardId) => {
   const { data } = await api.get(`/api/boards/${boardId}/months`, {
-    // 404s on a non-monthly board; the caller decides whether that matters
+    // 404s on a non-tracker board; the caller decides whether that matters
     // rather than firing the generic toast at someone opening a normal board.
     suppressErrorToast: true,
   });

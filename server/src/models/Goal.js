@@ -3,7 +3,7 @@ const { GOAL_TYPE_KEYS, UNITS } = require('../utils/goalTypes');
 const { MONTH_KEY_RE } = require('../utils/monthKey');
 
 /**
- * One monthly goal, belonging to one group of one monthly board.
+ * One monthly goal, belonging to one group of one tracker board.
  *
  * Its own collection rather than an array on `TaskGroup`: rows are per
  * (group x month) and unbounded over time — twelve clients x eight goals x

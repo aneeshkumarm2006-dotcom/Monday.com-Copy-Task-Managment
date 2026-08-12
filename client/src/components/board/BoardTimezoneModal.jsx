@@ -7,7 +7,7 @@ import Spinner from '../ui/Spinner';
 import { previewMonthTimezone, setMonthTimezone } from '../../services/monthService';
 
 /**
- * Change which calendar defines a monthly board's months.
+ * Change which calendar defines a tracker board's months.
  *
  * The important thing this screen has to communicate is that it is NOT a
  * settings toggle. Moving the timezone moves every month boundary, so a task

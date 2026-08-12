@@ -72,8 +72,8 @@ const taskSchema = new mongoose.Schema(
       default: {},
     },
     /**
-     * Which calendar month this task belongs to, as 'YYYY-MM'. Monthly boards
-     * only (`Board.boardType === 'monthly'`); null and ignored everywhere else.
+     * Which calendar month this task belongs to, as 'YYYY-MM'. Tracker boards
+     * only (`Board.boardType === 'tracker'`); null and ignored everywhere else.
      *
      * STORED, not derived from `createdAt`. The two are usually the same, but a
      * task created on 31 July for August's work must be able to sit in August —
@@ -300,7 +300,7 @@ taskSchema.pre('save', async function syncLegacyFieldsFromColumnValues() {
 // nor `createdAt` was indexed before, so all of them were collection scans.
 taskSchema.index({ board: 1, createdAt: -1 });
 
-// The monthly board's whole read: "this board, this month, grouped and ordered".
+// The tracker board's whole read: "this board, this month, grouped and ordered".
 //
 // Deliberately NOT sparse: a compound sparse index only skips a document that is
 // missing EVERY indexed field, and `board`/`group`/`order` are always present, so

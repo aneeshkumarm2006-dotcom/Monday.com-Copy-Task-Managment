@@ -25,7 +25,7 @@ import {
  * BoardDetailPage itself.
  *
  * @param {string} boardId
- * @param {{ enabled: boolean }} options - false on non-monthly boards, where
+ * @param {{ enabled: boolean }} options - false on non-tracker boards, where
  *   this hook fetches nothing and returns inert values.
  */
 const useBoardMonths = (boardId, { enabled = false } = {}) => {

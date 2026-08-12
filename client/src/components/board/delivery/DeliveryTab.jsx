@@ -94,7 +94,7 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
         setError(null);
       } catch (err) {
         // A 403 or 404 here is meaningful — the role lacks the capability, or
-        // this is not a monthly board — so the tab renders the server's own
+        // this is not a tracker board — so the tab renders the server's own
         // sentence rather than firing the generic toast.
         setError(err?.response?.data?.error || 'Could not load the delivery view.');
       } finally {

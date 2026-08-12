@@ -211,7 +211,7 @@ const buildPreview = async (board, timezone) => {
 const convertBoard = async (board, { to, timezone }) => {
   let stamped = { topLevel: 0, subitems: 0, orphanSubitems: 0, byMonth: new Map() };
 
-  if (to === 'monthly') {
+  if (to === 'tracker') {
     stamped = await applyMonthKeys(board._id, timezone);
     board.monthTimezone = timezone;
   }
@@ -220,7 +220,7 @@ const convertBoard = async (board, { to, timezone }) => {
   await board.save();
 
   let swept = null;
-  if (to === 'monthly') {
+  if (to === 'tracker') {
     // Anything created mid-flight. Usually zero; when it is not, silently
     // losing those rows would be the worst failure this feature could have.
     swept = await applyMonthKeys(board._id, timezone);
@@ -232,7 +232,7 @@ const convertBoard = async (board, { to, timezone }) => {
   };
 };
 
-/** Tasks left with no month on a monthly board. Should be zero; surfaced if not. */
+/** Tasks left with no month on a tracker board. Should be zero; surfaced if not. */
 const countUnfiled = (boardId) => Task.countDocuments(unfiled(boardId));
 
 module.exports = {

@@ -15,7 +15,7 @@ import useTaskStore from '../../../store/taskStore';
 import useToastStore from '../../../store/toastStore';
 
 // Recharts is ~95KB and this is the only thing in the app that uses it, so the
-// chart is split out — a standard board, or a monthly board sitting on the Board
+// chart is split out — a standard board, or a tracker board sitting on the Board
 // tab, never downloads it.
 const GoalTrendChart = lazy(() => import('./GoalTrendChart'));
 

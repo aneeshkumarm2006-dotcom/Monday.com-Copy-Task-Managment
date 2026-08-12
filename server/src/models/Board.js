@@ -86,7 +86,7 @@ const columnSchema = new mongoose.Schema(
 );
 
 /**
- * Per-board GOAL column — the extra detail columns a monthly board's Goals
+ * Per-board GOAL column — the extra detail columns a tracker board's Goals
  * table carries, on top of the built-in fields every goal has (name, type,
  * baseline, target, actual, weight, owner, score).
  *
@@ -218,21 +218,21 @@ const boardSchema = new mongoose.Schema(
      * `visibility: 'private'` internally, so the whole org access model (roles,
      * memberAccess, resolveAccess) is untouched. See utils/permissions.js.
      *
-     * Monthly boards ('monthly') partition everything by calendar month: each
+     * Tracker boards ('tracker') partition everything by calendar month: each
      * task carries a `Task.monthKey` and the board shows one month at a time,
      * alongside a Delivery view and a Goals view scoped to the same month. Built
      * for retainer work (SEO/Ads and anything else cyclical) — deliberately
      * generic, so nothing in the engine knows what an "SEO board" is. The three
-     * types are mutually exclusive: a monthly board has no client portal.
+     * types are mutually exclusive: a tracker board has no client portal.
      */
     boardType: {
       type: String,
-      enum: ['standard', 'client', 'monthly'],
+      enum: ['standard', 'client', 'tracker'],
       default: 'standard',
     },
     /**
      * The IANA zone whose calendar defines this board's month boundaries.
-     * Monthly boards only, and REQUIRED on them (enforced by the hook below).
+     * Tracker boards only, and REQUIRED on them (enforced by the hook below).
      *
      * Not defaulted to 'UTC', for the same reason `Tracker.timezone` is not: a
      * board silently on UTC while the team is on IST files every task created
@@ -325,7 +325,7 @@ const boardSchema = new mongoose.Schema(
     // legacy path is removed and this flag becomes implicit.
     useFlexibleColumns: { type: Boolean, default: false },
     // The extra columns this board's Goals tables carry, shared by every group.
-    // Empty on every board until an org admin adds one; monthly boards only.
+    // Empty on every board until an org admin adds one; tracker boards only.
     goalColumns: { type: [goalColumnSchema], default: [] },
   },
   { timestamps: true }
@@ -354,7 +354,7 @@ boardSchema.pre('save', function enforcePrimaryColumn() {
 });
 
 /**
- * Model-level invariant: a monthly board must know which calendar it is on.
+ * Model-level invariant: a tracker board must know which calendar it is on.
  *
  * Defence-in-depth alongside the controller's validation, and the reason
  * `monthTimezone` has no default: every month boundary on this board — which
@@ -364,9 +364,9 @@ boardSchema.pre('save', function enforcePrimaryColumn() {
  * that failure is silent. Better to refuse the save.
  */
 boardSchema.pre('save', function enforceMonthTimezone() {
-  if (this.boardType !== 'monthly') return;
+  if (this.boardType !== 'tracker') return;
   if (!this.monthTimezone) {
-    throw new Error('Board.monthTimezone is required when boardType is "monthly"');
+    throw new Error('Board.monthTimezone is required when boardType is "tracker"');
   }
 });
 

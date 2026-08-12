@@ -41,7 +41,7 @@ const notificationSchema = new mongoose.Schema(
         // Client Portal — team-facing alerts about external client activity.
         'clientIssueCreated',
         'clientReplied',
-        // Monthly boards — the month is ending (or has ended) and its goals
+        // Tracker boards — the month is ending (or has ended) and its goals
         // still need their final numbers.
         'goalsDue',
       ],
@@ -83,7 +83,7 @@ const notificationSchema = new mongoose.Schema(
       ],
       default: null,
     },
-    // Which month this notification is about ('YYYY-MM'), on monthly boards.
+    // Which month this notification is about ('YYYY-MM'), on tracker boards.
     // A `goalsDue` reminder deep-links to the Goals tab for the month that needs
     // closing, which by the time anyone clicks is no longer the current one —
     // so the month has to travel with the notification rather than be inferred.

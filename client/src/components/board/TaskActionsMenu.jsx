@@ -19,7 +19,7 @@ import {
  *   onPinPersonal     — callback to toggle the personal pin
  *   sharedWithClient  — task is currently visible in the client's portal
  *   onSharePortal     — callback to toggle client visibility (omit to hide the row)
- *   onMoveToMonth     — opens the month picker (monthly boards only; omit to hide)
+ *   onMoveToMonth     — opens the month picker (tracker boards only; omit to hide)
  *   onEdit            — callback when Edit is clicked
  *   onDelete          — callback when Delete is clicked
  *   onClose           — callback to close the menu

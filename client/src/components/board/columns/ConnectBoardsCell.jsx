@@ -103,7 +103,7 @@ const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
       setConnectableByBoard(byBoard);
 
       const lists = await Promise.all(
-        // `month: 'all'` because a link target may be a monthly board, where
+        // `month: 'all'` because a link target may be a tracker board, where
         // the task read is month-scoped and refuses an unscoped request. A
         // connect picker wants every candidate row, not just this month's.
         targetBoardIds.map((bid) =>

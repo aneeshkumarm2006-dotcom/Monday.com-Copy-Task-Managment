@@ -9,14 +9,14 @@ import { boardTypeKey } from '../../utils/boardFilters';
  * board rendered as "private", which is technically true and practically
  * useless — and a third board type made it worse. One component, both places.
  *
- * Board TYPE wins over visibility when there is one: "monthly" and "client"
+ * Board TYPE wins over visibility when there is one: "tracker" and "client"
  * tell you far more about a board than "private" does, and both types are
  * always private anyway.
  */
 const STYLES = {
-  monthly: {
+  tracker: {
     icon: CalendarRange,
-    label: 'monthly',
+    label: 'tracker',
     bg: 'var(--color-accent-light)',
     fg: 'var(--color-accent-text)',
   },

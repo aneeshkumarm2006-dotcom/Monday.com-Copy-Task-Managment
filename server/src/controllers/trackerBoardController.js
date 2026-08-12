@@ -1,5 +1,5 @@
 /**
- * Monthly boards: converting a board to the type, and listing its months.
+ * Tracker boards: converting a board to the type, and listing its months.
  *
  * Kept out of boardController.js, which is already ~1,300 lines. The write core
  * is [services/monthlyConvert.js](../services/monthlyConvert.js) and the refusal
@@ -11,10 +11,10 @@
 const Board = require('../models/Board');
 const Task = require('../models/Task');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
-const { checkConversion, describeEffects } = require('../utils/monthlyConvert');
+const { checkConversion, describeEffects } = require('../utils/trackerBoardConvert');
 const {
   buildPreview, convertBoard, countUnfiled, applyMonthKeys, partitionableTasks,
-} = require('../services/monthlyConvert');
+} = require('../services/trackerBoardConvert');
 const {
   monthKeyOf, formatMonth, addMonths, compareMonthKeys, monthKeysBetween, isMonthKey,
 } = require('../utils/monthKey');
@@ -25,7 +25,7 @@ const { missingFinalValues, monthIsUnclosed } = require('../utils/goalTypes');
 
 /**
  * POST /api/boards/:id/convert
- * body: { to: 'monthly' | 'standard', timezone?, dryRun?: boolean }
+ * body: { to: 'tracker' | 'standard', timezone?, dryRun?: boolean }
  *
  * Gated on `board.change_visibility`. Converting changes what the board IS —
  * the same family of lifecycle decision as flipping public/private, which
@@ -56,11 +56,11 @@ const convertBoardType = async (req, res) => {
     // refusal IS the answer the preview dialog is asking for, and rendering it
     // inline beats a toast that says "400".
     if (dryRun) {
-      const preview = verdict.ok && !verdict.noop && to === 'monthly'
+      const preview = verdict.ok && !verdict.noop && to === 'tracker'
         ? await buildPreview(board, verdict.timezone)
         : { months: [], total: 0, alreadyStamped: 0, subitems: 0, noGroup: 0 };
 
-      const simulated = verdict.ok && !verdict.noop && to === 'monthly'
+      const simulated = verdict.ok && !verdict.noop && to === 'tracker'
         ? await applyMonthKeys(board._id, verdict.timezone, { dryRun: true })
         : null;
 
@@ -105,7 +105,7 @@ const convertBoardType = async (req, res) => {
         orphanSubitems: result.stamped.orphanSubitems,
         sweptAfterFlip: result.sweptAfterFlip,
       },
-      unfiled: to === 'monthly' ? await countUnfiled(board._id) : 0,
+      unfiled: to === 'tracker' ? await countUnfiled(board._id) : 0,
       warnings: verdict.warnings,
     });
   } catch (err) {
@@ -118,7 +118,7 @@ const convertBoardType = async (req, res) => {
  * PUT /api/boards/:id/month-timezone
  * body: { timezone, dryRun?: boolean }
  *
- * Change which calendar defines a monthly board's months, and re-file every
+ * Change which calendar defines a tracker board's months, and re-file every
  * task accordingly.
  *
  * THIS IS NOT A FIELD UPDATE, which is the whole reason it is its own endpoint
@@ -150,8 +150,8 @@ const setMonthTimezone = async (req, res) => {
     if (denied) return res.status(denied.status).json({ error: denied.error });
 
     const { board } = ctx;
-    if (board.boardType !== 'monthly') {
-      return res.status(404).json({ error: 'This board is not organised by month' });
+    if (board.boardType !== 'tracker') {
+      return res.status(404).json({ error: 'This board is not a tracker board' });
     }
     if (!isValidTimezone(timezone)) {
       return res.status(400).json({ error: 'That is not a timezone this server recognises' });
@@ -226,8 +226,8 @@ const getBoardMonths = async (req, res) => {
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
     const { board } = ctx;
-    if (board.boardType !== 'monthly') {
-      return res.status(404).json({ error: 'This board is not a monthly board' });
+    if (board.boardType !== 'tracker') {
+      return res.status(404).json({ error: 'This board is not a tracker board' });
     }
 
     const tz = board.monthTimezone || 'UTC';
@@ -299,7 +299,7 @@ const getBoardMonths = async (req, res) => {
       currentKey,
       defaultKey: currentKey,
       timezone: tz,
-      // Tasks that somehow have no month on a monthly board. Should be zero.
+      // Tasks that somehow have no month on a tracker board. Should be zero.
       // Surfaced rather than hidden: an unfiled task is invisible in every
       // month view, and silently losing rows is the worst thing this feature
       // could do.

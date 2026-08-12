@@ -14,7 +14,7 @@ import { formatMonthKey } from '../../../utils/monthKeys';
  *
  * Recharts was already a dependency but imported by no file in the app, so this
  * is the first chart in the codebase. It is lazy-loaded by the Goals tab so that
- * standard boards — and monthly boards on other tabs — never pay for it.
+ * standard boards — and tracker boards on other tabs — never pay for it.
  *
  * Series colours come from the SAME cycle the board uses for group dots, so a
  * group's dot on the Board tab, its ring on this tab and its line here are one

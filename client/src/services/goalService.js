@@ -7,7 +7,7 @@ import api from './api';
  * rule.
  *
  * `suppressErrorToast` throughout, matching trackerService: a 403 or 404 here is
- * meaningful information (no capability, or not a monthly board) and the tab
+ * meaningful information (no capability, or not a tracker board) and the tab
  * renders the server's own sentence rather than firing a generic toast.
  */
 

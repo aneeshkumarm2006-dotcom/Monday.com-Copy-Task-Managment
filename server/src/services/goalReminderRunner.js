@@ -19,7 +19,7 @@ const { missingFinalValues } = require('../utils/goalTypes');
  *
  * WHY EVERY FIFTEEN MINUTES rather than once a day: the reminder has to fire at
  * a sensible hour in each BOARD's own timezone, and boards in one workspace can
- * sit in different ones. So the tick considers every monthly board and asks what
+ * sit in different ones. So the tick considers every tracker board and asks what
  * time it is *there*. Fifteen-minute granularity is plenty for a monthly nag and
  * costs a fifteenth of a per-minute tick.
  *
@@ -125,12 +125,12 @@ const tick = async () => {
   const now = new Date();
   let boards;
   try {
-    boards = await Board.find({ boardType: 'monthly' }).select(
+    boards = await Board.find({ boardType: 'tracker' }).select(
       '_id name organisation monthTimezone goalColumns visibility publicDefaultLevel '
       + 'memberAccess createdBy'
     );
   } catch (err) {
-    console.error('[goalReminder] failed to query monthly boards:', err);
+    console.error('[goalReminder] failed to query tracker boards:', err);
     return;
   }
 

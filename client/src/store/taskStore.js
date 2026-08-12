@@ -43,7 +43,7 @@ const useTaskStore = create((set, get) => ({
    * bucket them by group id. A single /api/tasks?board=:id call avoids the
    * N+1 per-group roundtrip.
    *
-   * `month` scopes the task fetch on a monthly board, and is REQUIRED there —
+   * `month` scopes the task fetch on a tracker board, and is REQUIRED there —
    * the server 400s without it rather than returning three years of tasks and
    * letting the client render them all as though they were this month's.
    * Groups are always fetched unscoped, which is what makes an empty month show

@@ -749,7 +749,7 @@ const emitColumnChangeEvents = (task, boardId, changes, actorId) => {
 /**
  * GET /api/tasks?board=:id&group=:id&month=YYYY-MM
  *
- * On a MONTHLY board `month` is REQUIRED. That is deliberate rather than
+ * On a TRACKER board `month` is REQUIRED. That is deliberate rather than
  * defaulting to the current month: an unfiltered read on a three-year retainer
  * board returns every task ever created and renders them all as though they
  * were this month's, which is precisely the "silently returns the wrong rows"
@@ -779,11 +779,11 @@ const getTasks = async (req, res) => {
     };
     if (groupId) filter.group = groupId;
 
-    const isMonthly = ctx.board?.boardType === 'monthly';
-    if (isMonthly && month !== 'all') {
+    const isTracker = ctx.board?.boardType === 'tracker';
+    if (isTracker && month !== 'all') {
       if (!isMonthKey(month)) {
         return res.status(400).json({
-          error: 'A month (YYYY-MM) is required when reading a monthly board',
+          error: 'A month (YYYY-MM) is required when reading a tracker board',
           code: 'MONTH_REQUIRED',
         });
       }
@@ -807,7 +807,7 @@ const getTasks = async (req, res) => {
     // mirror columns).
     await embedMirrorValues(tasks, ctx.board);
 
-    return res.json({ tasks, monthKey: isMonthly ? month : null });
+    return res.json({ tasks, monthKey: isTracker ? month : null });
   } catch (err) {
     console.error('getTasks error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -1175,7 +1175,7 @@ const createTask = async (req, res) => {
     // August's work, and letting the two drift apart would put a parent and its
     // own child in different months.
     let resolvedMonthKey = null;
-    if (ctx.board.boardType === 'monthly') {
+    if (ctx.board.boardType === 'tracker') {
       if (resolvedParent) {
         const parentDoc = await Task.findById(resolvedParent).select('monthKey').lean();
         resolvedMonthKey = parentDoc?.monthKey || null;
@@ -2023,8 +2023,8 @@ const moveTasksToMonth = async (req, res) => {
     const ctx = await loadTaskBoardContext(boardId, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
-    if (ctx.board.boardType !== 'monthly') {
-      return res.status(400).json({ error: 'This board is not organised by month' });
+    if (ctx.board.boardType !== 'tracker') {
+      return res.status(400).json({ error: 'This board is not a tracker board' });
     }
 
     const denied = requireCapability(

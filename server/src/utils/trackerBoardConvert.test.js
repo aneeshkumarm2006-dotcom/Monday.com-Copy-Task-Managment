@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { checkConversion, describeEffects } = require('./monthlyConvert');
+const { checkConversion, describeEffects } = require('./trackerBoardConvert');
 
 const board = (over = {}) => ({
   boardType: 'standard',
@@ -17,7 +17,7 @@ const board = (over = {}) => ({
 test('a client board is refused in both directions, with no override', () => {
   const toMonthly = checkConversion({
     board: board({ boardType: 'client' }),
-    to: 'monthly',
+    to: 'tracker',
     timezone: 'Asia/Kolkata',
   });
   assert.strictEqual(toMonthly.ok, false);
@@ -30,16 +30,16 @@ test('a client board is refused in both directions, with no override', () => {
 });
 
 test('converting to monthly without a usable timezone is refused', () => {
-  const none = checkConversion({ board: board(), to: 'monthly' });
+  const none = checkConversion({ board: board(), to: 'tracker' });
   assert.strictEqual(none.ok, false);
   assert.match(none.refusals[0], /timezone is required/i);
 
-  const junk = checkConversion({ board: board(), to: 'monthly', timezone: 'Mars/Olympus' });
+  const junk = checkConversion({ board: board(), to: 'tracker', timezone: 'Mars/Olympus' });
   assert.strictEqual(junk.ok, false);
   assert.match(junk.refusals[0], /not a timezone/i);
 
   // Empty string is not a timezone either, and must not read as "not supplied".
-  assert.strictEqual(checkConversion({ board: board(), to: 'monthly', timezone: '' }).ok, false);
+  assert.strictEqual(checkConversion({ board: board(), to: 'tracker', timezone: '' }).ok, false);
 });
 
 test('an unknown target type is refused rather than assumed', () => {
@@ -49,7 +49,7 @@ test('an unknown target type is refused rather than assumed', () => {
 });
 
 test('a missing board is refused, not crashed on', () => {
-  const r = checkConversion({ board: null, to: 'monthly', timezone: 'UTC' });
+  const r = checkConversion({ board: null, to: 'tracker', timezone: 'UTC' });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.refusals.length, 1);
 });
@@ -59,7 +59,7 @@ test('a missing board is refused, not crashed on', () => {
 // ---------------------------------------------------------------------------
 
 test('a standard board converts to monthly with a valid timezone', () => {
-  const r = checkConversion({ board: board(), to: 'monthly', timezone: 'Asia/Kolkata' });
+  const r = checkConversion({ board: board(), to: 'tracker', timezone: 'Asia/Kolkata' });
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.noop, false);
   assert.strictEqual(r.timezone, 'Asia/Kolkata');
@@ -67,10 +67,10 @@ test('a standard board converts to monthly with a valid timezone', () => {
   assert.deepStrictEqual(r.warnings, []);
 });
 
-test('an already-monthly board reuses its stored timezone when none is supplied', () => {
+test('an already-tracker board reuses its stored timezone when none is supplied', () => {
   const r = checkConversion({
     board: board({ boardType: 'standard', monthTimezone: 'Europe/London' }),
-    to: 'monthly',
+    to: 'tracker',
   });
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.timezone, 'Europe/London');
@@ -79,7 +79,7 @@ test('an already-monthly board reuses its stored timezone when none is supplied'
 test('an explicit timezone overrides the stored one', () => {
   const r = checkConversion({
     board: board({ monthTimezone: 'Europe/London' }),
-    to: 'monthly',
+    to: 'tracker',
     timezone: 'America/New_York',
   });
   assert.strictEqual(r.timezone, 'America/New_York');
@@ -90,8 +90,8 @@ test('an explicit timezone wins even when the board is ALREADY monthly', () => {
   // recompute every month against the zone being changed away from — which
   // reports "0 changed" and looks like success.
   const r = checkConversion({
-    board: board({ boardType: 'monthly', monthTimezone: 'America/Toronto' }),
-    to: 'monthly',
+    board: board({ boardType: 'tracker', monthTimezone: 'America/Toronto' }),
+    to: 'tracker',
     timezone: 'Asia/Calcutta',
   });
   assert.strictEqual(r.noop, true, 'still a no-op as far as the TYPE goes');
@@ -99,15 +99,15 @@ test('an explicit timezone wins even when the board is ALREADY monthly', () => {
 
   // With no timezone supplied, the stored one still stands.
   const kept = checkConversion({
-    board: board({ boardType: 'monthly', monthTimezone: 'America/Toronto' }),
-    to: 'monthly',
+    board: board({ boardType: 'tracker', monthTimezone: 'America/Toronto' }),
+    to: 'tracker',
   });
   assert.strictEqual(kept.timezone, 'America/Toronto');
 
   // Junk does not silently replace a good stored zone.
   const junk = checkConversion({
-    board: board({ boardType: 'monthly', monthTimezone: 'America/Toronto' }),
-    to: 'monthly',
+    board: board({ boardType: 'tracker', monthTimezone: 'America/Toronto' }),
+    to: 'tracker',
     timezone: 'Mars/Olympus',
   });
   assert.strictEqual(junk.timezone, 'America/Toronto');
@@ -115,8 +115,8 @@ test('an explicit timezone wins even when the board is ALREADY monthly', () => {
 
 test('converting a board to what it already is, is a no-op rather than an error', () => {
   const m = checkConversion({
-    board: board({ boardType: 'monthly', monthTimezone: 'UTC' }),
-    to: 'monthly',
+    board: board({ boardType: 'tracker', monthTimezone: 'UTC' }),
+    to: 'tracker',
   });
   assert.strictEqual(m.ok, true);
   assert.strictEqual(m.noop, true);
@@ -133,7 +133,7 @@ test('converting a board to what it already is, is a no-op rather than an error'
 test('a flexible-columns board converts, with a warning that Goals does not reuse them', () => {
   const r = checkConversion({
     board: board({ useFlexibleColumns: true }),
-    to: 'monthly',
+    to: 'tracker',
     timezone: 'UTC',
   });
   assert.strictEqual(r.ok, true, 'flexible columns must not block conversion');
@@ -143,7 +143,7 @@ test('a flexible-columns board converts, with a warning that Goals does not reus
 
 test('reverting to standard warns about the tabs but promises no data loss', () => {
   const r = checkConversion({
-    board: board({ boardType: 'monthly', monthTimezone: 'UTC' }),
+    board: board({ boardType: 'tracker', monthTimezone: 'UTC' }),
     to: 'standard',
   });
   assert.strictEqual(r.ok, true);
@@ -157,7 +157,7 @@ test('reverting to standard warns about the tabs but promises no data loss', () 
 // ---------------------------------------------------------------------------
 
 test('describeEffects states consequences the user wants, per direction', () => {
-  const monthly = describeEffects('monthly');
+  const monthly = describeEffects('tracker');
   assert.strictEqual(monthly.length, 3);
   assert.match(monthly.join(' '), /month picker/);
 

@@ -1,5 +1,5 @@
 /**
- * Calendar-MONTH math, for monthly boards.
+ * Calendar-MONTH math, for tracker boards.
  *
  * This is the month-level companion to [tzDay.js](./tzDay.js) and it inherits
  * that file's rule wholesale: "which month did this happen in?" is a question

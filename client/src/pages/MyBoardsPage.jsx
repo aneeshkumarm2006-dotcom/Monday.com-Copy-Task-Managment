@@ -156,7 +156,7 @@ const MyBoardsPage = () => {
       visibility: values.visibility,
       description: values.description,
       // Client Portal boards: boardType 'client' + optional client categories.
-      // Monthly boards: boardType 'monthly' + the browser's resolved timezone,
+      // Tracker boards: boardType 'tracker' + the browser's resolved timezone,
       // which the server requires and validates.
       boardType: values.boardType || 'standard',
       portalCategories: values.portalCategories || [],
@@ -186,9 +186,9 @@ const MyBoardsPage = () => {
       // Board type drives the tabs, the month picker and the card's pill, so the
       // cache has to see the new shape.
       await fetchBoards(orgId);
-      if (values.boardType === 'monthly') {
+      if (values.boardType === 'tracker') {
         toastSuccess(
-          `“${values.name}” is now a monthly board — ${result?.filed?.tasks ?? 0} tasks filed by month.`
+          `“${values.name}” is now a tracker board — ${result?.filed?.tasks ?? 0} tasks filed by month.`
         );
       } else {
         toastSuccess(`“${values.name}” is back to a standard board. Nothing was deleted.`);

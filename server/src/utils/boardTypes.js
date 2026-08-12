@@ -17,7 +17,7 @@
  *              and Goals views scoped to the selected month.
  */
 
-const BOARD_TYPES = ['standard', 'client', 'monthly'];
+const BOARD_TYPES = ['standard', 'client', 'tracker'];
 
 const isBoardType = (value) => BOARD_TYPES.includes(value);
 

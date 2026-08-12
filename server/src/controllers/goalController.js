@@ -1,5 +1,5 @@
 /**
- * Monthly goals — the per-group tables on a monthly board's Goals tab.
+ * Monthly goals — the per-group tables on a tracker board's Goals tab.
  *
  * The scoring lives in the pure [utils/goalTypes.js](../utils/goalTypes.js);
  * this file only queries and gates. Every handler runs the same three gates, in
@@ -31,7 +31,7 @@ const {
 } = require('../utils/goalTypes');
 const { isMonthKey, monthKeyOf, addMonths, monthKeysBetween } = require('../utils/monthKey');
 
-const NOT_MONTHLY = 'This board is not organised by month.';
+const NOT_TRACKER = 'This board is not a tracker board.';
 const MAX_GOALS_PER_GROUP = 100;
 const MAX_TREND_MONTHS = 24;
 const MAX_TREND_ROWS = 4000;
@@ -58,8 +58,8 @@ const gate = async (req, res, capability) => {
   }
   // 404, not 403: on a standard board goals do not exist, so there is nothing
   // here to be refused access to.
-  if (ctx.board?.boardType !== 'monthly') {
-    res.status(404).json({ error: NOT_MONTHLY, code: 'NOT_MONTHLY_BOARD' });
+  if (ctx.board?.boardType !== 'tracker') {
+    res.status(404).json({ error: NOT_TRACKER, code: 'NOT_TRACKER_BOARD' });
     return null;
   }
   return ctx;

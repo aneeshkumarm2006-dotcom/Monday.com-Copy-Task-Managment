@@ -14,7 +14,7 @@
 
 export const EMPTY_BOARD_FILTERS = {
   visibility: [], // 'public' | 'private'
-  boardType: [], // 'standard' | 'client' | 'monthly'
+  boardType: [], // 'standard' | 'client' | 'tracker'
   progress: [], // 'empty' | 'not_started' | 'in_progress' | 'completed'
   ownership: [], // 'owned' | 'shared'
   updated: [], // 'today' | 'week' | 'month' | 'older'
@@ -30,18 +30,18 @@ export const VISIBILITY_OPTIONS = [
 export const BOARD_TYPE_OPTIONS = [
   { key: 'standard', label: 'Standard' },
   { key: 'client', label: 'Client Portal' },
-  { key: 'monthly', label: 'Monthly' },
+  { key: 'tracker', label: 'Tracker' },
 ];
 
 /**
  * The single label a board should wear. Board TYPE beats visibility when there
- * is one: "monthly" and "client" say far more than "private" does, and both of
+ * is one: "tracker" and "client" say far more than "private" does, and both of
  * those types are always private anyway. Lives here rather than beside the pill
  * component so the pill file exports only a component (react-refresh) and the
  * filter and the badge cannot disagree about what a board is.
  */
 export const boardTypeKey = (board) => {
-  if (board?.boardType === 'monthly') return 'monthly';
+  if (board?.boardType === 'tracker') return 'tracker';
   if (board?.boardType === 'client') return 'client';
   return board?.visibility === 'public' ? 'public' : 'private';
 };

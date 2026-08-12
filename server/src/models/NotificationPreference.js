@@ -44,7 +44,7 @@ const notificationPreferenceSchema = new mongoose.Schema(
       dueDates: { type: channelSchema, default: () => ({}) },
       taskMoves: { type: channelSchema, default: () => ({}) },
       invites: { type: channelSchema, default: () => ({}) },
-      // Month-end goal reminders on monthly boards. Given its own category
+      // Month-end goal reminders on tracker boards. Given its own category
       // rather than folded into `dueDates` because an unmapped type is ALWAYS
       // delivered (see TYPE_CATEGORY in notificationService), and a recurring
       // monthly nag with no off switch is how a workspace learns to ignore the

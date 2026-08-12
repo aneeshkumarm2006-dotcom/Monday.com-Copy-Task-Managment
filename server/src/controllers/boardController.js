@@ -129,7 +129,7 @@ const DEFAULT_STATUSES = [
  * Returns a Map of boardId → { taskCount, doneCount, progress } that the caller
  * merges into each board's payload.
  *
- * On a MONTHLY board this counts the CURRENT month only — see the scope clause
+ * On a TRACKER board this counts the CURRENT month only — see the scope clause
  * below. Callers must therefore pass full board documents (`boardType` and
  * `monthTimezone`), not a lean projection.
  */
@@ -150,19 +150,19 @@ const computeBoardProgress = async (boards) => {
     }
   }
 
-  // A MONTHLY board's progress is THIS MONTH's progress, not its lifetime's.
+  // A TRACKER board's progress is THIS MONTH's progress, not its lifetime's.
   //
   // Counting every task a retainer board has ever held would mean the card on My
   // Boards showed a percentage over three years of work, which drifts towards a
   // meaningless constant and never reflects what the team is actually doing —
   // and it would contradict the board itself, which shows one month at a time.
-  // Each monthly board therefore gets its own `board + monthKey` clause, in the
+  // Each tracker board therefore gets its own `board + monthKey` clause, in the
   // board's own timezone; standard and client boards keep the lifetime count
   // they have always had.
   const monthlyClauses = [];
   const standardIds = [];
   for (const b of boards) {
-    if (b.boardType === 'monthly') {
+    if (b.boardType === 'tracker') {
       const monthKey = monthKeyOf(new Date(), b.monthTimezone || 'UTC');
       monthlyClauses.push({ board: b._id, monthKey });
     } else {
@@ -414,19 +414,19 @@ const createBoard = async (req, res) => {
     if (!isBoardType(boardType)) {
       return res.status(400).json({ error: 'Invalid board type' });
     }
-    // A monthly board must know whose calendar defines its months. Not defaulted
+    // A tracker board must know whose calendar defines its months. Not defaulted
     // to UTC on purpose — see the comment on `Board.monthTimezone`. The client
     // sends its resolved browser zone; anything Intl cannot parse is refused
     // here rather than silently filing every boundary task in the wrong month.
-    if (boardType === 'monthly' && !isValidTimezone(monthTimezone)) {
+    if (boardType === 'tracker' && !isValidTimezone(monthTimezone)) {
       return res.status(400).json({
-        error: 'A valid timezone is required for a monthly board',
+        error: 'A valid timezone is required for a tracker board',
       });
     }
     // A client-portal board is always internally private — the client plane sits
     // on top of a private board, so we ignore any visibility the client sent and
-    // pin it to 'private'. Standard and monthly boards validate visibility as
-    // before: a monthly board is an ordinary internal board that happens to be
+    // pin it to 'private'. Standard and tracker boards validate visibility as
+    // before: a tracker board is an ordinary internal board that happens to be
     // partitioned, so it may be public if the team wants it to be.
     const effectiveVisibility = boardType === 'client' ? 'private' : visibility;
     if (!VALID_VISIBILITIES.includes(effectiveVisibility)) {
@@ -482,7 +482,7 @@ const createBoard = async (req, res) => {
       visibility: effectiveVisibility,
       boardType,
       portalCategories: cleanPortalCategories,
-      monthTimezone: boardType === 'monthly' ? monthTimezone : null,
+      monthTimezone: boardType === 'tracker' ? monthTimezone : null,
       organisation,
       createdBy: userId,
       order: nextBoardOrder,
@@ -625,7 +625,7 @@ const deleteBoard = async (req, res) => {
     await Automation.deleteMany({ board: id });
     await Tracker.deleteMany({ board: id });
     await TrackerEntry.deleteMany({ board: id });
-    // Monthly boards: the goals and the "reminder already sent" markers. The
+    // Tracker boards: the goals and the "reminder already sent" markers. The
     // goal COLUMNS need no cleanup — they are embedded on the board document
     // that is about to go.
     await Goal.deleteMany({ board: id });

@@ -4,7 +4,7 @@ import api from './api';
  * GET /api/tasks?board=:id&group=:id&month=YYYY-MM
  *
  * List tasks for a board (optionally filtered by group, and by month on a
- * monthly board — where the server REQUIRES it, rather than silently returning
+ * tracker board — where the server REQUIRES it, rather than silently returning
  * every task the board has ever had).
  */
 export const getTasks = async (boardId, { group, month } = {}) => {
