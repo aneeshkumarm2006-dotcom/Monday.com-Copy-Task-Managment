@@ -201,6 +201,7 @@ const BoardMultiSelect = ({ boards = [], value = [], onChange }) => {
             width: Math.max(width, 220),
             zIndex: 60,
             minWidth: 220,
+            maxWidth: 'calc(100vw - 32px)',
             border: '1px solid var(--color-border)',
             borderRadius: 'var(--radius-md)',
             boxShadow: 'var(--shadow-md)',

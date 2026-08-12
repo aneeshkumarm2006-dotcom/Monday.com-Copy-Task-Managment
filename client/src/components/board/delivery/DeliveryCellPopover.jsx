@@ -152,6 +152,7 @@ const DeliveryCellPopover = ({
         bottom: openUpward ? window.innerHeight - top + 8 : undefined,
         left: Math.max(8, Math.min(left, window.innerWidth - POPOVER_WIDTH - 8)),
         width: POPOVER_WIDTH,
+        maxWidth: 'calc(100vw - 16px)',
         zIndex: 60,
         background: 'var(--color-bg-surface)',
         border: '1px solid var(--color-border)',

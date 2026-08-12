@@ -30,9 +30,13 @@ const useDropdownPosition = (
     const spaceBelow = window.innerHeight - r.bottom;
     const openUpward = spaceBelow < menuHeight + VIEWPORT_MARGIN && r.top > spaceBelow;
     const top = openUpward ? Math.max(VIEWPORT_MARGIN, r.top - menuHeight - 4) : r.bottom + 4;
-    // Clamp left so the dropdown never overflows off the right edge of the viewport
+    // Clamp left so the dropdown never overflows off the right edge of the
+    // viewport. Every consumer renders `Math.max(width, 220)`, so clamp against
+    // that same effective width — using a flat 220 let a trigger wider than
+    // 220px produce a menu that still hung off the right edge.
     const dropdownMinWidth = 220;
-    const left = Math.min(r.left, window.innerWidth - dropdownMinWidth - VIEWPORT_MARGIN);
+    const menuWidth = Math.max(r.width, dropdownMinWidth);
+    const left = Math.min(r.left, window.innerWidth - menuWidth - VIEWPORT_MARGIN);
     setRect({ top, left: Math.max(VIEWPORT_MARGIN, left), width: r.width, openUpward });
   }, [triggerRef, menuHeight]);
 

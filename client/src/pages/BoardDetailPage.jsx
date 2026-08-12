@@ -1412,9 +1412,8 @@ const BoardDetailPage = () => {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3 flex-wrap">
             <h1
-              className="font-display truncate"
+              className="font-display truncate text-[20px] md:text-[26px]"
               style={{
-                fontSize: 26,
                 fontWeight: 800,
                 textTransform: 'uppercase',
                 letterSpacing: '-0.01em',
@@ -1454,9 +1453,15 @@ const BoardDetailPage = () => {
 
         {/* `canExportActivity` widens this row deliberately: export is not an
             editing right, so an admin with read-only access to a board must
-            still get the button. Every control inside carries its own gate. */}
+            still get the button. Every control inside carries its own gate.
+
+            No `shrink-0` on the row below on purpose: a non-shrinking flex item
+            is sized to max-content, so `flex-wrap` alone never fires and the row
+            (~670px with every control showing) pushed the whole page sideways on
+            phones and iPad portrait. Letting it shrink is what allows the buttons
+            to wrap. At desktop widths it still fits on one line, unchanged. */}
         {(canEdit || isBoardCreator || canExportActivity || canManageTrackers) && (
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             {canViewAccess && !isPublic && (
               <Button
                 variant="secondary"
@@ -1584,7 +1589,7 @@ const BoardDetailPage = () => {
 
       {/* Filter bar + group sort toggle */}
       {view === 'board' && hasGroups && board && (
-        <div className="flex items-start gap-2">
+        <div className="flex flex-col md:flex-row md:items-start gap-2">
           <div className="flex-1 min-w-0">
             <BoardFilterBar
               board={board}
@@ -1602,7 +1607,7 @@ const BoardDetailPage = () => {
             onClick={toggleGroupSort}
             aria-pressed={sortCompletedLast}
             title="Move completed groups to the bottom"
-            className="mt-5 shrink-0 inline-flex items-center gap-1.5 font-body transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+            className="mt-2 md:mt-5 self-start shrink-0 inline-flex items-center gap-1.5 font-body transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
             style={{
               height: 34,
               padding: '0 12px',

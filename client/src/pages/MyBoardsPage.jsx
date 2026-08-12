@@ -216,9 +216,8 @@ const MyBoardsPage = () => {
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1
-            className="font-display font-bold"
+            className="font-display font-bold text-[22px] md:text-[28px]"
             style={{
-              fontSize: 28,
               color: 'var(--color-text-primary)',
               letterSpacing: '-0.02em',
             }}

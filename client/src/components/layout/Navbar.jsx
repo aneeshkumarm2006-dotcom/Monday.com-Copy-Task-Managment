@@ -72,7 +72,10 @@ const NavLinks = ({ onNavigate }) => {
   ];
 
   return (
-    <div className="flex items-center gap-1">
+    // Scrolls sideways rather than widening the bar when the viewport is too
+    // narrow for every link — the same treatment the board view tabs and the
+    // settings tab bar already use.
+    <div className="flex items-center gap-1 min-w-0 overflow-x-auto">
       {links.map((link) => (
         <NavLink
           key={link.to}
@@ -80,7 +83,7 @@ const NavLinks = ({ onNavigate }) => {
           onClick={onNavigate}
           className={({ isActive }) =>
             [
-              'relative font-body font-medium text-[14px] px-3 py-4 transition-colors duration-150',
+              'relative font-body font-medium text-[14px] px-3 py-4 transition-colors duration-150 shrink-0 whitespace-nowrap',
               'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]',
               isActive
                 ? 'text-[color:var(--color-accent)] font-semibold'
@@ -577,7 +580,9 @@ const NotificationBell = () => {
               right: 0,
               bottom: 0,
               width: 'min(50vw, 720px)',
-              minWidth: 380,
+              // min-width beats max-width in CSS, so a flat 380 would push the
+              // drawer past the edge of a 375px phone. Clamp it to the viewport.
+              minWidth: 'min(380px, 100vw)',
               maxWidth: '100vw',
               zIndex: 100,
               borderLeft: '1px solid var(--color-border)',
@@ -897,10 +902,13 @@ const Navbar = () => {
             )}
           </button>
 
-          {/* Logo + nav links (links hidden on mobile) */}
-          <div className="flex items-center gap-4">
+          {/* Logo + nav links (links hidden on mobile).
+              min-w-0 lets the link strip shrink instead of forcing the whole
+              bar wider than the viewport — with every admin link visible the
+              row wants ~830px, which overflowed an iPad in portrait. */}
+          <div className="flex items-center gap-4 min-w-0">
             <Logo />
-            <div className="hidden md:block h-full">
+            <div className="hidden md:block h-full min-w-0">
               <NavLinks />
             </div>
           </div>

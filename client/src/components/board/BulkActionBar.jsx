@@ -96,10 +96,14 @@ const BulkActionBar = ({
     <div
       role="toolbar"
       aria-label={`Bulk actions for ${count} selected ${count === 1 ? 'task' : 'tasks'}`}
-      className="fixed left-1/2 flex items-center font-body"
+      className="fixed left-1/2 flex items-center justify-center flex-wrap font-body"
       style={{
         bottom: 24,
         transform: 'translateX(-50%)',
+        // The bar is wider than a phone. It cannot scroll — the Status/Priority/
+        // Assign/Move menus are absolutely positioned INSIDE it, so any overflow
+        // value here would clip them — so it wraps onto a second line instead.
+        maxWidth: 'calc(100vw - 16px)',
         zIndex: 70,
         background: 'var(--color-text-primary)',
         color: '#FFFFFF',

@@ -122,6 +122,7 @@ const Dropdown = ({
             top,
             left,
             width,
+            maxWidth: 'calc(100vw - 32px)',
             zIndex: 60,
             border: '1px solid var(--color-border)',
             borderRadius: 'var(--radius-md)',

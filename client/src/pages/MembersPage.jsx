@@ -457,8 +457,8 @@ const MembersPage = () => {
       <div className="mx-auto" style={{ maxWidth: 900 }}>
         <header className="mb-6">
           <h1
-            className="font-display font-bold text-[color:var(--color-text-primary)]"
-            style={{ fontSize: 28, letterSpacing: '-0.01em' }}
+            className="font-display font-bold text-[color:var(--color-text-primary)] text-[22px] md:text-[28px]"
+            style={{ letterSpacing: '-0.01em' }}
           >
             Members
           </h1>
