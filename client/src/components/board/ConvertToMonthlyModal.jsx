@@ -4,6 +4,7 @@ import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import Spinner from '../ui/Spinner';
 import { previewBoardConversion, convertBoard } from '../../services/monthService';
+import MonthSplitPreview from './MonthSplitPreview';
 
 /**
  * Turn an existing standard board into a monthly one, showing exactly what will
@@ -53,9 +54,6 @@ const ConvertToMonthlyModal = ({ boardId, boardName, onClose, onConverted }) => 
     }
   };
 
-  const months = preview?.months || [];
-  const busiest = months.reduce((max, m) => Math.max(max, m.count), 0) || 1;
-
   return (
     <Modal
       isOpen
@@ -95,49 +93,7 @@ const ConvertToMonthlyModal = ({ boardId, boardName, onClose, onConverted }) => 
 
           {preview?.canConvert && (
             <>
-              <div>
-                <p
-                  className="font-body font-medium mb-2"
-                  style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--color-text-secondary)' }}
-                >
-                  {preview.total} task{preview.total === 1 ? '' : 's'} →
-                </p>
-                <div className="flex flex-col gap-1.5">
-                  {months.map((m) => (
-                    <div key={m.monthKey} className="flex items-center gap-3">
-                      <span
-                        className="font-body shrink-0"
-                        style={{ fontSize: 12, width: 110, color: 'var(--color-text-primary)' }}
-                      >
-                        {m.label}
-                      </span>
-                      <div
-                        className="flex-1"
-                        style={{
-                          height: 8,
-                          background: 'var(--color-border)',
-                          borderRadius: 'var(--radius-full)',
-                          overflow: 'hidden',
-                        }}
-                      >
-                        <div
-                          style={{
-                            width: `${Math.max(2, (m.count / busiest) * 100)}%`,
-                            height: '100%',
-                            background: 'var(--color-accent)',
-                          }}
-                        />
-                      </div>
-                      <span
-                        className="font-body shrink-0 text-right"
-                        style={{ fontSize: 12, width: 40, color: 'var(--color-text-secondary)' }}
-                      >
-                        {m.count}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <MonthSplitPreview preview={preview} />
 
               <p
                 className="font-body"

@@ -42,7 +42,9 @@ import BoardFilterPanel from '../components/board/BoardFilterPanel';
 import SortableItem from '../components/dnd/SortableItem';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
+import useToastStore from '../store/toastStore';
 import usePermissions from '../hooks/usePermissions';
+import { convertBoard } from '../services/monthService';
 import { timeAgo } from '../utils/dateUtils';
 import {
   EMPTY_BOARD_FILTERS,
@@ -82,6 +84,7 @@ const MyBoardsPage = () => {
   const boards = useBoardStore((s) => s.boards);
   const loading = useBoardStore((s) => s.loading);
   const fetchBoards = useBoardStore((s) => s.fetchBoards);
+  const toastSuccess = useToastStore((s) => s.success);
   const createBoardAction = useBoardStore((s) => s.createBoard);
   const updateBoardAction = useBoardStore((s) => s.updateBoard);
   const deleteBoardAction = useBoardStore((s) => s.deleteBoard);
@@ -165,11 +168,33 @@ const MyBoardsPage = () => {
 
   const handleEditSubmit = async (values) => {
     if (!editTarget) return;
+
+    // The plain fields first. `PUT /api/boards/:id` deliberately ignores
+    // `boardType` — changing the type re-files every task, so it is a different
+    // operation with its own endpoint and its own capability.
     await updateBoardAction(editTarget._id, {
       name: values.name,
       visibility: values.visibility,
       description: values.description,
     });
+
+    if (values.typeChanged) {
+      const result = await convertBoard(editTarget._id, {
+        to: values.boardType,
+        timezone: values.monthTimezone,
+      });
+      // Board type drives the tabs, the month picker and the card's pill, so the
+      // cache has to see the new shape.
+      await fetchBoards(orgId);
+      if (values.boardType === 'monthly') {
+        toastSuccess(
+          `“${values.name}” is now a monthly board — ${result?.filed?.tasks ?? 0} tasks filed by month.`
+        );
+      } else {
+        toastSuccess(`“${values.name}” is back to a standard board. Nothing was deleted.`);
+      }
+    }
+
     setEditTarget(null);
   };
 
