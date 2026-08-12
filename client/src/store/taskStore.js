@@ -42,14 +42,20 @@ const useTaskStore = create((set, get) => ({
    * Fetch all groups for a board, then fetch all tasks for the board and
    * bucket them by group id. A single /api/tasks?board=:id call avoids the
    * N+1 per-group roundtrip.
+   *
+   * `month` scopes the task fetch on a monthly board, and is REQUIRED there —
+   * the server 400s without it rather than returning three years of tasks and
+   * letting the client render them all as though they were this month's.
+   * Groups are always fetched unscoped, which is what makes an empty month show
+   * every group rather than nothing at all.
    */
-  fetchBoardData: async (boardId) => {
+  fetchBoardData: async (boardId, { month } = {}) => {
     if (!boardId) return;
     set({ loading: true, error: null });
     try {
       const [groups, tasks, noteCounts] = await Promise.all([
         taskService.getGroups(boardId),
-        taskService.getTasks(boardId),
+        taskService.getTasks(boardId, { month }),
         // Cheap per-group note counts for the header badges. Non-essential —
         // don't let a counts hiccup break the whole board load.
         noteService.getNoteCounts(boardId).catch(() => ({})),
@@ -77,10 +83,10 @@ const useTaskStore = create((set, get) => ({
    * board). Groups are left as-is — used after an out-of-band change such as an
    * automation reordering a group.
    */
-  refreshBoardTasks: async (boardId) => {
+  refreshBoardTasks: async (boardId, { month } = {}) => {
     if (!boardId) return;
     try {
-      const tasks = await taskService.getTasks(boardId);
+      const tasks = await taskService.getTasks(boardId, { month });
       set((s) => {
         const tasksByGroup = {};
         for (const g of s.groups) tasksByGroup[g._id] = [];

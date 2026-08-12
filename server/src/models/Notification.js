@@ -41,6 +41,9 @@ const notificationSchema = new mongoose.Schema(
         // Client Portal — team-facing alerts about external client activity.
         'clientIssueCreated',
         'clientReplied',
+        // Monthly boards — the month is ending (or has ended) and its goals
+        // still need their final numbers.
+        'goalsDue',
       ],
     },
     message: {
@@ -70,7 +73,22 @@ const notificationSchema = new mongoose.Schema(
     // to the Updates tab.
     tab: {
       type: String,
-      enum: ['updates', 'client', 'internal', 'comments', 'files', 'activity', null],
+      enum: [
+        'updates', 'client', 'internal', 'comments', 'files', 'activity',
+        // Not a task-panel tab: a board VIEW. A `goalsDue` notification carries
+        // no task, so clicking it opens the board's Goals tab for the month in
+        // question rather than a row.
+        'goals',
+        null,
+      ],
+      default: null,
+    },
+    // Which month this notification is about ('YYYY-MM'), on monthly boards.
+    // A `goalsDue` reminder deep-links to the Goals tab for the month that needs
+    // closing, which by the time anyone clicks is no longer the current one —
+    // so the month has to travel with the notification rather than be inferred.
+    month: {
+      type: String,
       default: null,
     },
     isRead: {

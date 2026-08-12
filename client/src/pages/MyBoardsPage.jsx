@@ -153,8 +153,11 @@ const MyBoardsPage = () => {
       visibility: values.visibility,
       description: values.description,
       // Client Portal boards: boardType 'client' + optional client categories.
+      // Monthly boards: boardType 'monthly' + the browser's resolved timezone,
+      // which the server requires and validates.
       boardType: values.boardType || 'standard',
       portalCategories: values.portalCategories || [],
+      monthTimezone: values.monthTimezone,
       organisation: orgId,
     });
     setCreateOpen(false);

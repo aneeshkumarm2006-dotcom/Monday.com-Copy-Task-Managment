@@ -13,3 +13,5 @@ require('./ItemFollow');
 require('./Automation');
 require('./Tracker');
 require('./TrackerEntry');
+require('./Goal');
+require('./GoalReminder');

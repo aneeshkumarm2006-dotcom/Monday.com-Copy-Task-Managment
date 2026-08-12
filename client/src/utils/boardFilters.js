@@ -14,6 +14,7 @@
 
 export const EMPTY_BOARD_FILTERS = {
   visibility: [], // 'public' | 'private'
+  boardType: [], // 'standard' | 'client' | 'monthly'
   progress: [], // 'empty' | 'not_started' | 'in_progress' | 'completed'
   ownership: [], // 'owned' | 'shared'
   updated: [], // 'today' | 'week' | 'month' | 'older'
@@ -25,6 +26,25 @@ export const VISIBILITY_OPTIONS = [
   { key: 'public', label: 'Public' },
   { key: 'private', label: 'Private' },
 ];
+
+export const BOARD_TYPE_OPTIONS = [
+  { key: 'standard', label: 'Standard' },
+  { key: 'client', label: 'Client Portal' },
+  { key: 'monthly', label: 'Monthly' },
+];
+
+/**
+ * The single label a board should wear. Board TYPE beats visibility when there
+ * is one: "monthly" and "client" say far more than "private" does, and both of
+ * those types are always private anyway. Lives here rather than beside the pill
+ * component so the pill file exports only a component (react-refresh) and the
+ * filter and the badge cannot disagree about what a board is.
+ */
+export const boardTypeKey = (board) => {
+  if (board?.boardType === 'monthly') return 'monthly';
+  if (board?.boardType === 'client') return 'client';
+  return board?.visibility === 'public' ? 'public' : 'private';
+};
 
 export const PROGRESS_OPTIONS = [
   { key: 'empty', label: 'No tasks yet' },
@@ -45,7 +65,9 @@ export const UPDATED_OPTIONS = [
   { key: 'older', label: 'Older than 30 days' },
 ];
 
-const FILTER_CATEGORIES = ['visibility', 'progress', 'ownership', 'updated'];
+const FILTER_CATEGORIES = [
+  'visibility', 'boardType', 'progress', 'ownership', 'updated',
+];
 
 /**
  * Which progress bucket a board falls in. Mutually exclusive, so matching one
@@ -104,6 +126,14 @@ export const boardMatchesFilters = (board, filters, now = new Date()) => {
   if (!filters || !board) return true;
 
   if (filters.visibility?.length && !filters.visibility.includes(board.visibility)) {
+    return false;
+  }
+  // `boardType` is absent on boards created before the field existed; they are
+  // standard, so default rather than dropping them out of every filtered view.
+  if (
+    filters.boardType?.length &&
+    !filters.boardType.includes(board.boardType || 'standard')
+  ) {
     return false;
   }
   if (filters.progress?.length && !filters.progress.includes(progressBucket(board))) {

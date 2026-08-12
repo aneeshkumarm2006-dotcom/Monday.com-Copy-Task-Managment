@@ -20,6 +20,11 @@ const ACTIVITY_TYPES = [
   'client.update_added',
 ];
 
+// NOTE: this list is a VALIDATOR, and `activityService.logActivity` swallows its
+// own errors — so a `field` missing from here does not fail loudly, it silently
+// writes no row at all. `portalShared` is already being dropped this way on every
+// client share (taskController's attachment/share path). Add the key here before
+// you log it, or the activity you thought you recorded does not exist.
 const FIELD_KEYS = [
   'name',
   'status',
@@ -30,6 +35,8 @@ const FIELD_KEYS = [
   'note',
   'group',
   'pinned',
+  // Monthly boards: which calendar month the task is filed under.
+  'monthKey',
 ];
 
 /**

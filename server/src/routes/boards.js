@@ -33,6 +33,9 @@ const {
   deleteColumn,
 } = require('../controllers/columnController');
 const { getActivityExport } = require('../controllers/boardExportController');
+const {
+  convertBoardType, getBoardMonths, setMonthTimezone,
+} = require('../controllers/monthlyController');
 
 const router = express.Router();
 
@@ -54,6 +57,14 @@ router.put('/:id', updateBoard);
 
 // DELETE /api/boards/:id — delete a board + cascade (admin-only)
 router.delete('/:id', deleteBoard);
+
+// --- Monthly boards -------------------------------------------------------
+// POST with { dryRun: true } returns the month-split preview and writes nothing.
+router.post('/:id/convert', convertBoardType);
+router.get('/:id/months', getBoardMonths);
+// Changing the timezone re-files every task, so it is its own endpoint rather
+// than a field on PUT /:id — see the controller.
+router.put('/:id/month-timezone', setMonthTimezone);
 
 // --- Labels (per board) ---------------------------------------------------
 // reorder must come BEFORE the /:lid routes so it isn't matched as a label id

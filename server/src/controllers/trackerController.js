@@ -7,7 +7,7 @@ const TaskGroup = require('../models/TaskGroup');
 const ActivityLog = require('../models/ActivityLog');
 
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
-const { requireFeature } = require('../utils/userFeatures');
+const { isMonthKey, lastDayKeyOf } = require('../utils/monthKey');
 const {
   validateCadence,
   periodsBetween,
@@ -37,17 +37,22 @@ const {
  * this file only queries and gates.
  *
  * EVERY handler runs three gates, in this order:
- *   1. loadBoardContext  — can you reach this board at all?
- *   2. requireCapability — does your role permit it? ('tracker.view'/'tracker.manage')
- *   3. requireFeature    — did you switch Trackers on in Settings → Extra features?
+ *   1. loadBoardContext    — can you reach this board at all?
+ *   2. requireCapability   — does your role permit it? ('tracker.view'/'tracker.manage')
+ *   3. requireMonthlyBoard — is this a board type that HAS a Delivery view?
  *
- * The order matters: a user who lacks the permission never learns the feature
- * exists. Hiding the tab in the UI is a courtesy; these are what make it real.
+ * The order matters: a user who lacks the permission never learns what is on the
+ * board. Hiding the tab in the UI is a courtesy; these are what make it real.
+ *
+ * Gate 3 replaced a `requireFeature('trackers', …)` check. Delivery used to be a
+ * per-user opt-in listed in Settings → Extra features; it is now a view of the
+ * monthly board type, so the question is about the BOARD, not the person. It
+ * answers 404 rather than 403 because on a standard board the resource does not
+ * exist — there is nothing here to be refused access to.
  */
 
-const FEATURE_KEY = 'trackers';
-const FEATURE_OFF_MESSAGE =
-  'Trackers are off. Turn them on in Settings → Extra features.';
+const NOT_MONTHLY_MESSAGE =
+  'Delivery is only available on monthly boards.';
 
 /**
  * The response is groups x periods cells. A year of daily periods across fifty
@@ -300,9 +305,8 @@ const gate = async (req, res, capability) => {
     return null;
   }
 
-  const off = await requireFeature(req.user.userId, FEATURE_KEY, FEATURE_OFF_MESSAGE);
-  if (off) {
-    res.status(off.status).json({ error: off.error, code: off.code });
+  if (ctx.board?.boardType !== 'monthly') {
+    res.status(404).json({ error: NOT_MONTHLY_MESSAGE, code: 'NOT_MONTHLY_BOARD' });
     return null;
   }
 
@@ -527,21 +531,27 @@ const deleteTrackerEntry = async (req, res) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Turn a window token ('4w', '12m') into a start day key, relative to today in
- * the tracker's own timezone. Presets rather than a free range on purpose: a
- * shared dashboard everyone reads the same way beats one everyone configures
- * differently.
+ * Turn a window token ('4w', '12m') into a start day key, counting back from
+ * `anchorKey` in the tracker's own timezone. Presets rather than a free range on
+ * purpose: a shared dashboard everyone reads the same way beats one everyone
+ * configures differently.
+ *
+ * The anchor is normally today. On a monthly board it is the last day of the
+ * SELECTED month instead, so the grid ends where the month picker says it does
+ * — pick July and the last column is July, not whatever month it happens to be
+ * now. The window token still controls the window's LENGTH; the month controls
+ * its END.
  */
-const resolveWindowStart = (token, todayKey, cadenceType) => {
+const resolveWindowStart = (token, anchorKey, cadenceType) => {
   const raw = typeof token === 'string' && WINDOW_RE.test(token)
     ? token
     : DEFAULT_WINDOW[cadenceType] || '4w';
   const [, countStr, unit] = raw.match(WINDOW_RE);
   const count = Math.max(1, Math.min(24, parseInt(countStr, 10)));
 
-  if (unit === 'w') return addDays(todayKey, -(count * 7 - 1));
+  if (unit === 'w') return addDays(anchorKey, -(count * 7 - 1));
 
-  const parsed = parseDayKey(todayKey);
+  const parsed = parseDayKey(anchorKey);
   const monthsBack = count - 1;
   let year = parsed.year;
   let month = parsed.month - monthsBack;
@@ -604,6 +614,12 @@ const getDelivery = async (req, res) => {
     const windows = parseWindows(req.query.windows);
     const now = new Date();
 
+    // The board's month picker sets where the grid ENDS. Clamped to today so
+    // the "one month ahead" entry in that dropdown does not paint a run of
+    // empty columns that all read as missed.
+    const monthParam = isMonthKey(req.query.month) ? req.query.month : null;
+    const monthEndKey = monthParam ? lastDayKeyOf(monthParam) : null;
+
     // Work out each tracker's window first, so the task and update queries can
     // be issued once across the union rather than once per tracker.
     const plans = [];
@@ -612,15 +628,19 @@ const getDelivery = async (req, res) => {
       const todayKey = dayKeyOf(now, tz);
       if (!todayKey) continue;
 
+      // Where the grid ends: the selected month's last day, never later than
+      // today. `minDayKey(null, x)` returns x, so no month means today as before.
+      const anchorKey = monthEndKey ? minDayKey(monthEndKey, todayKey) : todayKey;
+
       const windowStart = resolveWindowStart(
         windows.get(String(tracker._id)),
-        todayKey,
+        anchorKey,
         tracker.cadence?.type
       );
 
       // Never scan before the tracker existed, and never past its end.
       let from = maxDayKey(windowStart, tracker.startDate);
-      let to = tracker.endDate ? minDayKey(todayKey, tracker.endDate) : todayKey;
+      let to = tracker.endDate ? minDayKey(anchorKey, tracker.endDate) : anchorKey;
       // A tracker that has not started yet still renders its (empty) columns.
       if (compareDayKeys(from, to) > 0) to = from;
 

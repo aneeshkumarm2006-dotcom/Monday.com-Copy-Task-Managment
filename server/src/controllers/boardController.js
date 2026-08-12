@@ -8,11 +8,16 @@ const ItemFollow = require('../models/ItemFollow');
 const Automation = require('../models/Automation');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
+const Goal = require('../models/Goal');
+const GoalReminder = require('../models/GoalReminder');
 const Organisation = require('../models/Organisation');
 const { isBoardCreator } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
 const { BOARD_LEVELS } = require('../utils/capabilities');
+const { isBoardType } = require('../utils/boardTypes');
+const { isValidTimezone } = require('../utils/tzDay');
+const { monthKeyOf } = require('../utils/monthKey');
 const { createNotification } = require('../services/notificationService');
 const { requireFeature } = require('../utils/userFeatures');
 
@@ -123,6 +128,10 @@ const DEFAULT_STATUSES = [
  *
  * Returns a Map of boardId → { taskCount, doneCount, progress } that the caller
  * merges into each board's payload.
+ *
+ * On a MONTHLY board this counts the CURRENT month only — see the scope clause
+ * below. Callers must therefore pass full board documents (`boardType` and
+ * `monthTimezone`), not a lean projection.
  */
 const computeBoardProgress = async (boards) => {
   const result = new Map();
@@ -141,8 +150,32 @@ const computeBoardProgress = async (boards) => {
     }
   }
 
+  // A MONTHLY board's progress is THIS MONTH's progress, not its lifetime's.
+  //
+  // Counting every task a retainer board has ever held would mean the card on My
+  // Boards showed a percentage over three years of work, which drifts towards a
+  // meaningless constant and never reflects what the team is actually doing —
+  // and it would contradict the board itself, which shows one month at a time.
+  // Each monthly board therefore gets its own `board + monthKey` clause, in the
+  // board's own timezone; standard and client boards keep the lifetime count
+  // they have always had.
+  const monthlyClauses = [];
+  const standardIds = [];
+  for (const b of boards) {
+    if (b.boardType === 'monthly') {
+      const monthKey = monthKeyOf(new Date(), b.monthTimezone || 'UTC');
+      monthlyClauses.push({ board: b._id, monthKey });
+    } else {
+      standardIds.push(b._id);
+    }
+  }
+
+  const scopeClause = monthlyClauses.length === 0
+    ? { board: { $in: standardIds } }
+    : { $or: [...(standardIds.length ? [{ board: { $in: standardIds } }] : []), ...monthlyClauses] };
+
   const baseMatch = {
-    board: { $in: boardIds },
+    ...scopeClause,
     isPersonal: { $ne: true },
     parent: null,
   };
@@ -369,6 +402,7 @@ const createBoard = async (req, res) => {
       description = '',
       boardType = 'standard',
       portalCategories,
+      monthTimezone,
     } = req.body;
 
     if (!organisation) {
@@ -377,12 +411,23 @@ const createBoard = async (req, res) => {
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Board name is required' });
     }
-    if (!['standard', 'client'].includes(boardType)) {
+    if (!isBoardType(boardType)) {
       return res.status(400).json({ error: 'Invalid board type' });
+    }
+    // A monthly board must know whose calendar defines its months. Not defaulted
+    // to UTC on purpose — see the comment on `Board.monthTimezone`. The client
+    // sends its resolved browser zone; anything Intl cannot parse is refused
+    // here rather than silently filing every boundary task in the wrong month.
+    if (boardType === 'monthly' && !isValidTimezone(monthTimezone)) {
+      return res.status(400).json({
+        error: 'A valid timezone is required for a monthly board',
+      });
     }
     // A client-portal board is always internally private — the client plane sits
     // on top of a private board, so we ignore any visibility the client sent and
-    // pin it to 'private'. Standard boards validate visibility as before.
+    // pin it to 'private'. Standard and monthly boards validate visibility as
+    // before: a monthly board is an ordinary internal board that happens to be
+    // partitioned, so it may be public if the team wants it to be.
     const effectiveVisibility = boardType === 'client' ? 'private' : visibility;
     if (!VALID_VISIBILITIES.includes(effectiveVisibility)) {
       return res.status(400).json({ error: 'Invalid visibility value' });
@@ -437,6 +482,7 @@ const createBoard = async (req, res) => {
       visibility: effectiveVisibility,
       boardType,
       portalCategories: cleanPortalCategories,
+      monthTimezone: boardType === 'monthly' ? monthTimezone : null,
       organisation,
       createdBy: userId,
       order: nextBoardOrder,
@@ -444,6 +490,7 @@ const createBoard = async (req, res) => {
       labels: [],
       columns: [],
       useFlexibleColumns: false,
+      goalColumns: [],
     });
 
     // Attach the creator's resolved permissions, as getBoards does. The client
@@ -578,6 +625,11 @@ const deleteBoard = async (req, res) => {
     await Automation.deleteMany({ board: id });
     await Tracker.deleteMany({ board: id });
     await TrackerEntry.deleteMany({ board: id });
+    // Monthly boards: the goals and the "reminder already sent" markers. The
+    // goal COLUMNS need no cleanup — they are embedded on the board document
+    // that is about to go.
+    await Goal.deleteMany({ board: id });
+    await GoalReminder.deleteMany({ board: id });
     await Task.deleteMany({ board: id });
     await TaskGroup.deleteMany({ board: id });
     await Board.deleteOne({ _id: id });

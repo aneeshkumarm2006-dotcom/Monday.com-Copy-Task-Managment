@@ -14,6 +14,8 @@ import {
   Download,
   CalendarCheck,
   LayoutList,
+  Target,
+  CalendarRange,
 } from 'lucide-react';
 import {
   DndContext,
@@ -55,6 +57,15 @@ import BulkActionBar from '../components/board/BulkActionBar';
 import BoardFilterBar from '../components/board/BoardFilterBar';
 import BoardAccessModal from '../components/board/BoardAccessModal';
 import DeliveryTab from '../components/board/delivery/DeliveryTab';
+import BoardTypePill from '../components/board/BoardTypePill';
+import ConvertToMonthlyModal from '../components/board/ConvertToMonthlyModal';
+import BoardTimezoneModal from '../components/board/BoardTimezoneModal';
+import GoalsTab from '../components/board/goals/GoalsTab';
+import MonthSelector from '../components/board/MonthSelector';
+import MoveToMonthModal from '../components/board/MoveToMonthModal';
+import useBoardMonths from '../hooks/useBoardMonths';
+import { moveTasksToMonth } from '../services/monthService';
+import { findMonth } from '../utils/monthKeys';
 import TrackersModal from '../components/board/delivery/TrackersModal';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
@@ -97,13 +108,27 @@ const GROUP_SORT_KEY = 'board:groupSortCompletedLast:';
 
 /**
  * Board views. `board` is the default and renders exactly what this page always
- * rendered; `delivery` swaps the filter bar and group list for the tracker grid.
- * The tab bar only appears when there is more than one view to choose from, so a
- * user without the Trackers feature sees the page unchanged.
+ * rendered; `delivery` swaps the filter bar and group list for the tracker grid,
+ * and `goals` for the monthly goals tables.
+ *
+ * The tab bar only appears when there is more than one view to choose from, so
+ * a standard or client board — where Delivery and Goals both belong to the
+ * monthly board type and are therefore hidden — sees the page exactly as it was
+ * before any of this existed.
+ *
+ * Each tab carries its own `visible` predicate rather than the bar keying off
+ * one of them: with two optional tabs, gating the whole bar on Delivery alone
+ * would strand Goals for anyone who had Delivery hidden.
  */
 const VIEW_TABS = [
-  { value: 'board', label: 'Board', icon: LayoutList },
-  { value: 'delivery', label: 'Delivery', icon: CalendarCheck },
+  { value: 'board', label: 'Board', icon: LayoutList, visible: () => true },
+  {
+    value: 'delivery',
+    label: 'Delivery',
+    icon: CalendarCheck,
+    visible: (g) => g.canViewDelivery,
+  },
+  { value: 'goals', label: 'Goals', icon: Target, visible: (g) => g.canViewGoals },
 ];
 
 const BoardDetailPage = () => {
@@ -145,6 +170,7 @@ const BoardDetailPage = () => {
   const refreshNotifications = useNotificationStore((s) => s.fetchNotifications);
   const toastError = useToastStore((s) => s.error);
   const toastSuccess = useToastStore((s) => s.success);
+  const toastInfo = useToastStore((s) => s.info);
 
   // Collapse state, keyed by group id
   const [collapsed, setCollapsed] = useState(() => new Set());
@@ -242,6 +268,8 @@ const BoardDetailPage = () => {
   // Activity export modal — opt-in feature, see canExportActivity below
   const [exportOpen, setExportOpen] = useState(false);
   const [trackersOpen, setTrackersOpen] = useState(false);
+  const [convertOpen, setConvertOpen] = useState(false);
+  const [timezoneOpen, setTimezoneOpen] = useState(false);
 
   // --- Filtering ---------------------------------------------------------
   // Filter bar at the top of the board narrows the visible tasks by name,
@@ -327,17 +355,54 @@ const BoardDetailPage = () => {
   const groupTagsOn = !!currentUser?.features?.groupTags;
   const canTagGroups = groupTagsOn && canEdit && canOnBoard('column.manage');
 
-  // Trackers, same two-condition shape again. With the feature off there is no
-  // Delivery tab and no tab bar at all, so the page looks exactly as it did
-  // before this feature existed.
-  const canViewDelivery =
-    canOnBoard('tracker.view') && !!currentUser?.features?.trackers;
+  // The month-partitioned board type. Mutually exclusive with 'client' and
+  // 'standard'; the server enforces that, this only decides what to draw.
+  const isMonthlyBoard = board?.boardType === 'monthly';
+
+  // Delivery is no longer a per-user opt-in feature — it is a surface OF the
+  // monthly board type, so it appears for anyone who can read one. The
+  // `features.trackers` switch it used to need has been removed entirely.
+  const canViewDelivery = isMonthlyBoard && canOnBoard('tracker.view');
   const canManageTrackers = canViewDelivery && canOnBoard('tracker.manage');
+
+  // Goals: the same board-type-plus-capability shape. Editing the shared column
+  // SCHEMA is an org-admin act rather than a board one, which is why that last
+  // one reads `canOrg` — the goal columns are the organisation's reporting
+  // vocabulary, not one board owner's preference.
+  const canViewGoals = isMonthlyBoard && canOnBoard('goal.view');
+  const canTrackGoals = canViewGoals && canOnBoard('goal.track');
+  const canManageGoals = canViewGoals && canOnBoard('goal.manage');
+  const canManageGoalColumns = canViewGoals && canOrg('org.manage_settings');
+
+  // Converting a board changes what it IS, so it answers to the same capability
+  // as flipping public/private rather than to an ordinary edit right. Client
+  // boards are refused by the server and get no button here.
+  const canConvertToMonthly =
+    board?.boardType === 'standard' && canOnBoard('board.change_visibility');
+
+  // The board-level month. URL is the source of truth; see the hook.
+  const {
+    monthKey, setMonth, months, selectedMonth, monthsLoading, refreshMonths,
+    timezone: monthTimezone,
+  } = useBoardMonths(boardId, { enabled: isMonthlyBoard });
+
+  // Which tabs exist on this board, resolved once so the bar and the view
+  // validation below cannot disagree about it.
+  const visibleTabs = useMemo(
+    () => VIEW_TABS.filter((t) => t.visible({ canViewDelivery, canViewGoals })),
+    [canViewDelivery, canViewGoals]
+  );
 
   // Derived from the URL rather than mirrored into state — two sources of truth
   // for "which view am I on" is the classic bug here, and `?view=delivery` is
   // also the thing worth pasting to a colleague.
-  const view = canViewDelivery && searchParams.get('view') === 'delivery' ? 'delivery' : 'board';
+  //
+  // Validated against `visibleTabs` rather than hardcoding one tab's name, so
+  // an unknown value, or `?view=goals` on a standard board, or a board that has
+  // not loaded yet, all fall back to the board view instead of rendering a tab
+  // that is not there.
+  const rawView = searchParams.get('view');
+  const view = visibleTabs.some((t) => t.value === rawView) ? rawView : 'board';
   const setView = useCallback(
     (next) => {
       const params = new URLSearchParams(searchParams);
@@ -382,16 +447,45 @@ const BoardDetailPage = () => {
     }
   }, [board, orgId, boards.length, fetchBoards]);
 
-  // Fetch groups + tasks for this board
+  // Fetch groups + tasks for this board.
+  //
+  // On a monthly board this waits for the month to resolve — the task read is
+  // month-scoped and the server refuses an unscoped one, so firing before the
+  // month list has loaded would just 400.
+  const monthReady = !isMonthlyBoard || !!monthKey;
+
   useEffect(() => {
-    if (!boardId) return;
-    fetchBoardData(boardId).catch((err) => {
+    if (!boardId || !monthReady) return undefined;
+    fetchBoardData(boardId, { month: monthKey }).catch((err) => {
       console.error('Failed to load board data:', err);
     });
     return () => {
       clearTasks();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, monthReady]);
+
+  // Changing MONTH is not changing board: refetch quietly rather than through
+  // `fetchBoardData`, whose cleanup calls `clearTasks()` and would flash the
+  // whole board back to a skeleton on every month switch. Skipped on the first
+  // run, which the effect above already covers.
+  const loadedMonthRef = useRef(null);
+  useEffect(() => {
+    if (!boardId || !isMonthlyBoard || !monthKey) return;
+    if (loadedMonthRef.current === null) {
+      loadedMonthRef.current = monthKey;
+      return;
+    }
+    if (loadedMonthRef.current === monthKey) return;
+    loadedMonthRef.current = monthKey;
+    refreshBoardTasks(boardId, { month: monthKey });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monthKey, boardId, isMonthlyBoard]);
+
+  // Reset the month tracker when the board changes, or the next board's first
+  // month would look like a switch and double-fetch.
+  useEffect(() => {
+    loadedMonthRef.current = null;
   }, [boardId]);
 
   // Realtime: when an automation moves/creates tasks out-of-band, the server
@@ -399,7 +493,7 @@ const BoardDetailPage = () => {
   // Quietly refetch tasks so the change appears without a manual reload.
   useEffect(() => {
     if (!boardId || boardRefreshTarget !== boardId) return;
-    refreshBoardTasks(boardId);
+    refreshBoardTasks(boardId, { month: monthKey });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardRefreshSignal]);
 
@@ -408,13 +502,15 @@ const BoardDetailPage = () => {
     const taskId = searchParams.get('highlightTask');
     if (!taskId || loading || groups.length === 0) return;
 
-    // A notification can land while the Delivery view is open. Everything below
-    // expands a group and scrolls to a row that isn't rendered in that view, so
-    // it would silently do nothing — send the user back to the board first.
-    if (view === 'delivery') {
+    // A notification can land while the Delivery or Goals view is open.
+    // Everything below expands a group and scrolls to a row that isn't rendered
+    // in those views, so it would silently do nothing — send the user back to
+    // the board first.
+    if (view !== 'board') {
       setView('board');
       return;
     }
+
 
     // Optional tab hint (from a reply notification) — opens the task detail
     // panel on that tab once we confirm the task lives on this board.
@@ -452,6 +548,18 @@ const BoardDetailPage = () => {
     const anyTasksLoaded = groups.some((g) => (tasksByGroup[g._id] || []).length > 0);
     if (!found && !anyTasksLoaded) return;
 
+    // On a MONTHLY board that "tasks loaded but not found" test stops meaning
+    // "not on this board": only one month is loaded, so a July task opened while
+    // August is selected is simply not here. Clearing the params and glowing a
+    // row that was never rendered is a silent failure, so say what happened
+    // instead. Deep links from notifications carry `?month=` and land correctly;
+    // this is the fallback for an older link or a hand-typed one.
+    if (!found && isMonthlyBoard && monthKey) {
+      toastInfo(
+        `That task isn’t in ${selectedMonth?.label || 'this month'} — try another month.`
+      );
+    }
+
     // Clear the query params so refreshing doesn't re-trigger
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
@@ -472,7 +580,10 @@ const BoardDetailPage = () => {
       setInitialPanelTab(openTab);
       setSelectedTaskStack([taskId]);
     }
-  }, [searchParams, loading, groups, tasksByGroup, setSearchParams, view, setView]);
+  }, [
+    searchParams, loading, groups, tasksByGroup, setSearchParams, view, setView,
+    isMonthlyBoard, monthKey, selectedMonth, toastInfo,
+  ]);
 
   // --- Auto-remove highlight after animation completes -------------------
   useEffect(() => {
@@ -720,6 +831,10 @@ const BoardDetailPage = () => {
           ...payload,
           board: boardId,
           group: groupId,
+          // The SELECTED month, not today's — adding a task while looking at
+          // July must file it in July. Null on non-monthly boards, where the
+          // server ignores it.
+          monthKey: monthKey || undefined,
         });
         // When a positioning automation settled the group, the server returns
         // the full ordered list — drop it in so the task renders in its final
@@ -744,7 +859,10 @@ const BoardDetailPage = () => {
         throw err;
       }
     },
-    [boardId, addTaskLocal, setGroupTasksLocal, refreshNotifications, toastError]
+    [
+      boardId, monthKey, addTaskLocal, setGroupTasksLocal, refreshNotifications,
+      toastError, currentOrg?._id,
+    ]
   );
 
   // --- Inline edit ------------------------------------------------------
@@ -1099,6 +1217,52 @@ const BoardDetailPage = () => {
     }
   };
 
+  // --- Move to month -----------------------------------------------------
+  // Serves the row menu (one task) and the bulk bar (many) through one modal
+  // and one endpoint, the way "Move to group" already serves both.
+
+  const [monthMoveTargets, setMonthMoveTargets] = useState(null);
+  const [monthMoveBusy, setMonthMoveBusy] = useState(false);
+
+  const monthMoveNames = useMemo(() => {
+    if (!monthMoveTargets) return [];
+    const byId = new Map();
+    for (const list of Object.values(tasksByGroup)) {
+      for (const t of list) byId.set(t._id, t.name);
+    }
+    return monthMoveTargets.map((id) => byId.get(id) || 'this task');
+  }, [monthMoveTargets, tasksByGroup]);
+
+  const handleConfirmMonthMove = async (targetMonthKey) => {
+    if (!monthMoveTargets?.length || !targetMonthKey) return;
+    setMonthMoveBusy(true);
+    try {
+      await moveTasksToMonth(monthMoveTargets, targetMonthKey);
+      // The rows have left the month on screen, so drop them from the store
+      // rather than refetching the whole board.
+      for (const id of monthMoveTargets) deleteTaskLocal(id);
+      setSelectedTaskIds((prev) => {
+        const next = new Set(prev);
+        for (const id of monthMoveTargets) next.delete(id);
+        return next;
+      });
+      const label = findMonth(months, targetMonthKey)?.label || targetMonthKey;
+      toastSuccess(
+        monthMoveTargets.length === 1
+          ? `Moved to ${label}.`
+          : `Moved ${monthMoveTargets.length} tasks to ${label}.`
+      );
+      setMonthMoveTargets(null);
+      // Month task counts in the dropdown are now stale.
+      refreshMonths();
+    } catch (err) {
+      console.error('Failed to move tasks to month:', err);
+      toastError('Could not move the selected tasks to that month.');
+    } finally {
+      setMonthMoveBusy(false);
+    }
+  };
+
   // --- Bulk assign -------------------------------------------------------
 
   const handleBulkAssign = async (assigneeIds) => {
@@ -1422,24 +1586,7 @@ const BoardDetailPage = () => {
             >
               {board?.name || '—'}
             </h1>
-            {board && (
-              <span
-                className="inline-flex items-center gap-1 font-body shrink-0"
-                style={{
-                  fontSize: 11,
-                  fontWeight: 500,
-                  padding: '3px 10px',
-                  borderRadius: 'var(--radius-full)',
-                  background: isPublic
-                    ? 'var(--color-status-done-bg)'
-                    : '#FFF0F0',
-                  color: isPublic ? 'var(--color-status-done)' : '#DC2626',
-                }}
-              >
-                <VisibilityIcon size={11} aria-hidden="true" />
-                {isPublic ? 'public' : 'private'}
-              </span>
-            )}
+            <BoardTypePill board={board} />
           </div>
           <p
             className="mt-1 font-body"
@@ -1447,8 +1594,27 @@ const BoardDetailPage = () => {
           >
             {board
               ? `Created ${formatDate(board.createdAt)} · ${totalTaskCount} ${totalTaskCount === 1 ? 'task' : 'tasks'}`
+                + (isMonthlyBoard && selectedMonth ? ` in ${selectedMonth.label}` : '')
               : 'Loading board details…'}
           </p>
+          {/* The month scopes all three views, so it sits with the board's
+              identity rather than in the action row on the right — which
+              already wraps at six controls, and would make a scope control
+              look like an action. */}
+          {isMonthlyBoard && (
+            <MonthSelector
+              months={months}
+              value={monthKey}
+              onChange={setMonth}
+              loading={monthsLoading}
+              timezone={monthTimezone}
+              onEditTimezone={
+                canOnBoard('board.change_visibility')
+                  ? () => setTimezoneOpen(true)
+                  : undefined
+              }
+            />
+          )}
         </div>
 
         {/* `canExportActivity` widens this row deliberately: export is not an
@@ -1460,7 +1626,8 @@ const BoardDetailPage = () => {
             (~670px with every control showing) pushed the whole page sideways on
             phones and iPad portrait. Letting it shrink is what allows the buttons
             to wrap. At desktop widths it still fits on one line, unchanged. */}
-        {(canEdit || isBoardCreator || canExportActivity || canManageTrackers) && (
+        {(canEdit || isBoardCreator || canExportActivity || canManageTrackers
+          || canConvertToMonthly) && (
           <div className="flex items-center gap-2 flex-wrap justify-end">
             {canViewAccess && !isPublic && (
               <Button
@@ -1487,6 +1654,15 @@ const BoardDetailPage = () => {
                 onClick={() => setTrackersOpen(true)}
               >
                 Trackers
+              </Button>
+            )}
+            {canConvertToMonthly && (
+              <Button
+                variant="secondary"
+                icon={CalendarRange}
+                onClick={() => setConvertOpen(true)}
+              >
+                Make monthly
               </Button>
             )}
             {canExportActivity && (
@@ -1530,16 +1706,17 @@ const BoardDetailPage = () => {
         )}
       </header>
 
-      {/* View tabs. Only drawn when there is a second view to switch to, so a
-          user without the Trackers feature sees the page exactly as before. */}
-      {canViewDelivery && (
+      {/* View tabs. Only drawn when there IS a second view to switch to, so a
+          standard or client board — which has neither Delivery nor Goals —
+          renders exactly as it did before this board type existed. */}
+      {visibleTabs.length > 1 && (
         <div
           className="mt-5 flex items-center gap-1 overflow-x-auto"
           role="tablist"
           aria-label="Board views"
           style={{ borderBottom: '1px solid var(--color-border)' }}
         >
-          {VIEW_TABS.map((tab) => {
+          {visibleTabs.map((tab) => {
             const active = view === tab.value;
             const Icon = tab.icon;
             return (
@@ -1573,10 +1750,23 @@ const BoardDetailPage = () => {
         </div>
       )}
 
+      {view === 'goals' && (
+        <GoalsTab
+          boardId={boardId}
+          monthKey={monthKey}
+          monthLabel={selectedMonth?.label}
+          canTrack={canTrackGoals}
+          canManage={canManageGoals}
+          canManageColumns={canManageGoalColumns}
+          onGoalsChanged={refreshMonths}
+        />
+      )}
+
       {view === 'delivery' && (
         <DeliveryTab
           boardId={boardId}
           groups={groups}
+          monthKey={monthKey}
           canManage={canManageTrackers}
           onOpenTask={(taskId) => {
             // Reuse the existing deep-link machinery rather than inventing a
@@ -1965,10 +2155,74 @@ const BoardDetailPage = () => {
               ? handleMenuSharePortal
               : undefined
           }
+          // Monthly boards only, top-level rows only — subitems follow their
+          // parent's month server-side and cannot be refiled on their own.
+          onMoveToMonth={
+            isMonthlyBoard && canOnBoard('task.move') && !actionsMenu.task.parent
+              ? () => {
+                setMonthMoveTargets([actionsMenu.task._id]);
+                setActionsMenu(null);
+              }
+              : undefined
+          }
           onEdit={handleMenuEdit}
           onDelete={handleMenuDelete}
           onClose={() => setActionsMenu(null)}
         />
+      )}
+
+      {timezoneOpen && (
+        <BoardTimezoneModal
+          boardId={boardId}
+          current={monthTimezone}
+          onClose={() => setTimezoneOpen(false)}
+          onChanged={(res) => {
+            setTimezoneOpen(false);
+            toastSuccess(
+              res.moved > 0
+                ? `Timezone changed. ${res.moved} task${res.moved === 1 ? '' : 's'} moved month.`
+                : 'Timezone changed. No task changed month.'
+            );
+            // Both the month list and the task set were re-derived server-side.
+            refreshMonths();
+            refreshBoardTasks(boardId, { month: monthKey });
+          }}
+        />
+      )}
+
+      {convertOpen && (
+        <ConvertToMonthlyModal
+          boardId={boardId}
+          boardName={board?.name}
+          onClose={() => setConvertOpen(false)}
+          onConverted={(result) => {
+            setConvertOpen(false);
+            toastSuccess(
+              `Filed ${result?.filed?.tasks ?? 0} tasks by month. This board is now monthly.`
+            );
+            // Refetch the boards cache so `board.boardType` flips — that is what
+            // makes the tabs and the month picker appear, and the month effect
+            // then does the first month-scoped task fetch on its own.
+            fetchBoards(orgId).catch((err) =>
+              console.error('Failed to refresh boards after conversion:', err)
+            );
+          }}
+        />
+      )}
+
+      {/* Move to month — shared by the row menu and the bulk bar. Mounted only
+          while open, so the month picker resets between uses without an
+          effect syncing state from props. */}
+      {monthMoveTargets && (
+      <MoveToMonthModal
+        open
+        onClose={() => setMonthMoveTargets(null)}
+        onConfirm={handleConfirmMonthMove}
+        months={months}
+        currentMonthKey={monthKey}
+        taskNames={monthMoveNames}
+        saving={monthMoveBusy}
+      />
       )}
 
       {/* Delete confirmation */}
@@ -2129,6 +2383,11 @@ const BoardDetailPage = () => {
           members={members}
           onAssign={handleBulkAssign}
           onMoveToGroup={handleBulkMoveToGroup}
+          onMoveToMonth={
+            isMonthlyBoard && canOnBoard('task.move')
+              ? () => setMonthMoveTargets(Array.from(selectedTaskIds))
+              : undefined
+          }
           onDelete={() => setBulkDeleteOpen(true)}
           onClear={handleClearSelection}
         />

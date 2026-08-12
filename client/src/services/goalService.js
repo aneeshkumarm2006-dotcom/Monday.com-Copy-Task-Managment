@@ -1,0 +1,97 @@
+import api from './api';
+
+/**
+ * Monthly goals. Every read comes back with the server's computed score already
+ * attached — the client never recomputes one, because two implementations of a
+ * scoring rule is the same class of bug as two implementations of a permission
+ * rule.
+ *
+ * `suppressErrorToast` throughout, matching trackerService: a 403 or 404 here is
+ * meaningful information (no capability, or not a monthly board) and the tab
+ * renders the server's own sentence rather than firing a generic toast.
+ */
+
+/** The type catalog that generates the add-a-goal form. Static; fetched once. */
+export const getGoalTypes = async () => {
+  const { data } = await api.get('/api/goal-types', { suppressErrorToast: true });
+  return data;
+};
+
+/** Everything the Goals tab needs for one month, in one round trip. */
+export const getGoals = async (boardId, monthKey) => {
+  const { data } = await api.get(`/api/boards/${boardId}/goals`, {
+    params: { month: monthKey },
+    suppressErrorToast: true,
+  });
+  return data.goals;
+};
+
+export const createGoal = async (boardId, payload) => {
+  const { data } = await api.post(`/api/boards/${boardId}/goals`, payload, {
+    suppressErrorToast: true,
+  });
+  return data.goal;
+};
+
+/**
+ * A payload touching ONLY `actual` / `actualDayKey` / `columnValues` needs the
+ * lower `goal.track` rung; anything else needs `goal.manage`. The server decides
+ * that from the body, so there is nothing to pass here.
+ */
+export const updateGoal = async (goalId, payload) => {
+  const { data } = await api.put(`/api/goals/${goalId}`, payload, {
+    suppressErrorToast: true,
+  });
+  return data;
+};
+
+export const deleteGoal = async (goalId) => {
+  const { data } = await api.delete(`/api/goals/${goalId}`);
+  return data;
+};
+
+export const reorderGoals = async (boardId, orderedIds) => {
+  const { data } = await api.put(`/api/boards/${boardId}/goals/reorder`, { orderedIds });
+  return data;
+};
+
+/** Per-group scores month by month, for the trend chart. */
+export const getGoalTrend = async (boardId, { months = 12, through } = {}) => {
+  const { data } = await api.get(`/api/boards/${boardId}/goals/trend`, {
+    params: { months, through },
+    suppressErrorToast: true,
+  });
+  return data.trend;
+};
+
+// --- The shared column schema (org admins only) -----------------------------
+
+export const listGoalColumns = async (boardId) => {
+  const { data } = await api.get(`/api/boards/${boardId}/goal-columns`, {
+    suppressErrorToast: true,
+  });
+  return data;
+};
+
+export const addGoalColumn = async (boardId, payload) => {
+  const { data } = await api.post(`/api/boards/${boardId}/goal-columns`, payload);
+  return data.columns;
+};
+
+export const updateGoalColumn = async (boardId, columnId, payload) => {
+  const { data } = await api.patch(`/api/boards/${boardId}/goal-columns/${columnId}`, payload);
+  return data.columns;
+};
+
+export const reorderGoalColumns = async (boardId, orderedIds) => {
+  const { data } = await api.patch(`/api/boards/${boardId}/goal-columns/reorder`, { orderedIds });
+  return data.columns;
+};
+
+/** Archives by default; `purge` hard-deletes the column and every value in it. */
+export const deleteGoalColumn = async (boardId, columnId, { purge = false } = {}) => {
+  const { data } = await api.delete(`/api/boards/${boardId}/goal-columns/${columnId}`, {
+    params: purge ? { purge: 'true' } : undefined,
+  });
+  return data;
+};

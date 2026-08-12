@@ -86,6 +86,61 @@ const columnSchema = new mongoose.Schema(
 );
 
 /**
+ * Per-board GOAL column — the extra detail columns a monthly board's Goals
+ * table carries, on top of the built-in fields every goal has (name, type,
+ * baseline, target, actual, weight, owner, score).
+ *
+ * Board-level and SHARED: every group's goals table on this board renders the
+ * same columns, so an agency comparing two clients is comparing like with like.
+ * Only org admins (`org.manage_settings`) may edit the list — this is the
+ * organisation's reporting vocabulary, not one board owner's preference.
+ *
+ * Deliberately NOT `columnSchema` above. That is the flexible-columns engine for
+ * TASKS: 19 types including formula, mirror and connect_boards, a primary-column
+ * invariant, and cell values keyed on `Task.columnValues`. A goals table needs
+ * six plain types and a `required` flag, and borrowing the task engine would
+ * have coupled goal rows to a system built entirely around tasks. Goal values
+ * live in `Goal.columnValues`, keyed by these `_id`s.
+ *
+ * `required` is what "mandatory column" means: the goal controller refuses to
+ * save a row while a required column is empty. Rows written BEFORE a column was
+ * marked required are not retro-blocked — they surface through the unclosed-month
+ * check instead, so flipping the switch never strands existing data.
+ *
+ * `requiredSince` is what makes that rule STORABLE rather than guessed. The
+ * comparison is `goal.createdAt >= column.requiredSince`; without the timestamp
+ * there is no way to tell a row that predates the rule from one that broke it,
+ * and "flagged, not retro-blocked" collapses into "never enforced".
+ *
+ * Deleting a column that has values ARCHIVES it by default rather than dropping
+ * the data. Labels and statuses hard-delete and `$pull`, and that is right for
+ * them — losing a chip is a nuisance. Losing a number somebody already reported
+ * to a client is not. Hard delete stays available behind an explicit purge.
+ */
+const goalColumnSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true, trim: true },
+    name: { type: String, required: true, trim: true },
+    type: {
+      type: String,
+      required: true,
+      enum: ['text', 'number', 'date', 'dropdown', 'link', 'person'],
+    },
+    // Type-specific. `{ options: [{ id, label, color, order }] }` for dropdown;
+    // `{ min, max }` for number. Empty for the rest.
+    settings: { type: mongoose.Schema.Types.Mixed, default: {} },
+    required: { type: Boolean, default: false },
+    // Stamped when `required` flips false → true; cleared when it flips back.
+    requiredSince: { type: Date, default: null },
+    // Hidden from the grid and skipped by the required check, values retained.
+    archived: { type: Boolean, default: false },
+    order: { type: Number, default: 0 },
+    width: { type: Number, default: 160 },
+  },
+  { _id: true, timestamps: false }
+);
+
+/**
  * Per-board access grant (private boards only). The board's creator may grant
  * individual org members `read` (view-only) or `edit` (admin-equivalent over
  * board content) access. Absence of an entry means "no access" — the member
@@ -162,11 +217,32 @@ const boardSchema = new mongoose.Schema(
      * This is intentionally SEPARATE from `visibility` — a client board is still
      * `visibility: 'private'` internally, so the whole org access model (roles,
      * memberAccess, resolveAccess) is untouched. See utils/permissions.js.
+     *
+     * Monthly boards ('monthly') partition everything by calendar month: each
+     * task carries a `Task.monthKey` and the board shows one month at a time,
+     * alongside a Delivery view and a Goals view scoped to the same month. Built
+     * for retainer work (SEO/Ads and anything else cyclical) — deliberately
+     * generic, so nothing in the engine knows what an "SEO board" is. The three
+     * types are mutually exclusive: a monthly board has no client portal.
      */
     boardType: {
       type: String,
-      enum: ['standard', 'client'],
+      enum: ['standard', 'client', 'monthly'],
       default: 'standard',
+    },
+    /**
+     * The IANA zone whose calendar defines this board's month boundaries.
+     * Monthly boards only, and REQUIRED on them (enforced by the hook below).
+     *
+     * Not defaulted to 'UTC', for the same reason `Tracker.timezone` is not: a
+     * board silently on UTC while the team is on IST files every task created
+     * before 05:30 into the previous month, and the error looks exactly like
+     * data. The client sends its resolved browser zone at create/convert time
+     * and the controller rejects anything Intl cannot parse.
+     */
+    monthTimezone: {
+      type: String,
+      default: null,
     },
     /**
      * Optional categories a client may tag an issue with when submitting from the
@@ -248,6 +324,9 @@ const boardSchema = new mongoose.Schema(
     // runs against them. Two release cycles after migration completes, the
     // legacy path is removed and this flag becomes implicit.
     useFlexibleColumns: { type: Boolean, default: false },
+    // The extra columns this board's Goals tables carry, shared by every group.
+    // Empty on every board until an org admin adds one; monthly boards only.
+    goalColumns: { type: [goalColumnSchema], default: [] },
   },
   { timestamps: true }
 );
@@ -271,6 +350,23 @@ boardSchema.pre('save', function enforcePrimaryColumn() {
     throw new Error(
       `Board.columns must have exactly one isPrimary column (found ${primaries.length})`
     );
+  }
+});
+
+/**
+ * Model-level invariant: a monthly board must know which calendar it is on.
+ *
+ * Defence-in-depth alongside the controller's validation, and the reason
+ * `monthTimezone` has no default: every month boundary on this board — which
+ * tasks belong to August, when the month-end goal reminder fires, where the
+ * Delivery window ends — is computed from it. A board that reached the database
+ * without one would bucket by whatever `dayKeyOf` did with `undefined`, and
+ * that failure is silent. Better to refuse the save.
+ */
+boardSchema.pre('save', function enforceMonthTimezone() {
+  if (this.boardType !== 'monthly') return;
+  if (!this.monthTimezone) {
+    throw new Error('Board.monthTimezone is required when boardType is "monthly"');
   }
 });
 

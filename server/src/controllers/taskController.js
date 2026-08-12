@@ -22,6 +22,7 @@ const { buildTaskDeepLink } = require('../utils/taskDeepLink');
 const { embedMirrorValues } = require('../services/mirrorRefresh');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { resolveAccess } = require('../utils/permissions');
+const { isMonthKey, monthKeyOf } = require('../utils/monthKey');
 const ClientContact = require('../models/ClientContact');
 const { isResolvedStatus } = require('../utils/doneStatus');
 const {
@@ -746,12 +747,22 @@ const emitColumnChangeEvents = (task, boardId, changes, actorId) => {
 };
 
 /**
- * GET /api/tasks?board=:id&group=:id
+ * GET /api/tasks?board=:id&group=:id&month=YYYY-MM
+ *
+ * On a MONTHLY board `month` is REQUIRED. That is deliberate rather than
+ * defaulting to the current month: an unfiltered read on a three-year retainer
+ * board returns every task ever created and renders them all as though they
+ * were this month's, which is precisely the "silently returns the wrong rows"
+ * failure this board type exists to prevent. A caller that forgets the param
+ * gets a 400 telling it so.
+ *
+ * The response echoes `monthKey` so the client can discard a stale in-flight
+ * response for a month the user has already switched away from.
  */
 const getTasks = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { board: boardId, group: groupId } = req.query;
+    const { board: boardId, group: groupId, month } = req.query;
 
     if (!boardId) {
       return res.status(400).json({ error: 'Board ID required' });
@@ -768,6 +779,24 @@ const getTasks = async (req, res) => {
     };
     if (groupId) filter.group = groupId;
 
+    const isMonthly = ctx.board?.boardType === 'monthly';
+    if (isMonthly && month !== 'all') {
+      if (!isMonthKey(month)) {
+        return res.status(400).json({
+          error: 'A month (YYYY-MM) is required when reading a monthly board',
+          code: 'MONTH_REQUIRED',
+        });
+      }
+      filter.monthKey = month;
+    }
+    // `month=all` is the deliberate opt-out, for callers that legitimately want
+    // every month: the connect-boards picker listing link targets, for one. It
+    // has to be asked for explicitly — the point of the 400 above is that
+    // FORGETTING the month must not silently return three years of rows.
+    //
+    // On a standard or client board `month` is ignored rather than rejected —
+    // a stale URL carrying ?month= should not break the board.
+
     const tasks = await populateTask(Task.find(filter))
       .sort({ order: 1, createdAt: 1 })
       .lean();
@@ -778,7 +807,7 @@ const getTasks = async (req, res) => {
     // mirror columns).
     await embedMirrorValues(tasks, ctx.board);
 
-    return res.json({ tasks });
+    return res.json({ tasks, monthKey: isMonthly ? month : null });
   } catch (err) {
     console.error('getTasks error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -990,6 +1019,7 @@ const createTask = async (req, res) => {
       labels,
       parent: parentId,
       portalShared,
+      monthKey,
     } = req.body;
 
     if (!name || !name.trim()) {
@@ -1133,10 +1163,35 @@ const createTask = async (req, res) => {
       .lean();
     const nextTaskOrder = (lastSibling?.order ?? -1) + 1;
 
+    // Which month does this task belong to?
+    //
+    // The SELECTED month, not today's — creating a task while looking at July
+    // must file it in July, which is the whole reason `monthKey` is stored
+    // rather than derived from `createdAt`. Falls back to the board's current
+    // month when the client sends nothing (an older client, or the API).
+    //
+    // A subitem always inherits its parent's month, ignoring anything the
+    // client sent: a subitem added in September to an August task is part of
+    // August's work, and letting the two drift apart would put a parent and its
+    // own child in different months.
+    let resolvedMonthKey = null;
+    if (ctx.board.boardType === 'monthly') {
+      if (resolvedParent) {
+        const parentDoc = await Task.findById(resolvedParent).select('monthKey').lean();
+        resolvedMonthKey = parentDoc?.monthKey || null;
+      } else if (isMonthKey(monthKey)) {
+        resolvedMonthKey = monthKey;
+      }
+      if (!resolvedMonthKey) {
+        resolvedMonthKey = monthKeyOf(new Date(), ctx.board.monthTimezone || 'UTC');
+      }
+    }
+
     const task = await Task.create({
       name: name.trim(),
       board: boardId,
       group: groupId,
+      monthKey: resolvedMonthKey,
       priority: priority || 'medium',
       status: resolvedStatus,
       labels: resolvedLabels,
@@ -1911,6 +1966,107 @@ const reorderChecklist = async (req, res) => {
  * `group` field updated. All ids must reference top-level board tasks on
  * the same board as the target group.
  */
+/**
+ * PUT /api/tasks/move-month
+ * Body: { taskIds: [id,...], monthKey: 'YYYY-MM' }
+ *
+ * Refiles tasks into a different month. Serves both the row menu (one id) and
+ * the bulk selection bar (many), the same way "Move to group" does.
+ *
+ * Gated on `task.move` — the same authority as moving a task between groups,
+ * and for the same reason: it relocates somebody else's row out of the view
+ * they are working in.
+ *
+ * A separate endpoint rather than an extra field on `reorderTasks`, because
+ * that one rewrites `order` across the whole target group, which is meaningless
+ * here — a task keeps its position within its group when it changes month.
+ *
+ * Subitems follow their parent automatically and cannot be moved on their own.
+ */
+const MAX_MONTH_MOVE = 500;
+
+const moveTasksToMonth = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { taskIds, monthKey } = req.body || {};
+
+    if (!Array.isArray(taskIds) || taskIds.length === 0) {
+      return res.status(400).json({ error: 'taskIds must be a non-empty array' });
+    }
+    if (taskIds.length > MAX_MONTH_MOVE) {
+      return res.status(400).json({
+        error: `Cannot move more than ${MAX_MONTH_MOVE} tasks at once`,
+      });
+    }
+    if (!isMonthKey(monthKey)) {
+      return res.status(400).json({ error: 'A valid month (YYYY-MM) is required' });
+    }
+
+    const tasks = await Task.find({ _id: { $in: taskIds } }).select('_id board parent monthKey');
+    if (tasks.length !== new Set(taskIds.map(String)).size) {
+      return res.status(400).json({ error: 'One or more task ids were not found' });
+    }
+
+    const boardIds = new Set(tasks.map((t) => t.board && String(t.board)));
+    if (boardIds.size !== 1 || boardIds.has('undefined')) {
+      return res.status(400).json({ error: 'All tasks must belong to the same board' });
+    }
+    for (const t of tasks) {
+      if (t.parent) {
+        return res.status(400).json({
+          error: 'Subitems move with their parent and cannot be refiled on their own',
+        });
+      }
+    }
+
+    const boardId = [...boardIds][0];
+    const ctx = await loadTaskBoardContext(boardId, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+
+    if (ctx.board.boardType !== 'monthly') {
+      return res.status(400).json({ error: 'This board is not organised by month' });
+    }
+
+    const denied = requireCapability(
+      ctx,
+      'task.move',
+      'You do not have permission to move tasks'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    const ids = tasks.map((t) => t._id);
+    await Task.updateMany({ _id: { $in: ids } }, { $set: { monthKey } });
+    // Subitems follow, so a parent and its children are never in different months.
+    await Task.updateMany({ parent: { $in: ids } }, { $set: { monthKey } });
+
+    await Board.updateOne({ _id: boardId }, { $set: { updatedAt: new Date() } });
+
+    // `logActivity` derives the board from the task doc, so pass the doc. Note
+    // `'monthKey'` had to be added to ActivityLog's FIELD_KEYS for these rows to
+    // persist at all — that list is a validator and logActivity swallows its own
+    // errors, so an unlisted field writes nothing and reports nothing.
+    await Promise.all(
+      tasks
+        .filter((t) => t.monthKey !== monthKey)
+        .map((t) =>
+          logActivity({
+            task: t,
+            actor: userId,
+            type: 'task.field_changed',
+            field: 'monthKey',
+            oldValue: t.monthKey || null,
+            newValue: monthKey,
+          })
+        )
+    );
+
+    return res.json({ moved: ids.length, monthKey });
+  } catch (err) {
+    console.error('moveTasksToMonth error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 const reorderTasks = async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -2441,6 +2597,7 @@ module.exports = {
   updateTask,
   deleteTask,
   reorderTasks,
+  moveTasksToMonth,
   setTaskPinned,
   setTaskPortalShared,
   addChecklistItem,

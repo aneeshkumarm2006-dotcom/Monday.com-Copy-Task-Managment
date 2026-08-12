@@ -20,6 +20,7 @@ const TYPE_CATEGORY = {
   taskMoved: 'taskMoves',
   invited: 'invites',
   memberJoined: 'invites',
+  goalsDue: 'goals',
 };
 
 const categoryForType = (type) => TYPE_CATEGORY[type] || null;
@@ -90,6 +91,7 @@ const createNotification = async ({
   tab,
   actorId,
   boardId,
+  month,
   pref,
   boardAccessChecked = false,
 }) => {
@@ -117,6 +119,7 @@ const createNotification = async ({
       task: taskId || undefined,
       board: boardId || null,
       tab: tab || null,
+      month: month || null,
       isRead: false,
     });
 
@@ -157,6 +160,7 @@ const createNotificationsForUsers = async ({
   tab,
   actorId,
   boardId,
+  month,
 }) => {
   if (!Array.isArray(userIds) || userIds.length === 0) return [];
   const exclude = excludeUserId ? excludeUserId.toString() : null;
@@ -194,6 +198,7 @@ const createNotificationsForUsers = async ({
         tab,
         actorId,
         boardId,
+        month,
         pref: prefMap.get(uid) || null,
         boardAccessChecked: true,
       })

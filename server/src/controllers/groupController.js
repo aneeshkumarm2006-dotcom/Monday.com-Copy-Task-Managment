@@ -7,6 +7,7 @@ const ItemFollow = require('../models/ItemFollow');
 const ClientContact = require('../models/ClientContact');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
+const Goal = require('../models/Goal');
 const eventBus = require('../services/eventBus');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { requireFeature } = require('../utils/userFeatures');
@@ -316,6 +317,8 @@ const deleteGroup = async (req, res) => {
     // this query, so it is never touched) and disable only the ones the pull
     // actually emptied.
     await TrackerEntry.deleteMany({ group: id });
+    // A goal belongs to exactly one group, so deleting the group deletes them.
+    await Goal.deleteMany({ group: id });
     const scopedTrackerIds = await Tracker.distinct('_id', {
       board: group.board,
       groups: id,

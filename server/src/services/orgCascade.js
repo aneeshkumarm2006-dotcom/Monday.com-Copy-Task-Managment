@@ -8,6 +8,8 @@ const ItemFollow = require('../models/ItemFollow');
 const Automation = require('../models/Automation');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
+const Goal = require('../models/Goal');
+const GoalReminder = require('../models/GoalReminder');
 const User = require('../models/User');
 const ActivityLog = require('../models/ActivityLog');
 const BoardConnection = require('../models/BoardConnection');
@@ -64,6 +66,8 @@ const cascadeDeleteOrg = async (orgId) => {
   await Automation.deleteMany({ organisation: orgId });
   await Tracker.deleteMany({ organisation: orgId });
   await TrackerEntry.deleteMany({ organisation: orgId });
+  await Goal.deleteMany({ organisation: orgId });
+  await GoalReminder.deleteMany({ organisation: orgId });
 
   await User.updateMany(
     { organisations: orgId },

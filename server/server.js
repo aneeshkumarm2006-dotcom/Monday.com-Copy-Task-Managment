@@ -14,6 +14,7 @@ require('./src/models'); // register all Mongoose models
 const app = require('./src/app');
 const connectDB = require('./src/config/db');
 const { startAutomationRunner } = require('./src/services/automationRunner');
+const { startGoalReminderRunner } = require('./src/services/goalReminderRunner');
 const eventBus = require('./src/services/eventBus');
 const {
   mountAutomationEventDispatcher,
@@ -31,6 +32,7 @@ const start = async () => {
   mountMirrorRefresh();
   notificationStream.mount();
   startAutomationRunner();
+  startGoalReminderRunner();
   // Non-critical: never let the optional email poller block the server booting.
   try {
     startInboundMailPoller();

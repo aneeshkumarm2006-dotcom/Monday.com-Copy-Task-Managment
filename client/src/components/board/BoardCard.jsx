@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Folder,
-  Lock,
-  Globe,
   Calendar,
   MoreHorizontal,
   Pencil,
   Trash2,
 } from 'lucide-react';
 import { timeAgo } from '../../utils/dateUtils';
+import BoardTypePill from './BoardTypePill';
 
 /**
  * BoardCard — single card in the My Boards grid.
@@ -53,8 +52,6 @@ const BoardCard = ({
     };
   }, [menuOpen]);
 
-  const isPublic = board.visibility === 'public';
-  const PrivacyIcon = isPublic ? Globe : Lock;
 
   // Completion stats shipped by GET /api/boards; default to 0 for older
   // cached boards that predate the progress payload.
@@ -118,24 +115,7 @@ const BoardCard = ({
             <Folder size={18} color="var(--color-accent)" />
           </div>
 
-          <span
-            className="inline-flex items-center gap-1 font-body"
-            style={{
-              fontSize: 11,
-              fontWeight: 500,
-              padding: '2px 8px',
-              borderRadius: 'var(--radius-full)',
-              background: isPublic
-                ? 'var(--color-status-done-bg)'
-                : '#FFF0F0',
-              color: isPublic
-                ? 'var(--color-status-done)'
-                : '#DC2626',
-            }}
-          >
-            <PrivacyIcon size={10} aria-hidden="true" />
-            {isPublic ? 'public' : 'private'}
-          </span>
+          <BoardTypePill board={board} size={10} />
         </div>
 
         {/* Name */}

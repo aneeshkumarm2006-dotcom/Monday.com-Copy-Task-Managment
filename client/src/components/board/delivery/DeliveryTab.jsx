@@ -51,7 +51,7 @@ const SkeletonSection = () => (
   </div>
 );
 
-const DeliveryTab = ({ boardId, groups = [], canManage, onOpenTask }) => {
+const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) => {
   const [delivery, setDelivery] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -86,19 +86,22 @@ const DeliveryTab = ({ boardId, groups = [], canManage, onOpenTask }) => {
       if (!boardId) return;
       if (!quiet) setLoading(true);
       try {
-        const data = await trackerService.getDelivery(boardId, windowMap);
+        // The month sets where the grid ENDS; the per-tracker window presets
+        // still set how far back it reaches. All the date arithmetic stays
+        // server-side — see trackerService.
+        const data = await trackerService.getDelivery(boardId, windowMap, monthKey);
         setDelivery(data);
         setError(null);
       } catch (err) {
-        // 403 here is meaningful — the feature is off, or the role lacks the
-        // capability — so the tab renders the server's own sentence rather than
-        // firing the generic toast.
+        // A 403 or 404 here is meaningful — the role lacks the capability, or
+        // this is not a monthly board — so the tab renders the server's own
+        // sentence rather than firing the generic toast.
         setError(err?.response?.data?.error || 'Could not load the delivery view.');
       } finally {
         setLoading(false);
       }
     },
-    [boardId]
+    [boardId, monthKey]
   );
 
   useEffect(() => {

@@ -71,6 +71,27 @@ const taskSchema = new mongoose.Schema(
       of: mongoose.Schema.Types.Mixed,
       default: {},
     },
+    /**
+     * Which calendar month this task belongs to, as 'YYYY-MM'. Monthly boards
+     * only (`Board.boardType === 'monthly'`); null and ignored everywhere else.
+     *
+     * STORED, not derived from `createdAt`. The two are usually the same, but a
+     * task created on 31 July for August's work must be able to sit in August —
+     * and creating a task while looking at a past month must file it in that
+     * month, not today's. Deriving would make both impossible.
+     *
+     * Always computed through `utils/monthKey.js` `monthKeyOf(instant, tz)` with
+     * the board's `monthTimezone`. Never `.toISOString().slice(0, 7)`.
+     *
+     * Subitems inherit their parent's month rather than deriving their own: a
+     * subitem is part of the parent's work, and a subitem added in September to
+     * an August task does not make that work September's.
+     */
+    monthKey: {
+      type: String,
+      default: null,
+      match: /^\d{4}-(0[1-9]|1[0-2])$/,
+    },
     isPersonal: {
       type: Boolean,
       default: false,
@@ -278,5 +299,16 @@ taskSchema.pre('save', async function syncLegacyFieldsFromColumnValues() {
 // also the shape analytics and every board load already used. Neither `board`
 // nor `createdAt` was indexed before, so all of them were collection scans.
 taskSchema.index({ board: 1, createdAt: -1 });
+
+// The monthly board's whole read: "this board, this month, grouped and ordered".
+//
+// Deliberately NOT sparse: a compound sparse index only skips a document that is
+// missing EVERY indexed field, and `board`/`group`/`order` are always present, so
+// `sparse: true` here would index every task anyway while reading as though it
+// did not. A partialFilterExpression on `monthKey` would genuinely skip standard
+// boards, but the planner will only use a partial index when it can prove the
+// query implies the filter — not worth the risk of silently falling back to a
+// collection scan on the board's main read to save index entries on a null.
+taskSchema.index({ board: 1, monthKey: 1, group: 1, order: 1 });
 
 module.exports = mongoose.model('Task', taskSchema);

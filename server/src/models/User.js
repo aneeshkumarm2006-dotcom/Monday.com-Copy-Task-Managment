@@ -37,12 +37,10 @@ const userSchema = new mongoose.Schema({
     // WRITE is refused server-side. Tags already set by someone else stay on the
     // group documents untouched; they are simply not shown to you.
     groupTags: { type: Boolean, default: false },
-    // Recurring trackers — the per-board Delivery view that scores each group
-    // against the commitments a user has defined. Off means the Delivery tab and
-    // the Trackers button are not drawn and every tracker endpoint refuses. It
-    // is opt-in because most boards are ordinary task management and would gain
-    // only a tab they never open.
-    trackers: { type: Boolean, default: false },
+    // `trackers` used to live here and was removed when the Delivery view became
+    // part of the monthly board type. Stale `features.trackers` values may still
+    // sit on existing user documents; Mongoose ignores an unmapped path on read
+    // and strict mode drops it on the next save, so no migration is required.
   },
   createdAt: {
     type: Date,

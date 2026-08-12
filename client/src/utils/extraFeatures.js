@@ -1,4 +1,4 @@
-import { CalendarCheck, FileDown, Tags } from 'lucide-react';
+import { FileDown, Tags } from 'lucide-react';
 
 /**
  * The catalog of EXTRA FEATURES — opt-in tools that stay off until someone asks
@@ -46,20 +46,12 @@ export const EXTRA_FEATURES = [
       'button to each group header on boards you can edit. Tags set by others ' +
       'stay hidden until you turn this on.',
   },
-  {
-    key: 'trackers',
-    icon: CalendarCheck,
-    // Gated on the VIEW capability, not manage: the switch governs the thing you
-    // see, and someone with read-only access to a board still needs to be able
-    // to turn the view on. (Contrast groupTags, which keys off `column.manage`
-    // because its primary act is a write.)
-    capability: 'tracker.view',
-    label: 'Recurring trackers',
-    hint:
-      'Adds a Delivery view to boards you can open, showing whether each group ' +
-      'is keeping its recurring commitments — a task every working day, a ' +
-      'report every month, or whatever cadence you define.',
-  },
+  // `trackers` used to live here. It was removed when the Delivery view became
+  // part of the MONTHLY BOARD TYPE rather than an opt-in tool: a board either is
+  // organised by month — in which case Delivery is one of its three views and
+  // hiding it behind a personal switch makes no sense — or it is not, in which
+  // case there is nothing to switch on. The `tracker.view` / `tracker.manage`
+  // capabilities are unchanged; only the per-user flag is gone.
 ];
 
 /** The features this user may actually use. `can` comes from usePermissions(). */

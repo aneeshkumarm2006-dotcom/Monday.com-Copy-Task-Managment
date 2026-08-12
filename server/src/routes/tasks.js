@@ -10,6 +10,7 @@ const {
   updateTask,
   deleteTask,
   reorderTasks,
+  moveTasksToMonth,
   setTaskPinned,
   setTaskPortalShared,
   addChecklistItem,
@@ -54,6 +55,10 @@ router.post('/', createTask);
 // PUT /api/tasks/reorder — batch reorder tasks within a target group
 // (handles cross-group moves too). Must come BEFORE /:id.
 router.put('/reorder', reorderTasks);
+
+// PUT /api/tasks/move-month — refile tasks into another month on a monthly
+// board. Also before /:id, for the same reason.
+router.put('/move-month', moveTasksToMonth);
 
 // PUT /api/tasks/:id — update task (perms enforced in controller)
 router.put('/:id', updateTask);

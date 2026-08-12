@@ -58,4 +58,42 @@ const usersWithBoardRead = async (boardId, userIds) => {
     .filter((u) => allowed.has(String(u)));
 };
 
-module.exports = { filterUsersWithBoardRead, usersWithBoardRead };
+/**
+ * Everyone who holds `capability` on this board, given docs the caller already
+ * loaded. Pure and synchronous, unlike its siblings above — background jobs
+ * (the month-end goal reminder) hold the board and the org already and would
+ * otherwise re-query them once per candidate.
+ *
+ * THE CANDIDATE SET IS A UNION OF THREE, and missing any one under-notifies:
+ *   1. org members — a PUBLIC board grants access through
+ *      `publicDefaultLevel`, so on a public board the whole team qualifies and
+ *      there is no `memberAccess` row to find them by.
+ *   2. `board.memberAccess` — the explicit grants on a private board.
+ *   3. `board.createdBy` — the creator holds every board-scoped capability
+ *      unconditionally, even with no grant row of their own.
+ *
+ * `resolveAccess` then does the actual deciding, because it IS the AND of org
+ * role and board level. Re-implementing any part of it here is how the two
+ * drift.
+ */
+const usersWithBoardCapability = (board, org, capability) => {
+  if (!board || !org) return [];
+
+  const candidates = new Set();
+  for (const m of org.members || []) candidates.add(String(m));
+  for (const a of board.memberAccess || []) {
+    if (a?.user) candidates.add(String(a.user));
+  }
+  if (board.createdBy) candidates.add(String(board.createdBy));
+
+  return [...candidates].filter((id) => {
+    const access = resolveAccess(board, org, id);
+    return access.canRead && access.capabilities?.has(capability);
+  });
+};
+
+module.exports = {
+  filterUsersWithBoardRead,
+  usersWithBoardRead,
+  usersWithBoardCapability,
+};

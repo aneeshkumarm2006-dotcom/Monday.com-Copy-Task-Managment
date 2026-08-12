@@ -8,6 +8,7 @@ import {
   Flag,
   UserCheck,
   Check,
+  CalendarArrowUp,
 } from 'lucide-react';
 
 /**
@@ -46,6 +47,7 @@ const BulkActionBar = ({
   onChangeStatus,
   onChangePriority,
   onMoveToGroup,
+  onMoveToMonth,
   onAssign,
   onDelete,
   onClear,
@@ -220,7 +222,9 @@ const BulkActionBar = ({
         <BarButton
           ref={moveBtnRef}
           icon={FolderInput}
-          label="Move to"
+          // "Move to group", not "Move to": on a monthly board there are two
+          // move actions in this bar and a bare "Move to" is ambiguous.
+          label="Move to group"
           trailing={ChevronDown}
           disabled={busy || groups.length === 0}
           onClick={() => toggleMenu('move')}
@@ -286,6 +290,21 @@ const BulkActionBar = ({
           </div>
         )}
       </div>
+
+      {/* Move to month (monthly boards only). Opens the same modal the row menu
+          uses rather than a second popover — one month picker, one confirmation
+          sentence, whether you got here from one row or twenty. */}
+      {onMoveToMonth && (
+        <BarButton
+          icon={CalendarArrowUp}
+          label="Move to month"
+          disabled={busy}
+          onClick={() => {
+            setOpenMenu(null);
+            onMoveToMonth();
+          }}
+        />
+      )}
 
       <BarButton
         icon={Trash2}

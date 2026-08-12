@@ -11,6 +11,7 @@ import {
   Share2,
   Users,
   Bell,
+  Target,
 } from 'lucide-react';
 
 /**
@@ -29,6 +30,7 @@ export const NOTIF_TYPE_COLOR = {
   taskMoved: 'var(--color-status-working)',
   invited: 'var(--color-accent)',
   memberJoined: 'var(--color-status-done)',
+  goalsDue: 'var(--color-status-working)',
 };
 
 /**
@@ -47,6 +49,7 @@ export const NOTIF_TYPE_ICON = {
   taskMoved: ArrowLeftRight,
   invited: Share2,
   memberJoined: Users,
+  goalsDue: Target,
 };
 
 export const getNotifColor = (type) => NOTIF_TYPE_COLOR[type] || 'var(--color-accent)';
@@ -91,6 +94,16 @@ export const resolveNotifLink = (notif) => {
   const parentId = notif.task?.parent
     ? String(notif.task.parent)
     : null;
+
+  // A month-end goal reminder carries no task: it is about the board's Goals
+  // tab for one particular month, so it deep-links to the VIEW rather than to a
+  // row. `notif.month` rides on the notification so the link lands on the month
+  // that actually needs closing, not on whatever month is current by the time
+  // somebody clicks it.
+  if (boardId && notif.tab === 'goals') {
+    const monthParam = notif.month ? `&month=${notif.month}` : '';
+    return `/boards/${boardId}?view=goals${monthParam}`;
+  }
 
   if (boardId && taskId) {
     const tabParam = notif.tab ? `&openTab=${notif.tab}` : '';

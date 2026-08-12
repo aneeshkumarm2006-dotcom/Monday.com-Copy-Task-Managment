@@ -103,6 +103,21 @@ const CAPABILITY_GROUPS = [
     ],
   },
   {
+    key: 'goals',
+    name: 'Monthly goals',
+    // Three rungs rather than the usual view/manage pair, because filling in a
+    // number and changing what was promised are genuinely different acts. The
+    // person who types "we reached rank 4" at month end is usually an executive
+    // sitting on `contribute`; folding that into `goal.manage` would mean
+    // over-permissioning them — handing them the power to edit targets — purely
+    // so they could report a result.
+    capabilities: [
+      ['goal.view', "See a board's Monthly Goals and their scores"],
+      ['goal.track', 'Fill in the final numbers on existing goals'],
+      ['goal.manage', 'Create, edit and delete goals, and set targets'],
+    ],
+  },
+  {
     key: 'insights',
     name: 'Insights',
     capabilities: [
@@ -163,6 +178,11 @@ const BOARD_SCOPED = new Set([
   // confers and the AND strips it from everyone except the board's creator.
   'tracker.view',
   'tracker.manage',
+  // Same reasoning, same obligation: all three are conferred by a LEVEL_ADDS
+  // rung below, which is what makes board-scoping them safe.
+  'goal.view',
+  'goal.track',
+  'goal.manage',
 ]);
 
 /**
@@ -181,11 +201,14 @@ const LEVEL_ADDS = {
   // Read the board. (The old `read`, renamed.) Seeing whether the board is
   // meeting its commitments is reading it — a missed day the team cannot see is
   // a missed day nobody fixes.
-  view: ['tracker.view'],
+  // Seeing whether the month's goals were met is likewise reading the board.
+  view: ['tracker.view', 'goal.view'],
   // + weigh in without touching the data.
   comment: ['update.create'],
   // + do your own work, without being able to restructure the board.
-  contribute: ['task.create', 'task.edit_assigned', 'task.change_status'],
+  // Reporting a result you are responsible for is doing your own work; deciding
+  // what the target should have been is not.
+  contribute: ['task.create', 'task.edit_assigned', 'task.change_status', 'goal.track'],
   // + full control of board content. (The old `edit`.)
   edit: [
     'task.edit_any',
@@ -199,6 +222,7 @@ const LEVEL_ADDS = {
     'automation.view',
     'automation.manage',
     'tracker.manage',
+    'goal.manage',
     'board.rename',
   ],
 };
@@ -349,6 +373,9 @@ const SYSTEM_ROLES = [
       'automation.manage',
       'tracker.view',
       'tracker.manage',
+      'goal.view',
+      'goal.track',
+      'goal.manage',
       'analytics.view',
       'productivity.view_others',
       // Holding this only makes the export *possible*. Each admin still has to
@@ -404,6 +431,9 @@ const SYSTEM_ROLES = [
       'automation.manage',
       'tracker.view',
       'tracker.manage',
+      'goal.view',
+      'goal.track',
+      'goal.manage',
     ],
     // NOT granted, on purpose: `analytics.view`. The analytics and productivity
     // pages were admin-only before this system existed, and quietly opening them
@@ -417,10 +447,13 @@ const SYSTEM_ROLES = [
     isSystem: true,
     color: '#6B7280',
     description: 'Read-only across the workspace.',
-    // `tracker.view` is a read. A viewer who can open a board should be able to
-    // see whether that board is keeping its promises; they still cannot create a
-    // tracker, confirm a period or excuse a miss.
-    permissions: ['org.view_members', 'board.view_public', 'tracker.view'],
+    // `tracker.view` and `goal.view` are reads. A viewer who can open a board
+    // should be able to see whether that board is keeping its promises and
+    // whether it hit its numbers; they still cannot create a tracker, confirm a
+    // period, excuse a miss, or type a result into a goal.
+    permissions: [
+      'org.view_members', 'board.view_public', 'tracker.view', 'goal.view',
+    ],
   },
   {
     key: 'guest',

@@ -41,7 +41,10 @@ const updateProfile = async (req, res) => {
  * `organisations`, so an unfiltered `$set` here would be a write primitive into
  * the identity record.
  */
-const FEATURE_KEYS = ['activityExport', 'groupTags', 'trackers'];
+// `trackers` was removed from this list when the Delivery view became part of
+// the monthly board type rather than a personal opt-in. A client still sending
+// it is ignored rather than rejected — the loop below is a whitelist.
+const FEATURE_KEYS = ['activityExport', 'groupTags'];
 
 /**
  * PUT /api/profile/features — toggle the current user's opt-in extras.

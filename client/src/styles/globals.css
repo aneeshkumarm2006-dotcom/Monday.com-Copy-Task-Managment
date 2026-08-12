@@ -14,6 +14,13 @@
   --color-bg-surface:   #FFFFFF;   /* Cards, panels, nav */
   --color-bg-subtle:    #EEECEA;   /* Hover rows, muted sections */
   --color-bg-input:     #F9F8F6;   /* Input fields */
+  /* Popovers and dropdown panels that float ABOVE a surface. Ten declarations
+     across eight files (cellShared, StatusCell, PersonCell, TagsCell, DataGrid,
+     AddColumnButton, ConnectBoardsCell, MirrorCell) already referenced this and
+     it was never defined — an unresolvable var() with no fallback is invalid at
+     computed-value time, so every one of those panels was painting transparent.
+     It only looked fine because they open over white cards. */
+  --color-bg-elevated:  #FFFFFF;   /* Popovers, dropdown panels, floating menus */
 
   /* Text */
   --color-text-primary:   #1A1A1A; /* Headlines, body */
@@ -52,6 +59,14 @@
   --color-card-green:   #16A34A;
   --color-card-orange:  #EA580C;
   --color-card-purple:  #7C3AED;
+  /* Tints, for chips and pills drawn in a card colour. The status colours have
+     always had a `-bg` companion; these did not, and "Exceeded" on the goals
+     table needs one — purple rather than green precisely so beating a target
+     reads differently from meeting it. */
+  --color-card-blue-bg:   #EFF6FF;
+  --color-card-green-bg:  #F0FDF4;
+  --color-card-orange-bg: #FFF7ED;
+  --color-card-purple-bg: #F5F3FF;
 
   /* Utility */
   --color-shadow:    rgba(26, 26, 26, 0.06);

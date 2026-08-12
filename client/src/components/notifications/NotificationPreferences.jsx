@@ -17,6 +17,7 @@ const CATEGORIES = [
   { key: 'dueDates', label: 'Due dates', hint: 'Due-soon and due-date changes' },
   { key: 'taskMoves', label: 'Task moves', hint: 'When a task is moved to a new group' },
   { key: 'invites', label: 'Invites & members', hint: 'Board access and workspace joins' },
+  { key: 'goals', label: 'Monthly goals', hint: 'Reminders to fill in a month’s final numbers' },
 ];
 
 const minutesToTime = (mins) => {

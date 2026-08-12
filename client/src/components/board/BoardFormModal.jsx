@@ -50,17 +50,23 @@ const BoardFormModal = ({
   }, [isOpen, initialValues]);
 
   const isClient = values.boardType === 'client';
-  // In the create dialog the user picks one of three: Public, Private, or the
-  // new Client Portal. Client Portal is a board TYPE (internally always private);
-  // Public/Private are visibilities on a standard board. `kind` collapses these
-  // into one radio group.
-  const kind = isClient ? 'client' : values.visibility;
+  const isMonthly = values.boardType === 'monthly';
+  // In the create dialog the user picks one of four: Public, Private, Client
+  // Portal, or Monthly. The last two are board TYPES; Public/Private are
+  // visibilities on a standard board. `kind` collapses these into one radio
+  // group.
+  //
+  // A monthly board is pinned to private the same way a client board is —
+  // not because the type requires it (a monthly board is an ordinary internal
+  // board that happens to be partitioned) but because retainer boards are
+  // client work by default and defaulting them public would be a surprise.
+  const kind = isClient ? 'client' : isMonthly ? 'monthly' : values.visibility;
   const setKind = (next) => {
-    setValues((v) =>
-      next === 'client'
-        ? { ...v, boardType: 'client', visibility: 'private' }
-        : { ...v, boardType: 'standard', visibility: next }
-    );
+    setValues((v) => {
+      if (next === 'client') return { ...v, boardType: 'client', visibility: 'private' };
+      if (next === 'monthly') return { ...v, boardType: 'monthly', visibility: 'private' };
+      return { ...v, boardType: 'standard', visibility: next };
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -75,9 +81,16 @@ const BoardFormModal = ({
       setError(null);
       await onSubmit({
         name: trimmed,
-        visibility: isClient ? 'private' : values.visibility,
+        visibility: isClient || isMonthly ? 'private' : values.visibility,
         description: values.description.trim(),
         boardType: values.boardType,
+        // A monthly board must know whose calendar defines its months. Sending
+        // the browser's resolved zone is exactly what TrackersModal already does
+        // for a tracker, and for the same reason: a board silently on UTC while
+        // the team is on IST files every month-boundary task in the wrong month.
+        monthTimezone: isMonthly
+          ? Intl.DateTimeFormat().resolvedOptions().timeZone
+          : undefined,
         portalCategories: isClient
           ? values.portalCategoriesText
               .split(',')
@@ -132,7 +145,7 @@ const BoardFormModal = ({
 
         {/* Type / visibility selector. In edit mode an existing Client Portal
             board's type can't be changed, so we show a static note instead. */}
-        {mode === 'edit' && isClient ? (
+        {mode === 'edit' && (isClient || isMonthly) ? (
           <div>
             <label
               className="block mb-2 font-body font-medium text-xs uppercase tracking-wide"
@@ -150,7 +163,7 @@ const BoardFormModal = ({
                   background: 'var(--color-accent)',
                 }}
               />
-              Client Portal
+              {isClient ? 'Client Portal' : 'Monthly'}
             </span>
           </div>
         ) : (
@@ -167,6 +180,7 @@ const BoardFormModal = ({
                     { value: 'public', label: 'Public' },
                     { value: 'private', label: 'Private' },
                     { value: 'client', label: 'Client Portal' },
+                    { value: 'monthly', label: 'Monthly' },
                   ]
                 : [
                     { value: 'public', label: 'Public' },
@@ -236,6 +250,16 @@ const BoardFormModal = ({
               >
                 A private board where each group is a client. You'll generate a
                 shareable link per group so clients can raise issues.
+              </p>
+            )}
+            {mode === 'create' && isMonthly && (
+              <p
+                className="font-body mt-2"
+                style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+              >
+                Work organised month by month. You get a month picker at the top,
+                a Delivery view for recurring commitments, and a Goals tab for the
+                numbers you're promising. Built for retainers.
               </p>
             )}
           </div>

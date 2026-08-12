@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { Pencil, Trash2, Pin, PinOff, Eye, EyeOff } from 'lucide-react';
+import {
+  Pencil, Trash2, Pin, PinOff, Eye, EyeOff, CalendarArrowUp,
+} from 'lucide-react';
 
 /**
  * TaskActionsMenu — small popover shown when the ⋯ button on a task row
@@ -17,6 +19,7 @@ import { Pencil, Trash2, Pin, PinOff, Eye, EyeOff } from 'lucide-react';
  *   onPinPersonal     — callback to toggle the personal pin
  *   sharedWithClient  — task is currently visible in the client's portal
  *   onSharePortal     — callback to toggle client visibility (omit to hide the row)
+ *   onMoveToMonth     — opens the month picker (monthly boards only; omit to hide)
  *   onEdit            — callback when Edit is clicked
  *   onDelete          — callback when Delete is clicked
  *   onClose           — callback to close the menu
@@ -29,6 +32,7 @@ const TaskActionsMenu = ({
   onPinPersonal,
   sharedWithClient = false,
   onSharePortal,
+  onMoveToMonth,
   onEdit,
   onDelete,
   onClose,
@@ -102,6 +106,13 @@ const TaskActionsMenu = ({
           label={sharedWithClient ? 'Hide from client' : 'Show to client'}
           onClick={onSharePortal}
         />
+      )}
+      {onMoveToMonth && (
+        // Opens a modal rather than a nested submenu: this popover is sized to
+        // its longest label and clamped to the viewport, and a scrollable list
+        // of every month the board has had would fight both. The ellipsis says
+        // so.
+        <MenuItem icon={CalendarArrowUp} label="Move to month…" onClick={onMoveToMonth} />
       )}
       <MenuItem icon={Pencil} label="Edit" onClick={onEdit} />
       <MenuItem icon={Trash2} label="Delete" onClick={onDelete} danger />

@@ -9,12 +9,14 @@ import {
   User,
   Calendar,
   Eye,
+  LayoutGrid,
 } from 'lucide-react';
 import { OptionRow } from '../ui/FilterControls';
 import { toggleValue } from '../../utils/taskFilters';
 import {
   EMPTY_BOARD_FILTERS,
   VISIBILITY_OPTIONS,
+  BOARD_TYPE_OPTIONS,
   PROGRESS_OPTIONS,
   OWNERSHIP_OPTIONS,
   UPDATED_OPTIONS,
@@ -39,6 +41,7 @@ import {
  */
 const SECTIONS = [
   { key: 'visibility', label: 'Visibility', icon: null, options: VISIBILITY_OPTIONS },
+  { key: 'boardType', label: 'Board type', icon: LayoutGrid, options: BOARD_TYPE_OPTIONS },
   { key: 'progress', label: 'Progress', icon: CircleDot, options: PROGRESS_OPTIONS },
   { key: 'ownership', label: 'Ownership', icon: User, options: OWNERSHIP_OPTIONS },
   { key: 'updated', label: 'Last updated', icon: Calendar, options: UPDATED_OPTIONS },

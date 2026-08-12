@@ -1,13 +1,16 @@
 import api from './api';
 
 /**
- * GET /api/tasks?board=:id&group=:id
+ * GET /api/tasks?board=:id&group=:id&month=YYYY-MM
  *
- * List tasks for a board (optionally filtered by group).
+ * List tasks for a board (optionally filtered by group, and by month on a
+ * monthly board — where the server REQUIRES it, rather than silently returning
+ * every task the board has ever had).
  */
-export const getTasks = async (boardId, groupId) => {
+export const getTasks = async (boardId, { group, month } = {}) => {
   const params = { board: boardId };
-  if (groupId) params.group = groupId;
+  if (group) params.group = group;
+  if (month) params.month = month;
   const { data } = await api.get('/api/tasks', { params });
   return data.tasks;
 };

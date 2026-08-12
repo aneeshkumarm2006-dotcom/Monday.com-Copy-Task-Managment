@@ -16,18 +16,25 @@ export const listTrackers = async (boardId) => {
 /**
  * GET /api/boards/:boardId/delivery — the computed grid.
  *
- * `windows` is a map of trackerId -> preset ('4w', '12m'). Everything else —
- * period boundaries, labels, timezone, holidays, scoring — is resolved
- * server-side, so the client never does date arithmetic of its own.
+ * `windows` is a map of trackerId -> preset ('4w', '12m'), controlling how far
+ * back the grid reaches. `monthKey` ('YYYY-MM') controls where it ENDS — the
+ * board's month picker, so selecting July shows the run of periods up to July
+ * rather than up to today. Everything else — period boundaries, labels,
+ * timezone, holidays, scoring — is resolved server-side, so the client never
+ * does date arithmetic of its own.
  */
-export const getDelivery = async (boardId, windows = {}) => {
+export const getDelivery = async (boardId, windows = {}, monthKey = null) => {
   const encoded = Object.entries(windows)
     .filter(([, token]) => !!token)
     .map(([id, token]) => `${id}:${token}`)
     .join(',');
 
+  const params = {};
+  if (encoded) params.windows = encoded;
+  if (monthKey) params.month = monthKey;
+
   const { data } = await api.get(`/api/boards/${boardId}/delivery`, {
-    params: encoded ? { windows: encoded } : undefined,
+    params: Object.keys(params).length ? params : undefined,
     suppressErrorToast: true,
   });
   return data.delivery;
