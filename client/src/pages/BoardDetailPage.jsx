@@ -806,10 +806,16 @@ const BoardDetailPage = () => {
   // Auto-close the panel (or pop one level) if the selected task disappears
   // (e.g. it or its parent was deleted).
   useEffect(() => {
-    if (selectedTaskId && !selectedTask) {
-      setSelectedTaskStack((prev) => prev.slice(0, -1));
-    }
-  }, [selectedTaskId, selectedTask]);
+    if (!selectedTaskId || selectedTask) return;
+    // ...but "not in the store" and "deleted" are only the same thing once the
+    // store has had the chance to hold it. A deep link to a SUBITEM opens the
+    // panel in the same tick that TaskTable is still fetching that parent's
+    // children, so popping here would close the panel before it ever rendered.
+    // `subitemsByParent[parentId]` existing — even as an empty array — is what
+    // proves the fetch landed and the row is genuinely gone.
+    if (highlightedParentId && !subitemsByParent[highlightedParentId]) return;
+    setSelectedTaskStack((prev) => prev.slice(0, -1));
+  }, [selectedTaskId, selectedTask, highlightedParentId, subitemsByParent]);
 
   // --- Inline creation --------------------------------------------------
 

@@ -12,11 +12,14 @@ import {
   Eye,
   EyeOff,
   Loader2,
+  Link2,
 } from 'lucide-react';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
 import { formatDate, dateInputToISO } from '../../utils/dateUtils';
+import { buildTaskLink } from '../../utils/taskLink';
 import useOrgStore from '../../store/orgStore';
+import useToastStore from '../../store/toastStore';
 import {
   getColorPair,
   PRIORITY_COLORS,
@@ -208,6 +211,40 @@ const CommentPanel = ({
     [task]
   );
 
+  // --- Copy task link ----------------------------------------------------
+  // The shareable link to THIS task. Null for a personal task, which lives on no
+  // board and so cannot be opened by anyone else — the button hides rather than
+  // handing out a URL that 404s for the reader.
+  const taskLink = useMemo(() => buildTaskLink(task), [task]);
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  // A stale "Copied" tick against a different task would be a lie about what is
+  // on the clipboard.
+  useEffect(() => {
+    setLinkCopied(false);
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!linkCopied) return undefined;
+    const timer = setTimeout(() => setLinkCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [linkCopied]);
+
+  const handleCopyLink = useCallback(async () => {
+    if (!taskLink) return;
+    const toast = useToastStore.getState();
+    try {
+      await navigator.clipboard.writeText(taskLink);
+      setLinkCopied(true);
+      toast.success('Task link copied — paste it to send a teammate straight here.');
+    } catch {
+      // Clipboard access is refused outside a secure context (and by some
+      // browser policies). Showing the URL still lets the user copy it by hand,
+      // which beats a button that silently does nothing.
+      toast.info(taskLink);
+    }
+  }, [taskLink]);
+
   // --- Inline header edits (name / assignees / due date) ----------------
   // The name uses a click-to-edit pattern: an <h2> by default, an <input>
   // while editing. Assignees and due date are always-on editors (the
@@ -385,6 +422,31 @@ const CommentPanel = ({
             <span />
           )}
           <div className="flex items-center gap-2">
+            {taskLink && (
+              <button
+                type="button"
+                onClick={handleCopyLink}
+                aria-label="Copy link to this task"
+                title="Copy link to this task"
+                className="flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+                style={{ width: 32, height: 32 }}
+              >
+                {linkCopied ? (
+                  <Check
+                    size={17}
+                    strokeWidth={2.5}
+                    color="var(--color-status-done)"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <Link2
+                    size={17}
+                    color="var(--color-text-secondary)"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            )}
             {taskId && !task.isPersonal && (
               <FollowButton taskId={taskId} isOpen={isOpen} />
             )}
