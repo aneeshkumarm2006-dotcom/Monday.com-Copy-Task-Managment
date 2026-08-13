@@ -1962,8 +1962,25 @@ const BoardDetailPage = () => {
           onOpenTask={(taskId) => {
             // Reuse the existing deep-link machinery rather than inventing a
             // second way to reveal a task.
-            setView('board');
-            setSearchParams({ highlightTask: taskId }, { replace: true });
+            //
+            // MERGE into the existing params, never replace them: `?month=` is
+            // the source of truth for which month this board is showing, and
+            // the month seed in useBoardMonths only runs once per board, so
+            // dropping it here leaves the board with no month at all — an empty
+            // "Pick a month" board with none of its groups loaded. Deleting
+            // `view` is what sends us back to the board (see setView).
+            setSearchParams(
+              (prev) => {
+                const next = new URLSearchParams(prev);
+                next.delete('view');
+                next.set('highlightTask', taskId);
+                // Delivery only ever counts top-level tasks, so any parent id
+                // still on the URL is stale from an earlier jump.
+                next.delete('highlightParent');
+                return next;
+              },
+              { replace: true }
+            );
           }}
         />
       )}
