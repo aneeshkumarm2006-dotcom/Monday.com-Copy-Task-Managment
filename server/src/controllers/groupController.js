@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 const TaskGroup = require('../models/TaskGroup');
-const User = require('../models/User');
 const Task = require('../models/Task');
 const Update = require('../models/Update');
 const Note = require('../models/Note');
@@ -13,7 +12,8 @@ const Goal = require('../models/Goal');
 const eventBus = require('../services/eventBus');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { requireFeature } = require('../utils/userFeatures');
-const { ownerForMonth, setOwnerForMonth } = require('../utils/groupOwner');
+const { setOwnerForMonth } = require('../utils/groupOwner');
+const { resolveOwnerDisplay, EMPTY_OWNER_DISPLAY } = require('../services/groupOwnerDisplay');
 const { isMonthKey, monthKeyOf, addMonths, compareMonthKeys } = require('../utils/monthKey');
 const { generatePortalToken } = require('../utils/portalCrypto');
 const { inviteContact } = require('../services/portalInviteService');
@@ -118,28 +118,13 @@ const serializeGroups = async (groups, { board, org, monthKey }) => {
   const plain = groups.map((g) => (g?.toObject ? g.toObject() : g));
   if (board?.boardType !== 'tracker' || !monthKey) return plain.map(stripTimeline);
 
-  const resolved = plain.map((g) => ({ g, owner: ownerForMonth(g, monthKey) }));
+  // The resolve-and-hydrate itself lives in services/groupOwnerDisplay.js, so
+  // the Goals tab reads the owner through the same code the board does.
+  const display = await resolveOwnerDisplay(plain, monthKey, org);
 
-  const ids = [...new Set(resolved.map((r) => r.owner.userId).filter(Boolean))];
-  const users = ids.length
-    ? await User.find({ _id: { $in: ids } }).select('name profilePic email').lean()
-    : [];
-  const byId = new Map(users.map((u) => [String(u._id), u]));
-  const memberIds = new Set((org?.members || []).map((m) => String(m?._id || m)));
-
-  return resolved.map(({ g, owner }) => ({
+  return plain.map((g) => ({
     ...stripTimeline(g),
-    // The month this was resolved AGAINST. The client echoes it back on write,
-    // which is what stops a stale tab assigning into a month nobody is looking at.
-    ownerMonth: monthKey,
-    owner: owner.userId ? byId.get(owner.userId) || null : null,
-    ownerFromMonth: owner.fromMonth,
-    ownerInherited: owner.inherited,
-    // Removing someone from the org does NOT scrub the groups they owned — the
-    // same rule Task.assignedTo already follows, and scrubbing would rewrite
-    // history that was true at the time. Flagged rather than hidden, because the
-    // group still needs a new owner.
-    ownerActive: owner.userId ? memberIds.has(owner.userId) : true,
+    ...(display.get(String(g._id)) || EMPTY_OWNER_DISPLAY),
   }));
 };
 

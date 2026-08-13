@@ -37,6 +37,7 @@ import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
 import Input from '../components/ui/Input';
 import EmptyState from '../components/ui/EmptyState';
+import ErrorBoundary from '../components/ui/ErrorBoundary';
 import { SkeletonTaskGroup } from '../components/ui/Skeleton';
 import TaskGroupHeader from '../components/board/TaskGroupHeader';
 import TaskTable from '../components/board/TaskTable';
@@ -1926,19 +1927,25 @@ const BoardDetailPage = () => {
         </div>
       )}
 
+      {/* Every tab gets its own boundary, keyed on the view. A tab that throws
+          then loses only itself — the header and the tab bar stay on screen, so
+          you can switch away from it instead of staring at a white page. */}
       {view === 'goals' && (
-        <GoalsTab
-          boardId={boardId}
-          monthKey={monthKey}
-          monthLabel={selectedMonth?.label}
-          canTrack={canTrackGoals}
-          canManage={canManageGoals}
-          canManageColumns={canManageGoalColumns}
-          onGoalsChanged={refreshMonths}
-        />
+        <ErrorBoundary label="Goals" resetKey={view}>
+          <GoalsTab
+            boardId={boardId}
+            monthKey={monthKey}
+            monthLabel={selectedMonth?.label}
+            canTrack={canTrackGoals}
+            canManage={canManageGoals}
+            canManageColumns={canManageGoalColumns}
+            onGoalsChanged={refreshMonths}
+          />
+        </ErrorBoundary>
       )}
 
       {view === 'people' && (
+        <ErrorBoundary label="People" resetKey={view}>
         <ScoreboardTab
           boardId={boardId}
           monthKey={monthKey}
@@ -1954,9 +1961,11 @@ const BoardDetailPage = () => {
             });
           }}
         />
+        </ErrorBoundary>
       )}
 
       {view === 'delivery' && (
+        <ErrorBoundary label="Delivery" resetKey={view}>
         <DeliveryTab
           boardId={boardId}
           groups={groups}
@@ -1986,6 +1995,7 @@ const BoardDetailPage = () => {
             );
           }}
         />
+        </ErrorBoundary>
       )}
 
       {/* Filter bar + group sort toggle */}

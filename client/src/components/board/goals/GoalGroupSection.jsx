@@ -3,7 +3,9 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Plus, Target } from 'luc
 import GoalRow from './GoalRow';
 import GoalMobileCard from './GoalMobileCard';
 import ScoreRing from '../../ui/ScoreRing';
+import Avatar from '../../ui/Avatar';
 import useOrgStore from '../../../store/orgStore';
+import { formatMonthKey } from '../../../utils/monthKeys';
 import { sortGoals, nextGoalSort, columnSortKey } from '../../../utils/goalSort';
 import {
   buildGoalGrid,
@@ -103,7 +105,7 @@ const GoalGroupSection = ({
   onDelete,
   onAdd,
 }) => {
-  const { summary = {}, goals = [] } = group;
+  const { summary = {}, goals = [], owner = null } = group;
 
   // Gutter, name, …extras, start, target, actual, result, actions — see goalGrid.
   const gridTemplate = buildGoalGrid(columns);
@@ -171,6 +173,54 @@ const GoalGroupSection = ({
                   : '')}
           </p>
         </div>
+
+        {/* Whose month this is. The SAME resolved owner the Board tab shows on
+            the same group — one server-side resolver, one hydration, so a group
+            cannot be Aneesh's on one tab and nobody's on the other.
+
+            Read-only on purpose: ownership is ASSIGNED on the board, where the
+            work is, and a second writer would be a second way to get the month
+            wrong. Nothing renders on a group nobody owns rather than an empty
+            slot — on a board where most groups have no owner yet, seventeen
+            dashed circles is furniture, not information. */}
+        {owner && (
+          <div
+            // The name is the part that goes on a phone, not the owner: an
+            // avatar still says who this group belongs to in 22px.
+            className="flex items-center gap-1.5 shrink-0 min-w-0 pl-[3px] pr-[3px] sm:pr-2"
+            title={[
+              `Owner: ${owner.name}`,
+              group.ownerActive === false ? '(no longer in this workspace)' : '',
+              group.ownerInherited && group.ownerFromMonth
+                ? `— carried forward from ${formatMonthKey(group.ownerFromMonth)}`
+                : '',
+              '· change it on the Board tab',
+            ].filter(Boolean).join(' ')}
+            style={{
+              height: 28,
+              maxWidth: 170,
+              borderRadius: 'var(--radius-full)',
+              background: 'var(--color-bg-surface)',
+              border: '1px solid var(--color-border)',
+              // Inherited reads slightly quieter than a decision made THIS
+              // month — the same cue, and the same 0.75, as the board header.
+              opacity: group.ownerInherited ? 0.75 : 1,
+            }}
+          >
+            <Avatar user={owner} size={22} />
+            <span
+              className="hidden sm:inline font-body truncate"
+              style={{
+                fontSize: 11.5,
+                fontWeight: 500,
+                color: 'var(--color-text-secondary)',
+                textDecoration: group.ownerActive === false ? 'line-through' : 'none',
+              }}
+            >
+              {owner.name}
+            </span>
+          </div>
+        )}
 
         <ScoreRing
           pct={summary.pct}

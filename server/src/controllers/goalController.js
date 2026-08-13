@@ -30,6 +30,7 @@ const {
   missingFinalValues, monthIsUnclosed, describeGoalTypes, UNITS,
 } = require('../utils/goalTypes');
 const { isMonthKey, monthKeyOf, addMonths, monthKeysBetween } = require('../utils/monthKey');
+const { resolveOwnerDisplay, EMPTY_OWNER_DISPLAY } = require('../services/groupOwnerDisplay');
 
 const NOT_TRACKER = 'This board is not a tracker board.';
 const MAX_GOALS_PER_GROUP = 100;
@@ -167,6 +168,12 @@ const getGoals = async (req, res) => {
       if (list) list.push(goal);
     }
 
+    // Who owns each group in THIS month — the same fact the Board tab shows on
+    // the same group, resolved through the same service so the two tabs cannot
+    // disagree about it. Resolved against the requested month, not today's, so
+    // looking back at March credits whoever held the group in March.
+    const ownerDisplay = await resolveOwnerDisplay(groups, month, ctx.org);
+
     const groupPayloads = groups.map((g) => {
       const rows = (byGroup.get(String(g._id)) || []).map((goal) => {
         const decorated = decorate(goal, columns);
@@ -179,6 +186,7 @@ const getGoals = async (req, res) => {
         _id: String(g._id),
         name: g.name,
         order: g.order,
+        ...(ownerDisplay.get(String(g._id)) || EMPTY_OWNER_DISPLAY),
         goals: rows,
         summary: scoreGroup(rows),
       };
