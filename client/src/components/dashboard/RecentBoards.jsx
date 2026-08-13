@@ -1,13 +1,25 @@
+import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Folder, FolderOpen, ArrowRight, Lock, Globe } from 'lucide-react';
 import { timeAgo } from '../../utils/dateUtils';
+import { loadBoardVisits, sortByRecentlyVisited } from '../../utils/boardVisits';
 
 /**
- * RecentBoards — dashboard card listing the most recently updated boards.
+ * RecentBoards — dashboard card listing the boards you opened most recently.
  * See Macan_Design.md Section 7.3.
  *
+ * "Recent" means YOUR last visit, not the board's `updatedAt`. The visit log is
+ * device-local (see `utils/boardVisits.js`); boards you have never opened fall
+ * in behind, keeping the server's `order asc, updatedAt desc` — which is also
+ * exactly what the card shows before you have visited anything.
+ *
+ * The log is read at render rather than watched: this card lives on its own
+ * route, so navigating back from a board remounts it with the visit already
+ * written.
+ *
  * Props:
- *   boards — array of Board objects (already sorted by updatedAt desc)
+ *   boards — array of Board objects, in the order the API returned them
+ *   orgId  — organisation the boards belong to; picks the visit-log bucket
  *   limit  — max rows to render (default 5)
  */
 
@@ -113,9 +125,12 @@ const EmptyBoards = () => (
   </div>
 );
 
-const RecentBoards = ({ boards = [], limit = 5 }) => {
+const RecentBoards = ({ boards = [], orgId = null, limit = 5 }) => {
   const navigate = useNavigate();
-  const visible = boards.slice(0, limit);
+  const visible = useMemo(
+    () => sortByRecentlyVisited(boards, loadBoardVisits(orgId)).slice(0, limit),
+    [boards, orgId, limit]
+  );
   const total = boards.length;
 
   return (

@@ -128,7 +128,7 @@ const DashboardPage = () => {
           {boardsLoading && boards.length === 0 ? (
             <SkeletonRecentBoards rows={4} />
           ) : (
-            <RecentBoards boards={boards} />
+            <RecentBoards boards={boards} orgId={orgId} />
           )}
         </div>
         <div className="flex flex-col gap-4 min-w-0 h-full">

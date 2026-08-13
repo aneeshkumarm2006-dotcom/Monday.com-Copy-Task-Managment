@@ -68,6 +68,7 @@ import MoveToMonthModal from '../components/board/MoveToMonthModal';
 import useBoardMonths from '../hooks/useBoardMonths';
 import { moveTasksToMonth } from '../services/monthService';
 import { findMonth, formatMonthKey } from '../utils/monthKeys';
+import { recordBoardVisit } from '../utils/boardVisits';
 import TrackersModal from '../components/board/delivery/TrackersModal';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
@@ -470,6 +471,21 @@ const BoardDetailPage = () => {
       );
     }
   }, [board, orgId, boards.length, fetchBoards]);
+
+  // Log the visit for the dashboard's "Recent Boards" card.
+  //
+  // Gated on `board` rather than on the route param: the store is filled from
+  // the permission-filtered board list, so a board being present here means the
+  // server already agreed this user may see it. Landing on a board you cannot
+  // read therefore records nothing.
+  //
+  // Keyed on the board's OWN organisation, not `currentOrg`, so the entry lands
+  // in the right bucket even if the org store is still hydrating.
+  useEffect(() => {
+    const visitOrgId = board?.organisation || orgId;
+    if (!board?._id || !visitOrgId) return;
+    recordBoardVisit(visitOrgId, board._id);
+  }, [board?._id, board?.organisation, orgId]);
 
   // Fetch groups + tasks for this board.
   //
