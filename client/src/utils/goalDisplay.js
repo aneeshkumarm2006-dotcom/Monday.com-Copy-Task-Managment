@@ -167,16 +167,24 @@ export const describeGoal = (draft, typeSpec) => {
   }
 };
 
-/** localStorage per-board view prefs, mirroring `deliveryPrefs.js`. */
+/**
+ * localStorage per-board view prefs, mirroring `deliveryPrefs.js`.
+ *
+ * Which groups are open is NOT in here. It used to be, and that is why the tab
+ * opened on whatever you happened to leave expanded weeks ago; it is now
+ * per-visit state in `GoalsTab`, the same as the Board tab. Old stored values
+ * are dropped on read so a stale array cannot be written back out.
+ */
 const PREFS_KEY = 'board:goals:prefs:';
 
 export const loadGoalPrefs = (boardId) => {
   try {
     const raw = localStorage.getItem(`${PREFS_KEY}${boardId}`);
     const parsed = raw ? JSON.parse(raw) : {};
-    return { collapsed: [], trendMonths: 12, showTrend: true, ...parsed };
+    delete parsed.collapsed;
+    return { trendMonths: 12, showTrend: true, ...parsed };
   } catch {
-    return { collapsed: [], trendMonths: 12, showTrend: true };
+    return { trendMonths: 12, showTrend: true };
   }
 };
 

@@ -81,6 +81,12 @@ const GoalsTab = ({
 
   useEffect(() => { fetchGoals(); }, [fetchGoals]);
 
+  // Drop the old board's rows the instant the board changes. Two reasons, and
+  // the second is the subtle one: the collapse-on-open effect below keys off
+  // `data`, so leaving the previous board's groups in state lets THEM satisfy
+  // the guard — and the board you actually navigated to opens fully expanded.
+  useEffect(() => { setData(null); }, [boardId]);
+
   useEffect(() => {
     goalService.getGoalTypes().then((d) => setTypes(d.types || [])).catch(() => setTypes([]));
   }, []);
@@ -107,15 +113,32 @@ const GoalsTab = ({
     [types]
   );
 
-  const collapsed = useMemo(() => new Set(prefs.collapsed || []), [prefs.collapsed]);
+  /**
+   * Collapse state, keyed by group id — in memory, deliberately NOT persisted.
+   *
+   * The Board tab opens every board on the "categories only" view and this is
+   * the same behaviour, built the same way: a guard remembering which board the
+   * initial collapse was applied to, so a quiet SSE refetch cannot slam shut a
+   * group the user just opened. Switching MONTH keeps your expansion, because
+   * following one group across months is the whole point of the month picker.
+   */
+  const [collapsed, setCollapsed] = useState(() => new Set());
+  const collapseAppliedFor = useRef(null);
+
+  useEffect(() => {
+    const loaded = data?.groups;
+    if (!loaded?.length || collapseAppliedFor.current === boardId) return;
+    collapseAppliedFor.current = boardId;
+    setCollapsed(new Set(loaded.map((g) => g._id)));
+  }, [data, boardId]);
 
   const toggleCollapse = (groupId) => {
-    const next = new Set(collapsed);
-    if (next.has(groupId)) next.delete(groupId);
-    else next.add(groupId);
-    const updated = { ...prefs, collapsed: [...next] };
-    setPrefs(updated);
-    saveGoalPrefs(boardId, updated);
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
   };
 
   const setTrendWindow = (m) => {
