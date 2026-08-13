@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react';
 import DeliveryCell from './DeliveryCell';
+import { NAME_COL_HOVER, ROW_HOVER_EDGE, ROW_HOVER_TRANSITION } from './rowHover';
 
 /**
  * The delivery matrix: clients down, periods across.
@@ -29,6 +30,8 @@ const DENSITY = {
 };
 
 const MAX_TRACK = 96;
+
+const NAME_COL_DIVIDER = '1px 0 0 var(--color-border)';
 
 /**
  * Wide columns when there are few periods, tight ones when there are many —
@@ -191,53 +194,59 @@ const DeliveryGrid = ({ tracker, periods, rows, density: densityKey = 'comfortab
         ))}
 
         {/* Body */}
-        {rows.map((row, ri) => (
-          <Fragment key={row.groupId}>
-            <div
-              role="rowheader"
-              className="font-body truncate"
-              title={row.groupName}
-              style={{
-                position: 'sticky',
-                left: 0,
-                zIndex: 1,
-                height: d.rowH,
-                display: 'flex',
-                alignItems: 'center',
-                paddingRight: 10,
-                fontSize: 12.5,
-                fontWeight: hover.row === ri ? 600 : 500,
-                color:
-                  hover.row === ri ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-                background: 'var(--color-bg-surface)',
-                boxShadow: '1px 0 0 var(--color-border)',
-              }}
-            >
-              {row.groupName}
-            </div>
-            {row.cells.map((cell, ci) => (
-              <DeliveryCell
-                key={cell.p}
-                cell={cell}
-                period={periods[ci]}
-                groupName={row.groupName}
-                targetCount={tracker.targetCount || 1}
-                density={d}
-                isFocused={focus.row === ri && focus.col === ci}
-                cellRef={refFor(ri, ci)}
-                onFocus={() => setFocus({ row: ri, col: ci })}
-                onHover={() => setHover({ row: ri, col: ci })}
-                onActivate={(e) =>
-                  onCellClick?.({
-                    cell,
-                    period: periods[ci],
-                    row,
-                    anchor: e.currentTarget,
-                  })}
-              />
-            ))}
-          </Fragment>
-        ))}
+        {rows.map((row, ri) => {
+          const rowHovered = hover.row === ri;
+          return (
+            <Fragment key={row.groupId}>
+              <div
+                role="rowheader"
+                className="font-body truncate"
+                title={row.groupName}
+                style={{
+                  position: 'sticky',
+                  left: 0,
+                  zIndex: 1,
+                  height: d.rowH,
+                  display: 'flex',
+                  alignItems: 'center',
+                  paddingRight: 10,
+                  fontSize: 12.5,
+                  fontWeight: rowHovered ? 600 : 500,
+                  color: rowHovered ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
+                  background: rowHovered ? NAME_COL_HOVER : 'var(--color-bg-surface)',
+                  boxShadow: rowHovered
+                    ? `${NAME_COL_DIVIDER}, ${ROW_HOVER_EDGE}`
+                    : NAME_COL_DIVIDER,
+                  transition: `${ROW_HOVER_TRANSITION}, color 130ms ease`,
+                }}
+              >
+                {row.groupName}
+              </div>
+              {row.cells.map((cell, ci) => (
+                <DeliveryCell
+                  key={cell.p}
+                  cell={cell}
+                  period={periods[ci]}
+                  groupName={row.groupName}
+                  targetCount={tracker.targetCount || 1}
+                  density={d}
+                  isFocused={focus.row === ri && focus.col === ci}
+                  rowHovered={rowHovered}
+                  cellRef={refFor(ri, ci)}
+                  onFocus={() => setFocus({ row: ri, col: ci })}
+                  onHover={() => setHover({ row: ri, col: ci })}
+                  onActivate={(e) =>
+                    onCellClick?.({
+                      cell,
+                      period: periods[ci],
+                      row,
+                      anchor: e.currentTarget,
+                    })}
+                />
+              ))}
+            </Fragment>
+          );
+        })}
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { cellStateMeta, requirementMeta } from '../../../utils/deliveryTrackers';
+import { ROW_HOVER_BAND, ROW_HOVER_EDGE, ROW_HOVER_TRANSITION } from './rowHover';
 
 /**
  * One square in the delivery grid.
@@ -36,6 +37,7 @@ const DeliveryCell = ({
   targetCount,
   density,
   isFocused,
+  rowHovered,
   onActivate,
   onFocus,
   onHover,
@@ -47,6 +49,13 @@ const DeliveryCell = ({
   const title = `${groupName} — ${period.ariaLabel} — ${outcome}`;
   const showCount = targetCount > 1 && cell.s !== 'off' && cell.s !== 'na';
 
+  const trackStyle = {
+    height: density.rowH,
+    background: rowHovered ? ROW_HOVER_BAND : 'transparent',
+    boxShadow: rowHovered ? ROW_HOVER_EDGE : 'none',
+    transition: ROW_HOVER_TRANSITION,
+  };
+
   // Nothing was due, so there is nothing to open. A non-interactive div keeps
   // these out of the tab order and out of arrow-key navigation.
   if (cell.s === 'off' || cell.s === 'na') {
@@ -56,7 +65,7 @@ const DeliveryCell = ({
         aria-label={`${groupName} — ${period.ariaLabel} — ${outcome}`}
         title={title}
         className="flex items-center justify-center"
-        style={{ height: density.rowH }}
+        style={trackStyle}
       >
         <span
           aria-hidden="true"
@@ -78,7 +87,7 @@ const DeliveryCell = ({
       : meta.fill;
 
   return (
-    <div role="gridcell" className="flex items-center justify-center" style={{ height: density.rowH }}>
+    <div role="gridcell" className="flex items-center justify-center" style={trackStyle}>
       <button
         ref={cellRef}
         type="button"
