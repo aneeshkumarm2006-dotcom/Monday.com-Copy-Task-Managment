@@ -1884,7 +1884,10 @@ const BoardDetailPage = () => {
           renders exactly as it did before this board type existed. */}
       {visibleTabs.length > 1 && (
         <div
-          className="mt-5 flex items-center gap-1 overflow-x-auto"
+          // Wraps rather than scrolls: a scroll container here hides tabs behind
+          // a gesture nobody knows to make, and on touch it steals the swipe.
+          // With four short tabs a second row is the honest fallback.
+          className="mt-5 flex flex-wrap items-center gap-1"
           role="tablist"
           aria-label="Board views"
           style={{ borderBottom: '1px solid var(--color-border)' }}
