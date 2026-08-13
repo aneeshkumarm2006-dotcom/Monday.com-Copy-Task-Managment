@@ -2,6 +2,17 @@ import { ChevronDown, ChevronRight, Plus, Target } from 'lucide-react';
 import GoalRow from './GoalRow';
 import GoalMobileCard from './GoalMobileCard';
 import ScoreRing from '../../ui/ScoreRing';
+import {
+  buildGoalGrid,
+  goalGridMinWidth,
+  stickyGutter,
+  stickyName,
+  stickyActions,
+  bandEdgeLeft,
+  bandEdgeRight,
+  headerAlignFor,
+  FROZEN_CELL_CLASS,
+} from './goalGrid';
 
 /**
  * One group's goals for the selected month.
@@ -26,17 +37,9 @@ const GoalGroupSection = ({
 }) => {
   const { summary = {}, goals = [] } = group;
 
-  // Flag gutter, name, start, target, actual, result, …extras, actions.
-  const gridTemplate = [
-    '24px',
-    'minmax(160px, 1.6fr)',
-    '96px',
-    '96px',
-    '110px',
-    'minmax(190px, 1.4fr)',
-    ...columns.map((c) => `minmax(${Math.max(90, c.width || 140)}px, 1fr)`),
-    '72px',
-  ].join(' ');
+  // Gutter, name, …extras, start, target, actual, result, actions — see goalGrid.
+  const gridTemplate = buildGoalGrid(columns);
+  const hasRequired = columns.some((c) => c.required);
 
   const headerCell = {
     padding: '8px 10px',
@@ -145,17 +148,33 @@ const GoalGroupSection = ({
           <>
             {/* Desktop grid */}
             <div className="hidden md:block" style={{ overflowX: 'auto' }}>
-              <div role="table" style={{ minWidth: 'max-content' }}>
-                <div role="row" style={{ display: 'grid', gridTemplateColumns: gridTemplate }}>
-                  <div role="columnheader" style={{ ...headerCell, padding: '8px 2px' }} />
-                  <div role="columnheader" style={headerCell}>Goal</div>
-                  <div role="columnheader" style={numberHeaderCell}>Start</div>
-                  <div role="columnheader" style={numberHeaderCell}>Target</div>
-                  <div role="columnheader" style={numberHeaderCell}>Actual</div>
-                  <div role="columnheader" style={headerCell}>Result</div>
+              <div role="table" style={{ minWidth: goalGridMinWidth(columns) }}>
+                <div
+                  role="row"
+                  className="bg-[color:var(--color-bg-surface)]"
+                  style={{ display: 'grid', gridTemplateColumns: gridTemplate }}
+                >
+                  <div
+                    role="columnheader"
+                    className={FROZEN_CELL_CLASS}
+                    style={{ ...headerCell, ...stickyGutter, padding: '8px 2px' }}
+                  />
+                  <div
+                    role="columnheader"
+                    className={FROZEN_CELL_CLASS}
+                    style={{ ...headerCell, ...stickyName, ...bandEdgeRight }}
+                  >
+                    Goal
+                  </div>
+                  {/* The board's own columns sit next to the name they describe. */}
                   {columns.map((col) => (
-                    <div key={col._id} role="columnheader" style={headerCell}>
-                      {col.name}
+                    <div
+                      key={col._id}
+                      role="columnheader"
+                      style={{ ...headerCell, justifyContent: headerAlignFor(col.type) }}
+                      title={col.name}
+                    >
+                      <span className="truncate">{col.name}</span>
                       {col.required && (
                         <span
                           aria-label="required"
@@ -167,7 +186,34 @@ const GoalGroupSection = ({
                       )}
                     </div>
                   ))}
-                  <div role="columnheader" style={headerCell} />
+                  {/* …and the scoring block is fenced off from them. */}
+                  <div
+                    role="columnheader"
+                    style={{ ...numberHeaderCell, ...bandEdgeLeft }}
+                    title="Where this goal stood at the start of the month"
+                  >
+                    Start
+                  </div>
+                  <div
+                    role="columnheader"
+                    style={numberHeaderCell}
+                    title="What it was aiming for"
+                  >
+                    Target
+                  </div>
+                  <div
+                    role="columnheader"
+                    style={numberHeaderCell}
+                    title="Where it actually landed — this is the cell you fill in"
+                  >
+                    Actual
+                  </div>
+                  <div role="columnheader" style={headerCell}>Result</div>
+                  <div
+                    role="columnheader"
+                    className={FROZEN_CELL_CLASS}
+                    style={{ ...headerCell, ...stickyActions, ...bandEdgeLeft }}
+                  />
                 </div>
 
                 {goals.map((goal) => (
@@ -187,6 +233,18 @@ const GoalGroupSection = ({
                 ))}
               </div>
             </div>
+
+            {/* The red asterisk in the headings, explained once per table rather
+                than only in a tooltip nobody hovers. */}
+            {hasRequired && (
+              <p
+                className="hidden md:block font-body px-3 py-2"
+                style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
+              >
+                <span style={{ color: 'var(--color-status-stuck)' }}>*</span>
+                {' '}has to be filled in before this month can be closed.
+              </p>
+            )}
 
             {/* Mobile cards — identical editors, stacked */}
             <div

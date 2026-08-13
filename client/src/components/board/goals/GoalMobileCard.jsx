@@ -89,7 +89,11 @@ const GoalMobileCard = ({
       </div>
 
       <div className="mt-2 flex flex-col gap-1">
-        <GoalProgressBar pct={c.pct} state={c.state} rawPct={c.rawPct} height={8} />
+        {/* No bar until there is something to draw — same rule as the desktop
+            row. The badge stays: on a card it is the only outcome on screen. */}
+        {typeof c.pct === 'number' && (
+          <GoalProgressBar pct={c.pct} state={c.state} rawPct={c.rawPct} height={8} />
+        )}
         <div className="flex items-center gap-2">
           <GoalOutcomeBadge state={c.state} rawPct={c.rawPct} />
           {missingLabels.length > 0 && (

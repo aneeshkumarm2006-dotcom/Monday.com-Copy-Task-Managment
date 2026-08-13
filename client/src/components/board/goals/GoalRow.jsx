@@ -5,6 +5,14 @@ import GoalOutcomeBadge from './GoalOutcomeBadge';
 import GoalSparkline from './GoalSparkline';
 import { cellComponentFor } from '../columns';
 import { weightLabel, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
+import {
+  stickyGutter,
+  stickyName,
+  stickyActions,
+  bandEdgeLeft,
+  bandEdgeRight,
+  FROZEN_CELL_CLASS,
+} from './goalGrid';
 
 /**
  * One goal, on desktop.
@@ -39,6 +47,8 @@ const GoalRow = ({
         ? 'rating'
         : 'number';
   const targetField = targetFieldOf(typeSpec, goal.type);
+  // The scorer leaves `pct` null for a goal nobody has reported on yet.
+  const reported = typeof c.pct === 'number';
 
   const actualFieldKey = usesDate ? 'actualDayKey' : 'actual';
 
@@ -69,11 +79,14 @@ const GoalRow = ({
   return (
     <div
       role="row"
-      className="hover:bg-[color:var(--color-bg-subtle)] transition-colors duration-100"
+      className="group hover:bg-[color:var(--color-bg-subtle)] transition-colors duration-100"
       style={{ display: 'grid', gridTemplateColumns: gridTemplate }}
     >
       {/* Flag gutter — an amber triangle when something required is missing. */}
-      <div style={{ ...cellStyle, justifyContent: 'center', padding: '8px 2px' }}>
+      <div
+        className={FROZEN_CELL_CLASS}
+        style={{ ...cellStyle, ...stickyGutter, justifyContent: 'center', padding: '8px 2px' }}
+      >
         {flaggedColumns.length > 0 && (
           <AlertTriangle
             size={14}
@@ -84,8 +97,19 @@ const GoalRow = ({
         )}
       </div>
 
-      {/* Name + the type in plain language */}
-      <div style={{ ...cellStyle, flexDirection: 'column', alignItems: 'flex-start', gap: 1 }}>
+      {/* Name + the type in plain language. Frozen: every number to the right of
+          it is meaningless without the name it belongs to still on screen. */}
+      <div
+        className={FROZEN_CELL_CLASS}
+        style={{
+          ...cellStyle,
+          ...stickyName,
+          ...bandEdgeRight,
+          flexDirection: 'column',
+          alignItems: 'flex-start',
+          gap: 1,
+        }}
+      >
         <span
           className="font-body font-medium truncate w-full"
           style={{ fontSize: 13, color: 'var(--color-text-primary)' }}
@@ -102,8 +126,38 @@ const GoalRow = ({
         </span>
       </div>
 
+      {/* Admin-defined extra columns, through the existing cell registry. These
+          describe the goal, so they sit beside its name, before the scoring. */}
+      {columns.map((col) => {
+        const Cell = cellComponentFor(col.type);
+        const value = goal.columnValues?.[col._id] ?? null;
+        const isMissing = missingFields.has(String(col._id));
+        return (
+          <div
+            key={col._id}
+            style={{
+              ...cellStyle,
+              border: isMissing ? '1.5px solid var(--color-status-stuck)' : undefined,
+              borderBottom: isMissing
+                ? '1.5px solid var(--color-status-stuck)'
+                : '1px solid var(--color-border)',
+              background: isMissing ? 'var(--color-status-stuck-bg)' : undefined,
+            }}
+            title={isMissing ? `${col.name} is required` : undefined}
+          >
+            <Cell
+              value={value}
+              column={col}
+              task={goal}
+              readOnly={!canTrack}
+              onChange={(v) => onPatch({ columnValues: { [col._id]: v } })}
+            />
+          </div>
+        );
+      })}
+
       {/* Start / Target — the promise, editable only by goal.manage */}
-      <div style={numberCellStyle}>
+      <div style={{ ...numberCellStyle, ...bandEdgeLeft }}>
         {hasBaselineField(typeSpec, goal.type) ? (
           <GoalValueCell
             value={goal.config?.baseline ?? null}
@@ -145,57 +199,55 @@ const GoalRow = ({
         />
       </div>
 
-      {/* Result: bar, badge, sparkline */}
+      {/* Result: bar, badge, sparkline — and NOTHING at all until a number has
+          been reported. An empty grey track plus a "Not reported" pill on every
+          unreported row is thirty rows of furniture saying what the Actual cell
+          beside it already says in one word, and it drowns the handful of rows
+          that do have a result. */}
       <div style={{ ...cellStyle, gap: 8 }}>
-        <div className="flex-1 min-w-0 flex flex-col gap-1">
-          <GoalProgressBar pct={c.pct} state={c.state} rawPct={c.rawPct} />
-          <div className="flex items-center gap-2">
-            <GoalOutcomeBadge state={c.state} rawPct={c.rawPct} />
-            {c.assumedBaseline && (
-              <span
-                className="font-body"
-                style={{ fontSize: 10, color: 'var(--color-text-muted)' }}
-                title="No starting point was set, so this is measured from zero."
-              >
-                from 0
-              </span>
-            )}
-          </div>
-        </div>
-        <GoalSparkline history={goal.history} goal={goal} />
+        {reported ? (
+          <>
+            <div className="flex-1 min-w-0 flex flex-col gap-1">
+              <GoalProgressBar pct={c.pct} state={c.state} rawPct={c.rawPct} />
+              <div className="flex items-center gap-2">
+                <GoalOutcomeBadge state={c.state} rawPct={c.rawPct} />
+                {c.assumedBaseline && (
+                  <span
+                    className="font-body"
+                    style={{ fontSize: 10, color: 'var(--color-text-muted)' }}
+                    title="No starting point was set, so this is measured from zero."
+                  >
+                    from 0
+                  </span>
+                )}
+              </div>
+            </div>
+            <GoalSparkline history={goal.history} goal={goal} />
+          </>
+        ) : (
+          <span
+            className="font-body"
+            style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+            title="Nothing reported for this goal yet"
+          >
+            —
+          </span>
+        )}
       </div>
 
-      {/* Admin-defined extra columns, through the existing cell registry */}
-      {columns.map((col) => {
-        const Cell = cellComponentFor(col.type);
-        const value = goal.columnValues?.[col._id] ?? null;
-        const isMissing = missingFields.has(String(col._id));
-        return (
-          <div
-            key={col._id}
-            style={{
-              ...cellStyle,
-              border: isMissing ? '1.5px solid var(--color-status-stuck)' : undefined,
-              borderBottom: isMissing
-                ? '1.5px solid var(--color-status-stuck)'
-                : '1px solid var(--color-border)',
-              background: isMissing ? 'var(--color-status-stuck-bg)' : undefined,
-            }}
-            title={isMissing ? `${col.name} is required` : undefined}
-          >
-            <Cell
-              value={value}
-              column={col}
-              task={goal}
-              readOnly={!canTrack}
-              onChange={(v) => onPatch({ columnValues: { [col._id]: v } })}
-            />
-          </div>
-        );
-      })}
-
-      {/* Row actions */}
-      <div style={{ ...cellStyle, gap: 4, justifyContent: 'flex-end' }}>
+      {/* Row actions — frozen to the right edge, so they stay reachable on a
+          board with enough extra columns to overflow the viewport. */}
+      <div
+        className={FROZEN_CELL_CLASS}
+        style={{
+          ...cellStyle,
+          ...stickyActions,
+          ...bandEdgeLeft,
+          padding: '8px 6px',
+          gap: 2,
+          justifyContent: 'flex-end',
+        }}
+      >
         {canManage && (
           <>
             <button
