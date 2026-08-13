@@ -76,6 +76,23 @@ const GoalRow = ({
   // three figures line up as one row of numbers instead of three ragged edges.
   const numberCellStyle = { ...cellStyle, justifyContent: 'center' };
 
+  // A required-but-empty extra column, outlined in red.
+  //
+  // LONGHANDS ONLY — never a `border` shorthand here. Spreading `cellStyle` and
+  // then naming `borderBottom` again does NOT move that key to the end: it keeps
+  // the position it had in `cellStyle`, so any `border` key written afterwards
+  // is applied LAST. React writes an undefined style value as `style.border = ''`,
+  // and clearing the shorthand clears `border-bottom` with it — which silently
+  // erased the row separator from every extra column, on every row, while the
+  // name and scoring cells (which never mention `border`) kept theirs.
+  const missingCellStyle = {
+    borderTop: '1.5px solid var(--color-status-stuck)',
+    borderRight: '1.5px solid var(--color-status-stuck)',
+    borderBottom: '1.5px solid var(--color-status-stuck)',
+    borderLeft: '1.5px solid var(--color-status-stuck)',
+    background: 'var(--color-status-stuck-bg)',
+  };
+
   return (
     <div
       role="row"
@@ -135,14 +152,7 @@ const GoalRow = ({
         return (
           <div
             key={col._id}
-            style={{
-              ...cellStyle,
-              border: isMissing ? '1.5px solid var(--color-status-stuck)' : undefined,
-              borderBottom: isMissing
-                ? '1.5px solid var(--color-status-stuck)'
-                : '1px solid var(--color-border)',
-              background: isMissing ? 'var(--color-status-stuck-bg)' : undefined,
-            }}
+            style={{ ...cellStyle, ...(isMissing ? missingCellStyle : null) }}
             title={isMissing ? `${col.name} is required` : undefined}
           >
             <Cell
