@@ -1,7 +1,10 @@
-import { ChevronDown, ChevronRight, Plus, Target } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Plus, Target } from 'lucide-react';
 import GoalRow from './GoalRow';
 import GoalMobileCard from './GoalMobileCard';
 import ScoreRing from '../../ui/ScoreRing';
+import useOrgStore from '../../../store/orgStore';
+import { sortGoals, nextGoalSort, columnSortKey } from '../../../utils/goalSort';
 import {
   buildGoalGrid,
   goalGridMinWidth,
@@ -14,12 +17,77 @@ import {
   FROZEN_CELL_CLASS,
 } from './goalGrid';
 
+const headerCell = {
+  padding: '8px 10px',
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: '0.04em',
+  textTransform: 'uppercase',
+  color: 'var(--color-text-secondary)',
+  borderBottom: '1px solid var(--color-border)',
+  display: 'flex',
+  alignItems: 'center',
+  minWidth: 0,
+};
+
+// The three number columns are centred — heading over value — so start,
+// target and actual read as one row of figures rather than three ragged edges.
+const numberHeaderCell = { ...headerCell, justifyContent: 'center' };
+
+/**
+ * A clickable column heading.
+ *
+ * Hoisted to module scope rather than defined inside the section: a component
+ * created during render is a new type on every pass, so React would throw the
+ * heading away and rebuild it on each keystroke happening anywhere in the table.
+ */
+const SortHead = ({ label, columnKey, sort, onSort, style, hint, suffix, className }) => {
+  const active = sort.key === columnKey;
+  const Arrow = active && sort.dir === 'desc' ? ArrowDown : ArrowUp;
+
+  return (
+    <div
+      role="columnheader"
+      aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className={className}
+      style={{ ...style, color: active ? 'var(--color-accent)' : style.color }}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(columnKey)}
+        title={
+          active
+            ? (sort.dir === 'asc' ? `Sorted by ${label}, low to high` : `Sorted by ${label}, high to low`)
+            : (hint || `Sort by ${label}`)
+        }
+        className="inline-flex items-center gap-1 min-w-0 hover:text-[color:var(--color-text-primary)]"
+        // `text-transform` and `letter-spacing` are restated rather than
+        // inherited: the CSS reset sets `text-transform: none` on buttons, which
+        // beats inheritance and would silently un-capitalise every heading the
+        // moment it became clickable.
+        style={{ cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.04em' }}
+      >
+        <span className="truncate">{label}</span>
+        {suffix}
+        <Arrow
+          size={11}
+          aria-hidden="true"
+          className="shrink-0"
+          style={{ opacity: active ? 1 : 0.25 }}
+        />
+      </button>
+    </div>
+  );
+};
+
 /**
  * One group's goals for the selected month.
  *
  * Collapsible, with the group's own weighted score as a ring in the header —
  * deliberately the same shape and rhythm as the board's task groups, so the
- * Goals tab reads as the same board rather than a different product.
+ * Goals tab reads as the same board rather than a different product. Column
+ * sorting follows the same rule for the same reason: click a heading for
+ * ascending, again for descending, a third time for the board's own order.
  */
 const GoalGroupSection = ({
   group,
@@ -41,22 +109,29 @@ const GoalGroupSection = ({
   const gridTemplate = buildGoalGrid(columns);
   const hasRequired = columns.some((c) => c.required);
 
-  const headerCell = {
-    padding: '8px 10px',
-    fontSize: 11,
-    fontWeight: 600,
-    letterSpacing: '0.04em',
-    textTransform: 'uppercase',
-    color: 'var(--color-text-secondary)',
-    borderBottom: '1px solid var(--color-border)',
-    display: 'flex',
-    alignItems: 'center',
-    minWidth: 0,
-  };
+  // Per group, exactly like the board's per-group task table: sorting one
+  // client's goals is a question about that client, not about the whole month.
+  const [sort, setSort] = useState({ key: null, dir: 'asc' });
+  const handleSort = useCallback(
+    (key) => setSort((prev) => nextGoalSort(prev, key)),
+    []
+  );
 
-  // The three number columns are centred — heading over value — so start,
-  // target and actual read as one row of figures rather than three ragged edges.
-  const numberHeaderCell = { ...headerCell, justifyContent: 'center' };
+  const members = useOrgStore((s) => s.members || []);
+  const personName = useCallback(
+    (id) => members.find((m) => String(m._id || m.id) === String(id))?.name || '',
+    [members]
+  );
+
+  const columnsById = useMemo(
+    () => Object.fromEntries(columns.map((c) => [String(c._id), c])),
+    [columns]
+  );
+
+  const sortedGoals = useMemo(
+    () => sortGoals(goals, sort.key, sort.dir, { typesByKey, columnsById, personName }),
+    [goals, sort, typesByKey, columnsById, personName]
+  );
 
   return (
     <section
@@ -159,56 +234,67 @@ const GoalGroupSection = ({
                     className={FROZEN_CELL_CLASS}
                     style={{ ...headerCell, ...stickyGutter, padding: '8px 2px' }}
                   />
-                  <div
-                    role="columnheader"
+                  <SortHead
+                    label="Goal"
+                    columnKey="name"
+                    sort={sort}
+                    onSort={handleSort}
                     className={FROZEN_CELL_CLASS}
                     style={{ ...headerCell, ...stickyName, ...bandEdgeRight }}
-                  >
-                    Goal
-                  </div>
+                  />
                   {/* The board's own columns sit next to the name they describe. */}
                   {columns.map((col) => (
-                    <div
+                    <SortHead
                       key={col._id}
-                      role="columnheader"
+                      label={col.name}
+                      columnKey={columnSortKey(col)}
+                      sort={sort}
+                      onSort={handleSort}
                       style={{ ...headerCell, justifyContent: headerAlignFor(col.type) }}
-                      title={col.name}
-                    >
-                      <span className="truncate">{col.name}</span>
-                      {col.required && (
+                      suffix={col.required ? (
                         <span
                           aria-label="required"
                           title="Required before the month can be closed"
-                          style={{ color: 'var(--color-status-stuck)', marginLeft: 3 }}
+                          style={{ color: 'var(--color-status-stuck)' }}
                         >
                           *
                         </span>
-                      )}
-                    </div>
+                      ) : null}
+                    />
                   ))}
                   {/* …and the scoring block is fenced off from them. */}
-                  <div
-                    role="columnheader"
+                  <SortHead
+                    label="Start"
+                    columnKey="start"
+                    sort={sort}
+                    onSort={handleSort}
                     style={{ ...numberHeaderCell, ...bandEdgeLeft }}
-                    title="Where this goal stood at the start of the month"
-                  >
-                    Start
-                  </div>
-                  <div
-                    role="columnheader"
+                    hint="Where this goal stood at the start of the month — click to sort"
+                  />
+                  <SortHead
+                    label="Target"
+                    columnKey="target"
+                    sort={sort}
+                    onSort={handleSort}
                     style={numberHeaderCell}
-                    title="What it was aiming for"
-                  >
-                    Target
-                  </div>
-                  <div
-                    role="columnheader"
+                    hint="What it was aiming for — click to sort"
+                  />
+                  <SortHead
+                    label="Actual"
+                    columnKey="actual"
+                    sort={sort}
+                    onSort={handleSort}
                     style={numberHeaderCell}
-                    title="Where it actually landed — this is the cell you fill in"
-                  >
-                    Actual
-                  </div>
-                  <div role="columnheader" style={headerCell}>Result</div>
+                    hint="Where it actually landed — click to sort"
+                  />
+                  <SortHead
+                    label="Result"
+                    columnKey="result"
+                    sort={sort}
+                    onSort={handleSort}
+                    style={headerCell}
+                    hint="How the month went — click to sort worst first"
+                  />
                   <div
                     role="columnheader"
                     className={FROZEN_CELL_CLASS}
@@ -216,7 +302,7 @@ const GoalGroupSection = ({
                   />
                 </div>
 
-                {goals.map((goal) => (
+                {sortedGoals.map((goal) => (
                   <GoalRow
                     key={goal._id}
                     goal={goal}
@@ -251,7 +337,7 @@ const GoalGroupSection = ({
               className="md:hidden flex flex-col gap-3 p-3"
               style={{ borderTop: '1px solid var(--color-border)' }}
             >
-              {goals.map((goal) => (
+              {sortedGoals.map((goal) => (
                 <GoalMobileCard
                   key={goal._id}
                   goal={goal}

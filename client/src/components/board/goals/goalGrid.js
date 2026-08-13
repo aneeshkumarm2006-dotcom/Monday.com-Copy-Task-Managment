@@ -31,7 +31,9 @@ const ACTIONS_W = 56;
  * survive the squeeze; the extras get a floor that fits a five-figure number and
  * a share of the slack, not a share of the whole row.
  */
-const FIXED_W = { start: 78, target: 78, actual: 92, result: 168 };
+// Start and Target carry a sort arrow beside a six-letter heading; at 78px
+// "TARGET" truncated to "TARG…" the moment the column became clickable.
+const FIXED_W = { start: 86, target: 86, actual: 92, result: 168 };
 
 const extraW = (c) => Math.max(92, Math.min(c.width || 116, 220));
 
