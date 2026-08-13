@@ -3,7 +3,7 @@ import GoalValueCell from './GoalValueCell';
 import GoalProgressBar from './GoalProgressBar';
 import GoalOutcomeBadge from './GoalOutcomeBadge';
 import { cellComponentFor } from '../columns';
-import { formatGoalValue } from '../../../utils/goalDisplay';
+import { formatGoalValue, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
 
 /**
  * One goal, stacked, below 768px.
@@ -32,21 +32,28 @@ const Field = ({ label, children }) => (
 );
 
 const GoalMobileCard = ({
-  goal, columns = [], typeSpec, canTrack, canManage, onPatch, onEdit, onDelete,
+  goal, columns = [], typeSpec, canTrack, canManage, monthClosable = false, onPatch, onEdit, onDelete,
 }) => {
   const c = goal.computed || {};
-  const usesDate = typeSpec?.actualField?.key === 'actualDayKey';
+  const usesDate = (typeSpec?.actualField?.key || (goal.type === 'deadline' ? 'actualDayKey' : 'actual')) === 'actualDayKey';
+  const actualFieldKey = usesDate ? 'actualDayKey' : 'actual';
   const actualKind = usesDate
     ? 'date'
     : goal.type === 'boolean' ? 'boolean'
       : goal.type === 'rating' ? 'rating' : 'number';
-  const missingFields = new Set((goal.missing || []).map((m) => m.field));
+  // Same rule as the desktop row: a blank is only "missing" once the month is
+  // over, and the flags are the same flags.
+  const missingFields = new Set(
+    monthClosable ? (goal.missing || []).map((m) => m.field) : []
+  );
+  const missingLabels = monthClosable ? (goal.missing || []).map((m) => m.label) : [];
 
-  const targetValue =
-    goal.type === 'checklist' ? goal.config?.total
-      : goal.type === 'threshold' ? goal.config?.limit
-        : goal.type === 'deadline' ? goal.config?.dueDayKey
-          : goal.config?.target;
+  const targetField = targetFieldOf(typeSpec, goal.type);
+  const targetValue = targetField ? goal.config?.[targetField.key] : undefined;
+  const baselineSet = hasBaselineField(typeSpec, goal.type)
+    && goal.config?.baseline !== undefined
+    && goal.config?.baseline !== null
+    && goal.config?.baseline !== '';
 
   return (
     <div
@@ -85,13 +92,13 @@ const GoalMobileCard = ({
         <GoalProgressBar pct={c.pct} state={c.state} rawPct={c.rawPct} height={8} />
         <div className="flex items-center gap-2">
           <GoalOutcomeBadge state={c.state} rawPct={c.rawPct} />
-          {(goal.missing || []).length > 0 && (
+          {missingLabels.length > 0 && (
             <span
               className="inline-flex items-center gap-1 font-body"
               style={{ fontSize: 11, color: 'var(--color-status-working)' }}
             >
               <AlertTriangle size={12} aria-hidden="true" />
-              needs {goal.missing.map((m) => m.label).join(', ')}
+              needs {missingLabels.join(', ')}
             </span>
           )}
         </div>
@@ -104,23 +111,29 @@ const GoalMobileCard = ({
             goal={goal}
             kind={actualKind}
             readOnly={!canTrack}
-            required={missingFields.has(usesDate ? 'actualDayKey' : 'actual')}
+            required={missingFields.has(actualFieldKey)}
             placeholder="Not yet"
-            onChange={(v) => onPatch(usesDate ? { actualDayKey: v } : { actual: v })}
+            onChange={(v) => onPatch({ [actualFieldKey]: v })}
           />
         </Field>
-        {goal.config?.baseline !== undefined && goal.config?.baseline !== null && (
+        {baselineSet && (
           <Field label="Started at">
             <span className="font-body" style={{ fontSize: 13 }}>
               {formatGoalValue(goal.config.baseline, goal)}
             </span>
           </Field>
         )}
-        <Field label="Aiming for">
-          <span className="font-body" style={{ fontSize: 13 }}>
-            {usesDate ? (targetValue || '—') : formatGoalValue(targetValue, goal)}
-          </span>
-        </Field>
+        {/* No row at all for a type that promises no number — "Aiming for —"
+            under "Did we do it?" is a question the goal never asked. */}
+        {targetField && (
+          <Field label="Aiming for">
+            <span className="font-body" style={{ fontSize: 13 }}>
+              {targetField.kind === 'date'
+                ? (targetValue || '—')
+                : formatGoalValue(targetValue ?? null, goal)}
+            </span>
+          </Field>
+        )}
         {columns.map((col) => {
           const Cell = cellComponentFor(col.type);
           return (

@@ -18,6 +18,7 @@ const GoalGroupSection = ({
   onToggleCollapse,
   canTrack,
   canManage,
+  monthClosable = false,
   onPatch,
   onEdit,
   onDelete,
@@ -49,6 +50,10 @@ const GoalGroupSection = ({
     alignItems: 'center',
     minWidth: 0,
   };
+
+  // The three number columns are centred — heading over value — so start,
+  // target and actual read as one row of figures rather than three ragged edges.
+  const numberHeaderCell = { ...headerCell, justifyContent: 'center' };
 
   return (
     <section
@@ -144,9 +149,9 @@ const GoalGroupSection = ({
                 <div role="row" style={{ display: 'grid', gridTemplateColumns: gridTemplate }}>
                   <div role="columnheader" style={{ ...headerCell, padding: '8px 2px' }} />
                   <div role="columnheader" style={headerCell}>Goal</div>
-                  <div role="columnheader" style={headerCell}>Start</div>
-                  <div role="columnheader" style={headerCell}>Target</div>
-                  <div role="columnheader" style={headerCell}>Actual</div>
+                  <div role="columnheader" style={numberHeaderCell}>Start</div>
+                  <div role="columnheader" style={numberHeaderCell}>Target</div>
+                  <div role="columnheader" style={numberHeaderCell}>Actual</div>
                   <div role="columnheader" style={headerCell}>Result</div>
                   {columns.map((col) => (
                     <div key={col._id} role="columnheader" style={headerCell}>
@@ -174,6 +179,7 @@ const GoalGroupSection = ({
                     gridTemplate={gridTemplate}
                     canTrack={canTrack}
                     canManage={canManage}
+                    monthClosable={monthClosable}
                     onPatch={(patch) => onPatch(goal, patch)}
                     onEdit={onEdit}
                     onDelete={onDelete}
@@ -195,6 +201,7 @@ const GoalGroupSection = ({
                   typeSpec={typesByKey[goal.type]}
                   canTrack={canTrack}
                   canManage={canManage}
+                  monthClosable={monthClosable}
                   onPatch={(patch) => onPatch(goal, patch)}
                   onEdit={onEdit}
                   onDelete={onDelete}

@@ -236,6 +236,25 @@ test('the board score averages GROUPS, skipping ones that scored nothing', () =>
   assert.strictEqual(b.counts.partial, 1);
 });
 
+test('a group with no goals is counted as empty, not as one still to report', () => {
+  const b = scoreBoard([
+    scoreGroup([goal({ config: { baseline: 0, target: 100 }, actual: 100 })]),
+    scoreGroup([goal({ config: { target: 10 }, actual: null })]), // waiting on somebody
+    scoreGroup([]), // never set any up
+    scoreGroup([]),
+  ]);
+  assert.strictEqual(b.groupsEmpty, 2);
+  assert.strictEqual(b.groupsScored, 1);
+  // groupsTotal - groupsEmpty - groupsScored is the number genuinely awaited.
+  assert.strictEqual(b.groupsTotal - b.groupsEmpty - b.groupsScored, 1);
+});
+
+test('an all-empty board reports its empty groups too', () => {
+  const b = scoreBoard([scoreGroup([]), scoreGroup([])]);
+  assert.strictEqual(b.state, 'empty');
+  assert.strictEqual(b.groupsEmpty, 2);
+});
+
 // ---------------------------------------------------------------------------
 // Closing a month
 // ---------------------------------------------------------------------------

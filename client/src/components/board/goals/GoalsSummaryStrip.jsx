@@ -16,6 +16,17 @@ const GoalsSummaryStrip = ({ summary, monthLabel }) => {
   const counts = summary.counts || {};
   const reported = summary.totalGoals - (counts.untracked || 0);
 
+  // Two different sentences, and they were being told as one. A group holding
+  // unreported goals is waiting on somebody; a group with no goals at all is
+  // not — and on a board where most groups have never set any up, "24 groups
+  // not counted yet" reads as twenty-four teams being late.
+  const groupsEmpty = summary.groupsEmpty || 0;
+  const groupsAwaiting = Math.max(
+    0,
+    (summary.groupsTotal || 0) - groupsEmpty - (summary.groupsScored || 0)
+  );
+  const plural = (n) => (n === 1 ? '' : 's');
+
   return (
     <div
       className="flex flex-col sm:flex-row sm:items-center gap-4 p-4"
@@ -39,10 +50,14 @@ const GoalsSummaryStrip = ({ summary, monthLabel }) => {
               ? 'No goals yet'
               : `${reported} of ${summary.totalGoals} goal${summary.totalGoals === 1 ? '' : 's'} reported`}
           </p>
-          {summary.groupsScored < summary.groupsTotal && summary.groupsTotal > 0 && (
+          {groupsAwaiting > 0 && (
             <p className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-              {summary.groupsTotal - summary.groupsScored} group
-              {summary.groupsTotal - summary.groupsScored === 1 ? '' : 's'} not counted yet
+              {groupsAwaiting} group{plural(groupsAwaiting)} still to report
+            </p>
+          )}
+          {groupsEmpty > 0 && (
+            <p className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+              {groupsEmpty} group{plural(groupsEmpty)} {groupsEmpty === 1 ? 'has' : 'have'} no goals yet
             </p>
           )}
         </div>

@@ -45,11 +45,16 @@ const GoalValueCell = ({
       if (next !== (value ?? null)) onChange?.(next);
       return;
     }
-    if (draft === '') {
+    // Trimmed, because `Number(' ')` is 0 — an all-whitespace draft must read as
+    // "nothing typed", never as a reported result of zero.
+    const typed = draft.trim();
+    if (typed === '') {
       if (!isEmpty) {
         if (required) {
-          // Clearing a required cell is the one edit that is refused outright.
-          // The server rejects it too; this is the courteous version.
+          // Clearing a value the month is already waiting on is refused here,
+          // in the UI. The server does NOT reject it — un-reporting a mistake
+          // has to stay possible — so this is a guard rail on the one screen
+          // where wiping a number is almost always a slip, not an intention.
           setError('This one is required — clear it and the month can’t be closed.');
           return;
         }
@@ -57,7 +62,7 @@ const GoalValueCell = ({
       }
       return;
     }
-    const num = Number(draft);
+    const num = Number(typed);
     if (!Number.isFinite(num)) {
       setError('That needs to be a number.');
       return;
@@ -122,6 +127,7 @@ const GoalValueCell = ({
         style={{
           fontSize: 13,
           padding: '4px 6px',
+          textAlign: align === 'center' ? 'center' : undefined,
           border: `1px solid ${flagged ? 'var(--color-status-stuck)' : 'var(--color-border)'}`,
           borderRadius: 'var(--radius-sm)',
           background: 'var(--color-bg-input)',
@@ -147,6 +153,7 @@ const GoalValueCell = ({
         style={{
           fontSize: 13,
           padding: '4px 6px',
+          textAlign: align === 'center' ? 'center' : undefined,
           border: `1px solid ${flagged ? 'var(--color-status-stuck)' : 'var(--color-border)'}`,
           borderRadius: 'var(--radius-sm)',
           background: 'var(--color-bg-input)',

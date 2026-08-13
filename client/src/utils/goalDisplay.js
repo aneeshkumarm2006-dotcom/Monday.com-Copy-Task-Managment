@@ -76,6 +76,48 @@ export const formatGoalValue = (value, goal) => {
 };
 
 /**
+ * Which config field the Start and Target columns edit, per goal type.
+ *
+ * One table, used by the desktop row AND the mobile card, because they were
+ * each carrying their own copy of the same `checklist → total, threshold →
+ * limit, deadline → dueDayKey` switch and two copies of a mapping is one copy
+ * too many.
+ *
+ * `null` is a real answer, and the important one: "Did we do it?" and "Judge it
+ * manually" promise NO number, so their Target cell must render as a dash you
+ * cannot type into. It used to be an editable number cell writing `config.target`
+ * — a field neither scorer ever reads, so the value simply vanished.
+ */
+const TARGET_KEY_BY_TYPE = {
+  numeric: 'target',
+  checklist: 'total',
+  threshold: 'limit',
+  deadline: 'dueDayKey',
+};
+
+const BASELINE_TYPES = ['numeric', 'threshold'];
+
+/**
+ * Both helpers take the server's type spec but fall back to the goal's own type
+ * key, so a row still renders correctly in the moment before `GET /api/goal-types`
+ * comes back — or at all, if it fails.
+ */
+export const targetFieldOf = (typeSpec, type) => {
+  const key = TARGET_KEY_BY_TYPE[typeSpec?.key || type];
+  if (!key) return null;
+  const field = (typeSpec?.configFields || []).find((f) => f.key === key);
+  return {
+    key,
+    kind: (field?.type || (key === 'dueDayKey' ? 'date' : 'number')) === 'date' ? 'date' : 'number',
+    label: field?.label || 'Target',
+  };
+};
+
+export const hasBaselineField = (typeSpec, type) =>
+  (typeSpec?.configFields || []).some((f) => f.key === 'baseline')
+  || (!typeSpec && BASELINE_TYPES.includes(type));
+
+/**
  * The boolean and rating types store their result as a number so every type can
  * share one field. These turn that back into what the user actually picked.
  */

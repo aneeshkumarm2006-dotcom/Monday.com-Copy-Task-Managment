@@ -240,6 +240,9 @@ const GoalsTab = ({
               onToggleCollapse={() => toggleCollapse(group._id)}
               canTrack={canTrack}
               canManage={canManage}
+              // The rows only paint their blanks red once the month is over and
+              // genuinely owes numbers — the same flag the banner above runs on.
+              monthClosable={!!unclosed}
               onPatch={patchGoal}
               onEdit={(goal) => { setFormErrors([]); setFormFor({ group, goal }); }}
               onDelete={setPendingDelete}

@@ -206,6 +206,26 @@ const getGoals = async (req, res) => {
   }
 };
 
+/**
+ * A config with its blanks REMOVED rather than stored as empty strings.
+ *
+ * The add-a-goal form sends `''` for a number field the user cleared, and the
+ * inline cells send `null`. Both mean "not set", and both must land as an ABSENT
+ * key — `isNum('')` is false, so an empty string scores as a missing baseline
+ * anyway, and letting it persist leaves the row's own config disagreeing with
+ * every check that asks whether the field is there. A real 0 is a value and
+ * survives; only genuinely empty entries are dropped.
+ */
+const cleanConfig = (config) => {
+  if (!config || typeof config !== 'object') return {};
+  const out = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (value === null || value === undefined || value === '') continue;
+    out[key] = value;
+  }
+  return out;
+};
+
 /** Validate and normalise the writable parts of a goal payload. */
 const buildGoalPatch = (body, board, { partial = false } = {}) => {
   const patch = {};
@@ -230,7 +250,7 @@ const buildGoalPatch = (body, board, { partial = false } = {}) => {
   }
 
   if (body.config !== undefined) {
-    patch.config = body.config && typeof body.config === 'object' ? body.config : {};
+    patch.config = cleanConfig(body.config);
   }
 
   if (body.unit !== undefined) {
@@ -260,6 +280,19 @@ const buildGoalPatch = (body, board, { partial = false } = {}) => {
   }
 
   return { patch, errors };
+};
+
+/**
+ * A unit belongs to the goal's TYPE, not to whoever last touched the form.
+ *
+ * "Did we do it?", a checklist, a deadline and a rating have nothing to put a
+ * unit on, so switching a currency goal to one of them must drop the unit with
+ * it — otherwise a list of eight blog posts starts reporting itself as $8.
+ */
+const applyUnitRules = (patch, type) => {
+  if (!isGoalType(type) || getGoalType(type).supportsUnit) return;
+  patch.unit = 'none';
+  patch.unitLabel = '';
 };
 
 /** Validate the result fields, which `goal.track` may write on their own. */
@@ -356,6 +389,7 @@ const createGoal = async (req, res) => {
     if (patch.type) {
       const configError = getGoalType(patch.type).validateConfig(patch.config || {});
       if (configError) errors.push({ field: 'config', message: configError });
+      applyUnitRules(patch, patch.type);
     }
 
     const columnValues = mergedColumnValues({}, body.columnValues);
@@ -365,14 +399,15 @@ const createGoal = async (req, res) => {
     const last = await Goal.findOne({ board: board._id, group: body.group, monthKey: body.monthKey })
       .sort({ order: -1 }).select('order').lean();
 
-    const result = buildResultPatch(body, patch.type);
-    if (result.errors.length > 0) {
-      return res.status(422).json({ error: result.errors[0].message, errors: result.errors });
-    }
-
+    // A brand-new goal is a PROMISE, never a result: `actual` / `actualDayKey`
+    // stay null until somebody reports the month, which is what makes the row
+    // read "Not yet" and keeps it out of the reported count. A result sent at
+    // creation time is dropped rather than honoured — reporting is `goal.track`
+    // work and goes through PUT /api/goals/:id.
     const goal = await Goal.create({
       ...patch,
-      ...result.patch,
+      actual: null,
+      actualDayKey: null,
       board: board._id,
       organisation: board.organisation,
       group: body.group,
@@ -412,12 +447,16 @@ const updateGoal = async (req, res) => {
 
     const { patch, errors } = buildGoalPatch(body, board, { partial: true });
     const effectiveType = patch.type || goal.type;
+    // The form re-sends `type` on every edit, so "was it touched" is not the
+    // question — "did it actually change" is.
+    const typeChanged = patch.type !== undefined && patch.type !== goal.type;
 
     if (patch.config !== undefined || patch.type !== undefined) {
       const config = patch.config !== undefined ? patch.config : goal.config;
       const configError = getGoalType(effectiveType).validateConfig(config || {});
       if (configError) errors.push({ field: 'config', message: configError });
     }
+    applyUnitRules(patch, effectiveType);
 
     const result = buildResultPatch(body, effectiveType);
     errors.push(...result.errors);
@@ -430,7 +469,17 @@ const updateGoal = async (req, res) => {
 
     if (errors.length > 0) return res.status(422).json({ error: errors[0].message, errors });
 
-    Object.assign(goal, patch, result.patch);
+    Object.assign(goal, patch);
+    // A result belongs to the goal it was recorded against. Change the KIND of
+    // goal and the old number stops meaning anything: 4,200 recorded against
+    // "move a number" is not a Yes/No answer, and the boolean scorer would read
+    // it as a silent "No" rather than as the unanswered question it now is. The
+    // same request may supply a fresh result, which wins.
+    if (typeChanged) {
+      goal.actual = null;
+      goal.actualDayKey = null;
+    }
+    Object.assign(goal, result.patch);
     if (columnValues) goal.columnValues = columnValues;
     goal.updatedBy = req.user.userId;
     await goal.save();

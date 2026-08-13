@@ -213,7 +213,11 @@ const GOAL_TYPES = {
     ],
     // A day key, not a number — which is exactly why `Goal.actualDayKey` exists
     // as its own field rather than being crammed into `actual`.
-    actualField: { key: 'actualDayKey', label: 'When was it done?', help: 'Leave blank if it never shipped.', type: 'date' },
+    // "Leave blank until it ships", NOT "leave blank if it never shipped": a
+    // blank day key is `untracked`, and `missingFinalValues` keeps the month
+    // open until it is filled in. Blank is an unanswered question here, exactly
+    // as it is for every other type — it is not a way to record a miss.
+    actualField: { key: 'actualDayKey', label: 'When was it done?', help: 'Leave blank until it ships.', type: 'date' },
     validateConfig: (c) =>
       isDayKey(c?.dueDayKey) ? null : 'Pick the date this was due.',
     score: (c, actualDayKey) => {
@@ -346,17 +350,33 @@ const scoreGroup = (goals = []) => {
  *
  * Groups that scored nothing are excluded from the denominator for the same
  * reason untracked goals are.
+ *
+ * `groupsEmpty` counts the groups that have no goals AT ALL, and it is reported
+ * separately from `groupsTotal - groupsScored` because those are two different
+ * sentences: a group with three unreported goals is waiting on somebody, and a
+ * group with no goals is not. Collapsing them tells a board with twenty-four
+ * goal-less groups that twenty-four groups are late.
  */
 const scoreBoard = (summaries = []) => {
   const scored = summaries.filter((s) => s && typeof s.pct === 'number');
   const counts = { missed: 0, partial: 0, achieved: 0, exceeded: 0, untracked: 0 };
   let totalGoals = 0;
+  let groupsEmpty = 0;
   for (const s of summaries) {
     totalGoals += s?.totalCount || 0;
+    if (!s?.totalCount) groupsEmpty += 1;
     for (const k of Object.keys(counts)) counts[k] += s?.counts?.[k] || 0;
   }
   if (scored.length === 0) {
-    return { pct: null, state: 'empty', groupsScored: 0, groupsTotal: summaries.length, counts, totalGoals };
+    return {
+      pct: null,
+      state: 'empty',
+      groupsScored: 0,
+      groupsTotal: summaries.length,
+      groupsEmpty,
+      counts,
+      totalGoals,
+    };
   }
   const mean = scored.reduce((a, s) => a + s.pct, 0) / scored.length;
   return {
@@ -364,6 +384,7 @@ const scoreBoard = (summaries = []) => {
     state: 'scored',
     groupsScored: scored.length,
     groupsTotal: summaries.length,
+    groupsEmpty,
     counts,
     totalGoals,
   };

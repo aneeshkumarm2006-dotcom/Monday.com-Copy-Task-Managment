@@ -4,7 +4,7 @@ import GoalProgressBar from './GoalProgressBar';
 import GoalOutcomeBadge from './GoalOutcomeBadge';
 import GoalSparkline from './GoalSparkline';
 import { cellComponentFor } from '../columns';
-import { weightLabel } from '../../../utils/goalDisplay';
+import { weightLabel, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
 
 /**
  * One goal, on desktop.
@@ -24,12 +24,13 @@ const GoalRow = ({
   gridTemplate,
   canTrack,
   canManage,
+  monthClosable = false,
   onPatch,
   onEdit,
   onDelete,
 }) => {
   const c = goal.computed || {};
-  const usesDate = typeSpec?.actualField?.key === 'actualDayKey';
+  const usesDate = (typeSpec?.actualField?.key || (goal.type === 'deadline' ? 'actualDayKey' : 'actual')) === 'actualDayKey';
   const actualKind = usesDate
     ? 'date'
     : goal.type === 'boolean'
@@ -37,9 +38,21 @@ const GoalRow = ({
       : goal.type === 'rating'
         ? 'rating'
         : 'number';
+  const targetField = targetFieldOf(typeSpec, goal.type);
 
-  const missingFields = new Set((goal.missing || []).map((m) => m.field));
-  const flaggedColumns = (goal.missing || []).filter((m) => m.field !== goal.type);
+  const actualFieldKey = usesDate ? 'actualDayKey' : 'actual';
+
+  // Blanks only go red once the month is OVER. "Untracked is not a failure, it
+  // is an unanswered question" is the scorer's rule, and a goal created this
+  // morning shouting that it is missing a result contradicts it. `monthClosable`
+  // is the server's own `unclosed` flag — a past month with gaps in it.
+  const missing = monthClosable ? (goal.missing || []) : [];
+  const missingFields = new Set(missing.map((m) => m.field));
+  // The gutter triangle is about the EXTRA columns; the Actual cell paints its
+  // own missing state, so flagging it here too would say the same thing twice.
+  // (This used to compare `m.field` — 'actual' — against `goal.type` —
+  // 'numeric' — so it never actually excluded anything.)
+  const flaggedColumns = missing.filter((m) => m.field !== actualFieldKey);
 
   const cellStyle = {
     padding: '8px 10px',
@@ -48,6 +61,10 @@ const GoalRow = ({
     alignItems: 'center',
     minWidth: 0,
   };
+
+  // Start / target / actual are centred under their centred headings, so the
+  // three figures line up as one row of numbers instead of three ragged edges.
+  const numberCellStyle = { ...cellStyle, justifyContent: 'center' };
 
   return (
     <div
@@ -86,11 +103,12 @@ const GoalRow = ({
       </div>
 
       {/* Start / Target — the promise, editable only by goal.manage */}
-      <div style={cellStyle}>
-        {typeSpec?.configFields?.some((f) => f.key === 'baseline') ? (
+      <div style={numberCellStyle}>
+        {hasBaselineField(typeSpec, goal.type) ? (
           <GoalValueCell
             value={goal.config?.baseline ?? null}
             goal={goal}
+            align="center"
             readOnly={!canManage}
             onChange={(v) => onPatch({ config: { ...goal.config, baseline: v } })}
           />
@@ -98,36 +116,32 @@ const GoalRow = ({
           <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>—</span>
         )}
       </div>
-      <div style={cellStyle}>
-        <GoalValueCell
-          value={
-            goal.type === 'checklist' ? goal.config?.total ?? null
-              : goal.type === 'threshold' ? goal.config?.limit ?? null
-                : goal.type === 'deadline' ? goal.config?.dueDayKey ?? null
-                  : goal.config?.target ?? null
-          }
-          goal={goal}
-          kind={goal.type === 'deadline' ? 'date' : 'number'}
-          readOnly={!canManage}
-          onChange={(v) => {
-            const field = goal.type === 'checklist' ? 'total'
-              : goal.type === 'threshold' ? 'limit'
-                : goal.type === 'deadline' ? 'dueDayKey' : 'target';
-            onPatch({ config: { ...goal.config, [field]: v } });
-          }}
-        />
+      <div style={numberCellStyle}>
+        {targetField ? (
+          <GoalValueCell
+            value={goal.config?.[targetField.key] ?? null}
+            goal={goal}
+            kind={targetField.kind}
+            align="center"
+            readOnly={!canManage}
+            onChange={(v) => onPatch({ config: { ...goal.config, [targetField.key]: v } })}
+          />
+        ) : (
+          <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>—</span>
+        )}
       </div>
 
       {/* Actual — the result. This is the one cell `goal.track` can write. */}
-      <div style={cellStyle}>
+      <div style={numberCellStyle}>
         <GoalValueCell
           value={usesDate ? goal.actualDayKey : goal.actual}
           goal={goal}
           kind={actualKind}
+          align="center"
           readOnly={!canTrack}
-          required={missingFields.has(usesDate ? 'actualDayKey' : 'actual')}
+          required={missingFields.has(actualFieldKey)}
           placeholder="Not yet"
-          onChange={(v) => onPatch(usesDate ? { actualDayKey: v } : { actual: v })}
+          onChange={(v) => onPatch({ [actualFieldKey]: v })}
         />
       </div>
 
