@@ -18,8 +18,8 @@
  *     pct = (actual − baseline) / (target − baseline)
  *
  * Direction is NOT inferred with a branch. When the target is lower than the
- * baseline — a keyword rank going 5 → 3, a bounce rate coming down — both the
- * numerator and the denominator go negative and the same expression already
+ * baseline — a search position going 5 → 3, a cost per lead coming down — both
+ * the numerator and the denominator go negative and the same expression already
  * reads correctly. That is the whole reason this formula was chosen over
  * `actual / target`.
  *
@@ -27,6 +27,20 @@
  * own `configFields` and `actualField`, the client's add-a-goal form is
  * generated from this table rather than switch-cased against it — so a new type
  * arrives in the UI with correct inputs and plain-language labels for free.
+ *
+ * THE CHOOSING COPY LIVES HERE TOO — `useWhen`, `notWhen`, `answerShape`,
+ * `setupShape`, `partialCredit`, `examples` and `namePlaceholder`. The picker in
+ * `GoalFormModal` renders them and holds no per-type copy of its own, so the
+ * words a person reads while deciding sit next to the rule that scores them.
+ * Two things this copy must keep doing:
+ *
+ *  - `notWhen` always NAMES the type you probably wanted instead. Six labels
+ *    with no cross-references is a list; six labels that point at each other is
+ *    a decision tree, and picking the wrong kind is the actual failure mode.
+ *  - `examples` stay off any one trade. A goals board is used for SEO, for ads,
+ *    for client reminders and for internal ops, so each type carries three
+ *    examples from three different kinds of work. Somebody doing paid social
+ *    should never have to translate an SEO example to recognise their own goal.
  */
 
 const { compareDayKeys, daysBetween, isDayKey } = require('./tzDay');
@@ -107,14 +121,24 @@ const GOAL_TYPES = {
   numeric: {
     key: 'numeric',
     label: 'Move a number',
-    hint: 'Take a measurement from where it is now to where you want it.',
-    example: 'Get organic traffic from 4,200 to 6,000',
+    hint: 'Something you can measure today, and you want it higher or lower by the end of the month.',
+    useWhen: 'The thing you care about is a number that moves.',
+    notWhen: 'Just counting how many things you produced? Use “Tick off a list”.',
+    setupShape: 'Where it is now, and where you want it to get to',
+    answerShape: 'the number you ended on',
+    partialCredit: 'Yes — get halfway and it scores 50%.',
+    examples: [
+      'Website visits: 4,200 → 6,000',
+      'Cost per lead: $38 → $30',
+      'Newsletter subscribers: 900 → 1,200',
+    ],
+    namePlaceholder: 'Grow website visits',
     // Works in both directions with no extra setting: a target below the
     // baseline simply flips both signs of the ratio.
     supportsUnit: true,
     configFields: [
-      numberField('baseline', 'Where are you starting from?', 'Last month’s number. Leave blank if you are starting from zero.'),
-      numberField('target', 'Where do you want to get to?', 'The number that means this went well.'),
+      numberField('baseline', 'Where are you starting from?', 'The number at the start of the month. Leave blank to measure from zero.'),
+      numberField('target', 'Where do you want to get to?', 'The number that means this went well. It can be lower than the start.'),
     ],
     actualField: numberField('actual', 'Where did you land?', 'Fill this in at the end of the month.'),
     validateConfig: (c) => (isNum(c?.target) ? null : 'Set the number you are aiming for.'),
@@ -124,8 +148,18 @@ const GOAL_TYPES = {
   boolean: {
     key: 'boolean',
     label: 'Did we do it?',
-    hint: 'A goal that is either done or not. No partial credit.',
-    example: 'Publish the case study',
+    hint: 'One thing that either happened or it did not. There is no half.',
+    useWhen: 'There is a single thing to deliver, and half of it is worth nothing.',
+    notWhen: 'Has to land by a particular day? Use “Hit a date”.',
+    setupShape: 'Nothing to set up — just name it',
+    answerShape: 'Yes or No',
+    partialCredit: 'No — it is all or nothing.',
+    examples: [
+      'Publish the case study',
+      'Set up conversion tracking',
+      'Send the client their new logins',
+    ],
+    namePlaceholder: 'Publish the case study',
     supportsUnit: false,
     configFields: [],
     actualField: { key: 'actual', label: 'Did it happen?', help: '', type: 'boolean' },
@@ -142,11 +176,21 @@ const GOAL_TYPES = {
   checklist: {
     key: 'checklist',
     label: 'Tick off a list',
-    hint: 'Counting things you said you would deliver.',
-    example: 'Publish 8 blog posts',
+    hint: 'You promised a number of things this month. At the end you count how many you actually did.',
+    useWhen: 'The same kind of thing, done several times.',
+    notWhen: 'Only one thing to deliver? Use “Did we do it?”.',
+    setupShape: 'How many you promised',
+    answerShape: 'how many you got done',
+    partialCredit: 'Yes — 6 out of 8 scores 75%.',
+    examples: [
+      'Publish 8 blog posts',
+      'Ship 12 ad creatives',
+      'Send 4 client check-in emails',
+    ],
+    namePlaceholder: 'Publish 8 blog posts',
     supportsUnit: false,
     configFields: [
-      numberField('total', 'How many?', 'The number you committed to.'),
+      numberField('total', 'How many are you promising?', 'The number you committed to for this month.'),
     ],
     actualField: numberField('actual', 'How many did you do?', ''),
     validateConfig: (c) =>
@@ -163,13 +207,23 @@ const GOAL_TYPES = {
   threshold: {
     key: 'threshold',
     label: 'Keep it above or below',
-    hint: 'A line you must not cross, rather than a number to reach.',
-    example: 'Keep page load under 2.5 seconds',
+    hint: 'A line you must not cross. You are holding a number steady, not pushing it somewhere new.',
+    useWhen: 'The win is not slipping, rather than improving.',
+    notWhen: 'Want credit for improving month on month? Use “Move a number”.',
+    setupShape: 'The line, and which side to stay on',
+    answerShape: 'the number you ended on',
+    partialCredit: 'Only if you say where you started — otherwise it is pass or fail.',
+    examples: [
+      'Keep ad spend under $5,000',
+      'Keep page load under 2.5 seconds',
+      'Answer every client within 24 hours',
+    ],
+    namePlaceholder: 'Keep ad spend under budget',
     supportsUnit: true,
     configFields: [
       {
         key: 'direction',
-        label: 'Which way?',
+        label: 'Which side of the line?',
         help: '',
         type: 'choice',
         choices: [
@@ -177,8 +231,8 @@ const GOAL_TYPES = {
           { value: 'atLeast', label: 'Stay above' },
         ],
       },
-      numberField('limit', 'The line', 'The value you must stay the right side of.'),
-      numberField('baseline', 'Where were you before? (optional)', 'Give this and you get partial credit for getting closer.'),
+      numberField('limit', 'What is the line?', 'The value you must not cross.'),
+      numberField('baseline', 'Where were you before? (optional)', 'Fill this in and getting closer to the line still earns part of the score.'),
     ],
     actualField: numberField('actual', 'Where did you land?', ''),
     validateConfig: (c) => {
@@ -208,12 +262,22 @@ const GOAL_TYPES = {
   deadline: {
     key: 'deadline',
     label: 'Hit a date',
-    hint: 'Something that had to be finished by a particular day.',
-    example: 'Site migration live by the 25th',
+    hint: 'Something that had to be finished by a particular day. Being late costs points.',
+    useWhen: 'When it lands matters as much as whether it lands.',
+    notWhen: 'Date does not really matter? Use “Did we do it?”.',
+    setupShape: 'The day it is due by',
+    answerShape: 'the day it was actually done',
+    partialCredit: 'Yes — points come off for each day late.',
+    examples: [
+      'Monthly report to the client by the 5th',
+      'Campaign live before the sale starts',
+      'Site migration live by the 25th',
+    ],
+    namePlaceholder: 'Send the monthly report',
     supportsUnit: false,
     configFields: [
-      { key: 'dueDayKey', label: 'By when?', help: '', type: 'date' },
-      numberField('penaltyPerDay', 'Points lost per day late', 'Defaults to 10, so ten days late scores zero.'),
+      { key: 'dueDayKey', label: 'What day is it due by?', help: '', type: 'date' },
+      numberField('penaltyPerDay', 'Points lost per day late', 'Leave blank for 10, so ten days late scores zero.'),
     ],
     // A day key, not a number — which is exactly why `Goal.actualDayKey` exists
     // as its own field rather than being crammed into `actual`.
@@ -236,8 +300,18 @@ const GOAL_TYPES = {
   rating: {
     key: 'rating',
     label: 'Judge it manually',
-    hint: 'For work that matters but has no number. Someone decides.',
-    example: 'Client satisfaction this month',
+    hint: 'Work that matters but that nothing counts. A person decides at the end of the month.',
+    useWhen: 'You would know it went well, but no report will tell you.',
+    notWhen: 'Can you put a number on it? One of the other kinds will score it for you.',
+    setupShape: 'Nothing to set up — just name it',
+    answerShape: 'Missed, Partly there, or On track',
+    partialCredit: 'Yes — “Partly there” is worth half.',
+    examples: [
+      'Client happy with this month',
+      'Creative quality held up',
+      'Team stuck to the process',
+    ],
+    namePlaceholder: 'Client happy with this month',
     supportsUnit: false,
     configFields: [],
     actualField: {
@@ -466,6 +540,10 @@ const formatValue = (value, goal) => {
  * The type table as the client needs it for form generation — no functions.
  * Served by `GET /api/goal-types` so the add-a-goal form is generated from the
  * same table the scorer uses, rather than a hand-kept copy that drifts.
+ *
+ * `example` is the singular kept for older clients, which rendered one line of
+ * example text per card; it is simply the first of `examples`, so there is still
+ * only one place to edit the wording.
  */
 const describeGoalTypes = () =>
   GOAL_TYPE_KEYS.map((key) => {
@@ -474,7 +552,14 @@ const describeGoalTypes = () =>
       key: t.key,
       label: t.label,
       hint: t.hint,
-      example: t.example,
+      useWhen: t.useWhen,
+      notWhen: t.notWhen,
+      setupShape: t.setupShape,
+      answerShape: t.answerShape,
+      partialCredit: t.partialCredit,
+      examples: t.examples,
+      example: t.examples[0],
+      namePlaceholder: t.namePlaceholder,
       supportsUnit: t.supportsUnit,
       configFields: t.configFields,
       actualField: t.actualField,

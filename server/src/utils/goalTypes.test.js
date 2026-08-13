@@ -345,6 +345,13 @@ test('every type is describable to the client, with no functions leaking', () =>
   assert.strictEqual(described.length, GOAL_TYPE_KEYS.length);
   for (const t of described) {
     assert.ok(t.label && t.hint && t.example, `${t.key} needs plain-language copy`);
+    // The picker renders all of this and holds no copy of its own, so a type
+    // that arrives without it renders a blank card rather than failing loudly.
+    for (const field of ['useWhen', 'notWhen', 'setupShape', 'answerShape', 'partialCredit', 'namePlaceholder']) {
+      assert.ok(t[field], `${t.key} needs ${field} for the picker`);
+    }
+    assert.ok(t.examples?.length >= 2, `${t.key} needs examples from more than one kind of work`);
+    assert.strictEqual(t.example, t.examples[0]);
     assert.ok(Array.isArray(t.configFields));
     assert.ok(t.actualField?.key);
     assert.strictEqual(JSON.stringify(t).includes('function'), false);

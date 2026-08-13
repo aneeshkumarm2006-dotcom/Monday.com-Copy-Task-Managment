@@ -191,7 +191,7 @@ const BoardFormModal = ({
         <Input
           label="Board Name"
           required
-          placeholder="e.g. DAVNOOT SEO"
+          placeholder="e.g. Acme — Monthly Retainer"
           value={values.name}
           onChange={(e) => setValues((v) => ({ ...v, name: e.target.value }))}
           autoFocus

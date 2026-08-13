@@ -8,7 +8,7 @@
  *
  * Column ORDER is deliberate: name, then the board's own extra columns, and
  * only then Start / Target / Actual / Result. The extras describe the goal
- * ("keyword difficulty", "volume"), so they belong beside its name — parked past
+ * ("channel", "who asked for it"), so they belong beside its name — parked past
  * the scoring block, the only way to read one was to scroll the name it belongs
  * to off the left edge of the screen.
  *
