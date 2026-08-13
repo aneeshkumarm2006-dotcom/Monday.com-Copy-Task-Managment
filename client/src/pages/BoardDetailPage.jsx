@@ -82,7 +82,10 @@ import { formatDate, dateInputToISO } from '../utils/dateUtils';
 import {
   EMPTY_FILTERS,
   hasActiveFilters,
+  hasActiveTaskFilters,
+  hasActiveGroupFilters,
   taskMatchesFilters,
+  groupMatchesFilters,
 } from '../utils/taskFilters';
 import { isStatusDone } from '../utils/statusUtils';
 import {
@@ -284,7 +287,8 @@ const BoardDetailPage = () => {
 
   // --- Filtering ---------------------------------------------------------
   // Filter bar at the top of the board narrows the visible tasks by name,
-  // status, priority, label, due date, and assignee. See utils/taskFilters.js.
+  // status, priority, label, due date, and assignee — plus, on tracker boards,
+  // the group's owner, which hides whole groups. See utils/taskFilters.js.
   const [filters, setFilters] = useState(EMPTY_FILTERS);
 
   // --- Group sort ("completed last") -------------------------------------
@@ -711,18 +715,33 @@ const BoardDetailPage = () => {
   }, [tasksByGroup]);
 
   const filtersActive = hasActiveFilters(filters);
+  // Two flavours, and the difference matters below: a TASK filter subsets the
+  // rows inside a group (so reordering or creating into that subset would write
+  // a bogus order), while the GROUP-owner filter only removes whole groups and
+  // leaves every surviving group's row list exactly as it was.
+  const taskFiltersActive = hasActiveTaskFilters(filters);
+  const groupFiltersActive = hasActiveGroupFilters(filters);
 
   // Apply the active filters per group. When nothing is active we hand back
   // the original buckets untouched so unfiltered boards skip the work.
   const filteredTasksByGroup = useMemo(() => {
     if (!filtersActive) return tasksByGroup;
     const now = new Date();
+    const groupById = new Map(groups.map((g) => [String(g._id), g]));
     const out = {};
     for (const [gid, list] of Object.entries(tasksByGroup)) {
-      out[gid] = (list || []).filter((t) => taskMatchesFilters(t, filters, now, board));
+      // A group cut out by the owner filter contributes nothing — its tasks are
+      // never even tested, which is also what keeps `matchedTaskCount` honest.
+      if (!groupMatchesFilters(groupById.get(String(gid)), filters)) {
+        out[gid] = [];
+        continue;
+      }
+      out[gid] = taskFiltersActive
+        ? (list || []).filter((t) => taskMatchesFilters(t, filters, now, board))
+        : list || [];
     }
     return out;
-  }, [tasksByGroup, filters, filtersActive, board]);
+  }, [tasksByGroup, groups, filters, filtersActive, taskFiltersActive, board]);
 
   // Render order within each group: pinned tasks float to the top, everything
   // else keeps its persisted `order`. Purely a display transform — Task.order
@@ -751,6 +770,29 @@ const BoardDetailPage = () => {
         0
       ),
     [filteredTasksByGroup]
+  );
+
+  // Whether a group appears at all under the current filters. Two rules, and
+  // they are not the same rule: the owner filter removes a group outright,
+  // while an emptied group is only hidden when a TASK filter did the emptying.
+  // A group-owner filter on its own therefore keeps a task-less group on
+  // screen — answering "which groups does she own?" by quietly dropping the
+  // empty ones would be a wrong answer, not a tidier one.
+  const isGroupVisible = useCallback(
+    (group) => {
+      if (!groupMatchesFilters(group, filters)) return false;
+      if (taskFiltersActive && (filteredTasksByGroup[group._id] || []).length === 0)
+        return false;
+      return true;
+    },
+    [filters, taskFiltersActive, filteredTasksByGroup]
+  );
+
+  // Drives the "nothing matched" empty state. The matched TASK count can't:
+  // it is legitimately 0 while an owned-but-empty group is showing.
+  const visibleGroupCount = useMemo(
+    () => (filtersActive ? groups.filter(isGroupVisible).length : groups.length),
+    [groups, filtersActive, isGroupVisible]
   );
 
   // Render order for the groups. When "completed last" is off we return the
@@ -1571,15 +1613,18 @@ const BoardDetailPage = () => {
   );
   // DnD is disabled while an inline edit/create row is open in any group so
   // the form controls don't fight with the drag sensors. It's also disabled
-  // while filters are active — reordering a filtered subset would write a
-  // bogus order back to the full list.
+  // while TASK filters are active — reordering a filtered subset would write a
+  // bogus order back to the full list. The group-owner filter is deliberately
+  // NOT in here: it never subsets a group's rows, so dragging one is still safe.
   const dndDisabledGlobal =
-    creatingInGroup != null || editingTaskId != null || filtersActive;
+    creatingInGroup != null || editingTaskId != null || taskFiltersActive;
   // Group reordering additionally can't happen while the "completed last" sort
   // is active: the displayed order no longer matches the persisted `groups`
-  // array, so a drop would write a scrambled order. Task drag within a group is
-  // unaffected and keeps using `dndDisabledGlobal`.
-  const groupDndDisabled = dndDisabledGlobal || sortCompletedLast;
+  // array, so a drop would write a scrambled order. Filtering groups by owner
+  // hides some of them and so has exactly the same problem. Task drag within a
+  // group is unaffected and keeps using `dndDisabledGlobal`.
+  const groupDndDisabled =
+    dndDisabledGlobal || sortCompletedLast || groupFiltersActive;
 
   const handleBoardDragEnd = (event) => {
     const { active, over } = event;
@@ -1928,6 +1973,7 @@ const BoardDetailPage = () => {
             <BoardFilterBar
               board={board}
               allTasks={allTasks}
+              groups={groups}
               filters={filters}
               onChange={setFilters}
               matchedCount={matchedTaskCount}
@@ -2002,7 +2048,7 @@ const BoardDetailPage = () => {
               onAction={canEdit ? handleOpenGroupModal : undefined}
             />
           </div>
-        ) : filtersActive && matchedTaskCount === 0 ? (
+        ) : filtersActive && visibleGroupCount === 0 ? (
           <div
             className="bg-surface"
             style={{
@@ -2013,8 +2059,12 @@ const BoardDetailPage = () => {
           >
             <EmptyState
               icon={SearchX}
-              title="No tasks match your filters"
-              description="Try removing or loosening a filter to see more tasks."
+              title={
+                groupFiltersActive && !taskFiltersActive
+                  ? 'No groups match your filters'
+                  : 'No tasks match your filters'
+              }
+              description="Try removing or loosening a filter to see more."
               actionLabel="Clear all filters"
               onAction={() => setFilters(EMPTY_FILTERS)}
             />
@@ -2030,9 +2080,10 @@ const BoardDetailPage = () => {
                 // Pinned-first render order. The progress math below reads the
                 // unsorted filtered bucket, since it's order-independent.
                 const groupTasks = displayTasksByGroup[group._id] || [];
-                // While filtering, groups with no surviving tasks drop out of
-                // the view entirely to cut noise.
-                if (filtersActive && groupTasks.length === 0) return null;
+                // Filtered out by owner, or emptied by a task filter. `idx` is
+                // still the ORDERED index, so the header dot colours don't
+                // reshuffle as groups come and go.
+                if (filtersActive && !isGroupVisible(group)) return null;
                 const doneStatusId =
                   board && Array.isArray(board.statuses)
                     ? (board.statuses.find((s) => s.key === 'done')?._id || null)
@@ -2166,7 +2217,7 @@ const BoardDetailPage = () => {
                               board={board}
                               members={members}
                               editingTaskId={editingTaskId}
-                              isCreating={canEdit && !filtersActive}
+                              isCreating={canEdit && !taskFiltersActive}
                               createKey={newTaskKeysByGroup[group._id] || 0}
                               isAdmin={canEdit}
                               highlightedTaskId={highlightedTaskId}

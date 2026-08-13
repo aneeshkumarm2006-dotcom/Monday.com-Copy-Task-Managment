@@ -8,13 +8,19 @@ import {
   CircleDot,
   Tag,
   User,
+  UserCog,
 } from 'lucide-react';
 import {
   PRIORITY_COLORS,
   STATUS_COLORS,
   getColorPair,
 } from '../../utils/priorityColors';
-import { DUE_BUCKETS, countActiveFilters, toggleValue } from '../../utils/taskFilters';
+import {
+  DUE_BUCKETS,
+  EMPTY_FILTERS,
+  countActiveFilters,
+  toggleValue,
+} from '../../utils/taskFilters';
 import {
   FilterPopover,
   OptionList,
@@ -33,9 +39,15 @@ const LEGACY_STATUS_ORDER = ['not_started', 'working_on_it', 'done', 'stuck'];
  * `onChange`. BoardDetailPage owns the state and applies it to the task list
  * (see utils/taskFilters.js).
  *
+ * The "Group owner" category is the odd one out: it appears only on tracker
+ * boards, where a group carries a per-month owner, and it hides whole GROUPS
+ * rather than rows. The distinction lives in utils/taskFilters.js; here it is
+ * just one more popover.
+ *
  * Props:
  *   board        — current board doc (reads statuses + labels)
  *   allTasks     — flattened array of every board task (derives assignees)
+ *   groups       — board groups (derives the group-owner options)
  *   filters      — current filter state (shape: EMPTY_FILTERS)
  *   onChange     — (nextFilters) => void
  *   matchedCount — tasks currently passing the filters
@@ -44,6 +56,7 @@ const LEGACY_STATUS_ORDER = ['not_started', 'working_on_it', 'done', 'stuck'];
 const BoardFilterBar = ({
   board,
   allTasks = [],
+  groups = [],
   filters,
   onChange,
   matchedCount = 0,
@@ -99,6 +112,29 @@ const BoardFilterBar = ({
     }
     return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [allTasks]);
+
+  // Group owners exist only on tracker boards. Like the assignee list, the
+  // options come from the data on screen rather than the org roster — which
+  // also means they follow the month being viewed, since `group.owner` is the
+  // owner resolved for that month.
+  const showGroupOwner = board?.boardType === 'tracker';
+
+  const groupOwnerOptions = useMemo(() => {
+    if (!showGroupOwner) return [];
+    const byId = new Map();
+    for (const g of groups) {
+      const owner = g?.owner;
+      if (!owner) continue;
+      const id = (owner._id ?? owner)?.toString();
+      if (!id || byId.has(id)) continue;
+      byId.set(id, {
+        id,
+        name: owner.name || 'Member',
+        profilePic: owner.profilePic,
+      });
+    }
+    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [groups, showGroupOwner]);
 
   return (
     <div
@@ -272,6 +308,50 @@ const BoardFilterBar = ({
         </OptionList>
       </FilterPopover>
 
+      {/* Group owner (tracker boards) — hides whole groups, not rows */}
+      {showGroupOwner && (
+        <FilterPopover
+          label="Group owner"
+          icon={UserCog}
+          activeCount={filters.groupOwners?.length || 0}
+        >
+          <OptionList emptyLabel="No group owners set yet">
+            <OptionRow
+              checked={filters.groupOwners?.includes('unassigned')}
+              onToggle={() =>
+                set({ groupOwners: toggleValue(filters.groupOwners, 'unassigned') })
+              }
+            >
+              <span
+                className="font-body italic"
+                style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}
+              >
+                No owner
+              </span>
+            </OptionRow>
+            {groupOwnerOptions.map((opt) => (
+              <OptionRow
+                key={opt.id}
+                checked={filters.groupOwners?.includes(opt.id)}
+                onToggle={() =>
+                  set({ groupOwners: toggleValue(filters.groupOwners, opt.id) })
+                }
+              >
+                <span className="inline-flex items-center gap-2 min-w-0">
+                  <AssigneeDot user={opt} />
+                  <span
+                    className="font-body truncate"
+                    style={{ fontSize: 13, color: 'var(--color-text-primary)' }}
+                  >
+                    {opt.name}
+                  </span>
+                </span>
+              </OptionRow>
+            ))}
+          </OptionList>
+        </FilterPopover>
+      )}
+
       {/* Result count + clear all (only while filtering) */}
       {activeCount > 0 && (
         <div className="inline-flex items-center gap-2 ml-auto">
@@ -283,16 +363,7 @@ const BoardFilterBar = ({
           </span>
           <button
             type="button"
-            onClick={() =>
-              onChange?.({
-                search: '',
-                statuses: [],
-                priorities: [],
-                labels: [],
-                due: [],
-                assignees: [],
-              })
-            }
+            onClick={() => onChange?.({ ...EMPTY_FILTERS })}
             className="inline-flex items-center gap-1 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
             style={{
               height: 34,

@@ -12,6 +12,15 @@
  *
  * Labels are the one exception — they match EXCLUSIVELY, so the filtered view
  * shows exactly the label combination that was asked for. See below.
+ *
+ * `groupOwners` is the one category that does NOT describe a task. A tracker
+ * board's group carries a per-month owner (see server utils/groupOwner.js), so
+ * that filter cuts at the GROUP level: a non-matching group leaves the view
+ * whole, and the tasks inside it are never consulted. Hence the two predicates
+ * below — `taskMatchesFilters` for the task categories, `groupMatchesFilters`
+ * for this one — and the split active-count helpers, which callers use to tell
+ * "the task list has been subset" (unsafe to reorder / create into) from "some
+ * groups are hidden" (tasks untouched).
  */
 
 import { isStatusDone } from './statusUtils';
@@ -23,6 +32,7 @@ export const EMPTY_FILTERS = {
   labels: [],     // label _id strings
   due: [],        // DUE_BUCKETS keys
   assignees: [],  // user _id strings, plus the synthetic 'unassigned'
+  groupOwners: [], // GROUP owner user _id strings, plus 'unassigned' (tracker boards)
 };
 
 /**
@@ -74,10 +84,10 @@ export const toggleValue = (list, value) => {
 };
 
 /**
- * Count how many filter categories are currently constraining the view.
- * Used to badge the affordance and to toggle the "Clear all" button.
+ * Count how many TASK-level categories are constraining the view — i.e. how
+ * many of them can remove rows from inside a group.
  */
-export const countActiveFilters = (filters) => {
+export const countActiveTaskFilters = (filters) => {
   if (!filters) return 0;
   let n = 0;
   if (filters.search && filters.search.trim()) n += 1;
@@ -89,7 +99,24 @@ export const countActiveFilters = (filters) => {
   return n;
 };
 
+/** Count of GROUP-level categories. Today: group owner. */
+export const countActiveGroupFilters = (filters) =>
+  filters?.groupOwners?.length ? 1 : 0;
+
+/**
+ * Count how many filter categories are currently constraining the view.
+ * Used to badge the affordance and to toggle the "Clear all" button.
+ */
+export const countActiveFilters = (filters) =>
+  countActiveTaskFilters(filters) + countActiveGroupFilters(filters);
+
 export const hasActiveFilters = (filters) => countActiveFilters(filters) > 0;
+
+/** True when the visible task list is a SUBSET of a group's real task list. */
+export const hasActiveTaskFilters = (filters) => countActiveTaskFilters(filters) > 0;
+
+/** True when whole groups are being hidden. */
+export const hasActiveGroupFilters = (filters) => countActiveGroupFilters(filters) > 0;
 
 /**
  * Does a single task satisfy the active filters?
@@ -161,6 +188,30 @@ export const taskMatchesFilters = (task, filters, now = new Date(), board = null
   }
 
   return true;
+};
+
+/**
+ * Does a group survive the GROUP-level filters?
+ *
+ * Reads `group.owner` — the already-RESOLVED owner for the month on screen,
+ * which groupController serializes onto each group. The `ownerTimeline` never
+ * reaches the client precisely so that no second copy of the carry-forward rule
+ * can exist here; this function must therefore never try to derive an owner
+ * from anything but that field.
+ *
+ * A group carrying no owner for the month — never assigned, or a tombstone —
+ * matches only the synthetic 'unassigned' value, mirroring how the assignee
+ * category treats a task with nobody on it.
+ */
+export const groupMatchesFilters = (group, filters) => {
+  if (!filters?.groupOwners?.length) return true;
+  if (!group) return false;
+
+  const owner = group.owner;
+  const ownerId = owner ? String(owner._id ?? owner) : null;
+
+  if (!ownerId) return filters.groupOwners.includes('unassigned');
+  return filters.groupOwners.includes(ownerId);
 };
 
 export default taskMatchesFilters;
