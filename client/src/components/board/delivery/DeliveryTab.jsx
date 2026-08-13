@@ -146,6 +146,15 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
     }));
   }, [trackers, prefs.hideUntracked]);
 
+  // The delivery report is deliberately owner-blind — it scores groups, not
+  // people. The board's own group documents already carry the owner the server
+  // resolved for the month on screen, so the popover borrows that rather than
+  // widening the endpoint (and re-answering the question a second way).
+  const groupById = useMemo(
+    () => new Map(groups.map((g) => [String(g._id), g])),
+    [groups]
+  );
+
   const jumpToTracker = (item) => {
     const node = sectionRefs.current.get(String(item.trackerId));
     if (node) node.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -261,6 +270,8 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
           period={popover.period}
           row={popover.row}
           cell={popover.cell}
+          owner={groupById.get(String(popover.row.groupId))?.owner || null}
+          ownerActive={groupById.get(String(popover.row.groupId))?.ownerActive !== false}
           canManage={canManage}
           onClose={() => setPopover(null)}
           onOpenTask={onOpenTask}

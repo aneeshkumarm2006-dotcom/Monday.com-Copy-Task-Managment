@@ -148,7 +148,7 @@ test('a person score is scoreBoard over their groups, never a second formula', (
   assert.strictEqual(sb.people[0].groupCount, 2);
 });
 
-test('an unreported goal is excluded, not scored as zero, and `reported` says so', () => {
+test('an unreported goal scores zero, and `reported` still says how many landed', () => {
   const sb = buildScoreboard({
     groups: groups('g1'),
     ownerByGroupId: owners({ g1: ALICE }),
@@ -157,9 +157,9 @@ test('an unreported goal is excluded, not scored as zero, and `reported` says so
   });
 
   const row = sb.people[0];
-  assert.strictEqual(row.goals.pct, 100, 'the one reported goal was achieved');
+  assert.strictEqual(row.goals.pct, 33.3, 'one of three goals landed');
   assert.strictEqual(row.goals.totalGoals, 3);
-  assert.strictEqual(row.goals.reported, 1, 'rendered next to pct so 100% cannot read as final');
+  assert.strictEqual(row.goals.reported, 1, 'rendered next to pct so it cannot read as final');
   assert.strictEqual(row.goals.counts.untracked, 2);
 });
 

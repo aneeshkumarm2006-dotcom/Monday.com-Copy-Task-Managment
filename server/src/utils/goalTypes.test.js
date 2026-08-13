@@ -181,15 +181,27 @@ test('a group score is the WEIGHTED mean of its scored goals', () => {
   assert.strictEqual(scoreGroup(g).pct, 75);
 });
 
-test('untracked goals are EXCLUDED from the mean, not scored zero', () => {
+test('untracked goals score ZERO and stay in the denominator', () => {
   const s = scoreGroup([
     goal({ config: { baseline: 0, target: 100 }, actual: 80 }),
     goal({ config: { baseline: 0, target: 100 }, actual: null }),
   ]);
-  assert.strictEqual(s.pct, 80, 'not 40 — a blank is an unanswered question');
+  assert.strictEqual(s.pct, 40, 'not 80 — the score is out of every goal set');
   assert.strictEqual(s.scoredCount, 1);
   assert.strictEqual(s.totalCount, 2);
   assert.strictEqual(s.pendingCount, 1);
+});
+
+test('a handful of achieved goals cannot show a full ring', () => {
+  // The reported bug: 5 achieved, 16 blank, ring read 100%.
+  const s = scoreGroup([
+    ...Array.from({ length: 5 }, () =>
+      goal({ config: { baseline: 0, target: 100 }, actual: 100 })),
+    ...Array.from({ length: 16 }, () =>
+      goal({ config: { baseline: 0, target: 100 }, actual: null })),
+  ]);
+  assert.strictEqual(s.pct, 23.8, '5 of 21');
+  assert.strictEqual(s.pendingCount, 16);
 });
 
 test('a group with no goals scores null, never 0', () => {
@@ -198,10 +210,11 @@ test('a group with no goals scores null, never 0', () => {
   assert.strictEqual(s.state, 'empty');
 });
 
-test('a group where nothing has been reported yet is pending, not zero', () => {
+test('a group where nothing has been reported yet scores zero', () => {
   const s = scoreGroup([goal({ config: { target: 10 }, actual: null })]);
-  assert.strictEqual(s.pct, null);
-  assert.strictEqual(s.state, 'pending');
+  assert.strictEqual(s.pct, 0);
+  assert.strictEqual(s.state, 'scored');
+  assert.strictEqual(s.pendingCount, 1);
 });
 
 test('all-zero weights fall back to an unweighted mean instead of NaN', () => {
@@ -236,17 +249,19 @@ test('the board score averages GROUPS, skipping ones that scored nothing', () =>
   assert.strictEqual(b.counts.partial, 1);
 });
 
-test('a group with no goals is counted as empty, not as one still to report', () => {
+test('a group with no goals is counted as empty, not as one scoring zero', () => {
   const b = scoreBoard([
     scoreGroup([goal({ config: { baseline: 0, target: 100 }, actual: 100 })]),
-    scoreGroup([goal({ config: { target: 10 }, actual: null })]), // waiting on somebody
+    scoreGroup([goal({ config: { target: 10 }, actual: null })]), // set goals, hit none
     scoreGroup([]), // never set any up
     scoreGroup([]),
   ]);
   assert.strictEqual(b.groupsEmpty, 2);
-  assert.strictEqual(b.groupsScored, 1);
-  // groupsTotal - groupsEmpty - groupsScored is the number genuinely awaited.
-  assert.strictEqual(b.groupsTotal - b.groupsEmpty - b.groupsScored, 1);
+  // The unreported group scores 0 and is averaged in; only the goal-less ones
+  // sit outside the denominator.
+  assert.strictEqual(b.groupsScored, 2);
+  assert.strictEqual(b.pct, 50);
+  assert.strictEqual(b.counts.untracked, 1);
 });
 
 test('an all-empty board reports its empty groups too', () => {

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowUpRight, BadgeCheck, Check, MinusCircle, Undo2, X } from 'lucide-react';
 
+import Avatar from '../../ui/Avatar';
 import Button from '../../ui/Button';
 import DriveLinkChip from '../DriveLinkChip';
 import { isDriveUrl } from '../../../utils/driveLinks';
@@ -63,6 +64,8 @@ const DeliveryCellPopover = ({
   period,
   row,
   cell,
+  owner = null,
+  ownerActive = true,
   canManage,
   onClose,
   onConfirm,
@@ -168,6 +171,25 @@ const DeliveryCellPopover = ({
         >
           {row.groupName}
         </p>
+        {/* Who to go and ask. Resolved by the server for the month on screen and
+            handed down by DeliveryTab — the same owner the board header shows,
+            never re-derived here from the ownership timeline. */}
+        {owner && (
+          <div className="flex items-center gap-1.5 mt-1.5">
+            <Avatar user={owner} size={16} />
+            <span
+              className="truncate"
+              style={{
+                fontSize: 11.5,
+                color: 'var(--color-text-secondary)',
+                textDecoration: ownerActive ? 'none' : 'line-through',
+              }}
+              title={ownerActive ? owner.name : `${owner.name} (no longer in this workspace)`}
+            >
+              {owner.name}
+            </span>
+          </div>
+        )}
         <p style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginTop: 2 }}>
           {period.ariaLabel} · {tracker.name}
         </p>

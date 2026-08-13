@@ -31,7 +31,11 @@
 
 const { compareDayKeys, daysBetween, isDayKey } = require('./tzDay');
 
-/** Outcome bands. `untracked` is not a failure — it is an unanswered question. */
+/**
+ * Outcome bands. `untracked` is an unanswered question rather than a graded
+ * failure — it keeps its own state and its own colour everywhere it is shown.
+ * It nevertheless contributes ZERO to a group's score; see `scoreGroup`.
+ */
 const STATES = ['untracked', 'missed', 'partial', 'achieved', 'exceeded'];
 
 const UNITS = ['none', 'percent', 'currency', 'custom'];
@@ -290,15 +294,21 @@ const emptySummary = () => ({
 /**
  * Roll a group's goals into one weighted score.
  *
- * UNTRACKED GOALS ARE EXCLUDED, not counted as zero. A month where two of five
- * numbers have been filled in is a month that is 40% reported, not a month that
- * is failing — scoring the blanks as zero would show a catastrophe on the 3rd
- * and slowly climb as people typed. `scoredCount` / `totalCount` ride along so
- * the UI can say "3 of 5 goals reported" rather than implying the score is final.
+ * UNTRACKED GOALS SCORE ZERO and stay in the denominator. The score answers
+ * "how much of what this group set out to do is done", so five achieved goals
+ * out of twenty-one is 24% — not 100% with sixteen questions quietly dropped.
+ * The earlier rule averaged only the reported goals, which meant a group could
+ * show a full ring on the strength of the few numbers somebody happened to fill
+ * in, and the ring would FALL as the rest arrived.
  *
- * A group with no goals scores `null`, never 0. An empty group is not a failing
- * group, and averaging it in as zero would drag the board score down for every
- * client who simply has not set goals up yet.
+ * The trade this makes, deliberately: the ring starts a month near zero and
+ * climbs as results land. `pendingCount` / `totalCount` ride along so the UI
+ * keeps saying "16 still to report" beside it — that sentence is what stops a
+ * mid-month reading being mistaken for a final one.
+ *
+ * A group with no goals still scores `null`, never 0. An empty group is not a
+ * failing group, and averaging it in as zero would drag the board score down for
+ * every client who simply has not set goals up yet.
  */
 const scoreGroup = (goals = []) => {
   const summary = emptySummary();
@@ -311,27 +321,26 @@ const scoreGroup = (goals = []) => {
   for (const goal of goals) {
     const result = goal.computed || scoreGoal(goal);
     summary.counts[result.state] = (summary.counts[result.state] || 0) + 1;
-    if (result.state === 'untracked') {
-      summary.pendingCount += 1;
-      continue;
-    }
+    const untracked = result.state === 'untracked';
+    if (untracked) summary.pendingCount += 1;
+    else summary.scoredCount += 1;
+
+    // An unreported goal is weighted exactly like a reported one — that is what
+    // keeps it in the denominator. A goal weighted 0 ("track it, don't count
+    // it") still contributes nothing either way.
     const weight = isNum(goal.weight) && goal.weight >= 0 ? goal.weight : 1;
-    summary.scoredCount += 1;
     weightSum += weight;
-    weighted += result.pct * weight;
+    weighted += (untracked ? 0 : result.pct) * weight;
   }
 
-  if (summary.scoredCount === 0) {
-    return { ...summary, state: 'pending' };
-  }
-
-  // Every scored goal deliberately weighted zero ("track it, don't count it")
-  // would divide by zero. Fall back to an unweighted mean and say so.
+  // Every goal deliberately weighted zero would divide by zero. Fall back to an
+  // unweighted mean and say so.
   if (weightSum === 0) {
     const plain =
-      goals
-        .filter((g) => (g.computed || scoreGoal(g)).state !== 'untracked')
-        .reduce((a, g) => a + (g.computed || scoreGoal(g)).pct, 0) / summary.scoredCount;
+      goals.reduce((a, g) => {
+        const r = g.computed || scoreGoal(g);
+        return a + (r.state === 'untracked' ? 0 : r.pct);
+      }, 0) / goals.length;
     return {
       ...summary, pct: round1(plain), state: 'scored', weightSum: 0, weightFallback: true,
     };
@@ -348,14 +357,14 @@ const scoreGroup = (goals = []) => {
  * rounding once more here keeps the ring and the roll-up strip showing the same
  * number, which matters more than the fourth significant figure.
  *
- * Groups that scored nothing are excluded from the denominator for the same
- * reason untracked goals are.
+ * Groups with NO GOALS are excluded from the denominator — the only kind that
+ * scores `null` now that a group's unreported goals count as zero inside it.
  *
- * `groupsEmpty` counts the groups that have no goals AT ALL, and it is reported
- * separately from `groupsTotal - groupsScored` because those are two different
- * sentences: a group with three unreported goals is waiting on somebody, and a
- * group with no goals is not. Collapsing them tells a board with twenty-four
- * goal-less groups that twenty-four groups are late.
+ * `groupsEmpty` counts those groups, and it is reported separately from
+ * `groupsTotal - groupsScored` because those are two different sentences: a
+ * group with three unreported goals is waiting on somebody, and a group with no
+ * goals is not. Collapsing them tells a board with twenty-four goal-less groups
+ * that twenty-four groups are late.
  */
 const scoreBoard = (summaries = []) => {
   const scored = summaries.filter((s) => s && typeof s.pct === 'number');

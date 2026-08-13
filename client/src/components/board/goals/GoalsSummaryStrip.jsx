@@ -4,10 +4,10 @@ import { OUTCOME_META } from '../../../utils/goalDisplay';
 /**
  * The board-wide roll-up above the group sections.
  *
- * Ships `scoredCount` alongside the score deliberately. A weighted mean over
- * however many goals have been reported so far is easy to misread as final, and
- * "12 of 18 reported" is the sentence that stops someone screenshotting a
- * half-filled month into a client email.
+ * Ships the reported count alongside the score deliberately. The score counts
+ * an unreported goal as zero, so a half-filled month reads LOW rather than
+ * flatteringly high — and "12 of 18 reported" is the sentence that says why, and
+ * that the number can still only go up.
  */
 const TILES = ['achieved', 'exceeded', 'partial', 'missed'];
 
