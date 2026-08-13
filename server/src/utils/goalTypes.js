@@ -426,7 +426,8 @@ const formatValue = (value, goal) => {
   const unit = goal?.unit || 'none';
   const n = value.toLocaleString('en-US', { maximumFractionDigits: 2 });
   if (unit === 'percent') return `${n}%`;
-  if (unit === 'currency') return `${goal.unitLabel || ''}${n}`;
+  // Money is USD — the symbol is fixed, not read from `unitLabel`.
+  if (unit === 'currency') return `$${n}`;
   if (unit === 'custom' && goal.unitLabel) return `${n} ${goal.unitLabel}`;
   return n;
 };

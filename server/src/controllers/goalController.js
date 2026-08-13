@@ -240,6 +240,8 @@ const buildGoalPatch = (body, board, { partial = false } = {}) => {
   if (body.unitLabel !== undefined) {
     patch.unitLabel = String(body.unitLabel || '').trim().slice(0, 12);
   }
+  // Money is USD — the symbol is not the caller's to choose.
+  if (patch.unit === 'currency') patch.unitLabel = '$';
 
   if (body.weight !== undefined) {
     const w = Number(body.weight);

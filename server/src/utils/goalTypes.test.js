@@ -297,7 +297,9 @@ test('only a PAST month with gaps is unclosed', () => {
 
 test('formatValue respects the unit', () => {
   assert.strictEqual(formatValue(2.1, { unit: 'percent' }), '2.1%');
-  assert.strictEqual(formatValue(40000, { unit: 'currency', unitLabel: '₹' }), '₹40,000');
+  // Money is USD regardless of what `unitLabel` happens to hold.
+  assert.strictEqual(formatValue(40000, { unit: 'currency', unitLabel: '$' }), '$40,000');
+  assert.strictEqual(formatValue(40000, { unit: 'currency', unitLabel: '' }), '$40,000');
   assert.strictEqual(formatValue(12, { unit: 'custom', unitLabel: 'posts' }), '12 posts');
   assert.strictEqual(formatValue(1234.5, { unit: 'none' }), '1,234.5');
   assert.strictEqual(formatValue(null, {}), '—');

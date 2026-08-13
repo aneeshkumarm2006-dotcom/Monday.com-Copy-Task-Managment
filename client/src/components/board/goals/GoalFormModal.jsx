@@ -43,7 +43,7 @@ const TYPE_ICONS = {
 const UNIT_OPTIONS = [
   { value: 'none', label: 'Just a number' },
   { value: 'percent', label: 'Percent %' },
-  { value: 'currency', label: 'Money' },
+  { value: 'currency', label: 'Money (USD)' },
   { value: 'custom', label: 'Something else' },
 ];
 
@@ -89,7 +89,8 @@ const GoalFormModal = ({
       type: typeKey,
       name: draft.name.trim(),
       unit: typeSpec?.supportsUnit ? draft.unit : 'none',
-      unitLabel: draft.unit === 'currency' || draft.unit === 'custom' ? draft.unitLabel : '',
+      // Money is USD, always — nobody picks a symbol, so nothing to read off the draft.
+      unitLabel: draft.unit === 'currency' ? '$' : draft.unit === 'custom' ? draft.unitLabel : '',
       weight: draft.weight,
       config: draft.config,
     });
@@ -244,11 +245,11 @@ const GoalFormModal = ({
               onChange={(v) => setDraft((d) => ({ ...d, unit: v }))}
               options={UNIT_OPTIONS}
             />
-            {(draft.unit === 'currency' || draft.unit === 'custom') && (
+            {draft.unit === 'custom' && (
               <div className="mt-2">
                 <Input
-                  label={draft.unit === 'currency' ? 'Currency symbol' : 'What is the unit?'}
-                  placeholder={draft.unit === 'currency' ? '₹' : 'seconds'}
+                  label="What is the unit?"
+                  placeholder="seconds"
                   value={draft.unitLabel}
                   onChange={(e) => setDraft((d) => ({ ...d, unitLabel: e.target.value }))}
                 />

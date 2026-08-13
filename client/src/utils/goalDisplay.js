@@ -68,7 +68,8 @@ export const formatGoalValue = (value, goal) => {
   const n = value.toLocaleString(undefined, { maximumFractionDigits: 2 });
   switch (goal?.unit) {
     case 'percent': return `${n}%`;
-    case 'currency': return `${goal.unitLabel || ''}${n}`;
+    // Money is USD — the symbol is fixed, not read from `unitLabel`.
+    case 'currency': return `$${n}`;
     case 'custom': return goal.unitLabel ? `${n} ${goal.unitLabel}` : n;
     default: return n;
   }
