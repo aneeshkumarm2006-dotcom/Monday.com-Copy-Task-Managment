@@ -19,7 +19,12 @@ const MAX_NAME_LENGTH = 60;
  * TaskGroupHeader — collapsible header for a group within a board.
  *
  * Layout (left → right):
- *   [▾ chevron]  [● dot]  [GROUP NAME]  [N items]  [progress bar]
+ *   [▾ chevron] [● dot] [GROUP NAME] [N items] [owner] [progress bar] [tags] … [actions]
+ *
+ * Everything from the name through the progress bar sits in a FIXED-WIDTH slot,
+ * so those badges line up as columns down a board of differently-named groups
+ * instead of stepping right with each name. Name overflow truncates; anything
+ * whose width can't be pinned (tag chips) goes after the progress bar.
  *
  * See Macan_Design.md Section 6.8.
  *
@@ -179,79 +184,90 @@ const TaskGroupHeader = ({
       />
 
       {/* Group name — swaps for an input while renaming. Both share the same
-          typography so the row doesn't jump between the two states. */}
-      {editing ? (
-        <input
-          ref={inputRef}
-          type="text"
-          value={draft}
-          autoFocus
-          disabled={saving}
-          maxLength={MAX_NAME_LENGTH}
-          aria-label="Group name"
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitRename}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              e.stopPropagation();
-              commitRename();
-            }
-            if (e.key === 'Escape') {
-              e.stopPropagation();
-              setEditing(false);
-            }
-          }}
-          className="font-display"
+          typography so the row doesn't jump between the two states.
+
+          Fixed-width COLUMN, not content-width: every badge that follows starts
+          at the same x on every row, so the counts, owners and progress bars
+          read down the board as columns instead of a ragged edge. Long names
+          truncate (full text stays in the tooltip) rather than shoving the
+          column boundary right. */}
+      <div className="min-w-0 shrink w-[150px] md:w-[190px] lg:w-[220px]">
+        {editing ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={draft}
+            autoFocus
+            disabled={saving}
+            maxLength={MAX_NAME_LENGTH}
+            aria-label="Group name"
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                commitRename();
+              }
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setEditing(false);
+              }
+            }}
+            className="font-display"
+            style={{
+              // Fills the name column, so entering/leaving edit mode never moves
+              // the badges to its right.
+              width: '100%',
+              minWidth: 0,
+              fontSize: 14,
+              fontWeight: 600,
+              letterSpacing: '0.05em',
+              textTransform: 'uppercase',
+              color: 'var(--color-text-primary)',
+              background: 'var(--color-surface, #FFFFFF)',
+              border: '1px solid var(--color-accent)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '2px 6px',
+              outline: 'none',
+              opacity: saving ? 0.6 : 1,
+            }}
+          />
+        ) : (
+          <h3
+            className="font-display truncate"
+            title={name}
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              letterSpacing: '0.05em',
+              textTransform: 'uppercase',
+              color: 'var(--color-text-primary)',
+            }}
+          >
+            {name}
+          </h3>
+        )}
+      </div>
+
+      {/* Item count badge — in a fixed-width slot so "9 items" and "13 items"
+          leave the next column starting at the same place. */}
+      <div className="shrink-0 w-[78px]">
+        <span
+          className="inline-flex items-center font-body"
           style={{
-            // Sized for editing rather than to the old name's length, but still
-            // allowed to shrink so a narrow board doesn't push the badges out.
-            width: 240,
-            minWidth: 0,
-            maxWidth: '100%',
-            fontSize: 14,
-            fontWeight: 600,
-            letterSpacing: '0.05em',
-            textTransform: 'uppercase',
-            color: 'var(--color-text-primary)',
+            fontSize: 11,
+            fontWeight: 500,
+            padding: '2px 8px',
+            borderRadius: 'var(--radius-full)',
             background: 'var(--color-surface, #FFFFFF)',
-            border: '1px solid var(--color-accent)',
-            borderRadius: 'var(--radius-sm)',
-            padding: '2px 6px',
-            outline: 'none',
-            opacity: saving ? 0.6 : 1,
-          }}
-        />
-      ) : (
-        <h3
-          className="font-display truncate"
-          style={{
-            fontSize: 14,
-            fontWeight: 600,
-            letterSpacing: '0.05em',
-            textTransform: 'uppercase',
-            color: 'var(--color-text-primary)',
+            color: 'var(--color-text-muted)',
+            border: '1px solid var(--color-border)',
           }}
         >
-          {name}
-        </h3>
-      )}
-
-      {/* Item count badge */}
-      <span
-        className="inline-flex items-center font-body shrink-0"
-        style={{
-          fontSize: 11,
-          fontWeight: 500,
-          padding: '2px 8px',
-          borderRadius: 'var(--radius-full)',
-          background: 'var(--color-surface, #FFFFFF)',
-          color: 'var(--color-text-muted)',
-          border: '1px solid var(--color-border)',
-        }}
-      >
-        {totalCount} {totalCount === 1 ? 'item' : 'items'}
-      </span>
+          {totalCount} {totalCount === 1 ? 'item' : 'items'}
+        </span>
+      </div>
 
       {/* Group owner (tracker boards). Deliberately on the LEFT, with the
           group's identity rather than with the action buttons: who is
@@ -261,66 +277,102 @@ const TaskGroupHeader = ({
           Nothing renders at all on a board that has no owners, so every other
           board's header is byte-identical to before. */}
       {(owner || onOpenOwner) && (
-        <button
-          type="button"
-          onClick={onOpenOwner}
-          disabled={!onOpenOwner}
-          aria-label={
-            owner
-              ? `Owner: ${owner.name}${onOpenOwner ? '. Change owner' : ''}`
-              : `Assign an owner to ${name}`
-          }
-          title={
-            owner
-              ? [
-                owner.name,
-                !ownerActive ? '(no longer in this workspace)' : '',
-                ownerInherited && ownerFromLabel ? `— carried forward from ${ownerFromLabel}` : '',
-              ].filter(Boolean).join(' ')
-              : 'Assign an owner'
-          }
-          className="inline-flex items-center gap-1.5 shrink-0"
-          style={{
-            height: 28,
-            width: owner ? undefined : 28,
-            padding: owner ? '0 8px 0 3px' : 0,
-            justifyContent: owner ? undefined : 'center',
-            borderRadius: 'var(--radius-full)',
-            background: owner ? 'var(--color-surface, #FFFFFF)' : 'transparent',
-            border: owner ? '1px solid var(--color-border)' : '1px dashed var(--color-border)',
-            // Inherited reads as slightly quieter than a decision made THIS
-            // month. Same shape, so it never looks like a different kind of thing.
-            opacity: ownerInherited ? 0.75 : 1,
-            cursor: onOpenOwner ? 'pointer' : 'default',
-          }}
-        >
-          {owner ? (
-            <>
-              <Avatar user={owner} size={22} />
-              <span
-                className="hidden lg:inline font-body truncate"
-                style={{
-                  fontSize: 11.5,
-                  fontWeight: 500,
-                  maxWidth: 110,
-                  color: ownerActive
-                    ? 'var(--color-text-secondary, var(--color-text-muted))'
-                    : 'var(--color-text-muted)',
-                  textDecoration: ownerActive ? 'none' : 'line-through',
-                }}
-              >
-                {owner.name}
-              </span>
-            </>
-          ) : (
-            <UserPlus size={14} color="var(--color-text-muted)" aria-hidden="true" />
-          )}
-        </button>
+        <div className="shrink-0 w-[34px] lg:w-[164px]">
+          <button
+            type="button"
+            onClick={onOpenOwner}
+            disabled={!onOpenOwner}
+            aria-label={
+              owner
+                ? `Owner: ${owner.name}${onOpenOwner ? '. Change owner' : ''}`
+                : `Assign an owner to ${name}`
+            }
+            title={
+              owner
+                ? [
+                  owner.name,
+                  !ownerActive ? '(no longer in this workspace)' : '',
+                  ownerInherited && ownerFromLabel ? `— carried forward from ${ownerFromLabel}` : '',
+                ].filter(Boolean).join(' ')
+                : 'Assign an owner'
+            }
+            className="inline-flex items-center gap-1.5 shrink-0 max-w-full"
+            style={{
+              height: 28,
+              width: owner ? undefined : 28,
+              padding: owner ? '0 8px 0 3px' : 0,
+              justifyContent: owner ? undefined : 'center',
+              borderRadius: 'var(--radius-full)',
+              background: owner ? 'var(--color-surface, #FFFFFF)' : 'transparent',
+              border: owner ? '1px solid var(--color-border)' : '1px dashed var(--color-border)',
+              // Inherited reads as slightly quieter than a decision made THIS
+              // month. Same shape, so it never looks like a different kind of thing.
+              opacity: ownerInherited ? 0.75 : 1,
+              cursor: onOpenOwner ? 'pointer' : 'default',
+            }}
+          >
+            {owner ? (
+              <>
+                <Avatar user={owner} size={22} />
+                <span
+                  className="hidden lg:inline font-body truncate"
+                  style={{
+                    fontSize: 11.5,
+                    fontWeight: 500,
+                    maxWidth: 110,
+                    color: ownerActive
+                      ? 'var(--color-text-secondary, var(--color-text-muted))'
+                      : 'var(--color-text-muted)',
+                    textDecoration: ownerActive ? 'none' : 'line-through',
+                  }}
+                >
+                  {owner.name}
+                </span>
+              </>
+            ) : (
+              <UserPlus size={14} color="var(--color-text-muted)" aria-hidden="true" />
+            )}
+          </button>
+        </div>
       )}
+
+      {/* Progress bar — hidden on small screens to save horizontal space. Last
+          of the fixed-width columns, so it lines up down the board. */}
+      <div
+        className="shrink-0 hidden sm:block"
+        role="progressbar"
+        aria-valuenow={progressPct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={`${doneCount} of ${totalCount} done`}
+        title={`${doneCount} of ${totalCount} done`}
+        style={{
+          width: 80,
+          height: 4,
+          borderRadius: 'var(--radius-full)',
+          background: 'var(--color-border)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            width: `${progressPct}%`,
+            height: '100%',
+            background: progressPct === 100
+              ? 'var(--color-status-done)'
+              : 'var(--color-accent)',
+            transition: 'width 200ms ease-out',
+          }}
+        />
+      </div>
 
       {/* Group tag chips. Rendered only when the viewer has the `groupTags`
           extra feature on — the caller resolves the ids and passes an empty
-          array otherwise, so this whole block collapses to nothing. */}
+          array otherwise, so this whole block collapses to nothing.
+
+          Sits AFTER the progress bar because its width varies with the tag
+          names: anywhere earlier and it would knock the aligned columns out of
+          line group by group, which is exactly what these widths fix. */}
       {shownTags.length > 0 && (
         <span className="hidden md:flex items-center gap-1 shrink-0">
           {shownTags.map((tag) => {
@@ -363,35 +415,6 @@ const TaskGroupHeader = ({
           )}
         </span>
       )}
-
-      {/* Progress bar — hidden on small screens to save horizontal space */}
-      <div
-        className="shrink-0 hidden sm:block"
-        role="progressbar"
-        aria-valuenow={progressPct}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={`${doneCount} of ${totalCount} done`}
-        title={`${doneCount} of ${totalCount} done`}
-        style={{
-          width: 80,
-          height: 4,
-          borderRadius: 'var(--radius-full)',
-          background: 'var(--color-border)',
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            width: `${progressPct}%`,
-            height: '100%',
-            background: progressPct === 100
-              ? 'var(--color-status-done)'
-              : 'var(--color-accent)',
-            transition: 'width 200ms ease-out',
-          }}
-        />
-      </div>
 
       {/* Spacer pushes the add button to the right */}
       <div className="flex-1" />
