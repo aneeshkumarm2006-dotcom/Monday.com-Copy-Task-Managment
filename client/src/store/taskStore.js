@@ -525,8 +525,13 @@ const useTaskStore = create((set, get) => ({
    * is the full desired order of `targetGroupId` after the drop. If a task
    * came from a different group, this also removes it from its previous
    * bucket. Reverts on API failure.
+   *
+   * `month` must be passed on a tracker board. The server's reply REPLACES the
+   * target bucket, and the store only ever holds the month on screen — without
+   * it the reply carries the group's every month and the drag reads as though
+   * the month filter had been cleared.
    */
-  reorderTasks: async (targetGroupId, orderedIds) => {
+  reorderTasks: async (targetGroupId, orderedIds, { month } = {}) => {
     const prev = get().tasksByGroup;
     // Build a lookup of every top-level task we currently know about so we
     // can re-bucket cross-group moves.
@@ -548,7 +553,7 @@ const useTaskStore = create((set, get) => ({
       .filter(Boolean);
     set({ tasksByGroup: nextBuckets });
     try {
-      const data = await taskService.reorderTasks(targetGroupId, orderedIds);
+      const data = await taskService.reorderTasks(targetGroupId, orderedIds, { month });
       const serverTasks = Array.isArray(data?.tasks) ? data.tasks : null;
       if (serverTasks) {
         set((s) => ({

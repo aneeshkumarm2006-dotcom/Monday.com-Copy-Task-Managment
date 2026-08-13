@@ -159,11 +159,16 @@ export const reorderGroups = async (boardId, orderedIds) => {
  * PUT /api/tasks/reorder — reorder tasks within a target group, optionally
  * pulling in tasks from other groups on the same board. Server returns the
  * updated task list for the target group.
+ *
+ * `month` scopes that returned list, exactly like `getTasks`. It must be passed
+ * on a tracker board: the caller replaces its bucket with the response, so an
+ * unscoped reply would drop every other month's tasks into the group.
  */
-export const reorderTasks = async (targetGroupId, orderedIds) => {
+export const reorderTasks = async (targetGroupId, orderedIds, { month } = {}) => {
   const { data } = await api.put('/api/tasks/reorder', {
     targetGroupId,
     orderedIds,
+    ...(month ? { month } : {}),
   });
   return data;
 };

@@ -2067,10 +2067,21 @@ const moveTasksToMonth = async (req, res) => {
   }
 };
 
+/**
+ * PUT /api/tasks/reorder
+ * Body: { targetGroupId, orderedIds: [id,...], month?: 'YYYY-MM' }
+ *
+ * `month` scopes the task list in the RESPONSE, never the write. On a tracker
+ * board the client only ever holds one month, so the reply must be that same
+ * month or the client's replace-the-bucket update pulls in every other month.
+ * It is optional (and derived from the moved rows when absent) because a reorder
+ * has already been persisted by the time we build the reply — this is not a
+ * place to 400 the way the read path does.
+ */
 const reorderTasks = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { orderedIds, targetGroupId } = req.body || {};
+    const { orderedIds, targetGroupId, month } = req.body || {};
 
     if (!Array.isArray(orderedIds)) {
       return res.status(400).json({ error: 'orderedIds must be an array' });
@@ -2097,7 +2108,9 @@ const reorderTasks = async (req, res) => {
     if (denied) return res.status(denied.status).json({ error: denied.error });
 
     // Load every supplied task and validate same board, top-level, etc.
-    const tasks = await Task.find({ _id: { $in: orderedIds } }).select('_id board parent');
+    const tasks = await Task.find({ _id: { $in: orderedIds } }).select(
+      '_id board parent monthKey'
+    );
     if (tasks.length !== orderedIds.length) {
       return res.status(400).json({ error: 'One or more task ids were not found' });
     }
@@ -2121,13 +2134,35 @@ const reorderTasks = async (req, res) => {
 
     await Board.updateOne({ _id: targetGroup.board }, { $set: { updatedAt: new Date() } });
 
-    const updated = await populateTask(
-      Task.find({ group: targetGroupId, parent: null, isPersonal: { $ne: true } })
-    )
+    // The client REPLACES its bucket for this group with whatever comes back,
+    // so this read has to be scoped exactly like `getTasks` was — on a tracker
+    // board that means one month. Returning the group's whole history here made
+    // every drag inside a month dump three years of rows into the group, which
+    // looks like "reordering cleared the month filter".
+    const readFilter = { group: targetGroupId, parent: null, isPersonal: { $ne: true } };
+    if (ctx.board?.boardType === 'tracker') {
+      // Prefer the month the client says it is looking at. Fall back to the
+      // month of the rows just moved — they all come from one month's view, so
+      // a single distinct value is the month on screen. Only a genuinely
+      // ambiguous case (empty list, or mixed/legacy null monthKeys) falls
+      // through unscoped, which is the old behaviour and no worse than it.
+      let scope = isMonthKey(month) ? month : null;
+      if (!scope) {
+        const seen = new Set(tasks.map((t) => t.monthKey || null));
+        const only = seen.size === 1 ? [...seen][0] : null;
+        if (isMonthKey(only)) scope = only;
+      }
+      if (scope) readFilter.monthKey = scope;
+    }
+
+    const updated = await populateTask(Task.find(readFilter))
       .sort({ order: 1, createdAt: 1 })
       .lean();
     await annotateHasSubitems(updated);
     await annotateUpdateCounts(updated);
+    // Same reason as the month scope: match what `getTasks` hands the client,
+    // or mirror columns render as raw cache wrappers after a drag.
+    await embedMirrorValues(updated, ctx.board);
 
     return res.json({ tasks: updated, groupId: targetGroupId });
   } catch (err) {

@@ -1340,7 +1340,7 @@ const BoardDetailPage = () => {
     const nextOrder = [...targetTasks.map((t) => t._id), ...idsToMove];
     setBulkBusy(true);
     try {
-      await reorderTasksAction(targetGroupId, nextOrder);
+      await reorderTasksAction(targetGroupId, nextOrder, { month: monthKey });
       // Tasks now live in the new group; their ids stay in the store, so
       // selectedTaskIds remains valid and the bar can keep operating on them.
     } catch (err) {
@@ -1687,7 +1687,9 @@ const BoardDetailPage = () => {
         const moved = arrayMove(unpinned, oldIndex, newIndex);
         let k = 0;
         const next = sourceTasks.map((t) => (isPinned(t) ? t : moved[k++]));
-        reorderTasksAction(targetGroupId, next.map((t) => t._id)).catch((err) => {
+        reorderTasksAction(targetGroupId, next.map((t) => t._id), {
+          month: monthKey,
+        }).catch((err) => {
           console.error('Failed to reorder tasks:', err);
           toastError('Could not reorder tasks');
         });
@@ -1707,7 +1709,7 @@ const BoardDetailPage = () => {
       }
       const nextTargetIds = targetTasks.map((t) => t._id);
       nextTargetIds.splice(insertAt, 0, movingTask._id);
-      reorderTasksAction(targetGroupId, nextTargetIds).catch((err) => {
+      reorderTasksAction(targetGroupId, nextTargetIds, { month: monthKey }).catch((err) => {
         console.error('Failed to move task:', err);
         toastError('Could not move task');
       });
