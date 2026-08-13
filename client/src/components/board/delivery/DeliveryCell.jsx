@@ -1,6 +1,6 @@
-import { memo } from 'react';
+import { memo, useCallback } from 'react';
 import { cellStateMeta, requirementMeta } from '../../../utils/deliveryTrackers';
-import { ROW_HOVER_BAND, ROW_HOVER_EDGE, ROW_HOVER_TRANSITION } from './rowHover';
+import { ROW_HOVER_BAND, washVars } from './rowHover';
 
 /**
  * One square in the delivery grid.
@@ -36,24 +36,37 @@ const DeliveryCell = ({
   groupName,
   targetCount,
   density,
+  row,
+  col,
   isFocused,
   rowHovered,
   onActivate,
   onFocus,
   onHover,
-  cellRef,
+  registerRef,
 }) => {
+  // The grid hands down stable callbacks plus this cell's coordinates; binding
+  // them here keeps the memo intact (see the note on the callbacks in the grid).
+  const handleRef = useCallback((node) => registerRef(row, col, node), [registerRef, row, col]);
+  const handleFocus = useCallback(() => onFocus(row, col), [onFocus, row, col]);
+  const handleHover = useCallback(() => onHover(row, col), [onHover, row, col]);
+  const handleActivate = useCallback(
+    (e) => onActivate(row, col, e.currentTarget),
+    [onActivate, row, col],
+  );
+
   const meta = cellStateMeta(cell.s);
   const Glyph = meta.glyph;
   const outcome = describeCellOutcome(cell, targetCount);
   const title = `${groupName} — ${period.ariaLabel} — ${outcome}`;
   const showCount = targetCount > 1 && cell.s !== 'off' && cell.s !== 'na';
 
-  const trackStyle = {
-    height: density.rowH,
-    background: rowHovered ? ROW_HOVER_BAND : 'transparent',
-    boxShadow: rowHovered ? ROW_HOVER_EDGE : 'none',
-    transition: ROW_HOVER_TRANSITION,
+  // The wash itself is `.macan-row-wash::before`, fading its opacity; all this
+  // has to do is name the gradient and say whether the row is under the pointer.
+  const trackProps = {
+    className: 'macan-row-wash flex items-center justify-center',
+    'data-row-hovered': rowHovered ? 'true' : 'false',
+    style: { height: density.rowH, ...washVars(ROW_HOVER_BAND) },
   };
 
   // Nothing was due, so there is nothing to open. A non-interactive div keeps
@@ -64,8 +77,7 @@ const DeliveryCell = ({
         role="gridcell"
         aria-label={`${groupName} — ${period.ariaLabel} — ${outcome}`}
         title={title}
-        className="flex items-center justify-center"
-        style={trackStyle}
+        {...trackProps}
       >
         <span
           aria-hidden="true"
@@ -87,16 +99,16 @@ const DeliveryCell = ({
       : meta.fill;
 
   return (
-    <div role="gridcell" className="flex items-center justify-center" style={trackStyle}>
+    <div role="gridcell" {...trackProps}>
       <button
-        ref={cellRef}
+        ref={handleRef}
         type="button"
         tabIndex={isFocused ? 0 : -1}
         aria-label={title}
         title={title}
-        onClick={onActivate}
-        onFocus={onFocus}
-        onMouseEnter={onHover}
+        onClick={handleActivate}
+        onFocus={handleFocus}
+        onMouseEnter={handleHover}
         className="flex items-center justify-center font-body transition-shadow duration-100"
         style={{
           width: density.cell,

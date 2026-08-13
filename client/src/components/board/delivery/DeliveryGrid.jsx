@@ -1,6 +1,6 @@
-import { Fragment, useCallback, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DeliveryCell from './DeliveryCell';
-import { NAME_COL_HOVER, ROW_HOVER_EDGE, ROW_HOVER_TRANSITION } from './rowHover';
+import { HOVER_EASE, HOVER_MS, NAME_COL_HOVER, washVars } from './rowHover';
 
 /**
  * The delivery matrix: clients down, periods across.
@@ -64,10 +64,41 @@ const DeliveryGrid = ({ tracker, periods, rows, density: densityKey = 'comfortab
   const [focus, setFocus] = useState({ row: 0, col: 0 });
   const cellRefs = useRef(new Map());
 
-  const refFor = useCallback((r, c) => (node) => {
+  /**
+   * Every cell callback below is identity-stable, and that is the whole point:
+   * DeliveryCell is memo'd, but a callback rebuilt on each render is a changed
+   * prop, so before this the memo did nothing and moving the pointer one column
+   * re-rendered all 520 cells. Now a hover re-renders the two rows whose
+   * `rowHovered` actually flipped, which is what lets the 180ms fade run without
+   * competing with React for the frame.
+   *
+   * They take (row, col) rather than closing over them, and read the live data
+   * through a ref, so `rows` changing does not churn the identities either.
+   */
+  const dataRef = useRef({ rows, periods, onCellClick });
+  useEffect(() => {
+    dataRef.current = { rows, periods, onCellClick };
+  }, [rows, periods, onCellClick]);
+
+  const registerRef = useCallback((r, c, node) => {
     const key = `${r}:${c}`;
     if (node) cellRefs.current.set(key, node);
     else cellRefs.current.delete(key);
+  }, []);
+
+  const handleHover = useCallback((r, c) => {
+    setHover((prev) => (prev.row === r && prev.col === c ? prev : { row: r, col: c }));
+  }, []);
+
+  const handleFocus = useCallback((r, c) => {
+    setFocus((prev) => (prev.row === r && prev.col === c ? prev : { row: r, col: c }));
+  }, []);
+
+  const handleActivate = useCallback((r, c, anchor) => {
+    const live = dataRef.current;
+    const row = live.rows[r];
+    if (!row) return;
+    live.onCellClick?.({ cell: row.cells[c], period: live.periods[c], row, anchor });
   }, []);
 
   const isInteractive = (r, c) => {
@@ -179,7 +210,7 @@ const DeliveryGrid = ({ tracker, periods, rows, density: densityKey = 'comfortab
               borderBottom: '1px solid var(--color-border)',
               background: hover.col === ci ? 'var(--color-accent-light)' : 'transparent',
               color: headerTone(ci),
-              transition: 'background 100ms ease',
+              transition: `background ${HOVER_MS}ms ${HOVER_EASE}, color ${HOVER_MS}ms ${HOVER_EASE}`,
             }}
           >
             {p.sublabel && (
@@ -200,7 +231,8 @@ const DeliveryGrid = ({ tracker, periods, rows, density: densityKey = 'comfortab
             <Fragment key={row.groupId}>
               <div
                 role="rowheader"
-                className="font-body truncate"
+                className="macan-row-wash font-body truncate"
+                data-row-hovered={rowHovered ? 'true' : 'false'}
                 title={row.groupName}
                 style={{
                   position: 'sticky',
@@ -213,11 +245,12 @@ const DeliveryGrid = ({ tracker, periods, rows, density: densityKey = 'comfortab
                   fontSize: 12.5,
                   fontWeight: rowHovered ? 600 : 500,
                   color: rowHovered ? 'var(--color-text-primary)' : 'var(--color-text-secondary)',
-                  background: rowHovered ? NAME_COL_HOVER : 'var(--color-bg-surface)',
-                  boxShadow: rowHovered
-                    ? `${NAME_COL_DIVIDER}, ${ROW_HOVER_EDGE}`
-                    : NAME_COL_DIVIDER,
-                  transition: `${ROW_HOVER_TRANSITION}, color 130ms ease`,
+                  // Stays opaque under the wash: this cell scrolls across the
+                  // grid and must never let a cell show through it.
+                  background: 'var(--color-bg-surface)',
+                  boxShadow: NAME_COL_DIVIDER,
+                  transition: `color ${HOVER_MS}ms ${HOVER_EASE}`,
+                  ...washVars(NAME_COL_HOVER),
                 }}
               >
                 {row.groupName}
@@ -230,18 +263,14 @@ const DeliveryGrid = ({ tracker, periods, rows, density: densityKey = 'comfortab
                   groupName={row.groupName}
                   targetCount={tracker.targetCount || 1}
                   density={d}
+                  row={ri}
+                  col={ci}
                   isFocused={focus.row === ri && focus.col === ci}
                   rowHovered={rowHovered}
-                  cellRef={refFor(ri, ci)}
-                  onFocus={() => setFocus({ row: ri, col: ci })}
-                  onHover={() => setHover({ row: ri, col: ci })}
-                  onActivate={(e) =>
-                    onCellClick?.({
-                      cell,
-                      period: periods[ci],
-                      row,
-                      anchor: e.currentTarget,
-                    })}
+                  registerRef={registerRef}
+                  onFocus={handleFocus}
+                  onHover={handleHover}
+                  onActivate={handleActivate}
                 />
               ))}
             </Fragment>

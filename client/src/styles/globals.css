@@ -375,6 +375,56 @@ li.macan-task-highlight {
 }
 
 /* ==========================================================
+   DELIVERY GRID ROW WASH — the hover band
+   Used by the Delivery tab's grid: hovering a cell tints its
+   whole row. Both halves of the band — the sticky name column
+   and every cell track — wear this one class and supply their
+   own gradient through --row-wash-image.
+
+   It has to be a pseudo-element fading its OPACITY, which is
+   worth explaining because the obvious version is one line of
+   inline style. Chromium does not interpolate background-image
+   AT ALL — not even between two gradients of identical shape —
+   so a `background-image: a → b` transition is ignored and the
+   wash snaps in at full strength however long the duration is.
+   Measured, not assumed: the first colour stop reads its final
+   alpha 51ms into a 180ms transition. Opacity always
+   interpolates and runs on the compositor, so the band fades on
+   its own thread while React is busy elsewhere.
+
+   z-index:-1 with isolation puts the wash above the element's
+   own background and below its content, so the status square
+   and the client name stay fully opaque on top of it.
+   ========================================================== */
+
+.macan-row-wash {
+  position: relative;
+  isolation: isolate;
+}
+
+.macan-row-wash::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0;
+  background-image: var(--row-wash-image);
+  box-shadow: var(--row-wash-edge);
+  transition: opacity 180ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.macan-row-wash[data-row-hovered='true']::before {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .macan-row-wash::before {
+    transition: none;
+  }
+}
+
+/* ==========================================================
    CUSTOM SCROLLBAR — Section 21
    Thin, rounded scrollbar using the site's warm palette.
    WebKit (Chrome/Edge/Safari) + Firefox fallback.
