@@ -31,6 +31,11 @@ const buildTaskDeepLink = (task, { tab, boardId: boardIdOverride } = {}) => {
     params.set('highlightParent', parent.toString?.() || String(parent));
   }
   if (tab) params.set('openTab', tab);
+  // On a tracker board only one month's rows are loaded at a time, so a link to
+  // an August task opened in September lands on a board that genuinely does not
+  // contain it. Carrying the task's own month is what the client-side
+  // `utils/taskLink.js` does, and it is the same param.
+  if (task?.monthKey) params.set('month', String(task.monthKey));
 
   return `${base}/boards/${boardId}?${params.toString()}`;
 };

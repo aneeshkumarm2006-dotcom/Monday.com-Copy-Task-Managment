@@ -23,8 +23,6 @@ export const DEFAULT_PREFS = {
   collapsed: {}, // trackerId -> bool
   windows: {}, // trackerId -> '4w' | '12m' | …
   views: {}, // trackerId -> 'grid' | 'list'
-  density: 'comfortable', // 'comfortable' | 'compact'
-  hideUntracked: false,
 };
 
 export const loadPrefs = (boardId) => {

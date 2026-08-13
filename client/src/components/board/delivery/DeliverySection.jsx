@@ -21,7 +21,6 @@ const DeliverySection = ({
   collapsed,
   view,
   window: windowToken,
-  density,
   onToggleCollapsed,
   onChangeView,
   onChangeWindow,
@@ -177,7 +176,6 @@ const DeliverySection = ({
                   tracker={tracker}
                   periods={periods}
                   rows={rows}
-                  density={density}
                   onCellClick={onCellClick}
                 />
               </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { listBoardMonths } from '../services/monthService';
 import {
@@ -34,10 +34,6 @@ const useBoardMonths = (boardId, { enabled = false } = {}) => {
   const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // Guards the one-time seed so a re-render cannot overwrite a choice the user
-  // just made. Keyed by board, so opening a different board seeds again.
-  const seededFor = useRef(null);
-
   const load = useCallback(async () => {
     if (!enabled || !boardId) {
       setMonths([]);
@@ -60,7 +56,6 @@ const useBoardMonths = (boardId, { enabled = false } = {}) => {
   }, [boardId, enabled]);
 
   useEffect(() => {
-    seededFor.current = null;
     load();
   }, [load]);
 
@@ -82,24 +77,38 @@ const useBoardMonths = (boardId, { enabled = false } = {}) => {
     [boardId, setSearchParams]
   );
 
-  // Seed once per board, after the month list arrives.
+  // Seed the month whenever the URL does not already name a usable one.
   //
   //   URL has a month that exists      → use it, rewrite nothing
   //   URL has a month that does not    → replace with the default (stale link)
   //   URL has no month                 → localStorage, else the server default
+  //
+  // This deliberately runs on every render where the URL is monthless, NOT once
+  // per board. It used to be a one-time seed guarded by a ref, on the theory
+  // that re-running could overwrite a choice the user had just made — it cannot,
+  // because a user's choice goes straight into `?month=` and is caught by the
+  // first branch below. What the guard DID do was strand the board: any
+  // navigation that replaced the query string while staying on the same board —
+  // clicking a notification for a task on the board you are already looking at —
+  // dropped `?month=` with the seed already spent, so `monthKey` stayed null
+  // forever. That is a board stuck on "Pick a month" with no groups and no
+  // tasks, because the whole board read is gated on the month having resolved.
+  // Re-seeding is the thing that makes such a link self-heal.
   useEffect(() => {
     if (!enabled || months.length === 0) return;
-    if (seededFor.current === boardId) return;
-    seededFor.current = boardId;
 
-    const fallback = meta?.defaultKey || months[0]?.key;
     if (isMonthKey(urlMonth) && findMonth(months, urlMonth)) {
       writeStoredMonth(boardId, urlMonth);
       return;
     }
-    const seed = (!urlMonth && readStoredMonth(boardId)) || fallback;
-    if (seed && findMonth(months, seed)) setMonth(seed, { replace: true });
-    else if (fallback) setMonth(fallback, { replace: true });
+
+    const fallback = meta?.defaultKey || months[0]?.key;
+    const remembered = urlMonth ? null : readStoredMonth(boardId);
+    const seed = (remembered && findMonth(months, remembered)) ? remembered : fallback;
+    // `seed !== urlMonth` cannot fire on a month the list contains (that
+    // returned above), so it only stops a server default missing from its own
+    // month list from re-writing the same URL on every render.
+    if (seed && seed !== urlMonth) setMonth(seed, { replace: true });
   }, [enabled, months, meta, urlMonth, boardId, setMonth]);
 
   // Never hand out a month the list does not contain — a stale `?month=` must

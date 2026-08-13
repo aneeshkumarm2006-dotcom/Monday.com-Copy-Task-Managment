@@ -192,7 +192,9 @@ const getNotifications = async (req, res) => {
       .limit(limit + 1)
       .populate('actor', 'name profilePic email')
       .populate('board', 'name')
-      .populate('task', 'board name parent');
+      // `monthKey` rides along so the click can deep-link to the month that
+      // actually holds the task — a tracker board shows one month at a time.
+      .populate('task', 'board name parent monthKey');
 
     let nextCursor = null;
     if (docs.length > limit) {

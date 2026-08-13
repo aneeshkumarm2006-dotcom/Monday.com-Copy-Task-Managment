@@ -108,7 +108,15 @@ export const resolveNotifLink = (notif) => {
   if (boardId && taskId) {
     const tabParam = notif.tab ? `&openTab=${notif.tab}` : '';
     const parentParam = parentId ? `&highlightParent=${parentId}` : '';
-    return `/boards/${boardId}?highlightTask=${taskId}${parentParam}${tabParam}`;
+    // The task's own month, on a tracker board. A tracker board only ever has
+    // one month's rows loaded, so a notification about an August task opened
+    // while the board is showing September lands on a board that genuinely does
+    // not contain the row — same reasoning as `utils/taskLink.js`, which is why
+    // the param is spelled the same way. Absent on non-tracker boards, where
+    // the board ignores it.
+    const monthParam = notif.month || notif.task?.monthKey || null;
+    const month = monthParam ? `&month=${monthParam}` : '';
+    return `/boards/${boardId}?highlightTask=${taskId}${parentParam}${tabParam}${month}`;
   }
   if (boardId) return `/boards/${boardId}`;
   if (notif.type === 'memberJoined') return '/members';

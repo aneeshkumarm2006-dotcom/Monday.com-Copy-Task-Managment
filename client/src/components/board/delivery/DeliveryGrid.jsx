@@ -24,10 +24,7 @@ import { HOVER_EASE, HOVER_MS, NAME_COL_HOVER, washVars } from './rowHover';
  * scrolls sideways.
  */
 
-const DENSITY = {
-  comfortable: { nameCol: 172, cell: 24, gutter: 4, rowH: 30, headH: 42 },
-  compact: { nameCol: 148, cell: 20, gutter: 3, rowH: 24, headH: 36 },
-};
+const METRICS = { nameCol: 172, cell: 24, gutter: 4, rowH: 30, headH: 42 };
 
 const MAX_TRACK = 96;
 
@@ -55,8 +52,8 @@ const buildBands = (periods) => {
   return bands;
 };
 
-const DeliveryGrid = ({ tracker, periods, rows, density: densityKey = 'comfortable', onCellClick }) => {
-  const d = DENSITY[densityKey] || DENSITY.comfortable;
+const DeliveryGrid = ({ tracker, periods, rows, onCellClick }) => {
+  const d = METRICS;
   const track = trackWidth(periods.length, d);
   const bands = useMemo(() => buildBands(periods), [periods]);
 

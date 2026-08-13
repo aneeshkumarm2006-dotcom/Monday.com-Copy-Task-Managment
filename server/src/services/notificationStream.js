@@ -68,7 +68,9 @@ const handleNotificationCreated = async ({ userId, notificationId } = {}) => {
     const notif = await Notification.findById(notificationId)
       .populate('actor', 'name profilePic email')
       .populate('board', 'name')
-      .populate('task', 'board name parent');
+      // Same shape the list endpoint returns — `monthKey` included, so a live
+      // notification deep-links to the right month too.
+      .populate('task', 'board name parent monthKey');
     if (!notif) return;
 
     const notifOrg = notif.organisation ? String(notif.organisation) : null;

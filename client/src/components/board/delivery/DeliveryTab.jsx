@@ -4,7 +4,6 @@ import { CalendarCheck, Settings2 } from 'lucide-react';
 import Button from '../../ui/Button';
 import EmptyState from '../../ui/EmptyState';
 import { SkeletonBlock } from '../../ui/Skeleton';
-import { Toggle } from '../../ui/FormControls';
 import useTaskStore from '../../../store/taskStore';
 import useToastStore from '../../../store/toastStore';
 import * as trackerService from '../../../services/trackerService';
@@ -138,14 +137,6 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
     [delivery, prefs.order]
   );
 
-  const visibleTrackers = useMemo(() => {
-    if (!prefs.hideUntracked) return trackers;
-    return trackers.map((t) => ({
-      ...t,
-      rows: (t.rows || []).filter((r) => r.summary.required > 0),
-    }));
-  }, [trackers, prefs.hideUntracked]);
-
   // The delivery report is deliberately owner-blind — it scores groups, not
   // people. The board's own group documents already carry the owner the server
   // resolved for the month on screen, so the popover borrows that rather than
@@ -191,29 +182,17 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
     <div className="mt-5 flex flex-col gap-4">
       {hasTrackers ? (
         <>
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-4 flex-wrap">
-              <Toggle
-                checked={prefs.density === 'compact'}
-                onChange={(v) => updatePrefs({ density: v ? 'compact' : 'comfortable' })}
-                label="Compact rows"
-              />
-              <Toggle
-                checked={prefs.hideUntracked}
-                onChange={(v) => updatePrefs({ hideUntracked: v })}
-                label="Hide clients with nothing tracked"
-              />
-            </div>
-            {canManage && (
+          {canManage && (
+            <div className="flex items-center justify-end">
               <Button variant="secondary" size="sm" icon={Settings2} onClick={() => setModal({ view: 'list' })}>
                 Trackers
               </Button>
-            )}
-          </div>
+            </div>
+          )}
 
           <DeliverySummary trackers={trackers} />
 
-          {visibleTrackers.map((tracker) => (
+          {trackers.map((tracker) => (
             <DeliverySection
               key={tracker._id}
               sectionRef={(node) => {
@@ -223,7 +202,6 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
               tracker={tracker}
               groups={groups}
               canManage={canManage}
-              density={prefs.density}
               collapsed={!!prefs.collapsed[tracker._id]}
               view={prefs.views[tracker._id] || 'grid'}
               window={windows[tracker._id]}
