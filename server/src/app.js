@@ -50,6 +50,7 @@ app.use('/api', require('./routes/groups'));
 app.use('/api', require('./routes/automations'));
 app.use('/api', require('./routes/trackers'));
 app.use('/api', require('./routes/goals'));
+app.use('/api', require('./routes/scoreboard'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api', require('./routes/updates'));
 app.use('/api', require('./routes/notes'));

@@ -46,15 +46,17 @@ const useTaskStore = create((set, get) => ({
    * `month` scopes the task fetch on a tracker board, and is REQUIRED there —
    * the server 400s without it rather than returning three years of tasks and
    * letting the client render them all as though they were this month's.
-   * Groups are always fetched unscoped, which is what makes an empty month show
-   * every group rather than nothing at all.
+   * The group LIST is never filtered by month, which is what makes an empty
+   * month show every group rather than nothing at all. The month is still passed
+   * to the group fetch because on a tracker board it selects which OWNER each
+   * group resolves to — same groups, different avatars.
    */
   fetchBoardData: async (boardId, { month } = {}) => {
     if (!boardId) return;
     set({ loading: true, error: null });
     try {
       const [groups, tasks, noteCounts] = await Promise.all([
-        taskService.getGroups(boardId),
+        taskService.getGroups(boardId, { month }),
         taskService.getTasks(boardId, { month }),
         // Cheap per-group note counts for the header badges. Non-essential —
         // don't let a counts hiccup break the whole board load.
@@ -98,6 +100,29 @@ const useTaskStore = create((set, get) => ({
         }
         return { tasksByGroup };
       });
+    } catch {
+      // Background refresh — stay silent; the next full load reconciles.
+    }
+  },
+
+  /**
+   * Quietly refetch just the board's GROUPS, without touching tasks or toggling
+   * `loading`.
+   *
+   * The counterpart to refreshBoardTasks, and it exists because a group carries
+   * one piece of per-month state: its owner. Switching month refetches tasks
+   * only, so without this the board would show the PREVIOUS month's owners over
+   * the new month's tasks — silently, with no error, and invisibly to any test
+   * that only ever loads one month.
+   *
+   * Replaces the list wholesale rather than merging: the server is the resolver,
+   * and a merge would let a stale optimistic owner survive a month switch.
+   */
+  refreshBoardGroups: async (boardId, { month } = {}) => {
+    if (!boardId) return;
+    try {
+      const groups = await taskService.getGroups(boardId, { month });
+      set({ groups });
     } catch {
       // Background refresh — stay silent; the next full load reconciles.
     }
@@ -403,6 +428,52 @@ const useTaskStore = create((set, get) => ({
     });
     try {
       const group = await taskService.updateGroup(groupId, { tags });
+      if (group) get().updateGroupLocal(group);
+      return group;
+    } catch (err) {
+      set({ groups: prev });
+      throw err;
+    }
+  },
+
+  /**
+   * Optimistically set a group's owner FOR ONE MONTH. Same shape as
+   * `setGroupTags`: patch-merge, then reconcile with the server's doc.
+   *
+   * Takes the picker's member OBJECT rather than an id, because the optimistic
+   * avatar needs a name and a picture to draw immediately — the server's
+   * resolved doc replaces it a moment later. `null` unassigns.
+   *
+   * `monthKey` is the month currently on screen, and the server resolves the
+   * response against it. It is not optional in spirit: without it the server
+   * would fall back to ITS current month and the assignment could land in a
+   * month the user is not looking at, with a 200 and no error anywhere. The
+   * caller gates the affordance on having a known month.
+   *
+   * Note what the write means: pinning an owner in August also changes September
+   * and October, if those months were inheriting. That is the carry-forward rule
+   * working correctly, and it is why the caller's toast says "from Aug onward".
+   */
+  setGroupOwner: async (groupId, member, monthKey) => {
+    const prev = get().groups;
+    set({
+      groups: prev.map((g) => (g._id === groupId
+        ? {
+          ...g,
+          owner: member || null,
+          ownerMonth: monthKey,
+          ownerFromMonth: monthKey,
+          // An explicit write is pinned here, never inherited from earlier.
+          ownerInherited: false,
+          ownerActive: true,
+        }
+        : g)),
+    });
+    try {
+      const group = await taskService.updateGroup(groupId, {
+        owner: member?._id || null,
+        ownerMonth: monthKey,
+      });
       if (group) get().updateGroupLocal(group);
       return group;
     } catch (err) {

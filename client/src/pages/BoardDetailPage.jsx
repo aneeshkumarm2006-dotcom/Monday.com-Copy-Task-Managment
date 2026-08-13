@@ -16,6 +16,7 @@ import {
   LayoutList,
   Target,
   CalendarRange,
+  Users,
 } from 'lucide-react';
 import {
   DndContext,
@@ -61,11 +62,12 @@ import BoardTypePill from '../components/board/BoardTypePill';
 import ConvertToTrackerModal from '../components/board/ConvertToTrackerModal';
 import BoardTimezoneModal from '../components/board/BoardTimezoneModal';
 import GoalsTab from '../components/board/goals/GoalsTab';
+import ScoreboardTab from '../components/board/scoreboard/ScoreboardTab';
 import MonthSelector from '../components/board/MonthSelector';
 import MoveToMonthModal from '../components/board/MoveToMonthModal';
 import useBoardMonths from '../hooks/useBoardMonths';
 import { moveTasksToMonth } from '../services/monthService';
-import { findMonth } from '../utils/monthKeys';
+import { findMonth, formatMonthKey } from '../utils/monthKeys';
 import TrackersModal from '../components/board/delivery/TrackersModal';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
@@ -129,6 +131,9 @@ const VIEW_TABS = [
     visible: (g) => g.canViewDelivery,
   },
   { value: 'goals', label: 'Goals', icon: Target, visible: (g) => g.canViewGoals },
+  // People spans BOTH goals and delivery — who owns which group, and how their
+  // groups scored — so it belongs inside neither of the two tabs above.
+  { value: 'people', label: 'People', icon: Users, visible: (g) => g.canViewScoreboard },
 ];
 
 const BoardDetailPage = () => {
@@ -162,11 +167,13 @@ const BoardDetailPage = () => {
   const removeGroupLocal = useTaskStore((s) => s.removeGroup);
   const renameGroupAction = useTaskStore((s) => s.renameGroup);
   const setGroupTagsAction = useTaskStore((s) => s.setGroupTags);
+  const setGroupOwnerAction = useTaskStore((s) => s.setGroupOwner);
   const reorderGroupsAction = useTaskStore((s) => s.reorderGroups);
   const reorderTasksAction = useTaskStore((s) => s.reorderTasks);
   const boardRefreshSignal = useTaskStore((s) => s.boardRefreshSignal);
   const boardRefreshTarget = useTaskStore((s) => s.boardRefreshTarget);
   const refreshBoardTasks = useTaskStore((s) => s.refreshBoardTasks);
+  const refreshBoardGroups = useTaskStore((s) => s.refreshBoardGroups);
   const refreshNotifications = useNotificationStore((s) => s.fetchNotifications);
   const toastError = useToastStore((s) => s.error);
   const toastSuccess = useToastStore((s) => s.success);
@@ -233,6 +240,9 @@ const BoardDetailPage = () => {
   const [labelMenu, setLabelMenu] = useState(null); // { task, anchor }
   // Group tags picker popover state (extra feature)
   const [groupTagMenu, setGroupTagMenu] = useState(null); // { groupId, anchor }
+  // Group owner picker popover state (tracker boards). Distinct from
+  // `ownerMenu` above, which is a TASK's assignees.
+  const [groupOwnerMenu, setGroupOwnerMenu] = useState(null); // { groupId, anchor }
   // Edit-chips modal — `kind` is 'labels' | 'statuses' | 'groupTags'
   const [editChipsModal, setEditChipsModal] = useState(null);
   // Row actions menu state
@@ -369,10 +379,24 @@ const BoardDetailPage = () => {
   // SCHEMA is an org-admin act rather than a board one, which is why that last
   // one reads `canOrg` — the goal columns are the organisation's reporting
   // vocabulary, not one board owner's preference.
+  // Who owns a group. Part of the tracker board type, NOT an opt-in extra
+  // feature: group tags can hide from people who never asked for them because a
+  // tag is decoration, but hiding who is RESPONSIBLE from the rest of the team
+  // would defeat the point. So capability only — the same reasoning that took
+  // Delivery out of the extra-features table.
+  const canOwnGroups = isTrackerBoard && canOnBoard('group.manage');
+
   const canViewGoals = isTrackerBoard && canOnBoard('goal.view');
   const canTrackGoals = canViewGoals && canOnBoard('goal.track');
   const canManageGoals = canViewGoals && canOnBoard('goal.manage');
   const canManageGoalColumns = canViewGoals && canOrg('org.manage_settings');
+
+  // The People tab opens for anyone who can read the goals. WHAT it shows then
+  // narrows server-side rather than here: without `productivity.view_others` the
+  // endpoint returns only your own row, and without `tracker.view` the delivery
+  // half is absent. Gating the tab itself on those would hide a page people are
+  // allowed to see a version of.
+  const canViewScoreboard = canViewGoals;
 
   // Converting a board changes what it IS, so it answers to the same capability
   // as flipping public/private rather than to an ordinary edit right. Client
@@ -389,8 +413,8 @@ const BoardDetailPage = () => {
   // Which tabs exist on this board, resolved once so the bar and the view
   // validation below cannot disagree about it.
   const visibleTabs = useMemo(
-    () => VIEW_TABS.filter((t) => t.visible({ canViewDelivery, canViewGoals })),
-    [canViewDelivery, canViewGoals]
+    () => VIEW_TABS.filter((t) => t.visible({ canViewDelivery, canViewGoals, canViewScoreboard })),
+    [canViewDelivery, canViewGoals, canViewScoreboard]
   );
 
   // Derived from the URL rather than mirrored into state — two sources of truth
@@ -479,6 +503,9 @@ const BoardDetailPage = () => {
     if (loadedMonthRef.current === monthKey) return;
     loadedMonthRef.current = monthKey;
     refreshBoardTasks(boardId, { month: monthKey });
+    // Groups too, not just tasks: a group's OWNER is per-month, so refetching
+    // only the tasks would leave last month's avatars over this month's rows.
+    refreshBoardGroups(boardId, { month: monthKey });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monthKey, boardId, isTrackerBoard]);
 
@@ -496,6 +523,42 @@ const BoardDetailPage = () => {
     refreshBoardTasks(boardId, { month: monthKey });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardRefreshSignal]);
+
+  // --- Handle highlightGroup, from the People tab's drill-down -------------
+  //
+  // Deliberately much simpler than highlightTask below: a group always exists in
+  // every month, so there is no "not in this month" case to explain and nothing
+  // to wait for beyond the groups themselves.
+  useEffect(() => {
+    const groupId = searchParams.get('highlightGroup');
+    if (!groupId || loading || groups.length === 0) return;
+
+    // The row it wants to scroll to is not rendered on the People/Goals/Delivery
+    // views, so land on the board first; this effect re-runs once `view` changes.
+    if (view !== 'board') {
+      setView('board');
+      return;
+    }
+
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.delete(groupId);
+      return next;
+    });
+
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('highlightGroup');
+      return next;
+    }, { replace: true });
+
+    // After the expand has painted.
+    requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-group-id="${groupId}"]`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [searchParams, loading, groups, view, setView, setSearchParams]);
 
   // --- Handle highlightTask query param from notification click -----------
   useEffect(() => {
@@ -596,14 +659,21 @@ const BoardDetailPage = () => {
   }, [highlightedTaskId]);
 
   // Fetch org members (used by the assignee picker + Share modal). Anyone who
-  // can edit the board needs them; the board creator needs them to share.
+  // can edit the board needs them; the board creator needs them to share; and on
+  // a tracker board the group-owner picker needs them too — `group.manage`
+  // without `task.edit_any` is a real combination, and it would otherwise open an
+  // empty picker.
+  //
+  // Deliberately NOT widened any further than that. Everyone else — viewers
+  // included — still gets each group's owner populated on the group document
+  // itself, so they see the name and avatar without ever receiving the roster.
   useEffect(() => {
     if (!orgId) return;
-    if (!canEdit && !isBoardCreator) return;
+    if (!canEdit && !isBoardCreator && !canOwnGroups) return;
     fetchMembers(orgId).catch((err) =>
       console.error('Failed to load members:', err)
     );
-  }, [orgId, canEdit, isBoardCreator, fetchMembers]);
+  }, [orgId, canEdit, isBoardCreator, canOwnGroups, fetchMembers]);
 
   const totalTaskCount = useMemo(
     () =>
@@ -1407,6 +1477,40 @@ const BoardDetailPage = () => {
     }
   };
 
+  // --- Group owner (tracker boards) ---------------------------------------
+
+  const handleOpenGroupOwner = (group, event) => {
+    setGroupOwnerMenu({ groupId: group._id, anchor: event.currentTarget });
+  };
+
+  /**
+   * Set (or clear) who owns a group FROM the month currently on screen.
+   *
+   * The toast names the month deliberately. Ownership carries forward, so
+   * assigning in August also changes September and October if those months were
+   * inheriting — correct by construction, and astonishing if nobody says so.
+   * The timeline itself is invisible; this sentence and the "carried forward
+   * from…" tooltip are the only places the rule is ever stated to the user.
+   */
+  const handleSetGroupOwner = async (groupId, member) => {
+    if (!canOwnGroups || !monthKey) return;
+    try {
+      await setGroupOwnerAction(groupId, member, monthKey);
+      const when = selectedMonth?.label || formatMonthKey(monthKey);
+      toastSuccess(
+        member
+          ? `${member.name} owns this group from ${when} onward.`
+          : `Owner cleared from ${when} onward.`
+      );
+    } catch (err) {
+      console.error('Failed to set group owner:', err);
+      toastError(
+        err?.response?.data?.error ||
+          'Failed to set the group owner. Please try again.'
+      );
+    }
+  };
+
   // --- Group deletion -----------------------------------------------------
 
   const handleDeleteGroup = (group) => {
@@ -1768,6 +1872,24 @@ const BoardDetailPage = () => {
         />
       )}
 
+      {view === 'people' && (
+        <ScoreboardTab
+          boardId={boardId}
+          monthKey={monthKey}
+          monthLabel={selectedMonth?.label}
+          // The drill-down jumps back to the board and scrolls to the group, so
+          // a name in the table is a route to the work rather than a dead end.
+          onOpenGroup={(groupId) => {
+            setSearchParams((prev) => {
+              const next = new URLSearchParams(prev);
+              next.set('view', 'board');
+              next.set('highlightGroup', groupId);
+              return next;
+            });
+          }}
+        />
+      )}
+
       {view === 'delivery' && (
         <DeliveryTab
           boardId={boardId}
@@ -1931,6 +2053,8 @@ const BoardDetailPage = () => {
                     {({ ref, setActivatorNodeRef, style, attributes, listeners, isDragging }) => (
                       <div
                         ref={ref}
+                        // The People tab's drill-down scrolls to a group by id.
+                        data-group-id={group._id}
                         className={`bg-surface ${
                           needsOverflowVisible ? 'overflow-visible' : 'overflow-hidden'
                         }`}
@@ -1963,6 +2087,22 @@ const BoardDetailPage = () => {
                           onOpenTags={
                             canTagGroups
                               ? (event) => handleOpenGroupTags(group, event)
+                              : undefined
+                          }
+                          owner={group.owner || null}
+                          ownerInherited={!!group.ownerInherited}
+                          ownerActive={group.ownerActive !== false}
+                          ownerFromLabel={
+                            group.ownerFromMonth ? formatMonthKey(group.ownerFromMonth) : ''
+                          }
+                          onOpenOwner={
+                            // `monthKey` is legitimately null while the month list
+                            // loads or when ?month= is stale. Opening the picker
+                            // then would write into the SERVER's current month
+                            // instead of the one on screen — a 200, and the wrong
+                            // month, with no error anywhere.
+                            canOwnGroups && monthKey
+                              ? (event) => handleOpenGroupOwner(group, event)
                               : undefined
                           }
                           noteCount={notesCountByGroup[group._id] ?? 0}
@@ -2102,6 +2242,30 @@ const BoardDetailPage = () => {
           onClose={() => setGroupTagMenu(null)}
         />
       )}
+
+      {/* Group owner picker (tracker boards). Reuses the task assignee menu,
+          collapsed to SINGLE-select here at the call site rather than by adding
+          a mode to the shared component — so the task-owner picker above cannot
+          regress. Clicking a new person yields [current, new]; clicking the
+          current one yields [] and means "unassign". */}
+      {groupOwnerMenu && canOwnGroups && (() => {
+        const currentOwnerId =
+          groups.find((g) => g._id === groupOwnerMenu.groupId)?.owner?._id || null;
+        return (
+          <InlineAssigneeMenu
+            anchorEl={groupOwnerMenu.anchor}
+            members={members}
+            value={currentOwnerId ? [String(currentOwnerId)] : []}
+            onChange={(ids) => {
+              const nextId = ids.find((id) => String(id) !== String(currentOwnerId)) ?? null;
+              const member = nextId ? members.find((m) => String(m._id) === String(nextId)) : null;
+              handleSetGroupOwner(groupOwnerMenu.groupId, member || null);
+              setGroupOwnerMenu(null); // single-select closes on pick
+            }}
+            onClose={() => setGroupOwnerMenu(null)}
+          />
+        );
+      })()}
 
       {/* Inline owner picker */}
       {ownerMenu && (

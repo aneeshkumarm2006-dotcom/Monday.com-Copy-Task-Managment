@@ -51,7 +51,14 @@ const portalAuth = async (req, res, next) => {
     // "regenerate link" instantly kill existing client sessions: disabling
     // clears portalEnabled, regenerating changes portalToken — either way the
     // check below fails on the next request.
-    const group = await TaskGroup.findById(contact.group);
+    //
+    // Narrowly selected on purpose. `req.portal.group` below is handed to
+    // controllers serving an EXTERNAL client, and a group document now carries
+    // internal-only fields (`ownerTimeline` — who on the team is responsible).
+    // Nothing does `res.json({ group: req.portal.group })` today; selecting only
+    // what the portal actually reads means nothing can start to.
+    const group = await TaskGroup.findById(contact.group)
+      .select('portalEnabled portalToken name portalClientName board');
     if (!group || !group.portalEnabled || group.portalToken !== decoded.ptk) {
       return res.status(401).json({ error: 'This portal is no longer available' });
     }

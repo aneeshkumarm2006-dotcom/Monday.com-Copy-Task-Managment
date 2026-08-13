@@ -7,8 +7,10 @@ import {
   Trash2,
   Link2,
   Tags,
+  UserPlus,
 } from 'lucide-react';
 import { getColorPair } from '../../utils/priorityColors';
+import Avatar from '../ui/Avatar';
 
 /** Mirrors MAX_GROUP_NAME in the server's groupController. */
 const MAX_NAME_LENGTH = 60;
@@ -33,6 +35,21 @@ const MAX_NAME_LENGTH = 60;
  *                   unless the viewer has the `groupTags` extra feature on, so
  *                   the header is byte-identical to before for everyone else.
  *   onOpenTags    — (event) => {}; its presence shows the tag button
+ *   owner         — resolved { _id, name, profilePic, email } or null. Tracker
+ *                   boards only. The SERVER resolves who owns this group in the
+ *                   month on screen; this component never sees the ownership
+ *                   timeline and never derives anything from it.
+ *   ownerInherited— true when the owner was set in an EARLIER month and carried
+ *                   forward into this one. Rendered muted, not differently
+ *                   shaped: it is the same fact, just less recently stated.
+ *   ownerActive   — false when the owner has left the workspace. The group still
+ *                   needs a new owner, so they are flagged rather than hidden.
+ *   ownerFromLabel— pre-formatted 'Mar 2026' for the tooltip. Formatted by the
+ *                   caller, the way `tags` arrive pre-resolved, so this header
+ *                   stays dumb about months.
+ *   onOpenOwner   — (event) => {}; its presence shows the picker affordance.
+ *                   Absent + owner   → a read-only avatar (what a viewer sees).
+ *                   Absent + no owner→ nothing at all.
  */
 const TaskGroupHeader = ({
   name,
@@ -48,6 +65,11 @@ const TaskGroupHeader = ({
   noteCount = 0,
   tags = [],
   onOpenTags,
+  owner = null,
+  ownerInherited = false,
+  ownerActive = true,
+  ownerFromLabel = '',
+  onOpenOwner,
   dragHandle = null,
 }) => {
   const Chevron = collapsed ? ChevronRight : ChevronDown;
@@ -230,6 +252,71 @@ const TaskGroupHeader = ({
       >
         {totalCount} {totalCount === 1 ? 'item' : 'items'}
       </span>
+
+      {/* Group owner (tracker boards). Deliberately on the LEFT, with the
+          group's identity rather than with the action buttons: who is
+          responsible for a client is part of what the group IS, and it is the
+          thing this header exists to make visible at a glance.
+
+          Nothing renders at all on a board that has no owners, so every other
+          board's header is byte-identical to before. */}
+      {(owner || onOpenOwner) && (
+        <button
+          type="button"
+          onClick={onOpenOwner}
+          disabled={!onOpenOwner}
+          aria-label={
+            owner
+              ? `Owner: ${owner.name}${onOpenOwner ? '. Change owner' : ''}`
+              : `Assign an owner to ${name}`
+          }
+          title={
+            owner
+              ? [
+                owner.name,
+                !ownerActive ? '(no longer in this workspace)' : '',
+                ownerInherited && ownerFromLabel ? `— carried forward from ${ownerFromLabel}` : '',
+              ].filter(Boolean).join(' ')
+              : 'Assign an owner'
+          }
+          className="inline-flex items-center gap-1.5 shrink-0"
+          style={{
+            height: 28,
+            width: owner ? undefined : 28,
+            padding: owner ? '0 8px 0 3px' : 0,
+            justifyContent: owner ? undefined : 'center',
+            borderRadius: 'var(--radius-full)',
+            background: owner ? 'var(--color-surface, #FFFFFF)' : 'transparent',
+            border: owner ? '1px solid var(--color-border)' : '1px dashed var(--color-border)',
+            // Inherited reads as slightly quieter than a decision made THIS
+            // month. Same shape, so it never looks like a different kind of thing.
+            opacity: ownerInherited ? 0.75 : 1,
+            cursor: onOpenOwner ? 'pointer' : 'default',
+          }}
+        >
+          {owner ? (
+            <>
+              <Avatar user={owner} size={22} />
+              <span
+                className="hidden lg:inline font-body truncate"
+                style={{
+                  fontSize: 11.5,
+                  fontWeight: 500,
+                  maxWidth: 110,
+                  color: ownerActive
+                    ? 'var(--color-text-secondary, var(--color-text-muted))'
+                    : 'var(--color-text-muted)',
+                  textDecoration: ownerActive ? 'none' : 'line-through',
+                }}
+              >
+                {owner.name}
+              </span>
+            </>
+          ) : (
+            <UserPlus size={14} color="var(--color-text-muted)" aria-hidden="true" />
+          )}
+        </button>
+      )}
 
       {/* Group tag chips. Rendered only when the viewer has the `groupTags`
           extra feature on — the caller resolves the ids and passes an empty

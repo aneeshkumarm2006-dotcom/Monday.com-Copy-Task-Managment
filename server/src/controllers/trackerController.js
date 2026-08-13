@@ -2,31 +2,30 @@ const mongoose = require('mongoose');
 
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
-const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
-const ActivityLog = require('../models/ActivityLog');
 
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { isMonthKey, lastDayKeyOf } = require('../utils/monthKey');
 const {
   validateCadence,
-  periodsBetween,
   periodKeyFor,
   CADENCE_TYPES,
   MAX_GRACE_DAYS,
   MAX_EVERY_N,
 } = require('../utils/trackerPeriods');
-const { evaluateTracker, REQUIREMENT_TYPES } = require('../utils/trackerEvaluate');
+const { REQUIREMENT_TYPES } = require('../utils/trackerEvaluate');
+const {
+  planDelivery,
+  fetchDeliveryInputs,
+  evaluatePlans,
+} = require('../services/deliveryReport');
 const {
   isValidTimezone,
   isDayKey,
   parseDayKey,
-  dayKeyOf,
-  dayKeyToUtcRange,
   addDays,
   compareDayKeys,
   minDayKey,
-  maxDayKey,
 } = require('../utils/tzDay');
 
 /**
@@ -609,167 +608,56 @@ const getDelivery = async (req, res) => {
       });
     }
 
-    const groupById = new Map(allGroups.map((g) => [String(g._id), g]));
-
     const windows = parseWindows(req.query.windows);
     const now = new Date();
 
-    // The board's month picker sets where the grid ENDS. Clamped to today so
-    // the "one month ahead" entry in that dropdown does not paint a run of
-    // empty columns that all read as missed.
+    // The board's month picker sets where the grid ENDS. Clamped to today so the
+    // "one month ahead" entry in that dropdown does not paint a run of empty
+    // columns that all read as missed.
     const monthParam = isMonthKey(req.query.month) ? req.query.month : null;
     const monthEndKey = monthParam ? lastDayKeyOf(monthParam) : null;
 
-    // Work out each tracker's window first, so the task and update queries can
-    // be issued once across the union rather than once per tracker.
-    const plans = [];
-    for (const tracker of trackers) {
-      const tz = tracker.timezone;
-      const todayKey = dayKeyOf(now, tz);
-      if (!todayKey) continue;
+    // ROUND TRIP 2 of 2 happens inside fetchDeliveryInputs. Everything between
+    // here and there is pure — see services/deliveryReport.js for why this
+    // pipeline lives out there rather than inline, and for the clamps it applies
+    // to whatever range `resolveRange` asks for.
+    const { plans, scanFrom, scanTo, overCap } = planDelivery({
+      trackers,
+      allGroups,
+      now,
+      maxCells: MAX_CELLS,
+      // The ONE thing this endpoint does differently from the People scoreboard:
+      // the window TOKEN sets the length, the selected month sets the end.
+      resolveRange: ({ tracker, todayKey }) => {
+        const anchorKey = monthEndKey ? minDayKey(monthEndKey, todayKey) : todayKey;
+        return {
+          from: resolveWindowStart(
+            windows.get(String(tracker._id)),
+            anchorKey,
+            tracker.cadence?.type
+          ),
+          to: anchorKey,
+        };
+      },
+    });
 
-      // Where the grid ends: the selected month's last day, never later than
-      // today. `minDayKey(null, x)` returns x, so no month means today as before.
-      const anchorKey = monthEndKey ? minDayKey(monthEndKey, todayKey) : todayKey;
-
-      const windowStart = resolveWindowStart(
-        windows.get(String(tracker._id)),
-        anchorKey,
-        tracker.cadence?.type
-      );
-
-      // Never scan before the tracker existed, and never past its end.
-      let from = maxDayKey(windowStart, tracker.startDate);
-      let to = tracker.endDate ? minDayKey(anchorKey, tracker.endDate) : anchorKey;
-      // A tracker that has not started yet still renders its (empty) columns.
-      if (compareDayKeys(from, to) > 0) to = from;
-
-      const periods = periodsBetween(tracker.cadence, from, to, {
-        skipDates: tracker.skipDates || [],
-      });
-
-      const scoped = (tracker.groups || []).length > 0
-        ? (tracker.groups || []).map((g) => groupById.get(String(g))).filter(Boolean)
-        : allGroups;
-
-      plans.push({ tracker, tz, todayKey, from, to, periods, groups: scoped });
-    }
-
-    const overCap = plans.find((p) => p.groups.length * p.periods.length > MAX_CELLS);
     if (overCap) {
       return res.status(400).json({
         error:
-          `"${overCap.tracker.name}" would show ${overCap.groups.length * overCap.periods.length} `
+          `"${overCap.tracker.name}" would show ${overCap.cells} `
           + `cells. Pick a shorter window or fewer clients (limit ${MAX_CELLS}).`,
       });
     }
 
-    // One task read and one update read across the union of every window. The
-    // last period may extend past today via graceDays, so the upper bound comes
-    // from the periods rather than from `to`.
-    let scanFrom = null;
-    let scanTo = null;
-    for (const p of plans) {
-      scanFrom = minDayKey(scanFrom, p.periods[0]?.startDayKey || p.from);
-      const last = p.periods[p.periods.length - 1];
-      scanTo = maxDayKey(scanTo, last?.dueDayKey || p.to);
-    }
+    const inputs = await fetchDeliveryInputs({ board, plans, scanFrom, scanTo });
+    const results = evaluatePlans({ board, plans, now, ...inputs });
 
-    // ROUND TRIP 2 of 2 — every remaining read, issued together.
-    const scanTz = plans[0].tz;
-    const startRange = scanFrom ? dayKeyToUtcRange(scanFrom, scanTz) : null;
-    const endRange = scanTo ? dayKeyToUtcRange(scanTo, scanTz) : null;
-    const range =
-      startRange && endRange ? { $gte: startRange.start, $lt: endRange.end } : null;
-
-    const [tasks, updateRows, entryRows] = await Promise.all([
-      // Task.createdAt is the signal, not ActivityLog: automation-created tasks
-      // never write an activity row, and a board that auto-creates its daily
-      // item would otherwise read as entirely missed.
-      // Rides { board: 1, createdAt: -1 } — an IXSCAN returning only the window.
-      range
-        ? Task.find({
-          board: board._id,
-          parent: null,
-          isPersonal: { $ne: true },
-          createdAt: range,
-        })
-          // Never select columnValues / attachments / checklist / note — the
-          // last three are unbounded arrays and this is thousands of rows.
-          .select('_id group name createdAt status labels')
-          .lean()
-        : [],
-      // Updates come from ActivityLog rather than the Update collection: it is
-      // the only board-and-day query with an index behind it
-      // ({ board: 1, createdAt: -1 }), it needs no $in over every task id, and
-      // it excludes authorType 'system' auto-posts by construction — "Status
-      // changed to Done" is not somebody writing an update.
-      range
-        ? ActivityLog.find({
-          board: board._id,
-          createdAt: range,
-          type: { $in: ['update.added', 'client.update_added'] },
-        })
-          .select('task createdAt')
-          .lean()
-        : [],
-      // Manual confirmations and waivers. Bounded by what humans have actually
-      // clicked, so this stays small — no period filter needed.
-      TrackerEntry.find({
-        board: board._id,
-        tracker: { $in: plans.map((p) => p.tracker._id) },
-      })
-        .populate('by', 'name email profilePic')
-        .lean(),
-    ]);
-
-    const entriesByTracker = new Map();
-    for (const entry of entryRows) {
-      const key = String(entry.tracker);
-      if (!entriesByTracker.has(key)) entriesByTracker.set(key, []);
-      entriesByTracker.get(key).push(entry);
-    }
-
-    const payload = plans.map(({ tracker, tz, periods, groups }) => {
-      // Day keys are timezone-dependent, so the update index is rebuilt per
-      // tracker. In practice every tracker on a board shares a timezone and this
-      // is a few thousand cheap string ops.
-      const updateDayKeys = new Map();
-      for (const row of updateRows) {
-        const taskId = String(row.task);
-        const dayKey = dayKeyOf(row.createdAt, tz);
-        if (!dayKey) continue;
-        let set = updateDayKeys.get(taskId);
-        if (!set) {
-          set = new Set();
-          updateDayKeys.set(taskId, set);
-        }
-        set.add(dayKey);
-      }
-
-      const entries = entriesByTracker.get(String(tracker._id)) || [];
-
-      const { rows, summary } = tracker.enabled
-        ? evaluateTracker({
-          tracker,
-          periods,
-          groups,
-          tasks,
-          updateDayKeys,
-          entries,
-          board,
-          timezone: tz,
-          now,
-        })
-        : { rows: [], summary: null };
-
-      return {
-        ...serialiseTracker(tracker),
-        periods: tracker.enabled ? periods : [],
-        rows,
-        summary,
-      };
-    });
+    const payload = results.map(({ tracker, periods, rows, summary }) => ({
+      ...serialiseTracker(tracker),
+      periods: tracker.enabled ? periods : [],
+      rows,
+      summary,
+    }));
 
     return res.json({
       delivery: {

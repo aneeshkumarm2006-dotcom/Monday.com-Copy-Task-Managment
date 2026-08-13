@@ -1,4 +1,4 @@
-import ScoreRing from './ScoreRing';
+import ScoreRing from '../../ui/ScoreRing';
 import { OUTCOME_META } from '../../../utils/goalDisplay';
 
 /**

@@ -1,4 +1,6 @@
+const mongoose = require('mongoose');
 const TaskGroup = require('../models/TaskGroup');
+const User = require('../models/User');
 const Task = require('../models/Task');
 const Update = require('../models/Update');
 const Note = require('../models/Note');
@@ -11,6 +13,8 @@ const Goal = require('../models/Goal');
 const eventBus = require('../services/eventBus');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { requireFeature } = require('../utils/userFeatures');
+const { ownerForMonth, setOwnerForMonth } = require('../utils/groupOwner');
+const { isMonthKey, monthKeyOf, addMonths, compareMonthKeys } = require('../utils/monthKey');
 const { generatePortalToken } = require('../utils/portalCrypto');
 const { inviteContact } = require('../services/portalInviteService');
 
@@ -64,12 +68,95 @@ const resolveGroupName = async (rawName, boardId, excludeId = null) => {
   return { name };
 };
 
+// ---------------------------------------------------------------------------
+// Group owner (tracker boards) — resolution on the way out
+// ---------------------------------------------------------------------------
+
 /**
- * GET /api/boards/:boardId/groups
+ * The timeline is server-internal. Nothing leaves this controller carrying it —
+ * that is the enforcement mechanism behind "utils/groupOwner.js is the only
+ * resolver". A client cannot derive a second, drifting answer from data it was
+ * never given.
+ */
+const stripTimeline = (g) => {
+  const { ownerTimeline, ...rest } = g;
+  return rest;
+};
+
+/**
+ * Which month should a group list resolve its owners against?
+ *
+ * Never trusts the client for "now" — a bad or absent `?month=` falls back
+ * through `monthKeyOf` with the BOARD's timezone, per the rule at the top of
+ * utils/monthKey.js. Returns null on any board that has no months.
+ */
+const resolveGroupMonth = (board, requested) => {
+  if (board?.boardType !== 'tracker') return null;
+  if (isMonthKey(requested)) return requested;
+  return monthKeyOf(new Date(), board.monthTimezone || 'UTC');
+};
+
+/**
+ * Attach each group's resolved owner for `monthKey`, and strip the raw timeline.
+ *
+ * On a non-tracker board this is JUST the strip, so standard and client boards
+ * receive exactly the response they always did — `owner` is ABSENT, not null, so
+ * nothing there can start depending on it.
+ *
+ * ONE batched User query for the whole board rather than a populate: populating
+ * `ownerTimeline.user` would hydrate every historical entry of every group to
+ * render one avatar each.
+ *
+ * Populating rather than returning a bare id also settles a permissions problem.
+ * The org member list is only fetched client-side for board editors
+ * (BoardDetailPage), because handing the workspace roster to everyone who can
+ * open a public board would leak it. A viewer needs the owner's name and picture
+ * but has no roster to look them up in — so the server sends the one user
+ * actually being displayed, and the roster stays where it was.
+ */
+const serializeGroups = async (groups, { board, org, monthKey }) => {
+  const plain = groups.map((g) => (g?.toObject ? g.toObject() : g));
+  if (board?.boardType !== 'tracker' || !monthKey) return plain.map(stripTimeline);
+
+  const resolved = plain.map((g) => ({ g, owner: ownerForMonth(g, monthKey) }));
+
+  const ids = [...new Set(resolved.map((r) => r.owner.userId).filter(Boolean))];
+  const users = ids.length
+    ? await User.find({ _id: { $in: ids } }).select('name profilePic email').lean()
+    : [];
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+  const memberIds = new Set((org?.members || []).map((m) => String(m?._id || m)));
+
+  return resolved.map(({ g, owner }) => ({
+    ...stripTimeline(g),
+    // The month this was resolved AGAINST. The client echoes it back on write,
+    // which is what stops a stale tab assigning into a month nobody is looking at.
+    ownerMonth: monthKey,
+    owner: owner.userId ? byId.get(owner.userId) || null : null,
+    ownerFromMonth: owner.fromMonth,
+    ownerInherited: owner.inherited,
+    // Removing someone from the org does NOT scrub the groups they owned — the
+    // same rule Task.assignedTo already follows, and scrubbing would rewrite
+    // history that was true at the time. Flagged rather than hidden, because the
+    // group still needs a new owner.
+    ownerActive: owner.userId ? memberIds.has(owner.userId) : true,
+  }));
+};
+
+/**
+ * GET /api/boards/:boardId/groups?month=YYYY-MM
  *
  * List groups for a board, sorted by order asc then createdAt asc.
  * Anyone who can read the board can list its groups — `loadBoardContext` already
  * rejects users who cannot, so there is no further gate here.
+ *
+ * On a tracker board `month` selects which owner each group resolves to. Note
+ * the deliberate asymmetry with `getTasks`, which REQUIRES a month and 400s
+ * without one: groups are the board's skeleton, and a month with no tasks must
+ * still render every group, so failing the whole list over a decoration would
+ * blank the board. A missing or malformed month falls back to the board's
+ * current month instead. (Tasks are the opposite case: silently returning three
+ * years of them is worse than an error.)
  */
 const getGroups = async (req, res) => {
   try {
@@ -79,12 +166,17 @@ const getGroups = async (req, res) => {
     const ctx = await loadBoardContext(boardId, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
-    const groups = await TaskGroup.find({ board: boardId }).sort({
-      order: 1,
-      createdAt: 1,
-    });
+    const groups = await TaskGroup.find({ board: boardId })
+      .sort({ order: 1, createdAt: 1 })
+      .lean();
 
-    return res.json({ groups });
+    return res.json({
+      groups: await serializeGroups(groups, {
+        board: ctx.board,
+        org: ctx.org,
+        monthKey: resolveGroupMonth(ctx.board, req.query.month),
+      }),
+    });
   } catch (err) {
     console.error('getGroups error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -178,7 +270,15 @@ const createGroup = async (req, res) => {
       createdByUserId: userId,
     });
 
-    return res.status(201).json({ group, inviteSent });
+    // A brand-new group's timeline is empty, but the rule is "nothing leaves
+    // this controller carrying it" — no exceptions to audit later. Creation
+    // deliberately does not accept an owner: one write path, one set of gates.
+    const [serialized] = await serializeGroups([group], {
+      board: ctx.board,
+      org: ctx.org,
+      monthKey: resolveGroupMonth(ctx.board, null),
+    });
+    return res.status(201).json({ group: serialized, inviteSent });
   } catch (err) {
     console.error('createGroup error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -188,7 +288,7 @@ const createGroup = async (req, res) => {
 /**
  * PUT /api/groups/:id
  *
- * Requires `group.manage`. Updates name, order, or tags.
+ * Requires `group.manage`. Updates name, order, tags, or the owner.
  *
  * A rename runs the same trim/clamp/duplicate checks as create (excluding this
  * group, so re-saving an unchanged name is not a self-collision). It
@@ -202,12 +302,18 @@ const createGroup = async (req, res) => {
  * for everyone by default. It is checked only when `tags` is actually present,
  * so a plain rename or reorder never pays for the lookup — or trips over a flag
  * that has nothing to do with it.
+ *
+ * `owner` + `ownerMonth` pin who is responsible for this group FROM that month
+ * onward. Tracker boards only, and it carries no feature flag: unlike group
+ * tags, ownership is part of what a tracker board IS, and hiding who is
+ * responsible behind a personal switch would defeat the point. See
+ * utils/groupOwner.js for why this is a timeline rather than a single field.
  */
 const updateGroup = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { id } = req.params;
-    const { name, order, tags } = req.body;
+    const { name, order, tags, owner, ownerMonth } = req.body;
 
     const group = await TaskGroup.findById(id);
     if (!group) return res.status(404).json({ error: 'Group not found' });
@@ -264,8 +370,85 @@ const updateGroup = async (req, res) => {
         });
     }
 
+    // The month the RESPONSE is resolved against — the one the caller was
+    // looking at, so the avatar they get back is the one they just set.
+    let resolveMonth = null;
+
+    if (owner !== undefined) {
+      // 1. TRACKER GATE. 400 rather than goalController's 404: there, the whole
+      //    route does not exist on a standard board. Here the group and the
+      //    route are real and readable — it is this one FIELD that does not
+      //    apply.
+      if (ctx.board.boardType !== 'tracker') {
+        return res.status(400).json({
+          error: 'Group owners are only available on tracker boards',
+          code: 'NOT_TRACKER_BOARD',
+        });
+      }
+
+      // 2. MONTH. Absent or malformed falls back to the board's current month.
+      //    A month more than one ahead is refused, matching the ceiling the
+      //    month picker itself offers: without the clamp you could bury an entry
+      //    in 2031 that silently activates later and that no UI can show you.
+      const tz = ctx.board.monthTimezone || 'UTC';
+      const currentKey = monthKeyOf(new Date(), tz);
+      const month = isMonthKey(ownerMonth) ? ownerMonth : currentKey;
+      if (!month) {
+        return res.status(400).json({ error: 'This board has no valid month timezone' });
+      }
+      if (compareMonthKeys(month, addMonths(currentKey, 1)) > 0) {
+        return res.status(400).json({ error: 'That month is too far ahead' });
+      }
+
+      // 3. OWNER. null writes a tombstone ("unassigned from here on"). Anything
+      //    else must be a member of this org.
+      //
+      //    A non-member is a 400, deliberately breaking the `tags` precedent
+      //    above. `tags` is a SET, so dropping one unknown id still lands the
+      //    rest of the edit and the race that causes it is benign. `owner` is a
+      //    SCALAR: dropping it would mean the request did nothing while the
+      //    server said 200, and the user would watch their optimistic avatar
+      //    silently revert with no explanation. And the analogous race — the
+      //    person left the workspace between the menu rendering and the save —
+      //    is exactly when saying so beats silence.
+      let ownerId = null;
+      if (owner !== null) {
+        ownerId = String(owner?._id || owner || '');
+        const isMember = (ctx.org.members || [])
+          .some((m) => String(m?._id || m) === ownerId);
+        if (!mongoose.Types.ObjectId.isValid(ownerId) || !isMember) {
+          return res.status(400).json({
+            error: 'That person is not a member of this workspace',
+          });
+        }
+      }
+
+      // 4. GENESIS BACKFILL. The first owner a group ever gets, assigned while
+      //    looking at the CURRENT month, reaches back to the group's birth month
+      //    instead. A first assignment is a statement of fact rather than a
+      //    change of guard — there is no prior attribution it could overwrite —
+      //    and without this you turn the feature on in September, assign
+      //    everyone, flip to August and see nothing, which reads as a bug on day
+      //    one. An assignment made while looking at an OLDER month is an
+      //    explicit historical claim and is honoured exactly.
+      const firstEver = (group.ownerTimeline || []).length === 0;
+      const effectiveMonth = firstEver && month === currentKey
+        ? (monthKeyOf(group.createdAt, tz) || month)
+        : month;
+
+      const next = setOwnerForMonth(group.ownerTimeline, effectiveMonth, ownerId, userId);
+      if (next.changed) group.ownerTimeline = next.timeline;
+      resolveMonth = month;
+    }
+
     await group.save();
-    return res.json({ group });
+
+    const [serialized] = await serializeGroups([group], {
+      board: ctx.board,
+      org: ctx.org,
+      monthKey: resolveMonth || resolveGroupMonth(ctx.board, null),
+    });
+    return res.json({ group: serialized });
   } catch (err) {
     console.error('updateGroup error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -396,8 +579,19 @@ const reorderGroups = async (req, res) => {
     }));
     if (ops.length > 0) await TaskGroup.bulkWrite(ops);
 
-    const groups = await TaskGroup.find({ board: boardId }).sort({ order: 1, createdAt: 1 });
-    return res.json({ groups });
+    // Serialized like getGroups, not returned raw. The client replaces its whole
+    // group list with this response, so shipping owner-less docs here would wipe
+    // every avatar on the board until the next full load.
+    const groups = await TaskGroup.find({ board: boardId })
+      .sort({ order: 1, createdAt: 1 })
+      .lean();
+    return res.json({
+      groups: await serializeGroups(groups, {
+        board: ctx.board,
+        org: ctx.org,
+        monthKey: resolveGroupMonth(ctx.board, req.query.month),
+      }),
+    });
   } catch (err) {
     console.error('reorderGroups error:', err);
     return res.status(500).json({ error: 'Server error' });

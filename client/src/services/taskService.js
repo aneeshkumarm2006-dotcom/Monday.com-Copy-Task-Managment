@@ -103,9 +103,16 @@ export const deleteTask = async (id) => {
  *
  * Groups are a task-adjacent concept and are used exclusively by the
  * board detail view, so we keep the API call alongside the task service.
+ *
+ * `month` never filters WHICH groups come back — every group exists in every
+ * month. On a tracker board it selects which owner each group resolves to, since
+ * ownership is a per-month fact that carries forward. Omitting it is safe: the
+ * server falls back to the board's current month rather than erroring.
  */
-export const getGroups = async (boardId) => {
-  const { data } = await api.get(`/api/boards/${boardId}/groups`);
+export const getGroups = async (boardId, { month } = {}) => {
+  const params = {};
+  if (month) params.month = month;
+  const { data } = await api.get(`/api/boards/${boardId}/groups`, { params });
   return data.groups;
 };
 

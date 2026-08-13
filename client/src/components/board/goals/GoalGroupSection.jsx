@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, Plus, Target } from 'lucide-react';
 import GoalRow from './GoalRow';
 import GoalMobileCard from './GoalMobileCard';
-import ScoreRing from './ScoreRing';
+import ScoreRing from '../../ui/ScoreRing';
 
 /**
  * One group's goals for the selected month.
