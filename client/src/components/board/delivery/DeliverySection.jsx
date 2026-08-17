@@ -26,6 +26,7 @@ const DeliverySection = ({
   onChangeWindow,
   onEdit,
   onCellClick,
+  onPeriodClick,
   canManage,
   sectionRef,
 }) => {
@@ -177,6 +178,7 @@ const DeliverySection = ({
                   periods={periods}
                   rows={rows}
                   onCellClick={onCellClick}
+                  onPeriodClick={onPeriodClick}
                 />
               </div>
               <div className={view === 'list' ? '' : 'md:hidden'}>

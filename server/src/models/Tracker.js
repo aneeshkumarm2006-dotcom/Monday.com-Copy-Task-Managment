@@ -124,10 +124,32 @@ const trackerSchema = new mongoose.Schema(
     startDate: dayKeyField({ required: true }),
     endDate: dayKeyField({ default: null }),
     cadence: { type: cadenceSchema, required: true },
-    // Holidays and one-off closures. Deliberately NOT consulted when computing
-    // period boundaries — see INVARIANT 1 in utils/trackerPeriods.js. They only
+    // Holidays and one-off closures, unlabelled. SUPERSEDED by `daysOff` below,
+    // which says the same thing and can also say why; kept because it is the
+    // shape utils/trackerPeriods.js takes and because unioning the two costs one
+    // line in utils/trackerDaysOff.js. Deliberately NOT consulted when computing
+    // period boundaries — see INVARIANT 1 in utils/trackerPeriods.js. These only
     // mark days as non-working, which affects rendering and scoring.
     skipDates: [dayKeyField()],
+    // The labelled version: "14 Aug — Event — Client shoot". A red column nobody
+    // can explain is one people argue with, so the reason is stored WITH the
+    // date rather than remembered in Slack. Written from the grid's own column
+    // header via PUT/DELETE /api/trackers/:id/days-off, never from the tracker
+    // form — marking today off should not mean reopening the whole definition.
+    daysOff: [
+      {
+        _id: false,
+        date: dayKeyField({ required: true }),
+        tag: {
+          type: String,
+          enum: ['holiday', 'event', 'other_work', 'other'],
+          default: 'other',
+        },
+        label: { type: String, default: '', trim: true },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: { type: Date, default: Date.now },
+      },
+    ],
     // EMPTY MEANS ALL GROUPS, including ones added later. That default is the
     // one an agency wants: a client onboarded next month is covered without
     // anyone remembering to edit this.

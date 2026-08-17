@@ -124,7 +124,9 @@ const trackerFromForm = (form) => ({
   requirements: form.requirements,
   requireSameTask: form.requireSameTask,
   targetCount: form.showTargetCount ? form.targetCount || 1 : 1,
-  skipDates: [],
+  // NOT sent: `skipDates` / `daysOff`. Update is partial, so omitting them leaves
+  // them alone — sending `[]` here would silently wipe every day off the team
+  // marked from the grid the moment somebody renamed the tracker.
 });
 
 const validateLocal = (form) => {

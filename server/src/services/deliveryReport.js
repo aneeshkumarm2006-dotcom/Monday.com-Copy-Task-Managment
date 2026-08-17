@@ -34,6 +34,7 @@ const ActivityLog = require('../models/ActivityLog');
 
 const { periodsBetween } = require('../utils/trackerPeriods');
 const { evaluateTracker } = require('../utils/trackerEvaluate');
+const { skipDayKeysOf, annotateDaysOff } = require('../utils/trackerDaysOff');
 const {
   dayKeyOf,
   dayKeyToUtcRange,
@@ -75,9 +76,13 @@ const planDelivery = ({ trackers, allGroups, resolveRange, now, maxCells }) => {
     // A tracker that has not started yet still renders its (empty) columns.
     if (compareDayKeys(from, to) > 0) to = from;
 
-    const periods = periodsBetween(tracker.cadence, from, to, {
-      skipDates: tracker.skipDates || [],
-    });
+    // Days off go in HERE rather than at either call site, so the Delivery grid
+    // and the People scoreboard cannot disagree about which days were owed. See
+    // utils/trackerDaysOff.js for why there are two sources of dates.
+    const periods = annotateDaysOff(
+      periodsBetween(tracker.cadence, from, to, { skipDates: skipDayKeysOf(tracker) }),
+      tracker
+    );
 
     // An empty `tracker.groups` means EVERY group — see models/Tracker.js.
     const scoped = (tracker.groups || []).length > 0

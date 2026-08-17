@@ -3,6 +3,7 @@ const assert = require('node:assert');
 
 const { periodsBetween } = require('./trackerPeriods');
 const { evaluateTracker, matchesTask, summariseRows } = require('./trackerEvaluate');
+const { skipDayKeysOf } = require('./trackerDaysOff');
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -63,7 +64,9 @@ const run = ({
   to = TO,
   now = NOW,
 } = {}) => {
-  const periods = periodsBetween(trk.cadence, from, to, { skipDates: trk.skipDates });
+  // Same union the real pipeline uses, so a fixture can say `daysOff` and get
+  // the periods the Delivery grid would actually build.
+  const periods = periodsBetween(trk.cadence, from, to, { skipDates: skipDayKeysOf(trk) });
   const result = evaluateTracker({
     tracker: trk,
     periods,
@@ -150,6 +153,70 @@ test('off and na periods stay out of the kept ratio', () => {
   assert.strictEqual(row.summary.pending, 2);
   assert.strictEqual(row.summary.required, 4);
   assert.strictEqual(row.summary.keptPct, 100);
+});
+
+// ---------------------------------------------------------------------------
+// Days off
+// ---------------------------------------------------------------------------
+
+test('a day off turns a missed day into off, for everybody at once', () => {
+  // Wed the 12th is the day nothing happened on. Marking it off must take the
+  // red square out entirely rather than leaving it to be argued about.
+  const trk = tracker({
+    daysOff: [{ date: '2026-08-12', tag: 'event', label: 'Client shoot' }],
+  });
+  const { states, row } = run({ trk, tasks: [] });
+
+  assert.strictEqual(states[2], 'off');
+  assert.strictEqual(row.summary.missed, 3); // Mon, Tue, Thu — not Wed
+  assert.strictEqual(row.summary.required, 3);
+});
+
+test('a day off does not erase a client who delivered anyway', () => {
+  // THE POINT: the team was off on Wednesday, but this client got a task and an
+  // update. Greying that out would hide real work, so the tick stands and still
+  // counts as kept. A day off excuses; it does not rewrite history.
+  const trk = tracker({
+    daysOff: [{ date: '2026-08-12', tag: 'holiday', label: 'Independence Day' }],
+  });
+  const { states, row } = run({
+    trk,
+    tasks: [task('t3', 'g1', 'Interlink Blog', '2026-08-12T09:00:00Z')],
+    updateDayKeys: new Map([['t3', new Set(['2026-08-12'])]]),
+  });
+
+  assert.strictEqual(states[2], 'met');
+  assert.strictEqual(row.summary.met, 1);
+});
+
+test('half-finished work on a day off is off, not partial — nothing was owed', () => {
+  // A task with no update is `partial` on a working day. On a day off it is not
+  // a debt, so it drops out of the ratio rather than counting against anyone.
+  const trk = tracker({
+    daysOff: [{ date: '2026-08-12', tag: 'other_work', label: 'On the pitch deck' }],
+  });
+  const { states, row } = run({
+    trk,
+    tasks: [task('t3', 'g1', 'Interlink Blog', '2026-08-12T09:00:00Z')],
+  });
+
+  assert.strictEqual(states[2], 'off');
+  assert.strictEqual(row.summary.partial, 0);
+});
+
+test('an excused entry still beats a day off', () => {
+  // Excused is a human's word about one client. It outranks everything, so the
+  // cell keeps saying what the human said rather than flipping to a bare dot.
+  const trk = tracker({
+    daysOff: [{ date: '2026-08-12', tag: 'holiday', label: 'Independence Day' }],
+  });
+  const { states } = run({
+    trk,
+    tasks: [],
+    entries: [{ group: 'g1', periodKey: 'd:2026-08-12', state: 'excused', note: 'client on hold' }],
+  });
+
+  assert.strictEqual(states[2], 'excused');
 });
 
 // ---------------------------------------------------------------------------

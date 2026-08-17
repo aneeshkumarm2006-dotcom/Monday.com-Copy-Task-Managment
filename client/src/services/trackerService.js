@@ -89,3 +89,20 @@ export const deleteTrackerEntry = async (id, { group, periodKey }) => {
   });
   return data;
 };
+
+/**
+ * PUT /api/trackers/:id/days-off — mark one calendar day as not owed, for every
+ * client this tracker covers. Upserts by date, so re-marking a day edits its
+ * label. Separate from updateTracker on purpose: this is a one-click act from
+ * the grid, and it must not re-send the whole tracker definition to do it.
+ */
+export const setTrackerDayOff = async (id, { date, tag, label }) => {
+  const { data } = await api.put(`/api/trackers/${id}/days-off`, { date, tag, label });
+  return data.tracker;
+};
+
+/** DELETE /api/trackers/:id/days-off?date=YYYY-MM-DD — the day is owed again. */
+export const deleteTrackerDayOff = async (id, { date }) => {
+  const { data } = await api.delete(`/api/trackers/${id}/days-off`, { params: { date } });
+  return data.tracker;
+};

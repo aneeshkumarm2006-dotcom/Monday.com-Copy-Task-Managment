@@ -14,6 +14,7 @@ const {
   MAX_EVERY_N,
 } = require('../utils/trackerPeriods');
 const { REQUIREMENT_TYPES } = require('../utils/trackerEvaluate');
+const { sanitizeDayOff, MAX_DAYS_OFF } = require('../utils/trackerDaysOff');
 const {
   planDelivery,
   fetchDeliveryInputs,
@@ -344,6 +345,11 @@ const serialiseTracker = (tracker) => ({
   endDate: tracker.endDate || null,
   cadence: tracker.cadence,
   skipDates: tracker.skipDates || [],
+  daysOff: (tracker.daysOff || []).map((d) => ({
+    date: d.date,
+    tag: d.tag || 'other',
+    label: d.label || '',
+  })),
   groups: tracker.groups || [],
   match: tracker.match || {},
   requirements: tracker.requirements || [],
@@ -526,6 +532,77 @@ const deleteTrackerEntry = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
+// Days off — one calendar day this tracker did not expect work on
+// ---------------------------------------------------------------------------
+
+/**
+ * PUT /api/trackers/:id/days-off  { date, tag, label }
+ *
+ * Upserts by DATE, so re-marking a day edits its label in place. A separate
+ * endpoint from updateTracker on purpose: marking today off is a one-click act
+ * from the grid's column header, and routing it through the tracker form would
+ * mean re-sending — and risk clobbering — the whole definition.
+ */
+const setTrackerDayOff = async (req, res) => {
+  try {
+    const gated = await gateByTracker(req, res, 'tracker.manage');
+    if (!gated) return undefined;
+    const { tracker } = gated;
+
+    const one = sanitizeDayOff(req.body);
+    if (one.error) return res.status(400).json({ error: one.error });
+    const { date, tag, label } = one.value;
+
+    const existing = (tracker.daysOff || []).find((d) => d.date === date);
+    if (existing) {
+      existing.tag = tag;
+      existing.label = label;
+      existing.by = req.user.userId;
+      existing.at = new Date();
+    } else {
+      if ((tracker.daysOff || []).length >= MAX_DAYS_OFF) {
+        return res.status(400).json({ error: `At most ${MAX_DAYS_OFF} days off per tracker` });
+      }
+      tracker.daysOff.push({ date, tag, label, by: req.user.userId, at: new Date() });
+    }
+
+    // Sorted on write so every read — the grid, the scoreboard, an export — sees
+    // them in calendar order without re-sorting. An in-place sort of a document
+    // array is not something Mongoose notices on its own, hence markModified.
+    tracker.daysOff.sort((a, b) => compareDayKeys(a.date, b.date));
+    tracker.markModified('daysOff');
+    await tracker.save();
+
+    return res.json({ tracker: serialiseTracker(tracker) });
+  } catch (err) {
+    console.error('setTrackerDayOff error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/** DELETE /api/trackers/:id/days-off?date=YYYY-MM-DD — the day is owed again. */
+const deleteTrackerDayOff = async (req, res) => {
+  try {
+    const gated = await gateByTracker(req, res, 'tracker.manage');
+    if (!gated) return undefined;
+    const { tracker } = gated;
+
+    const { date } = req.query;
+    if (!isDayKey(date) || !parseDayKey(date)) {
+      return res.status(400).json({ error: 'Invalid date' });
+    }
+
+    tracker.daysOff = (tracker.daysOff || []).filter((d) => d.date !== date);
+    await tracker.save();
+
+    return res.json({ tracker: serialiseTracker(tracker) });
+  } catch (err) {
+    console.error('deleteTrackerDayOff error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+// ---------------------------------------------------------------------------
 // The Delivery grid
 // ---------------------------------------------------------------------------
 
@@ -679,6 +756,8 @@ module.exports = {
   deleteTracker,
   setTrackerEntry,
   deleteTrackerEntry,
+  setTrackerDayOff,
+  deleteTrackerDayOff,
   getDelivery,
   // Exported for unit testing.
   sanitizeCadence,

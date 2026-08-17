@@ -1,5 +1,9 @@
 import { memo, useCallback } from 'react';
-import { cellStateMeta, requirementMeta } from '../../../utils/deliveryTrackers';
+import {
+  cellStateMeta,
+  describePeriodDaysOff,
+  requirementMeta,
+} from '../../../utils/deliveryTrackers';
 import { ROW_HOVER_BAND, washVars } from './rowHover';
 
 /**
@@ -14,9 +18,15 @@ import { ROW_HOVER_BAND, washVars } from './rowHover';
  */
 
 /** "Partial: task created, no update posted" — the tooltip and the aria-label. */
-const describeCellOutcome = (cell, targetCount) => {
+const describeCellOutcome = (cell, targetCount, period) => {
   const meta = cellStateMeta(cell.s);
-  if (cell.s === 'off') return 'Day off';
+  if (cell.s === 'off') {
+    // A grey dot people cannot explain is the thing this whole feature exists to
+    // fix, so the reason rides on the tooltip of every cell in the column, not
+    // just the header.
+    const why = describePeriodDaysOff(period);
+    return why ? `Day off — ${why}` : 'Day off';
+  }
   if (cell.s === 'na') return 'Not tracked in this period';
   if (cell.s === 'excused') return `Excused${cell.entry?.note ? ` — ${cell.entry.note}` : ''}`;
 
@@ -57,7 +67,7 @@ const DeliveryCell = ({
 
   const meta = cellStateMeta(cell.s);
   const Glyph = meta.glyph;
-  const outcome = describeCellOutcome(cell, targetCount);
+  const outcome = describeCellOutcome(cell, targetCount, period);
   const title = `${groupName} — ${period.ariaLabel} — ${outcome}`;
   const showCount = targetCount > 1 && cell.s !== 'off' && cell.s !== 'na';
 

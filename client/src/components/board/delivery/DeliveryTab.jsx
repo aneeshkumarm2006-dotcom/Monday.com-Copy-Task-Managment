@@ -11,6 +11,7 @@ import { loadPrefs, orderTrackers, savePrefs, windowFor } from '../../../utils/d
 import DeliverySummary from './DeliverySummary';
 import DeliverySection from './DeliverySection';
 import DeliveryCellPopover from './DeliveryCellPopover';
+import DayOffPopover from './DayOffPopover';
 import NeedsAttention from './NeedsAttention';
 import TrackersModal from './TrackersModal';
 
@@ -57,6 +58,7 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
   const [prefs, setPrefs] = useState(() => loadPrefs(boardId));
   const [modal, setModal] = useState(null); // null | { view }
   const [popover, setPopover] = useState(null);
+  const [dayOff, setDayOff] = useState(null); // { tracker, period, dayOff, anchor }
 
   const toastError = useToastStore((s) => s.error);
   const boardRefreshSignal = useTaskStore((s) => s.boardRefreshSignal);
@@ -123,7 +125,9 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
     fetchDelivery(nextWindows, { quiet: true });
   };
 
-  const mutateEntry = async (fn, label) => {
+  // Every write on this tab is the same three steps: do it, refetch quietly, and
+  // say something readable if it failed.
+  const applyChange = async (fn, label) => {
     try {
       await fn();
       await fetchDelivery(windows, { quiet: true });
@@ -216,6 +220,14 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
               onEdit={() => setModal({ view: 'list' })}
               onCellClick={({ cell, period, row, anchor }) =>
                 setPopover({ tracker, cell, period, row, anchor })}
+              // Marking a day off rewrites the column for every client, so it is
+              // gated on the same capability as editing the tracker itself.
+              onPeriodClick={
+                canManage
+                  ? ({ period, dayOff: existing, anchor }) =>
+                    setDayOff({ tracker, period, dayOff: existing, anchor })
+                  : undefined
+              }
             />
           ))}
 
@@ -254,7 +266,7 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
           onClose={() => setPopover(null)}
           onOpenTask={onOpenTask}
           onConfirm={({ link, note }) =>
-            mutateEntry(
+            applyChange(
               () =>
                 trackerService.setTrackerEntry(popover.tracker._id, {
                   group: popover.row.groupId,
@@ -266,7 +278,7 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
               'confirm this period'
             )}
           onExcuse={({ note }) =>
-            mutateEntry(
+            applyChange(
               () =>
                 trackerService.setTrackerEntry(popover.tracker._id, {
                   group: popover.row.groupId,
@@ -277,13 +289,42 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
               'excuse this period'
             )}
           onClearEntry={() =>
-            mutateEntry(
+            applyChange(
               () =>
                 trackerService.deleteTrackerEntry(popover.tracker._id, {
                   group: popover.row.groupId,
                   periodKey: popover.cell.p,
                 }),
               'undo this'
+            )}
+        />
+      )}
+
+      {dayOff && (
+        <DayOffPopover
+          key={`${dayOff.tracker._id}:${dayOff.period.key}`}
+          anchorEl={dayOff.anchor}
+          tracker={dayOff.tracker}
+          period={dayOff.period}
+          dayOff={dayOff.dayOff}
+          onClose={() => setDayOff(null)}
+          onSave={({ tag, label }) =>
+            applyChange(
+              () =>
+                trackerService.setTrackerDayOff(dayOff.tracker._id, {
+                  date: dayOff.period.startDayKey,
+                  tag,
+                  label,
+                }),
+              'mark this day off'
+            )}
+          onRemove={() =>
+            applyChange(
+              () =>
+                trackerService.deleteTrackerDayOff(dayOff.tracker._id, {
+                  date: dayOff.period.startDayKey,
+                }),
+              'undo this day off'
             )}
         />
       )}

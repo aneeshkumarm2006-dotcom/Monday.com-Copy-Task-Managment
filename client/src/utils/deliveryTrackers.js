@@ -1,10 +1,14 @@
 import {
   BadgeCheck,
+  Briefcase,
+  CalendarOff,
   Check,
   CircleSlash2,
   ListChecks,
   MessageSquare,
   Minus,
+  PartyPopper,
+  TreePalm,
   X,
 } from 'lucide-react';
 
@@ -102,6 +106,65 @@ export const cellStateMeta = (state) => CELL_STATES[state] || NA_STATE;
 
 /** Legend order — worst-to-best reads oddly; this reads as a story. */
 export const LEGEND_ORDER = ['met', 'partial', 'missed', 'pending', 'excused', 'off'];
+
+// ---------------------------------------------------------------------------
+// Days off
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a day was off. The tag is an ICON, not a colour: the grid already spends
+ * its whole colour budget on met/partial/missed, and a fourth hue in the header
+ * would read as a seventh cell state. `values` must stay in step with the enum
+ * in server/src/utils/trackerDaysOff.js.
+ */
+export const DAY_OFF_TAGS = [
+  {
+    value: 'holiday',
+    label: 'Holiday',
+    icon: TreePalm,
+    placeholder: 'Independence Day',
+  },
+  {
+    value: 'event',
+    label: 'Event',
+    icon: PartyPopper,
+    placeholder: 'Client shoot',
+  },
+  {
+    value: 'other_work',
+    label: 'On other work',
+    icon: Briefcase,
+    placeholder: 'Everyone on the pitch deck',
+  },
+  {
+    value: 'other',
+    label: 'Other',
+    icon: CalendarOff,
+    placeholder: 'Why nothing was owed',
+  },
+];
+
+export const dayOffTagMeta = (value) =>
+  DAY_OFF_TAGS.find((t) => t.value === value) || DAY_OFF_TAGS[DAY_OFF_TAGS.length - 1];
+
+/**
+ * "Event — Client shoot", or just "Holiday" when nobody typed a label. Used by
+ * the column header's tooltip, the cell tooltip and the popover heading, so all
+ * three say the same words.
+ */
+export const describeDayOff = (dayOff) => {
+  if (!dayOff) return '';
+  const tag = dayOffTagMeta(dayOff.tag).label;
+  return dayOff.label ? `${tag} — ${dayOff.label}` : tag;
+};
+
+/** The same, for a whole period: a month can hold several days off. */
+export const describePeriodDaysOff = (period) => {
+  const list = period?.daysOff || [];
+  if (list.length === 0) return '';
+  if (list.length === 1) return describeDayOff(list[0]);
+  return `${list.length} days off`;
+};
 
 // ---------------------------------------------------------------------------
 // Requirements

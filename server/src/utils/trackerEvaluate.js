@@ -238,7 +238,10 @@ const evaluateTracker = ({
         return finish('excused', { entry: describeEntry(entry) });
       }
 
-      if (period.isOff) return finish('off');
+      // NOTE: `period.isOff` is NOT checked here. A day off excuses a client who
+      // did nothing; it must not erase one who delivered anyway. So an off
+      // period is still evaluated, and only falls through to `off` further down
+      // if the work did not actually meet the bar — see the comment there.
 
       // --- Which requirements did anything at all satisfy? ------------------
       const confirmed = !!(entry && entry.state === 'confirmed');
@@ -292,6 +295,13 @@ const evaluateTracker = ({
       if (isMet) {
         return finish('met', entry ? { entry: describeEntry(entry) } : {});
       }
+
+      // Nothing was owed today — a Sunday, a holiday, an event. Everything above
+      // has already had its say, so a client who cleared the bar anyway kept its
+      // green tick; from here down the day simply drops out of the ratio rather
+      // than becoming a `partial` or a `missed` nobody owed. Half-finished work
+      // on a day off is not a debt.
+      if (period.isOff) return finish('off');
 
       // Evidence beats the clock: a task logged today with no update yet is
       // `partial`, not `pending`. That is the state the user actually asked to

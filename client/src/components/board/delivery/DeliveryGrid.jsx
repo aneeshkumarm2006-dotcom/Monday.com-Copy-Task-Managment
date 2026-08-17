@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DeliveryCell from './DeliveryCell';
+import { dayOffTagMeta, describePeriodDaysOff } from '../../../utils/deliveryTrackers';
 import { HOVER_EASE, HOVER_MS, NAME_COL_HOVER, washVars } from './rowHover';
 
 /**
@@ -52,7 +53,37 @@ const buildBands = (periods) => {
   return bands;
 };
 
-const DeliveryGrid = ({ tracker, periods, rows, onCellClick }) => {
+/**
+ * The stack inside one date header: weekday, date, and — when the day is marked
+ * off — the reason's icon. Shared so the clickable and read-only headers can
+ * never drift apart.
+ */
+const PeriodHeaderContent = ({ period, dayOff }) => {
+  const TagIcon = dayOff ? dayOffTagMeta(dayOff.tag).icon : null;
+  return (
+    <>
+      {period.sublabel && (
+        <span style={{ fontSize: 9, lineHeight: 1.1, letterSpacing: '0.02em' }}>
+          {period.sublabel}
+        </span>
+      )}
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: period.isCurrent ? 700 : 500,
+          lineHeight: 1.2,
+          // A day off is not the story of the column any more; the tag below is.
+          opacity: dayOff ? 0.55 : 1,
+        }}
+      >
+        {period.label}
+      </span>
+      {TagIcon && <TagIcon size={10} strokeWidth={2.5} aria-hidden="true" style={{ marginTop: 1 }} />}
+    </>
+  );
+};
+
+const DeliveryGrid = ({ tracker, periods, rows, onCellClick, onPeriodClick }) => {
   const d = METRICS;
   const track = trackWidth(periods.length, d);
   const bands = useMemo(() => buildBands(periods), [periods]);
@@ -195,31 +226,65 @@ const DeliveryGrid = ({ tracker, periods, rows, onCellClick }) => {
             borderBottom: '1px solid var(--color-border)',
           }}
         />
-        {periods.map((p, ci) => (
-          <div
-            key={p.key}
-            role="columnheader"
-            aria-label={p.ariaLabel}
-            className="font-body flex flex-col items-center justify-end"
-            style={{
-              height: d.headH,
-              paddingBottom: 5,
-              borderBottom: '1px solid var(--color-border)',
-              background: hover.col === ci ? 'var(--color-accent-light)' : 'transparent',
-              color: headerTone(ci),
-              transition: `background ${HOVER_MS}ms ${HOVER_EASE}, color ${HOVER_MS}ms ${HOVER_EASE}`,
-            }}
-          >
-            {p.sublabel && (
-              <span style={{ fontSize: 9, lineHeight: 1.1, letterSpacing: '0.02em' }}>
-                {p.sublabel}
-              </span>
-            )}
-            <span style={{ fontSize: 11, fontWeight: p.isCurrent ? 700 : 500, lineHeight: 1.2 }}>
-              {p.label}
-            </span>
-          </div>
-        ))}
+        {periods.map((p, ci) => {
+          // A day off is a property of a DAY, so the header only offers it when
+          // the column is exactly one day. On a weekly or monthly tracker the
+          // header still shows any tags inside the period, but marking one is a
+          // question this control cannot ask coherently.
+          const singleDay = p.startDayKey === p.endDayKey;
+          const dayOff = p.daysOff?.[0] || null;
+          const canMark = !!onPeriodClick && singleDay;
+          const description = describePeriodDaysOff(p);
+          const label = description ? `${p.ariaLabel} — ${description}` : p.ariaLabel;
+
+          return (
+            <div
+              key={p.key}
+              role="columnheader"
+              aria-label={label}
+              title={canMark ? `${label}\nClick to mark this day off` : label}
+              className="font-body"
+              style={{
+                height: d.headH,
+                borderBottom: '1px solid var(--color-border)',
+                background: hover.col === ci ? 'var(--color-accent-light)' : 'transparent',
+                color: headerTone(ci),
+                transition:
+                  `background ${HOVER_MS}ms ${HOVER_EASE}, color ${HOVER_MS}ms ${HOVER_EASE}`,
+              }}
+            >
+              {/* A button INSIDE the columnheader rather than instead of it: the
+                  grid still gets one header cell per column, and the header
+                  keeps its role while the day-off control keeps its own. */}
+              {canMark ? (
+                <button
+                  type="button"
+                  onClick={(e) => onPeriodClick({ period: p, dayOff, anchor: e.currentTarget })}
+                  aria-label={
+                    dayOff ? `Edit day off — ${label}` : `Mark ${p.ariaLabel} as a day off`
+                  }
+                  className="w-full h-full flex flex-col items-center justify-end focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--color-accent)]"
+                  style={{
+                    padding: '0 0 5px',
+                    border: 'none',
+                    background: 'transparent',
+                    color: 'inherit',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <PeriodHeaderContent period={p} dayOff={dayOff} />
+                </button>
+              ) : (
+                <div
+                  className="w-full h-full flex flex-col items-center justify-end"
+                  style={{ paddingBottom: 5 }}
+                >
+                  <PeriodHeaderContent period={p} dayOff={dayOff} />
+                </div>
+              )}
+            </div>
+          );
+        })}
 
         {/* Body */}
         {rows.map((row, ri) => {

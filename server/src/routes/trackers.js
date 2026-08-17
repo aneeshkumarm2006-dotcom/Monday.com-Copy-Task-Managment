@@ -7,6 +7,8 @@ const {
   deleteTracker,
   setTrackerEntry,
   deleteTrackerEntry,
+  setTrackerDayOff,
+  deleteTrackerDayOff,
   getDelivery,
 } = require('../controllers/trackerController');
 
@@ -23,6 +25,8 @@ router.post('/boards/:boardId/trackers', createTracker);
 // the static segment first anyway — this router will grow.
 router.put('/trackers/:id/entries', setTrackerEntry);
 router.delete('/trackers/:id/entries', deleteTrackerEntry);
+router.put('/trackers/:id/days-off', setTrackerDayOff);
+router.delete('/trackers/:id/days-off', deleteTrackerDayOff);
 router.put('/trackers/:id', updateTracker);
 router.delete('/trackers/:id', deleteTracker);
 
