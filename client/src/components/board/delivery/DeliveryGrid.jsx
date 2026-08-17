@@ -62,6 +62,11 @@ const PeriodHeaderContent = ({ period, dayOff }) => {
   const TagIcon = dayOff ? dayOffTagMeta(dayOff.tag).icon : null;
   return (
     <>
+      {/* The tag sits ABOVE the date. Below it, the icon reads as a footnote to
+          the column of cells underneath and collides with the first row. */}
+      {TagIcon && (
+        <TagIcon size={11} strokeWidth={2.5} aria-hidden="true" style={{ marginBottom: 1 }} />
+      )}
       {period.sublabel && (
         <span style={{ fontSize: 9, lineHeight: 1.1, letterSpacing: '0.02em' }}>
           {period.sublabel}
@@ -72,13 +77,12 @@ const PeriodHeaderContent = ({ period, dayOff }) => {
           fontSize: 11,
           fontWeight: period.isCurrent ? 700 : 500,
           lineHeight: 1.2,
-          // A day off is not the story of the column any more; the tag below is.
+          // A day off is not the story of the column any more; the tag above is.
           opacity: dayOff ? 0.55 : 1,
         }}
       >
         {period.label}
       </span>
-      {TagIcon && <TagIcon size={10} strokeWidth={2.5} aria-hidden="true" style={{ marginTop: 1 }} />}
     </>
   );
 };
