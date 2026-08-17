@@ -5,7 +5,12 @@ const TrackerEntry = require('../models/TrackerEntry');
 const TaskGroup = require('../models/TaskGroup');
 
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
-const { isMonthKey, lastDayKeyOf } = require('../utils/monthKey');
+const {
+  isMonthKey,
+  firstDayKeyOf,
+  lastDayKeyOf,
+  monthKeyOfDayKey,
+} = require('../utils/monthKey');
 const {
   validateCadence,
   periodKeyFor,
@@ -26,7 +31,6 @@ const {
   parseDayKey,
   addDays,
   compareDayKeys,
-  minDayKey,
 } = require('../utils/tzDay');
 
 /**
@@ -61,15 +65,21 @@ const NOT_TRACKER_MESSAGE =
  * makes the limit mean the same thing for a daily and a monthly tracker.
  */
 const MAX_CELLS = 5000;
-const MAX_WINDOW_DAYS = 366;
 
 const MAX_NAME_LENGTH = 60;
 const MAX_MATCH_LENGTH = 80;
 const MAX_SKIP_DATES = 120;
 const MAX_TARGET_COUNT = 100;
 
-/** Default window per cadence type — roughly one screen's worth of history. */
-const DEFAULT_WINDOW = { everyNDays: '4w', weekly: '13w', monthly: '12m' };
+/**
+ * Default window, for the ONE cadence that still has one.
+ *
+ * A monthly cadence produces a single column per month, so scoping it to the
+ * board's selected month would render one square and no trend. Every other
+ * cadence IS scoped to that month — see resolveRange in getDelivery — and
+ * carries no window token at all.
+ */
+const DEFAULT_WINDOW = { monthly: '12m' };
 
 const WINDOW_RE = /^(\d{1,2})([wm])$/;
 
@@ -607,21 +617,18 @@ const deleteTrackerDayOff = async (req, res) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Turn a window token ('4w', '12m') into a start day key, counting back from
- * `anchorKey` in the tracker's own timezone. Presets rather than a free range on
- * purpose: a shared dashboard everyone reads the same way beats one everyone
- * configures differently.
+ * Turn a window token ('12m') into a start day key, counting back from
+ * `anchorKey`. Presets rather than a free range on purpose: a shared dashboard
+ * everyone reads the same way beats one everyone configures differently.
  *
- * The anchor is normally today. On a tracker board it is the last day of the
- * SELECTED month instead, so the grid ends where the month picker says it does
- * — pick July and the last column is July, not whatever month it happens to be
- * now. The window token still controls the window's LENGTH; the month controls
- * its END.
+ * ONLY a monthly cadence reaches here. Everything finer is scoped to the board's
+ * selected month, so its window is not a length at all — it is that month's two
+ * ends. See resolveRange in getDelivery.
  */
 const resolveWindowStart = (token, anchorKey, cadenceType) => {
   const raw = typeof token === 'string' && WINDOW_RE.test(token)
     ? token
-    : DEFAULT_WINDOW[cadenceType] || '4w';
+    : DEFAULT_WINDOW[cadenceType] || '12m';
   const [, countStr, unit] = raw.match(WINDOW_RE);
   const count = Math.max(1, Math.min(24, parseInt(countStr, 10)));
 
@@ -688,11 +695,10 @@ const getDelivery = async (req, res) => {
     const windows = parseWindows(req.query.windows);
     const now = new Date();
 
-    // The board's month picker sets where the grid ENDS. Clamped to today so the
-    // "one month ahead" entry in that dropdown does not paint a run of empty
-    // columns that all read as missed.
+    // The board's month picker IS the window for every cadence finer than a
+    // month. Falls back to the month containing today when the client sends
+    // nothing, so the endpoint is still meaningful without the picker.
     const monthParam = isMonthKey(req.query.month) ? req.query.month : null;
-    const monthEndKey = monthParam ? lastDayKeyOf(monthParam) : null;
 
     // ROUND TRIP 2 of 2 happens inside fetchDeliveryInputs. Everything between
     // here and there is pure — see services/deliveryReport.js for why this
@@ -703,17 +709,41 @@ const getDelivery = async (req, res) => {
       allGroups,
       now,
       maxCells: MAX_CELLS,
-      // The ONE thing this endpoint does differently from the People scoreboard:
-      // the window TOKEN sets the length, the selected month sets the end.
+      /**
+       * The window is the SELECTED MONTH — both ends of it — for a daily or
+       * weekly cadence, and a run of months ending at the selected one for a
+       * monthly cadence.
+       *
+       * It used to be a rolling length counting back from the month's end, which
+       * meant a weekly tracker on a board showing August opened with the week of
+       * Monday 27 July and, on a board whose trackers had been running a while,
+       * kept going back through May. Two months in one grid on a board whose
+       * every other tab is partitioned BY month is not a window anyone can read.
+       * The month picker is the one control now.
+       *
+       * The end is NOT clamped to today. Periods that have not come due yet are
+       * scored `pending` by trackerEvaluate, and `pending` is not in
+       * SCORED_STATES — so the columns for the rest of the month render as "not
+       * due yet" and touch neither the ratio nor the miss counts. Clamping
+       * instead made the grid grow a column at a time through the month and
+       * showed three of August's five weeks on the 18th.
+       */
       resolveRange: ({ tracker, todayKey }) => {
-        const anchorKey = monthEndKey ? minDayKey(monthEndKey, todayKey) : todayKey;
+        const monthKey = monthParam || monthKeyOfDayKey(todayKey);
+        const monthStart = firstDayKeyOf(monthKey);
+        const monthEnd = lastDayKeyOf(monthKey);
+
+        if (tracker.cadence?.type !== 'monthly') {
+          return { from: monthStart, to: monthEnd };
+        }
+
         return {
           from: resolveWindowStart(
             windows.get(String(tracker._id)),
-            anchorKey,
+            monthEnd,
             tracker.cadence?.type
           ),
-          to: anchorKey,
+          to: monthEnd,
         };
       },
     });
@@ -722,7 +752,7 @@ const getDelivery = async (req, res) => {
       return res.status(400).json({
         error:
           `"${overCap.tracker.name}" would show ${overCap.cells} `
-          + `cells. Pick a shorter window or fewer clients (limit ${MAX_CELLS}).`,
+          + `cells. Scope it to fewer clients, or shorten its window (limit ${MAX_CELLS}).`,
       });
     }
 

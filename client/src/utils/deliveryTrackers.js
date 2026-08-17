@@ -222,18 +222,20 @@ export const CADENCE_TYPES = [
   { value: 'monthly', label: 'Monthly' },
 ];
 
-/** Window presets, per cadence. Presets not a free range — see the plan. */
+/**
+ * Window presets, per cadence — and only ONE cadence still has any.
+ *
+ * A daily or weekly tracker's window is the month the board is showing, chosen
+ * by the month picker above the tabs. There is deliberately no second control
+ * that could disagree with it: a `13w` preset on a board showing August put five
+ * months of columns under an "August 2026" heading, which is not a window
+ * anybody can read against a board partitioned by month everywhere else.
+ *
+ * A monthly cadence is the exception, because month-scoping it would render one
+ * column and no trend. Its presets are how far BACK from the selected month the
+ * run of columns reaches.
+ */
 export const WINDOW_OPTIONS = {
-  everyNDays: [
-    { value: '2w', label: '2w' },
-    { value: '4w', label: '4w' },
-    { value: '8w', label: '8w' },
-  ],
-  weekly: [
-    { value: '8w', label: '8w' },
-    { value: '13w', label: '13w' },
-    { value: '26w', label: '26w' },
-  ],
   monthly: [
     { value: '6m', label: '6m' },
     { value: '12m', label: '12m' },
@@ -241,10 +243,11 @@ export const WINDOW_OPTIONS = {
   ],
 };
 
-export const DEFAULT_WINDOW = { everyNDays: '4w', weekly: '13w', monthly: '12m' };
+/** Only cadences with a window have a default one. See WINDOW_OPTIONS. */
+export const DEFAULT_WINDOW = { monthly: '12m' };
 
-export const windowOptionsFor = (cadenceType) =>
-  WINDOW_OPTIONS[cadenceType] || WINDOW_OPTIONS.everyNDays;
+/** `[]` for the month-scoped cadences — the section renders no control at all. */
+export const windowOptionsFor = (cadenceType) => WINDOW_OPTIONS[cadenceType] || [];
 
 // ---------------------------------------------------------------------------
 // Describers

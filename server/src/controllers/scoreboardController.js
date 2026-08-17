@@ -197,8 +197,12 @@ const getScoreboard = async (req, res) => {
       // A period belongs to the month containing its START day — the month its
       // own key is named after ('w:2026-07-28' is July's). Without this rule a
       // week straddling a boundary is counted in BOTH months and a year's
-      // totals exceed reality. Applied at fold time rather than by trimming the
-      // periods, so planDelivery stays exactly what the Delivery grid needs.
+      // totals exceed reality.
+      //
+      // planDelivery now enforces exactly this against `resolveRange`'s `from`,
+      // for the Delivery grid's sake as much as this one's, so nothing should
+      // reach here to be dropped. Kept as the assertion of a rule this endpoint
+      // depends on rather than one it merely inherits.
       deliveryByGroupId = foldDeliveryByGroup(results, {
         keepPeriod: (p) => monthKeyOfDayKey(p.startDayKey) === month,
       });

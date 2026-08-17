@@ -20,9 +20,11 @@ import { HOVER_EASE, HOVER_MS, NAME_COL_HOVER, washVars } from './rowHover';
  * Layout note behind the numbers below — PageWrapper gives a 960px content box
  * at a 1280px viewport, 912px inside a 24px-padded section card. A 172px sticky
  * name column leaves 740px, so 26 columns at 28px (24 + 4 gutter) is 728px and
- * fits with no scroll. That is why the default daily window is 26 periods rather
- * than 30. Past that the grid scrolls inside its own card; the page body never
- * scrolls sideways.
+ * fits with no scroll. A daily tracker is now scoped to one calendar month
+ * (see the Delivery endpoint's resolveRange), so a 31-day month overruns that by
+ * five columns and the grid scrolls inside its own card — `overflowX: auto`
+ * below, with the name column sticky so the client you are reading stays put.
+ * The page body never scrolls sideways.
  */
 
 const METRICS = { nameCol: 172, cell: 24, gutter: 4, rowH: 30, headH: 42 };

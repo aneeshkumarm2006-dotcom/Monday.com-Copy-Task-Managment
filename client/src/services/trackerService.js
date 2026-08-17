@@ -16,12 +16,17 @@ export const listTrackers = async (boardId) => {
 /**
  * GET /api/boards/:boardId/delivery — the computed grid.
  *
- * `windows` is a map of trackerId -> preset ('4w', '12m'), controlling how far
- * back the grid reaches. `monthKey` ('YYYY-MM') controls where it ENDS — the
- * board's month picker, so selecting July shows the run of periods up to July
- * rather than up to today. Everything else — period boundaries, labels,
- * timezone, holidays, scoring — is resolved server-side, so the client never
- * does date arithmetic of its own.
+ * `monthKey` ('YYYY-MM') is the board's month picker, and for every cadence
+ * finer than a month it IS the window — both ends of it. Pick July and a weekly
+ * tracker shows July's four or five weeks, nothing either side.
+ *
+ * `windows` is a map of trackerId -> preset ('12m'), and only monthly-cadence
+ * trackers have one: scoping those to a single month would render one column and
+ * no trend, so the preset says how many months back from `monthKey` to run.
+ * Entries with a falsy token are dropped, which is how the month-scoped cadences
+ * send nothing. Everything else — period boundaries, labels, timezone, holidays,
+ * scoring — is resolved server-side, so the client never does date arithmetic of
+ * its own.
  */
 export const getDelivery = async (boardId, windows = {}, monthKey = null) => {
   const encoded = Object.entries(windows)

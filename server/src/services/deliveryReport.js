@@ -79,10 +79,26 @@ const planDelivery = ({ trackers, allGroups, resolveRange, now, maxCells }) => {
     // Days off go in HERE rather than at either call site, so the Delivery grid
     // and the People scoreboard cannot disagree about which days were owed. See
     // utils/trackerDaysOff.js for why there are two sources of dates.
+    //
+    // A PERIOD BELONGS TO THE WINDOW CONTAINING ITS FIRST DAY. periodsBetween
+    // returns every period that INTERSECTS the range — it has to, because
+    // periodKeyFor is pure in (cadence, day) and cannot know where a caller's
+    // window happens to fall (INVARIANT 1 in trackerPeriods.js). So asking a
+    // Monday-start weekly cadence for August hands back the week of Mon 27 July
+    // as its first column, labelled and banded JUL. Two things go wrong if it
+    // stays: a foreign month appears in a grid the board's month picker says is
+    // August, and that week is scored twice over — once in July's totals and
+    // once in August's — so a year of ratios does not add up to the year.
+    //
+    // The threshold is the REQUESTED start, not the startDate-clamped `from`
+    // below it. A tracker that begins on Wednesday 5 August still owns the week
+    // of Monday the 3rd: no earlier window will ever render it, so dropping it
+    // would lose the first week of tracking entirely.
+    const windowStart = requested.from;
     const periods = annotateDaysOff(
       periodsBetween(tracker.cadence, from, to, { skipDates: skipDayKeysOf(tracker) }),
       tracker
-    );
+    ).filter((p) => compareDayKeys(p.startDayKey, windowStart) >= 0);
 
     // An empty `tracker.groups` means EVERY group — see models/Tracker.js.
     const scoped = (tracker.groups || []).length > 0

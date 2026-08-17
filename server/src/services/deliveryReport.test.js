@@ -110,6 +110,69 @@ test('a tracker that has not started yet still renders its empty columns', () =>
 });
 
 // ---------------------------------------------------------------------------
+// Straddling periods — a period belongs to the window holding its FIRST day
+// ---------------------------------------------------------------------------
+
+const WEEKLY = { type: 'weekly', weekStartsOn: 1, weekdays: [1, 2, 3, 4, 5], graceDays: 0 };
+
+test('a week straddling the window start is dropped, not banded into a foreign month', () => {
+  // August 2026 opens on a Saturday, so the week containing 1 August starts on
+  // Monday 27 JULY. Rendering it puts a July column in an August grid and scores
+  // that week in both months' totals.
+  const { plans } = plan1(
+    tracker({ cadence: WEEKLY, startDate: '2026-01-01' }),
+    fixedRange('2026-08-01', '2026-08-31')
+  );
+
+  assert.strictEqual(plans[0].periods[0].startDayKey, '2026-08-03');
+  assert.ok(
+    plans[0].periods.every((p) => p.startDayKey.slice(0, 7) === '2026-08'),
+    'every column belongs to the month that was asked for'
+  );
+});
+
+test('the straddle rule measures from the REQUESTED start, not the clamped one', () => {
+  // A tracker born mid-week still owns that week: no earlier window will ever
+  // render it, so trimming against the startDate-clamped `from` would lose the
+  // first week of tracking outright.
+  const { plans } = plan1(
+    tracker({ cadence: WEEKLY, startDate: '2026-08-05' }), // a Wednesday
+    fixedRange('2026-08-01', '2026-08-31')
+  );
+
+  assert.strictEqual(plans[0].from, '2026-08-05', 'still clamped to the tracker start');
+  assert.strictEqual(plans[0].periods[0].startDayKey, '2026-08-03', 'but its week is kept');
+});
+
+test('the trailing period is kept whole — August owns the week that runs into September', () => {
+  // The mirror of the rule above: Mon 31 August starts in August, so August
+  // scores it, and September will drop it.
+  const { plans } = plan1(
+    tracker({ cadence: WEEKLY, startDate: '2026-01-01' }),
+    fixedRange('2026-08-01', '2026-08-31')
+  );
+
+  const last = plans[0].periods[plans[0].periods.length - 1];
+  assert.strictEqual(last.startDayKey, '2026-08-31');
+  assert.strictEqual(last.endDayKey, '2026-09-06', 'kept whole, not clipped to the month');
+});
+
+test('a daily cadence needs no trim — every day is its own period', () => {
+  // The straddle rule must not quietly eat the 1st. A daily period starts on the
+  // day it covers, so nothing here precedes the window; Sat 1 August is present
+  // and merely `isOff`, which is how a weekend renders rather than how it hides.
+  const { plans } = plan1(
+    tracker({ startDate: '2026-01-01' }),
+    fixedRange('2026-08-01', '2026-08-31')
+  );
+
+  assert.strictEqual(plans[0].periods.length, 31, 'the whole month, weekends included');
+  assert.strictEqual(plans[0].periods[0].startDayKey, '2026-08-01');
+  assert.strictEqual(plans[0].periods[0].isOff, true, 'a Saturday on a Mon-Fri cadence');
+  assert.strictEqual(plans[0].periods[30].startDayKey, '2026-08-31');
+});
+
+// ---------------------------------------------------------------------------
 // Scan bounds — the subtle one
 // ---------------------------------------------------------------------------
 

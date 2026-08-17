@@ -58,9 +58,16 @@ export const savePrefs = (boardId, prefs) => {
   }
 };
 
-/** The window preset for a tracker, falling back to its cadence's default. */
-export const windowFor = (prefs, tracker) =>
-  prefs.windows?.[tracker._id] || DEFAULT_WINDOW[tracker.cadence?.type] || '4w';
+/**
+ * The window preset for a tracker, falling back to its cadence's default —
+ * or `null` for the cadences whose window is simply the board's selected month.
+ * Those send no token at all rather than one the server would ignore.
+ */
+export const windowFor = (prefs, tracker) => {
+  const fallback = DEFAULT_WINDOW[tracker.cadence?.type];
+  if (!fallback) return null;
+  return prefs.windows?.[tracker._id] || fallback;
+};
 
 /** The trackers in the user's chosen order; unknown ids keep server order at the end. */
 export const orderTrackers = (trackers, order = []) => {

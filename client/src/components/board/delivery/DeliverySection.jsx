@@ -34,6 +34,11 @@ const DeliverySection = ({
   const periods = tracker.periods || [];
   const summary = tracker.summary;
 
+  // Empty for every cadence whose window is the board's selected month, which is
+  // most of them — see WINDOW_OPTIONS. Rendering a one-option control, or a
+  // control the month picker overrules, is worse than rendering none.
+  const windowOptions = windowOptionsFor(tracker.cadence?.type);
+
   return (
     <section
       ref={sectionRef}
@@ -101,11 +106,13 @@ const DeliverySection = ({
         </div>
 
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
-          <SegmentedControl
-            options={windowOptionsFor(tracker.cadence?.type)}
-            value={windowToken}
-            onChange={onChangeWindow}
-          />
+          {windowOptions.length > 0 && (
+            <SegmentedControl
+              options={windowOptions}
+              value={windowToken}
+              onChange={onChangeWindow}
+            />
+          )}
           <div className="hidden md:block">
             <SegmentedControl
               options={[

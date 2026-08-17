@@ -87,9 +87,9 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
       if (!boardId) return;
       if (!quiet) setLoading(true);
       try {
-        // The month sets where the grid ENDS; the per-tracker window presets
-        // still set how far back it reaches. All the date arithmetic stays
-        // server-side — see trackerService.
+        // The month IS the window for a daily or weekly tracker; only a monthly
+        // one carries a preset saying how many months back to run. All the date
+        // arithmetic stays server-side — see trackerService.
         const data = await trackerService.getDelivery(boardId, windowMap, monthKey);
         setDelivery(data);
         setError(null);
