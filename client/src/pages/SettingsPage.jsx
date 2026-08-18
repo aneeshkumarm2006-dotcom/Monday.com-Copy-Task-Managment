@@ -20,17 +20,7 @@ import * as profileService from '../services/profileService';
  * See Macan_Design.md Section 7.8.
  */
 
-const AVATAR_COLORS = [
-  '#2563EB', '#16A34A', '#EA580C', '#7C3AED', '#D97706', '#DC2626',
-];
 const getInitial = (name) => (name ? name.trim().charAt(0).toUpperCase() : '?');
-const getAvatarColor = (seed = '') => {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i += 1) {
-    hash = (hash * 31 + seed.charCodeAt(i)) & 0xffffffff;
-  }
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-};
 
 const Avatar = ({ user, size = 40 }) => {
   const [imgError, setImgError] = useState(false);
@@ -45,15 +35,15 @@ const Avatar = ({ user, size = 40 }) => {
       />
     );
   }
-  const seed = user?.email || user?.name || '';
   return (
     <div
-      className="flex items-center justify-center font-display font-semibold text-white"
+      className="flex items-center justify-center font-display font-semibold"
       style={{
         width: size,
         height: size,
         borderRadius: 9999,
-        background: getAvatarColor(seed),
+        background: 'var(--color-accent-light)',
+        color: 'var(--color-accent-text)',
         fontSize: size * 0.4,
       }}
       aria-hidden="true"
@@ -523,12 +513,13 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
             />
           ) : (
             <div
-              className="flex items-center justify-center font-display font-semibold text-white"
+              className="flex items-center justify-center font-display font-semibold"
               style={{
                 width: 80,
                 height: 80,
                 borderRadius: 9999,
-                background: getAvatarColor(user?.email || user?.name || ''),
+                background: 'var(--color-accent-light)',
+                color: 'var(--color-accent-text)',
                 fontSize: 32,
               }}
             >
