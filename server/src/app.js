@@ -14,13 +14,33 @@ app.use(
 
 // Body parsing. `verify` stashes the raw bytes on req.rawBody so webhook routes
 // (e.g. inbound email) can verify provider signatures over the exact payload.
-app.use(
-  express.json({
-    verify: (req, res, buf) => {
-      req.rawBody = buf;
-    },
-  })
+const stashRawBody = (req, res, buf) => {
+  req.rawBody = buf;
+};
+
+/**
+ * Vault routes get a larger JSON limit than everything else.
+ *
+ * A vault item's whole payload — title, fields, a full TipTap document — is
+ * AES-GCM sealed and then base64'd, which inflates it by a third before it ever
+ * reaches the wire. At body-parser's 100kb default a Doc of any real length is
+ * rejected with a 413 the user cannot act on, and there is no way to make it
+ * smaller: encryption is not compressible and the payload cannot be split,
+ * because it is one sealed unit by design.
+ *
+ * This runs BEFORE the global parser and body-parser marks a request once
+ * parsed, so the parser below then skips it. That makes this an override for
+ * these paths rather than a second parse, and leaves every other route on the
+ * conservative default.
+ */
+const VAULT_BODY_PATH =
+  /^\/api\/(boards\/[^/]+\/vault|orgs\/[^/]+\/vault-escrow|vault)(\/|$)/;
+const vaultJson = express.json({ limit: '6mb', verify: stashRawBody });
+app.use((req, res, next) =>
+  VAULT_BODY_PATH.test(req.path) ? vaultJson(req, res, next) : next()
 );
+
+app.use(express.json({ verify: stashRawBody }));
 app.use(express.urlencoded({ extended: true }));
 
 // Passport (stateless — no session middleware)
@@ -54,6 +74,7 @@ app.use('/api', require('./routes/scoreboard'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api', require('./routes/updates'));
 app.use('/api', require('./routes/notes'));
+app.use('/api', require('./routes/vault'));
 app.use('/api', require('./routes/activity'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/analytics', require('./routes/analytics'));

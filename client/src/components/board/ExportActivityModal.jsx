@@ -3,6 +3,7 @@ import { Download, FileSpreadsheet, FileText, AlertTriangle } from 'lucide-react
 import Modal from '../ui/Modal';
 import Button from '../ui/Button';
 import Spinner from '../ui/Spinner';
+import Switch from '../ui/Switch';
 import DatePickerPopover from '../ui/DatePickerPopover';
 import useToastStore from '../../store/toastStore';
 import { getActivityExport } from '../../services/boardService';
@@ -79,6 +80,9 @@ const ExportActivityModal = ({ isOpen, onClose, board }) => {
 
   const [presetKey, setPresetKey] = useState('30d');
   const [format, setFormat] = useState('csv');
+  // On by default: the log records that someone posted, not what they posted,
+  // so without this the report says "Ann posted an update" and stops.
+  const [includeThreads, setIncludeThreads] = useState(true);
   const [customFrom, setCustomFrom] = useState(toValue(daysAgo(29)));
   const [customTo, setCustomTo] = useState(toValue(new Date()));
   const [busy, setBusy] = useState(false);
@@ -104,7 +108,13 @@ const ExportActivityModal = ({ isOpen, onClose, board }) => {
     setBusy(true);
     setResult(null);
     try {
-      const payload = await getActivityExport(board._id, { from, to });
+      const payload = await getActivityExport(board._id, {
+        from,
+        to,
+        // The PDF has no column for a thread, so asking for one would only
+        // make the download bigger.
+        threads: format === 'csv' && includeThreads,
+      });
       setResult(payload);
       // A quiet window still produces a file. "Nothing happened on this board
       // today" is a result worth filing, and the report says so in writing.
@@ -270,6 +280,25 @@ const ExportActivityModal = ({ isOpen, onClose, board }) => {
           </div>
         </Field>
       </div>
+
+      {format === 'csv' && (
+        <div className="mt-4 flex items-start gap-3">
+          <Switch
+            checked={includeThreads}
+            onChange={setIncludeThreads}
+            label="Include the full update thread for each task"
+          />
+          <span className="min-w-0">
+            <span className="block font-body text-[13px] text-[color:var(--color-text-primary)]">
+              Include full update threads
+            </span>
+            <span className="block font-body text-[11.5px] text-[color:var(--color-text-muted)]">
+              Every message on each task, in full — not just the log's one-line
+              summary. Makes the file considerably larger.
+            </span>
+          </span>
+        </div>
+      )}
 
       {/* Outcome */}
       {result && result.totalCount === 0 && (

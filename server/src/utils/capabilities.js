@@ -118,6 +118,20 @@ const CAPABILITY_GROUPS = [
     ],
   },
   {
+    key: 'vault',
+    name: 'Vault',
+    // A pair rather than the usual view/manage split doing double duty: here
+    // `vault.view` does NOT mean "can read the secrets". Nobody can read them
+    // without the vault password, which the server never has. It means "may the
+    // Vault tab exist for this person at all" — the outer door, in front of the
+    // one the password opens. Both sit on the `edit` rung below; see the note
+    // there for why nothing lower gets even the door.
+    capabilities: [
+      ['vault.view', "Open a board's Vault and read its items"],
+      ['vault.manage', 'Add, edit and delete vault items, and set up the vault'],
+    ],
+  },
+  {
     key: 'insights',
     name: 'Insights',
     capabilities: [
@@ -183,6 +197,10 @@ const BOARD_SCOPED = new Set([
   'goal.view',
   'goal.track',
   'goal.manage',
+  // Same obligation again: both are conferred by the `edit` rung in LEVEL_ADDS,
+  // which is what makes board-scoping them safe rather than a silent revoke.
+  'vault.view',
+  'vault.manage',
 ]);
 
 /**
@@ -224,6 +242,13 @@ const LEVEL_ADDS = {
     'tracker.manage',
     'goal.manage',
     'board.rename',
+    // The vault opens no lower than `edit`, and that is a deliberate departure
+    // from the pattern above, where the view half of every pair sits on `view`.
+    // A tracker or a goal is the board reporting on itself; the vault is the
+    // board's production credentials. Someone invited to comment on a board has
+    // not been trusted with the door to its secrets, only with the board.
+    'vault.view',
+    'vault.manage',
   ],
 };
 
@@ -376,6 +401,8 @@ const SYSTEM_ROLES = [
       'goal.view',
       'goal.track',
       'goal.manage',
+      'vault.view',
+      'vault.manage',
       'analytics.view',
       'productivity.view_others',
       // Holding this only makes the export *possible*. Each admin still has to
@@ -434,6 +461,11 @@ const SYSTEM_ROLES = [
       'goal.view',
       'goal.track',
       'goal.manage',
+      // Board-scoped, so the AND still limits this to boards where they hold
+      // `edit` — in practice their own. A member who creates a board and cannot
+      // open its vault would be locked out of a room in their own house.
+      'vault.view',
+      'vault.manage',
     ],
     // NOT granted, on purpose: `analytics.view`. The analytics and productivity
     // pages were admin-only before this system existed, and quietly opening them
@@ -451,6 +483,11 @@ const SYSTEM_ROLES = [
     // should be able to see whether that board is keeping its promises and
     // whether it hit its numbers; they still cannot create a tracker, confirm a
     // period, excuse a miss, or type a result into a goal.
+    //
+    // `vault.view` is NOT here, and would do nothing if it were: the vault opens
+    // at the `edit` rung, so the AND strips it from anyone read-only anyway.
+    // Leaving it out keeps the matrix honest rather than showing a viewer a
+    // ticked box that grants nothing.
     permissions: [
       'org.view_members', 'board.view_public', 'tracker.view', 'goal.view',
     ],

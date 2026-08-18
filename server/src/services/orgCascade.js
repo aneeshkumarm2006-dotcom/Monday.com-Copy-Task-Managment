@@ -3,6 +3,7 @@ const Board = require('../models/Board');
 const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
 const Update = require('../models/Update');
+const Note = require('../models/Note');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
 const Automation = require('../models/Automation');
@@ -14,6 +15,8 @@ const User = require('../models/User');
 const ActivityLog = require('../models/ActivityLog');
 const BoardConnection = require('../models/BoardConnection');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
+const VaultEscrow = require('../models/VaultEscrow');
+const { cascadeDeleteVaults } = require('./vaultCascade');
 
 /**
  * Permanently delete an organisation and everything that lives under it.
@@ -55,6 +58,10 @@ const cascadeDeleteOrg = async (orgId) => {
   await ItemFollow.deleteMany({ organisation: orgId });
 
   if (boardIds.length) {
+    await cascadeDeleteVaults(boardIds);
+    // Same omission as the board cascade had: notes are only otherwise removed
+    // when their GROUP is deleted, so tearing down an org left them behind.
+    await Note.deleteMany({ board: { $in: boardIds } });
     await TaskGroup.deleteMany({ board: { $in: boardIds } });
     await Automation.deleteMany({ board: { $in: boardIds } });
     await BoardConnection.deleteMany({
@@ -63,6 +70,10 @@ const cascadeDeleteOrg = async (orgId) => {
     await Board.deleteMany({ _id: { $in: boardIds } });
   }
 
+  // The org's break-glass key. Nothing else references it once the boards are
+  // gone, and leaving it would keep a wrapped private key alive for a workspace
+  // that no longer exists.
+  await VaultEscrow.deleteMany({ organisation: orgId });
   await Automation.deleteMany({ organisation: orgId });
   await Tracker.deleteMany({ organisation: orgId });
   await TrackerEntry.deleteMany({ organisation: orgId });

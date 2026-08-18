@@ -46,6 +46,8 @@ const COLUMNS = [
   { key: 'labels', header: 'Labels', width: 22 },
   { key: 'checklist', header: 'Checklist', width: 14 },
   { key: 'note', header: 'Task notes', csvOnly: true },
+  { key: 'updatesCount', header: 'Updates', csvOnly: true },
+  { key: 'updates', header: 'Update thread', csvOnly: true },
   { key: 'taskSource', header: 'Task source', csvOnly: true },
   { key: 'portalRef', header: 'Ticket #', csvOnly: true },
   { key: 'portalType', header: 'Request type', csvOnly: true },
@@ -102,7 +104,60 @@ const displayTask = (row) => (row.isSubitem ? `↳ ${row.taskName}` : row.taskNa
 
 const list = (values) => (Array.isArray(values) ? values.join(', ') : '');
 
-const toCells = (row) => ({
+/**
+ * One message of a task's discussion as a single line.
+ *
+ *   [12 Mar 2026, 14:05] Ann Smith: Looks right to me
+ *   [12 Mar 2026, 14:20] Jane Doe (client): thanks! [attached: brief.pdf]
+ *
+ * Everything after the name is conditional, and each part earns its place by
+ * answering something the name alone doesn't: whether the author was outside
+ * the team, which of a client board's two threads this was said on, and
+ * whether it was a reply rather than a new point.
+ */
+const messageLine = (m) => {
+  let who = m.authorName || 'Unknown';
+  if (m.isClient) who += ' (client)';
+  if (m.replyToAuthor) who += ` (reply to ${m.replyToAuthor})`;
+  if (m.edited) who += ' (edited)';
+
+  const thread = m.thread === 'team'
+    ? ' [team thread]'
+    : m.thread === 'client' ? ' [client thread]' : '';
+
+  const files = m.attachments?.length
+    ? `[attached: ${m.attachments.join(', ')}]`
+    : '';
+
+  // A post can be nothing but a file, and a bare colon at the end of the line
+  // reads as a message that failed to export.
+  const text = (m.text || '').trim() || (files ? '' : '(no text)');
+  // A multi-line message keeps its lines, indented: every message starts at
+  // column zero with its timestamp, so the indent is what stops the second
+  // paragraph of one post reading as somebody else's.
+  const indented = text.replace(/\n/g, '\n    ');
+
+  return `[${formatWhen(m.at)}]${thread} ${who}: ${[indented, files].filter(Boolean).join(' ')}`;
+};
+
+/**
+ * A task's whole thread in one cell, oldest first.
+ *
+ * Newlines inside a quoted CSV field are legal (RFC 4180) and Excel wraps
+ * them in place, so the conversation stays readable as a conversation rather
+ * than being flattened onto one line or split across rows.
+ */
+const threadText = (thread) => {
+  if (!thread?.messages?.length) return '';
+  const lines = thread.messages.map(messageLine);
+  const dropped = (thread.count || 0) - thread.messages.length;
+  if (thread.truncated && dropped > 0) {
+    lines.unshift(`… ${dropped} earlier message${dropped === 1 ? '' : 's'} not exported.`);
+  }
+  return lines.join('\n');
+};
+
+const toCells = (row, threads = {}) => ({
   when: formatWhen(row.at),
   groupName: row.groupName,
   taskName: displayTask(row),
@@ -116,6 +171,11 @@ const toCells = (row) => ({
   // "nothing ticked" and "no checklist" is the one a reader actually needs.
   checklist: row.checklistTotal ? `${row.checklistDone}/${row.checklistTotal}` : '',
   note: row.note || '',
+  // Repeated on every row of a task, like the field snapshot above it: a
+  // spreadsheet column has no other shape, and it is what lets any single row
+  // be read without hunting for the one that carries the conversation.
+  updatesCount: threads[row.taskId]?.count ? String(threads[row.taskId].count) : '',
+  updates: threadText(threads[row.taskId]),
   taskSource: humanize(row.taskSource),
   portalRef: row.portalRef ? `#${row.portalRef}` : '',
   portalType: humanize(row.portalType),
@@ -184,7 +244,7 @@ export const rowsToCsv = (payload) => {
     return `${BOM}${lines.join('\r\n')}\r\n`;
   }
   for (const row of payload.rows) {
-    const cells = toCells(row);
+    const cells = toCells(row, payload.threads || {});
     lines.push(COLUMNS.map((c) => csvField(cells[c.key])).join(','));
   }
   // The BOM is not decoration: without it Excel on Windows opens UTF-8 as

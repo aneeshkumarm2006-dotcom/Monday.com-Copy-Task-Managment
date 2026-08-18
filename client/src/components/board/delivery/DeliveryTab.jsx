@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CalendarCheck, Settings2 } from 'lucide-react';
+import { CalendarCheck } from 'lucide-react';
 
-import Button from '../../ui/Button';
 import EmptyState from '../../ui/EmptyState';
 import { SkeletonBlock } from '../../ui/Skeleton';
 import useTaskStore from '../../../store/taskStore';
@@ -186,14 +185,6 @@ const DeliveryTab = ({ boardId, groups = [], monthKey, canManage, onOpenTask }) 
     <div className="mt-5 flex flex-col gap-4">
       {hasTrackers ? (
         <>
-          {canManage && (
-            <div className="flex items-center justify-end">
-              <Button variant="secondary" size="sm" icon={Settings2} onClick={() => setModal({ view: 'list' })}>
-                Trackers
-              </Button>
-            </div>
-          )}
-
           <DeliverySummary trackers={trackers} />
 
           {trackers.map((tracker) => (

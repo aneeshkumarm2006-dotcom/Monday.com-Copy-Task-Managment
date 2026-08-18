@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const multer = require('multer');
@@ -111,6 +112,38 @@ const taskAttachmentUpload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB per file
 });
 
+/**
+ * Cloudinary storage for VAULT blobs — and the one storage here whose params do
+ * not resemble the others, for reasons worth stating.
+ *
+ *   resource_type: 'raw'  — always. The bytes arriving are AES-GCM ciphertext,
+ *       so there is no image to transform and nothing to sniff. Letting
+ *       Cloudinary decide would occasionally guess 'image' on random bytes and
+ *       then serve, resize or re-encode them, which corrupts the payload.
+ *
+ *   public_id: random    — NOT `Date.now()-originalname` like every sibling
+ *       above. A Cloudinary URL is public to anyone holding it, and the real
+ *       filename ("aws-root-recovery-codes.pdf") is most of the secret. The
+ *       filename is sealed inside the item's ciphertext instead; what lands here
+ *       is 32 hex characters that say nothing.
+ *
+ * The browser encrypts BEFORE the request is made, so plaintext never reaches
+ * this process, let alone Cloudinary.
+ */
+const vaultBlobStorage = new CloudinaryStorage({
+  cloudinary,
+  params: () => ({
+    folder: 'macan/vault',
+    resource_type: 'raw',
+    public_id: crypto.randomBytes(16).toString('hex'),
+  }),
+});
+
+const vaultBlobUpload = multer({
+  storage: vaultBlobStorage,
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB per file, as elsewhere
+});
+
 // Error-handling middleware for the attachment upload routes. Turns multer's
 // file-size error (and any other upload failure) into a clear, friendly
 // message instead of letting it fall through to the generic 500 handler.
@@ -133,6 +166,7 @@ module.exports = {
   avatarUpload,
   updateUpload,
   taskAttachmentUpload,
+  vaultBlobUpload,
   destroyCloudinaryAssets,
   handleUploadError,
 };

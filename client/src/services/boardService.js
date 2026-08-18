@@ -254,9 +254,11 @@ export const reorderGroupTags = async (boardId, orderedIds) => {
  * feature on in Settings → Extra features; the modal surfaces the server's own
  * message, which distinguishes the two.
  */
-export const getActivityExport = async (boardId, { from, to }) => {
+// `threads` pulls each task's full update thread into the payload. It is the
+// heaviest part of the response, and only the CSV has a column for it.
+export const getActivityExport = async (boardId, { from, to, threads = true }) => {
   const { data } = await api.get(`/api/boards/${boardId}/activity-export`, {
-    params: { from, to },
+    params: { from, to, threads: threads ? 1 : 0 },
     suppressErrorToast: true,
   });
   return data;

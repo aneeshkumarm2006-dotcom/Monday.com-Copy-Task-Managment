@@ -10,6 +10,7 @@ const {
   describeActivity,
   eventLabel,
 } = require('../services/activityFormat');
+const { buildTaskThreads } = require('../services/updateThread');
 
 /**
  * Board activity export.
@@ -92,7 +93,12 @@ const toDayString = (date) => {
 };
 
 /**
- * GET /api/boards/:id/activity-export?from=YYYY-MM-DD&to=YYYY-MM-DD
+ * GET /api/boards/:id/activity-export?from=YYYY-MM-DD&to=YYYY-MM-DD&threads=1
+ *
+ * `threads=0` drops the discussion threads from the response. They are the
+ * single biggest thing in it — a chatty task carries more text than every
+ * other column of every one of its rows put together — so the caller may
+ * say no.
  */
 const getActivityExport = async (req, res) => {
   try {
@@ -146,6 +152,13 @@ const getActivityExport = async (req, res) => {
       });
     }
 
+    // Opt-out rather than opt-in: someone exporting a board's activity wants
+    // what was SAID as much as what changed, and the snippet the log stores is
+    // 80 characters of it.
+    const includeThreads = !['0', 'false', 'no'].includes(
+      String(req.query.threads ?? '').toLowerCase()
+    );
+
     // ── Fetch ───────────────────────────────────────────────────────────────
     // +1 to detect truncation without a second count query.
     const raw = await ActivityLog.find({
@@ -178,6 +191,26 @@ const getActivityExport = async (req, res) => {
           .lean()
       : [];
     const taskMap = new Map(tasks.map((t) => [t._id.toString(), t]));
+
+    /**
+     * The tasks' discussions — every message in full, not the log's snippet.
+     *
+     * Keyed off the EVENT ids rather than the tasks that survived the lookup
+     * above, so a task deleted since its messages were written still exports
+     * the conversation held on it — the same reason its rows are kept.
+     *
+     * Sent once per task at the top level and deliberately NOT folded into the
+     * rows the way the field snapshot is: a twenty-message thread copied onto
+     * each of that task's forty event rows is the same text eight hundred
+     * times. The CSV repeats it per row because a spreadsheet column has to;
+     * the wire does not.
+     */
+    const threads = includeThreads
+      ? await buildTaskThreads(taskIds, {
+        // Only a client board has two threads to tell apart.
+        labelThreads: ctx.board.boardType === 'client',
+      })
+      : {};
 
     // Users referenced by the log AND by the assignee snapshot below, resolved in
     // one query — the assignees of a task are frequently nobody who appears in
@@ -256,6 +289,8 @@ const getActivityExport = async (req, res) => {
 
       rows.push({
         at: e.createdAt,
+        // The join key for `threads`; blank only for a row with no task at all.
+        taskId: e.task ? e.task.toString() : '',
         actorName,
         actorType: e.actorType || 'user',
         groupName: (task?.group && groupMap.get(task.group.toString())) || '',
@@ -269,6 +304,13 @@ const getActivityExport = async (req, res) => {
       });
     }
 
+    // The orphaned-group filter above drops rows; their threads go with them,
+    // so the payload never carries a conversation the report does not show.
+    const exportedTaskIds = new Set(rows.map((r) => r.taskId).filter(Boolean));
+    for (const key of Object.keys(threads)) {
+      if (!exportedTaskIds.has(key)) delete threads[key];
+    }
+
     return res.json({
       board: { id: ctx.board._id, name: ctx.board.name },
       range: { from: toDayString(from), to: toDayString(to) },
@@ -276,6 +318,7 @@ const getActivityExport = async (req, res) => {
       totalCount: rows.length,
       truncated,
       maxRows: MAX_ROWS,
+      threads,
       rows,
     });
   } catch (err) {

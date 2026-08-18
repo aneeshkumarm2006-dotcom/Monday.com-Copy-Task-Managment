@@ -15,3 +15,7 @@ require('./Tracker');
 require('./TrackerEntry');
 require('./Goal');
 require('./GoalReminder');
+require('./Vault');
+require('./VaultItem');
+require('./VaultAudit');
+require('./VaultEscrow');

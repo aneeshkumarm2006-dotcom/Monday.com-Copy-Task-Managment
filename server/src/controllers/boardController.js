@@ -3,6 +3,7 @@ const Board = require('../models/Board');
 const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
 const Update = require('../models/Update');
+const Note = require('../models/Note');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
 const Automation = require('../models/Automation');
@@ -20,6 +21,7 @@ const { isValidTimezone } = require('../utils/tzDay');
 const { monthKeyOf } = require('../utils/monthKey');
 const { createNotification } = require('../services/notificationService');
 const { requireFeature } = require('../utils/userFeatures');
+const { cascadeDeleteVaults } = require('../services/vaultCascade');
 
 const VALID_VISIBILITIES = ['public', 'private'];
 
@@ -630,6 +632,15 @@ const deleteBoard = async (req, res) => {
     // that is about to go.
     await Goal.deleteMany({ board: id });
     await GoalReminder.deleteMany({ board: id });
+    // Group notes. They were missing from this cascade entirely — `Note` was
+    // only ever deleted by groupController's DELETE GROUP, so removing a board
+    // outright left every note on it orphaned in the collection forever. The
+    // denormalised `board` field is exactly what makes this a one-liner.
+    await Note.deleteMany({ board: id });
+    // The board vault: key material, item ciphertexts, the audit trail, and the
+    // encrypted blobs behind any file items. See services/vaultCascade.js for
+    // why a surviving vault is worse than the usual orphan.
+    await cascadeDeleteVaults(id);
     await Task.deleteMany({ board: id });
     await TaskGroup.deleteMany({ board: id });
     await Board.deleteOne({ _id: id });

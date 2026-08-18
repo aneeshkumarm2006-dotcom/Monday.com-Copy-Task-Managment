@@ -17,6 +17,7 @@ import {
   Target,
   CalendarRange,
   Users,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   DndContext,
@@ -64,6 +65,7 @@ import ConvertToTrackerModal from '../components/board/ConvertToTrackerModal';
 import BoardTimezoneModal from '../components/board/BoardTimezoneModal';
 import GoalsTab from '../components/board/goals/GoalsTab';
 import ScoreboardTab from '../components/board/scoreboard/ScoreboardTab';
+import VaultTab from '../components/vault/VaultTab';
 import MonthSelector from '../components/board/MonthSelector';
 import MoveToMonthModal from '../components/board/MoveToMonthModal';
 import useBoardMonths from '../hooks/useBoardMonths';
@@ -139,6 +141,11 @@ const VIEW_TABS = [
   // People spans BOTH goals and delivery — who owns which group, and how their
   // groups scored — so it belongs inside neither of the two tabs above.
   { value: 'people', label: 'People', icon: Users, visible: (g) => g.canViewScoreboard },
+  // Vault is the one tab that is NOT tied to a board type — every board can hold
+  // credentials. On a standard board it is therefore the SECOND tab, which is
+  // what makes the tab bar appear there for the first time. That is intended:
+  // the bar exists to switch between views, and there are now two.
+  { value: 'vault', label: 'Vault', icon: ShieldCheck, visible: (g) => g.canViewVault },
 ];
 
 const BoardDetailPage = () => {
@@ -404,6 +411,12 @@ const BoardDetailPage = () => {
   // allowed to see a version of.
   const canViewScoreboard = canViewGoals;
 
+  // The vault answers to capability alone — no board type, no extra-feature
+  // switch. A standard board's production credentials are exactly as worth
+  // protecting as a tracker board's, and `vault.view` already sits on the top
+  // rung of the board ladder, so the AND has done the narrowing.
+  const canViewVault = canOnBoard('vault.view');
+
   // Converting a board changes what it IS, so it answers to the same capability
   // as flipping public/private rather than to an ordinary edit right. Client
   // boards are refused by the server and get no button here.
@@ -419,8 +432,11 @@ const BoardDetailPage = () => {
   // Which tabs exist on this board, resolved once so the bar and the view
   // validation below cannot disagree about it.
   const visibleTabs = useMemo(
-    () => VIEW_TABS.filter((t) => t.visible({ canViewDelivery, canViewGoals, canViewScoreboard })),
-    [canViewDelivery, canViewGoals, canViewScoreboard]
+    () =>
+      VIEW_TABS.filter((t) =>
+        t.visible({ canViewDelivery, canViewGoals, canViewScoreboard, canViewVault })
+      ),
+    [canViewDelivery, canViewGoals, canViewScoreboard, canViewVault]
   );
 
   // Derived from the URL rather than mirrored into state — two sources of truth
@@ -1941,6 +1957,15 @@ const BoardDetailPage = () => {
             canManageColumns={canManageGoalColumns}
             onGoalsChanged={refreshMonths}
           />
+        </ErrorBoundary>
+      )}
+
+      {view === 'vault' && (
+        <ErrorBoundary label="Vault" resetKey={view}>
+          {/* The tab holds the decrypted vault key in memory, so it is
+              deliberately NOT kept mounted across tab switches — unmounting is
+              what locks it. See VaultTab's cleanup. */}
+          <VaultTab boardId={boardId} boardName={board?.name} />
         </ErrorBoundary>
       )}
 

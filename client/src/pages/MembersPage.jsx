@@ -7,6 +7,7 @@ import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import usePermissions from '../hooks/usePermissions';
 import PermissionsMatrix from '../components/settings/PermissionsMatrix';
+import VaultEscrowSection from '../components/settings/VaultEscrowSection';
 import * as orgService from '../services/orgService';
 import { formatShortDate } from '../utils/dateUtils';
 
@@ -629,6 +630,18 @@ const MembersPage = () => {
               orgId={currentOrg._id}
               onRolesChanged={() => fetchMembers(currentOrg._id).catch(() => {})}
             />
+          </div>
+        )}
+
+        {/* The workspace break-glass key for board vaults. Sits with the
+            permissions matrix because both are org-wide security settings, not
+            anybody's personal preference. Any member may see WHETHER one
+            exists — that is what tells them their vault can be recovered — but
+            only `org.manage_settings` can create or rotate it, which the server
+            enforces and the section reflects. */}
+        {currentOrg?._id && (
+          <div className="mt-8">
+            <VaultEscrowSection orgId={currentOrg._id} />
           </div>
         )}
 
