@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ChevronRight,
@@ -305,6 +312,26 @@ const BoardDetailPage = () => {
   // TaskGroup.order — it's applied only to the render order. Remembered per
   // board in localStorage.
   const [sortCompletedLast, setSortCompletedLast] = useState(false);
+
+  // "Working here" hold for that sort. Ticking tasks off inside an OPEN group
+  // would otherwise slide the group down (or straight to the bottom) mid-click,
+  // so the user has to chase it to carry on. A group whose completion changes
+  // while it's expanded therefore keeps sorting on the numbers it had BEFORE
+  // the change. We freeze the METRIC, not the index, so the sort stays a clean
+  // total order instead of two rules fighting over one slot. The hold is
+  // released when the user closes (collapses) the group, and on any
+  // board/month/sort-mode change. Map<groupId, {complete, pct}>.
+  const [heldGroupMetrics, setHeldGroupMetrics] = useState(() => new Map());
+
+  const releaseGroupHold = useCallback((groupId) => {
+    const gid = String(groupId);
+    setHeldGroupMetrics((cur) => {
+      if (!cur.has(gid)) return cur;
+      const next = new Map(cur);
+      next.delete(gid);
+      return next;
+    });
+  }, []);
 
   // --- Task pins ---------------------------------------------------------
   // "Pin for me only" — task ids this user floated to the top of their group,
@@ -812,26 +839,93 @@ const BoardDetailPage = () => {
     [groups, filtersActive, isGroupVisible]
   );
 
-  // Render order for the groups. When "completed last" is off we return the
-  // original array untouched (server order). When on, fully-done groups (green
-  // progress bar) sink to the bottom and groups with remaining work rise to the
-  // top — sorted on the same filtered buckets the progress bars render from, so
-  // the ordering always matches the colored bar the user sees. This is purely a
-  // display transform; the persisted TaskGroup.order is never changed.
-  const orderedGroups = useMemo(() => {
-    if (!sortCompletedLast) return groups;
-    const meta = groups.map((group, idx) => {
+  // Completion metric per group, read from the same filtered buckets the
+  // progress bars render from. Split out of `orderedGroups` so the hold below
+  // can freeze a snapshot of exactly the numbers the user can see.
+  const groupMetrics = useMemo(() => {
+    const out = new Map();
+    for (const group of groups) {
       const list = filteredTasksByGroup[group._id] || [];
       const total = list.length;
       const done = list.filter(
         (t) => t.status != null && isStatusDone(board, t.status)
       ).length;
-      return {
-        group,
-        idx,
+      out.set(String(group._id), {
         complete: total > 0 && done === total, // green == 100% AND non-empty
         pct: total === 0 ? 0 : done / total,
-      };
+      });
+    }
+    return out;
+  }, [groups, filteredTasksByGroup, board]);
+
+  // The metrics we last sorted on, tagged with the board/month they describe.
+  const settledMetricsRef = useRef({ key: null, metrics: null });
+
+  // Take (and drop) the "working here" holds. This is a LAYOUT effect so the
+  // corrected order is committed before the browser paints — the group never
+  // visibly jumps and snaps back.
+  useLayoutEffect(() => {
+    const key = `${boardId}:${monthKey || ''}`;
+    const settled = settledMetricsRef.current;
+    const previous = settled.key === key ? settled.metrics : null;
+    settledMetricsRef.current = { key, metrics: groupMetrics };
+
+    // Sort off, or a fresh board/month: nothing to hold, and any existing hold
+    // describes a view we've already left.
+    if (!sortCompletedLast || !previous) {
+      setHeldGroupMetrics((cur) => (cur.size ? new Map() : cur));
+      return;
+    }
+
+    // Only a SINGLE group changing reads as "the user is working in here". A
+    // filter flip, a refetch or a month switch moves many at once and must
+    // still re-sort normally.
+    const changed = [];
+    for (const [gid, metric] of groupMetrics) {
+      const before = previous.get(gid);
+      if (!before) continue; // brand-new group — let it sort on its real numbers
+      if (before.complete === metric.complete && before.pct === metric.pct) continue;
+      changed.push([gid, before]);
+    }
+
+    setHeldGroupMetrics((cur) => {
+      let next = null;
+      // Forget groups that are no longer on the board at all.
+      for (const gid of cur.keys()) {
+        if (groupMetrics.has(gid)) continue;
+        next = next || new Map(cur);
+        next.delete(gid);
+      }
+      if (changed.length === 1) {
+        const [gid, before] = changed[0];
+        // A collapsed group isn't one the user is inside, and an existing hold
+        // keeps its ORIGINAL snapshot — otherwise the second tick would rewrite
+        // it to the position the first tick already earned.
+        if (!collapsed.has(gid) && !cur.has(gid)) {
+          next = next || new Map(cur);
+          next.set(gid, before);
+        }
+      }
+      return next || cur;
+    });
+  }, [groupMetrics, sortCompletedLast, collapsed, boardId, monthKey]);
+
+  // Render order for the groups. When "completed last" is off we return the
+  // original array untouched (server order). When on, fully-done groups (green
+  // progress bar) sink to the bottom and groups with remaining work rise to the
+  // top — sorted on the same filtered buckets the progress bars render from, so
+  // the ordering always matches the colored bar the user sees. A group the user
+  // is currently working in sorts on its HELD metric instead, so ticking tasks
+  // off doesn't move it out from under the cursor. This is purely a display
+  // transform; the persisted TaskGroup.order is never changed.
+  const orderedGroups = useMemo(() => {
+    if (!sortCompletedLast) return groups;
+    const meta = groups.map((group, idx) => {
+      const gid = String(group._id);
+      const metric =
+        heldGroupMetrics.get(gid) ||
+        groupMetrics.get(gid) || { complete: false, pct: 0 };
+      return { group, idx, complete: metric.complete, pct: metric.pct };
     });
     meta.sort((a, b) => {
       if (a.complete !== b.complete) return a.complete ? 1 : -1; // done groups last
@@ -839,7 +933,7 @@ const BoardDetailPage = () => {
       return a.idx - b.idx; // stable: preserve manual order within a tier
     });
     return meta.map((m) => m.group);
-  }, [groups, sortCompletedLast, filteredTasksByGroup, board]);
+  }, [groups, sortCompletedLast, groupMetrics, heldGroupMetrics]);
 
   const orderedGroupIds = useMemo(
     () => orderedGroups.map((g) => g._id),
@@ -847,6 +941,9 @@ const BoardDetailPage = () => {
   );
 
   const toggleGroup = (groupId) => {
+    // Closing the group is the signal that the user has finished working in
+    // it, so it gives up its held sort position and drops into its real slot.
+    if (!collapsed.has(groupId)) releaseGroupHold(groupId);
     setCollapsed((prev) => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
