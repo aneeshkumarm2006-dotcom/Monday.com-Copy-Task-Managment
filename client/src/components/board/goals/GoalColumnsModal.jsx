@@ -106,7 +106,7 @@ const GoalColumnsModal = ({ boardId, columns = [], onClose, onChanged }) => {
         <p className="font-body" style={{ fontSize: 13, color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>
           These columns appear on every group’s goals table, on every month of this
           board — that is what makes one client’s month comparable with another’s.
-          Only organisation admins can change them.
+          Anyone who can set this board’s goals can change them.
         </p>
 
         <div className="flex flex-col gap-2">

@@ -124,8 +124,12 @@ const CAPABILITY_GROUPS = [
     // `vault.view` does NOT mean "can read the secrets". Nobody can read them
     // without the vault password, which the server never has. It means "may the
     // Vault tab exist for this person at all" — the outer door, in front of the
-    // one the password opens. Both sit on the `edit` rung below; see the note
-    // there for why nothing lower gets even the door.
+    // one the password opens.
+    //
+    // That distinction is why the two sit on DIFFERENT rungs below: `vault.view`
+    // on `view`, because the password is the real gate and the outer door alone
+    // reveals nothing; `vault.manage` on `edit`, because deleting a credential
+    // needs no password and cannot be undone.
     capabilities: [
       ['vault.view', "Open a board's Vault and read its items"],
       ['vault.manage', 'Add, edit and delete vault items, and set up the vault'],
@@ -197,8 +201,10 @@ const BOARD_SCOPED = new Set([
   'goal.view',
   'goal.track',
   'goal.manage',
-  // Same obligation again: both are conferred by the `edit` rung in LEVEL_ADDS,
-  // which is what makes board-scoping them safe rather than a silent revoke.
+  // Same obligation again, and note the two are conferred by DIFFERENT rungs in
+  // LEVEL_ADDS — `vault.view` by `view`, `vault.manage` by `edit`. Both are
+  // conferred by some rung, which is what makes board-scoping them safe rather
+  // than a silent revoke.
   'vault.view',
   'vault.manage',
 ]);
@@ -220,7 +226,16 @@ const LEVEL_ADDS = {
   // meeting its commitments is reading it — a missed day the team cannot see is
   // a missed day nobody fixes.
   // Seeing whether the month's goals were met is likewise reading the board.
-  view: ['tracker.view', 'goal.view'],
+  //
+  // `vault.view` is here too, and it is the one rung placement worth pausing
+  // over. It grants the outer door only: the Vault tab appears and the
+  // ENCRYPTED items load. Reading any of them still needs the vault password,
+  // which the server never holds and cannot hand out. Someone on the board who
+  // has been given that password was trusted with it deliberately, by a person,
+  // out of band — so making them climb to the `edit` rung as well only meant
+  // over-permissioning them everywhere else in order to let them read a
+  // password they already had.
+  view: ['tracker.view', 'goal.view', 'vault.view'],
   // + weigh in without touching the data.
   comment: ['update.create'],
   // + do your own work, without being able to restructure the board.
@@ -242,12 +257,11 @@ const LEVEL_ADDS = {
     'tracker.manage',
     'goal.manage',
     'board.rename',
-    // The vault opens no lower than `edit`, and that is a deliberate departure
-    // from the pattern above, where the view half of every pair sits on `view`.
-    // A tracker or a goal is the board reporting on itself; the vault is the
-    // board's production credentials. Someone invited to comment on a board has
-    // not been trusted with the door to its secrets, only with the board.
-    'vault.view',
+    // CHANGING a vault stays here, at the top, even though opening its door
+    // dropped to `view`. Reading is gated twice — by this ladder and then by a
+    // password the server does not have — but adding, overwriting and deleting
+    // items are gated by the ladder ALONE. An unrecoverable delete needs no
+    // password, so it needs the rung.
     'vault.manage',
   ],
 };
@@ -484,12 +498,17 @@ const SYSTEM_ROLES = [
     // whether it hit its numbers; they still cannot create a tracker, confirm a
     // period, excuse a miss, or type a result into a goal.
     //
-    // `vault.view` is NOT here, and would do nothing if it were: the vault opens
-    // at the `edit` rung, so the AND strips it from anyone read-only anyway.
-    // Leaving it out keeps the matrix honest rather than showing a viewer a
-    // ticked box that grants nothing.
+    // `vault.view` IS here, and it is a read like the two beside it: the Vault
+    // tab appears and its encrypted items load, and that is the whole of it —
+    // the password that turns them into text is not the workspace's to grant.
+    // A viewer still cannot add, edit or delete an item; `vault.manage` is
+    // absent here AND sits on the `edit` rung, so both layers refuse it.
+    //
+    // The `guest` role below deliberately does NOT get this. That is the line:
+    // the team can see the door, external people shared into one board cannot.
     permissions: [
       'org.view_members', 'board.view_public', 'tracker.view', 'goal.view',
+      'vault.view',
     ],
   },
   {
@@ -501,6 +520,11 @@ const SYSTEM_ROLES = [
       'External. Sees only the boards explicitly shared with them — never the ' +
       "organisation's public boards.",
     // The absence of `board.view_public` is the whole point of this role.
+    //
+    // `vault.view` is deliberately absent too, and unlike the viewer above that
+    // absence is load-bearing rather than incidental: the vault door opens at
+    // the `view` rung, so this org role is the ONLY thing standing between an
+    // external collaborator and a board's encrypted credentials. Do not add it.
     permissions: [
       'task.create',
       'task.edit_assigned',

@@ -2,19 +2,26 @@
  * The shared goal COLUMN schema on a tracker board.
  *
  * Every group's goals table on a board renders the same columns, so an agency
- * comparing two clients is comparing like with like. That makes the column list
- * the organisation's reporting vocabulary rather than one board owner's
- * preference, which is why writes here gate on the org-wide
- * `org.manage_settings` instead of a board capability.
+ * comparing two clients is comparing like with like.
  *
- * `org.manage_settings` is NOT in BOARD_SCOPED, so it needs no ladder rung and
- * no AND — the same situation `board.export_activity` is in. Board READ access
- * remains the ceiling, because these still run through `loadBoardContext`.
+ * Writes gate on `goal.manage` — the same capability that already lets someone
+ * create a goal and decide its target. These USED to gate on the org-wide
+ * `org.manage_settings`, on the theory that the column list was the
+ * organisation's reporting vocabulary rather than one board owner's preference.
+ * The theory was tidy and the consequence was not: it meant a board's own
+ * creator could define every goal on it and still be unable to add a column to
+ * hold them. Deciding what a goal promises and deciding what is recorded
+ * alongside it are the same job, done by the same person, and they now need the
+ * same permission.
+ *
+ * `goal.manage` IS in BOARD_SCOPED, so it resolves through the full two-layer
+ * AND: the org role is the floor and the board's `edit` rung is the ceiling.
+ * That makes this gate strictly per-board, which is the point.
  *
  * IMPORTANT: do not reach for `middleware/requireCapability.js` here. It
  * resolves the organisation from `req.params.id`, which on these routes is a
- * BOARD id. Use `ctx.can(...)` from the loaded board context, which passes
- * non-board-scoped capabilities straight through from the org role.
+ * BOARD id. Use `ctx.can(...)` from the loaded board context, which applies the
+ * AND for board-scoped capabilities and passes org-scoped ones straight through.
  */
 
 const mongoose = require('mongoose');
@@ -46,7 +53,7 @@ const uniqueSlug = (board, base, excludeId = null) => {
   return `${base}_${n}`;
 };
 
-/** Board read + org-admin. Returns the context, or null having answered. */
+/** Board read + `goal.manage`. Returns the context, or null having answered. */
 const gateColumns = async (req, res, { write = true } = {}) => {
   const boardId = req.params.boardId || req.params.id;
   if (!isValidId(boardId)) {
@@ -62,10 +69,10 @@ const gateColumns = async (req, res, { write = true } = {}) => {
     res.status(404).json({ error: 'This board is not a tracker board.' });
     return null;
   }
-  if (write && !ctx.can('org.manage_settings')) {
+  if (write && !ctx.can('goal.manage')) {
     res.status(403).json({
-      error: 'Goal columns are shared across the whole organisation, so only an '
-        + 'organisation admin can change them.',
+      error: 'Goal columns are shared by every group on this board, so changing '
+        + 'them needs permission to manage this board\u2019s goals.',
     });
     return null;
   }
@@ -92,7 +99,7 @@ const listGoalColumns = async (req, res) => {
     if (!ctx) return undefined;
     return res.json({
       columns: (ctx.board.goalColumns || []).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
-      canManage: ctx.can('org.manage_settings'),
+      canManage: ctx.can('goal.manage'),
     });
   } catch (err) {
     console.error('listGoalColumns error:', err);

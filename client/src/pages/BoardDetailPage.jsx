@@ -429,7 +429,11 @@ const BoardDetailPage = () => {
   const canViewGoals = isTrackerBoard && canOnBoard('goal.view');
   const canTrackGoals = canViewGoals && canOnBoard('goal.track');
   const canManageGoals = canViewGoals && canOnBoard('goal.manage');
-  const canManageGoalColumns = canViewGoals && canOrg('org.manage_settings');
+  // Deliberately the SAME gate as setting a target, not a coincidence to be
+  // tidied apart later: the columns are part of the goals schema. They used to
+  // need org-admin, which locked a board's own creator out of their own board's
+  // columns — see goalColumnController for the whole story.
+  const canManageGoalColumns = canManageGoals;
 
   // The People tab opens for anyone who can read the goals. WHAT it shows then
   // narrows server-side rather than here: without `productivity.view_others` the
@@ -440,8 +444,14 @@ const BoardDetailPage = () => {
 
   // The vault answers to capability alone — no board type, no extra-feature
   // switch. A standard board's production credentials are exactly as worth
-  // protecting as a tracker board's, and `vault.view` already sits on the top
-  // rung of the board ladder, so the AND has done the narrowing.
+  // protecting as a tracker board's.
+  //
+  // `vault.view` sits on the BOTTOM rung of the board ladder, so this opens the
+  // tab to anyone who can read the board — and opens nothing else. Every item
+  // arrives encrypted and stays that way without the vault password, which the
+  // server never has. Writing is a different question with a different answer:
+  // `vault.manage` is still `edit`-only, and the tab's own controls follow the
+  // server's answer rather than this flag.
   const canViewVault = canOnBoard('vault.view');
 
   // Converting a board changes what it IS, so it answers to the same capability

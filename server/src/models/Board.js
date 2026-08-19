@@ -92,8 +92,9 @@ const columnSchema = new mongoose.Schema(
  *
  * Board-level and SHARED: every group's goals table on this board renders the
  * same columns, so an agency comparing two clients is comparing like with like.
- * Only org admins (`org.manage_settings`) may edit the list — this is the
- * organisation's reporting vocabulary, not one board owner's preference.
+ * Editing the list needs `goal.manage` on this board — the same permission that
+ * sets a goal's target, because choosing what a goal promises and choosing what
+ * is recorded beside it are one job.
  *
  * Deliberately NOT `columnSchema` above. That is the flexible-columns engine for
  * TASKS: 19 types including formula, mirror and connect_boards, a primary-column

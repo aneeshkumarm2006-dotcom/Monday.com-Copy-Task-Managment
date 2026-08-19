@@ -50,8 +50,21 @@ export const deleteGoal = async (goalId) => {
   return data;
 };
 
+/**
+ * The order one group's goals sit in, saved for EVERYONE — the whole point of
+ * it being a request at all rather than a localStorage key. `orderedIds` is one
+ * group's whole table, in one month; the server refuses a list that spans two.
+ *
+ * `suppressErrorToast` like the rest of this file: the tab re-reads and says
+ * what happened itself, rather than firing a generic toast over a move it is
+ * about to visibly undo.
+ */
 export const reorderGoals = async (boardId, orderedIds) => {
-  const { data } = await api.put(`/api/boards/${boardId}/goals/reorder`, { orderedIds });
+  const { data } = await api.put(
+    `/api/boards/${boardId}/goals/reorder`,
+    { orderedIds },
+    { suppressErrorToast: true }
+  );
   return data;
 };
 

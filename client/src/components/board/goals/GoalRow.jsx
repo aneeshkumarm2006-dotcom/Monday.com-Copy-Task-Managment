@@ -3,6 +3,7 @@ import GoalValueCell from './GoalValueCell';
 import GoalProgressBar from './GoalProgressBar';
 import GoalOutcomeBadge from './GoalOutcomeBadge';
 import GoalSparkline from './GoalSparkline';
+import GoalMoveMenu from './GoalMoveMenu';
 import { cellComponentFor } from '../columns';
 import { weightLabel, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
 import {
@@ -33,9 +34,15 @@ const GoalRow = ({
   canTrack,
   canManage,
   monthClosable = false,
+  // Where this row sits in its group's stored order, and whether that order is
+  // the one currently on screen — see the note on the move menu below.
+  index = 0,
+  rowCount = 0,
+  reorderDisabledHint = '',
   onPatch,
   onEdit,
   onDelete,
+  onMove,
 }) => {
   const c = goal.computed || {};
   const usesDate = (typeSpec?.actualField?.key || (goal.type === 'deadline' ? 'actualDayKey' : 'actual')) === 'actualDayKey';
@@ -260,6 +267,21 @@ const GoalRow = ({
       >
         {canManage && (
           <>
+            {/* Moving a goal writes `Goal.order`, so it moves for everyone —
+                unlike the column sort in the heading above, which is yours
+                alone. `reorderDisabledHint` is set while a sort is active,
+                because the rows on screen are not in stored order then and
+                "up" would move the goal somewhere the user cannot see. */}
+            {onMove && (
+              <GoalMoveMenu
+                index={index}
+                count={rowCount}
+                goalName={goal.name}
+                disabled={!!reorderDisabledHint}
+                disabledHint={reorderDisabledHint}
+                onMove={(dir) => onMove(goal, dir)}
+              />
+            )}
             <button
               type="button"
               onClick={() => onEdit(goal)}

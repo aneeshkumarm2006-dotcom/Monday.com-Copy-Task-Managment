@@ -95,6 +95,28 @@ test('ladder: each rung is a superset of the one below', () => {
   assert.ok(edit.has('column.manage'));
 });
 
+test('ladder: the vault door opens at `view`, but changing it needs `edit`', () => {
+  // The security-relevant half of the ladder, pinned deliberately.
+  //
+  // `vault.view` grants the OUTER door: the tab exists and the encrypted items
+  // load. It is safe at the bottom rung precisely because a second gate the
+  // server cannot open — the vault password — stands behind it.
+  //
+  // `vault.manage` has no such second gate. Deleting a credential needs no
+  // password and cannot be undone, so it stays at the top. If someone ever
+  // moves it down, this test is the thing that should stop them.
+  assert.ok(capabilitiesForLevel('view').has('vault.view'), 'the door opens at view');
+  assert.ok(capabilitiesForLevel('edit').has('vault.view'));
+
+  for (const level of ['view', 'comment', 'contribute']) {
+    assert.ok(
+      !capabilitiesForLevel(level).has('vault.manage'),
+      `${level} must NOT be able to change a vault`
+    );
+  }
+  assert.ok(capabilitiesForLevel('edit').has('vault.manage'));
+});
+
 test('ladder: canManage adds sharing only at edit', () => {
   assert.ok(capabilitiesForLevel('edit', { canManage: true }).has('board.manage_access'));
   assert.ok(!capabilitiesForLevel('edit').has('board.manage_access'));

@@ -2,6 +2,7 @@ import { AlertTriangle, Trash2, Pencil } from 'lucide-react';
 import GoalValueCell from './GoalValueCell';
 import GoalProgressBar from './GoalProgressBar';
 import GoalOutcomeBadge from './GoalOutcomeBadge';
+import GoalMoveMenu from './GoalMoveMenu';
 import { cellComponentFor } from '../columns';
 import { formatGoalValue, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
 
@@ -32,7 +33,9 @@ const Field = ({ label, children }) => (
 );
 
 const GoalMobileCard = ({
-  goal, columns = [], typeSpec, canTrack, canManage, monthClosable = false, onPatch, onEdit, onDelete,
+  goal, columns = [], typeSpec, canTrack, canManage, monthClosable = false,
+  index = 0, rowCount = 0, reorderDisabledHint = '',
+  onPatch, onEdit, onDelete, onMove,
 }) => {
   const c = goal.computed || {};
   const usesDate = (typeSpec?.actualField?.key || (goal.type === 'deadline' ? 'actualDayKey' : 'actual')) === 'actualDayKey';
@@ -78,6 +81,20 @@ const GoalMobileCard = ({
         </div>
         {canManage && (
           <div className="flex gap-1 shrink-0">
+            {/* Same control, same shared write as the desktop row — a phone is
+                not a reason to be handed a different set of verbs. */}
+            {onMove && (
+              <GoalMoveMenu
+                index={index}
+                count={rowCount}
+                goalName={goal.name}
+                disabled={!!reorderDisabledHint}
+                disabledHint={reorderDisabledHint}
+                onMove={(dir) => onMove(goal, dir)}
+                iconSize={15}
+                className="p-1.5"
+              />
+            )}
             <button type="button" onClick={() => onEdit(goal)} aria-label="Edit goal" className="p-1.5">
               <Pencil size={15} color="var(--color-text-secondary)" />
             </button>

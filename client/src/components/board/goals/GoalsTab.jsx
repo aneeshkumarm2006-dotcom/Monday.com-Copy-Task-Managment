@@ -11,6 +11,7 @@ import GoalColumnsModal from './GoalColumnsModal';
 import UnclosedMonthBanner from './UnclosedMonthBanner';
 import * as goalService from '../../../services/goalService';
 import { loadGoalPrefs, saveGoalPrefs } from '../../../utils/goalDisplay';
+import { applyGoalOrder } from '../../../utils/goalOrder';
 import useTaskStore from '../../../store/taskStore';
 import useToastStore from '../../../store/toastStore';
 
@@ -180,6 +181,40 @@ const GoalsTab = ({
     }
   };
 
+  /**
+   * A goal moved up or down its group's table — saved for everyone.
+   *
+   * Optimistic and then silent on success: the server writes exactly the order
+   * it was handed, so there is nothing to re-read, and a refetch here would
+   * repaint twenty-eight rows to put them back where they already are.
+   *
+   * Nor does it call `onGoalsChanged` — position is the one edit on this tab
+   * that moves no score and closes no month, so the header's unclosed badge has
+   * nothing to hear about.
+   */
+  const reorderGoalsInGroup = async (group, orderedIds) => {
+    setData((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        groups: prev.groups.map((g) => (
+          String(g._id) !== String(group._id)
+            ? g
+            : { ...g, goals: applyGoalOrder(g.goals, orderedIds) }
+        )),
+      };
+    });
+
+    try {
+      await goalService.reorderGoals(boardId, orderedIds);
+    } catch (err) {
+      toastError(err?.response?.data?.error || 'Could not move that goal.');
+      // Re-read rather than guessing what the server kept — the same rule as
+      // patchGoal, and the refetch is what puts the row visibly back.
+      fetchGoals({ quiet: true });
+    }
+  };
+
   const submitGoal = async (payload) => {
     setSaving(true);
     setFormErrors([]);
@@ -270,6 +305,7 @@ const GoalsTab = ({
               onEdit={(goal) => { setFormErrors([]); setFormFor({ group, goal }); }}
               onDelete={setPendingDelete}
               onAdd={(g) => { setFormErrors([]); setFormFor({ group: g }); }}
+              onReorder={canManage ? reorderGoalsInGroup : undefined}
             />
           </div>
         ))

@@ -25,8 +25,8 @@ const {
  * Capabilities, per handler:
  *   goal.view    — reading the tab and the trend
  *   goal.track   — a write touching ONLY the result fields
- *   goal.manage  — creating, deleting, or redefining a goal
- *   org.manage_settings — the shared column schema (see goalColumnController)
+ *   goal.manage  — creating, deleting, or redefining a goal, AND the shared
+ *                  column schema (see goalColumnController)
  */
 const router = express.Router();
 
@@ -47,7 +47,7 @@ router.put('/boards/:boardId/goals/reorder', reorderGoals);
 router.put('/goals/:id', updateGoal);
 router.delete('/goals/:id', deleteGoal);
 
-// --- The shared column schema (org admins only) -----------------------------
+// --- The shared column schema (needs goal.manage) ---------------------------
 // `reorder` before `/:cid` so it is not parsed as a column id.
 router.get('/boards/:boardId/goal-columns', listGoalColumns);
 router.post('/boards/:boardId/goal-columns', addGoalColumn);

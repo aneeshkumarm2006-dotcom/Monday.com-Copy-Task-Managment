@@ -1,5 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Plus, Target } from 'lucide-react';
+import {
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, ListOrdered, Plus, Target,
+} from 'lucide-react';
 import GoalRow from './GoalRow';
 import GoalMobileCard from './GoalMobileCard';
 import ScoreRing from '../../ui/ScoreRing';
@@ -7,6 +9,7 @@ import Avatar from '../../ui/Avatar';
 import useOrgStore from '../../../store/orgStore';
 import { formatMonthKey } from '../../../utils/monthKeys';
 import { sortGoals, nextGoalSort, columnSortKey } from '../../../utils/goalSort';
+import { moveGoalId } from '../../../utils/goalOrder';
 import {
   buildGoalGrid,
   goalGridMinWidth,
@@ -90,6 +93,20 @@ const SortHead = ({ label, columnKey, sort, onSort, style, hint, suffix, classNa
  * Goals tab reads as the same board rather than a different product. Column
  * sorting follows the same rule for the same reason: click a heading for
  * ascending, again for descending, a third time for the board's own order.
+ *
+ * TWO KINDS OF ORDER LIVE HERE, and keeping them apart is most of this file:
+ *
+ *   SORTING is yours. Per group, per visit, persisted nowhere, and it never
+ *   writes anything back — a way of LOOKING at the month.
+ *
+ *   THE ORDER is everyone's. It lives in `Goal.order` on the server, so a goal
+ *   moved to the top of a table is at the top of that table for whoever opens
+ *   it next. Moved through the control on each row.
+ *
+ * They cannot both be live at once: while a sort is active the rows on screen
+ * are not in stored order, so "move up" would move a goal somewhere the mover
+ * cannot see. The move controls go quiet, and the header offers the honest
+ * version of what the user is probably after — save THIS order for everyone.
  */
 const GoalGroupSection = ({
   group,
@@ -104,11 +121,13 @@ const GoalGroupSection = ({
   onEdit,
   onDelete,
   onAdd,
+  onReorder,
 }) => {
   const { summary = {}, goals = [], owner = null } = group;
 
   // Gutter, name, …extras, start, target, actual, result, actions — see goalGrid.
-  const gridTemplate = buildGoalGrid(columns);
+  // The actions column is narrower for someone with no row buttons to put in it.
+  const gridTemplate = buildGoalGrid(columns, canManage);
   const hasRequired = columns.some((c) => c.required);
 
   // Per group, exactly like the board's per-group task table: sorting one
@@ -134,6 +153,35 @@ const GoalGroupSection = ({
     () => sortGoals(goals, sort.key, sort.dir, { typesByKey, columnsById, personName }),
     [goals, sort, typesByKey, columnsById, personName]
   );
+
+  // Empty string means "you can move things"; the rows read it as a tooltip.
+  const reorderDisabledHint = sort.key
+    ? 'Sorted by a column right now — clear the sort, or save it as the order.'
+    : '';
+
+  const handleMove = useCallback(
+    (goal, dir) => {
+      const next = moveGoalId(goals.map((g) => g._id), goal._id, dir);
+      if (next) onReorder?.(group, next);
+    },
+    [goals, group, onReorder]
+  );
+
+  /**
+   * Freeze the current sort as the order everyone sees, then drop the sort.
+   *
+   * The sort has to go: leaving it on would show the same rows in the same
+   * places and give no sign that anything had been saved, and the next thing
+   * the mover does — nudging one row up — has to happen against stored order
+   * anyway. Clearing it turns "this is how I like to look at it" into "this is
+   * how it is", visibly, in one click.
+   */
+  const saveSortAsOrder = useCallback(() => {
+    onReorder?.(group, sortedGoals.map((g) => g._id));
+    setSort({ key: null, dir: 'asc' });
+  }, [group, sortedGoals, onReorder]);
+
+  const canReorder = canManage && !!onReorder && goals.length > 1;
 
   return (
     <section
@@ -228,6 +276,28 @@ const GoalGroupSection = ({
           label={`${group.name} scored ${summary.pct ?? 'nothing yet'}`}
         />
 
+        {/* Only while a sort is on — otherwise what is on screen already IS the
+            saved order, and the button would promise a change it cannot make. */}
+        {canReorder && sort.key && (
+          <button
+            type="button"
+            onClick={saveSortAsOrder}
+            title="Make this the order everyone sees, and clear the sort"
+            className="inline-flex items-center gap-1 font-body shrink-0"
+            style={{
+              fontSize: 12,
+              fontWeight: 500,
+              padding: '5px 10px',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--color-accent)',
+              color: 'var(--color-accent)',
+            }}
+          >
+            <ListOrdered size={13} aria-hidden="true" />
+            <span className="hidden sm:inline">Save this order</span>
+          </button>
+        )}
+
         {canManage && (
           <button
             type="button"
@@ -273,7 +343,7 @@ const GoalGroupSection = ({
           <>
             {/* Desktop grid */}
             <div className="hidden md:block" style={{ overflowX: 'auto' }}>
-              <div role="table" style={{ minWidth: goalGridMinWidth(columns) }}>
+              <div role="table" style={{ minWidth: goalGridMinWidth(columns, canManage) }}>
                 <div
                   role="row"
                   className="bg-[color:var(--color-bg-surface)]"
@@ -352,7 +422,7 @@ const GoalGroupSection = ({
                   />
                 </div>
 
-                {sortedGoals.map((goal) => (
+                {sortedGoals.map((goal, i) => (
                   <GoalRow
                     key={goal._id}
                     goal={goal}
@@ -362,9 +432,13 @@ const GoalGroupSection = ({
                     canTrack={canTrack}
                     canManage={canManage}
                     monthClosable={monthClosable}
+                    index={i}
+                    rowCount={sortedGoals.length}
+                    reorderDisabledHint={reorderDisabledHint}
                     onPatch={(patch) => onPatch(goal, patch)}
                     onEdit={onEdit}
                     onDelete={onDelete}
+                    onMove={canReorder ? handleMove : undefined}
                   />
                 ))}
               </div>
@@ -387,7 +461,7 @@ const GoalGroupSection = ({
               className="md:hidden flex flex-col gap-3 p-3"
               style={{ borderTop: '1px solid var(--color-border)' }}
             >
-              {sortedGoals.map((goal) => (
+              {sortedGoals.map((goal, i) => (
                 <GoalMobileCard
                   key={goal._id}
                   goal={goal}
@@ -396,9 +470,13 @@ const GoalGroupSection = ({
                   canTrack={canTrack}
                   canManage={canManage}
                   monthClosable={monthClosable}
+                  index={i}
+                  rowCount={sortedGoals.length}
+                  reorderDisabledHint={reorderDisabledHint}
                   onPatch={(patch) => onPatch(goal, patch)}
                   onEdit={onEdit}
                   onDelete={onDelete}
+                  onMove={canReorder ? handleMove : undefined}
                 />
               ))}
             </div>

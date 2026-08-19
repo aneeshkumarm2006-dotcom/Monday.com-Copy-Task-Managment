@@ -15,10 +15,17 @@
  * utils/capabilities.js):
  *     admin   → vault.view, vault.manage
  *     member  → vault.view, vault.manage
- *     viewer  → nothing   (the vault opens at the `edit` rung; a read-only
- *                          member would hold a capability the AND strips anyway)
+ *     viewer  → vault.view  (the door only: the tab appears and the ENCRYPTED
+ *                            items load, and the password that reads them is
+ *                            not the workspace's to grant. `vault.manage` is
+ *                            withheld — deleting an item needs no password.)
  *     guest   → nothing   (external — a client has no business near the door)
  *     owner   → untouched; the resolver short-circuits owners to the full catalog
+ *
+ * RE-RUN THIS after the change that dropped `vault.view` to the `view` rung.
+ * Workspaces migrated by the earlier version of this script have viewers with no
+ * `vault.view`, and `ensureSystemRoles` will never backfill it. Idempotent, so
+ * re-running costs nothing where it has already been applied.
  *
  * Granting `vault.manage` to every member sounds broad and is not: both
  * capabilities are BOARD_SCOPED, so the org grant is only the floor. The board
@@ -49,6 +56,8 @@ const Organisation = require('../models/Organisation');
 const GRANTS = {
   admin: ['vault.view', 'vault.manage'],
   member: ['vault.view', 'vault.manage'],
+  // The door, not the keys. See the note above.
+  viewer: ['vault.view'],
 };
 
 const args = process.argv.slice(2);
@@ -76,7 +85,7 @@ const run = async () => {
 
     for (const role of org.roles || []) {
       const wanted = GRANTS[role.key];
-      if (!wanted) continue; // owner, viewer, guest, and every custom role
+      if (!wanted) continue; // owner, guest, and every custom role
 
       const have = new Set(role.permissions || []);
       const missing = wanted.filter((c) => !have.has(c));

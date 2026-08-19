@@ -12,12 +12,12 @@
  * Order matters, exactly as it does in trackerController: someone who cannot
  * reach the board never learns what is on it.
  *
- * THE ONE EXCEPTION to "capability = board capability" is the goal COLUMN
- * schema, which gates on the org-wide `org.manage_settings`. The columns are the
- * organisation's reporting vocabulary — shared by every group on the board and
- * meant to be comparable across clients — not one board owner's preference.
- * A consequence worth knowing before it becomes a support ticket: a board's own
- * creator who is not an org admin cannot edit their own board's goal columns.
+ * The goal COLUMN schema (see goalColumnController) gates on `goal.manage`, the
+ * same rung that sets a goal's target. It used to gate on the org-wide
+ * `org.manage_settings`, which meant a board's own creator could define every
+ * goal on it and still not add a column to hold them. That was the support
+ * ticket the old comment here predicted, so the gate moved rather than the
+ * explanation.
  */
 
 const mongoose = require('mongoose');
@@ -30,6 +30,7 @@ const {
   missingFinalValues, monthIsUnclosed, describeGoalTypes, UNITS,
 } = require('../utils/goalTypes');
 const { isMonthKey, monthKeyOf, addMonths, monthKeysBetween } = require('../utils/monthKey');
+const { mergeGoalOrder, isOneTable } = require('../utils/goalOrdering');
 const { resolveOwnerDisplay, EMPTY_OWNER_DISPLAY } = require('../services/groupOwnerDisplay');
 
 const NOT_TRACKER = 'This board is not a tracker board.';
@@ -205,7 +206,7 @@ const getGoals = async (req, res) => {
         summary,
         unclosed: monthIsUnclosed(month, currentKey, allRows, columns),
         missingCount: allRows.filter((g) => g.missing.length > 0).length,
-        canManageColumns: ctx.can('org.manage_settings'),
+        canManageColumns: ctx.can('goal.manage'),
       },
     });
   } catch (err) {
@@ -522,26 +523,67 @@ const deleteGoal = async (req, res) => {
   }
 };
 
-/** PUT /api/boards/:boardId/goals/reorder — body { orderedIds } */
+/**
+ * PUT /api/boards/:boardId/goals/reorder — body { orderedIds }
+ *
+ * The order one group's goals sit in, for EVERYONE. Stored on the rows rather
+ * than in the mover's browser, because "put the keyword we actually care about
+ * at the top" is a statement about the client's month, not about one person's
+ * screen — the whole reason this is a write and not a localStorage key.
+ *
+ * `goal.manage`, alongside creating and redefining a goal: someone who can only
+ * fill in this month's numbers is not rewriting the table those numbers sit in.
+ *
+ * ONE TABLE PER CALL. The read buckets goals by group, so `order` only ever
+ * means anything within a single (group, month) — a list spanning two of them
+ * has no single ordering to write, and quietly writing one would shuffle a
+ * table the user was not even looking at.
+ */
 const reorderGoals = async (req, res) => {
   try {
     const ctx = await gate(req, res, 'goal.manage');
     if (!ctx) return undefined;
+
     const { orderedIds } = req.body || {};
-    if (!Array.isArray(orderedIds)) {
-      return res.status(400).json({ error: 'orderedIds must be an array' });
+    if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
+      return res.status(400).json({ error: 'orderedIds must be a non-empty array' });
     }
-    const goals = await Goal.find({ _id: { $in: orderedIds }, board: ctx.board._id })
-      .select('_id').lean();
-    if (goals.length !== orderedIds.length) {
+    if (!orderedIds.every(isValidId)) {
+      return res.status(400).json({ error: 'orderedIds must all be goal ids' });
+    }
+
+    const requested = await Goal.find({ _id: { $in: orderedIds }, board: ctx.board._id })
+      .select('_id group monthKey').lean();
+    if (requested.length !== new Set(orderedIds.map(String)).size) {
       return res.status(400).json({ error: 'One or more goals are not on this board' });
     }
+    if (!isOneTable(requested)) {
+      return res.status(400).json({
+        error: 'Goals can only be reordered within one group and one month.',
+      });
+    }
+
+    const { group, monthKey } = requested[0];
+    // The table as it stands RIGHT NOW, in its current order — so a goal added
+    // while the mover's tab sat open lands at the end instead of colliding on
+    // order 0 with every other row. See utils/goalOrdering.js.
+    const live = await Goal.find({ board: ctx.board._id, group, monthKey })
+      .select('_id').sort({ order: 1, createdAt: 1 }).lean();
+
+    const finalIds = mergeGoalOrder(orderedIds, live.map((g) => g._id));
+
     await Goal.bulkWrite(
-      orderedIds.map((id, idx) => ({
+      finalIds.map((id, idx) => ({
         updateOne: { filter: { _id: id }, update: { $set: { order: idx } } },
       }))
     );
-    return res.json({ reordered: orderedIds.length });
+
+    return res.json({
+      reordered: finalIds.length,
+      group: String(group),
+      monthKey,
+      orderedIds: finalIds,
+    });
   } catch (err) {
     console.error('reorderGoals error:', err);
     return res.status(500).json({ error: 'Server error' });
