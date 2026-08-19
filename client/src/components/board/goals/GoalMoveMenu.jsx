@@ -16,7 +16,9 @@ import { availableGoalMoves } from '../../../utils/goalOrder';
  *
  * The order it writes is SHARED — see `utils/goalOrder.js`. The button says so
  * in its tooltip, because a control that quietly rearranges what a colleague
- * sees ought to admit it before the click, not after.
+ * sees ought to admit it before the click, not after. When a column sort is on,
+ * the tooltip says the larger thing too: the move commits the order you are
+ * looking at, for everyone.
  *
  * Positioned and dismissed exactly like `TaskActionsMenu`: portalled to body so
  * the table's `overflow-x: auto` cannot clip it, anchored to the trigger,
@@ -60,7 +62,7 @@ const MenuItem = ({ icon: Icon, label, disabled, onClick }) => (
  *   index, count   — where this goal sits in its group, and how many there are
  *   onMove(dir)    — 'top' | 'up' | 'down' | 'bottom'
  *   goalName       — for the trigger's accessible name
- *   disabled       — with `disabledHint` as the tooltip explaining why
+ *   sortActive     — a column sort is on, so this move also commits that order
  *   iconSize       — 14 on desktop rows, 15 on the mobile cards
  */
 const GoalMoveMenu = ({
@@ -68,8 +70,7 @@ const GoalMoveMenu = ({
   count,
   onMove,
   goalName = 'this goal',
-  disabled = false,
-  disabledHint = '',
+  sortActive = false,
   iconSize = 14,
   className = 'p-1 rounded hover:bg-[color:var(--color-bg-subtle)]',
 }) => {
@@ -114,13 +115,15 @@ const GoalMoveMenu = ({
   }, [anchor]);
 
   const moves = availableGoalMoves(index, count);
+  // The only thing that ever greys this out: a table with one row in it. A
+  // column sort deliberately does NOT — see the note on `handleMove`.
   const stuck = !moves.top && !moves.down;
-  const off = disabled || stuck;
 
-  const title = disabled
-    ? disabledHint
-    : stuck
-      ? 'Nowhere to move — this is the only goal here'
+  const title = stuck
+    ? 'Nowhere to move — this is the only goal here'
+    : sortActive
+      ? 'Move this goal — saves the order you are looking at, for everyone, '
+        + 'and clears the sort'
       : 'Move this goal — the order everyone on the board sees';
 
   const rect = anchor?.getBoundingClientRect();
@@ -133,14 +136,14 @@ const GoalMoveMenu = ({
       <button
         ref={triggerRef}
         type="button"
-        disabled={off}
+        disabled={stuck}
         aria-haspopup="menu"
         aria-expanded={!!anchor}
         aria-label={`Move ${goalName}`}
         title={title}
         onClick={(e) => setAnchor((prev) => (prev ? null : e.currentTarget))}
         className={className}
-        style={{ opacity: off ? 0.3 : 1, cursor: off ? 'default' : 'pointer' }}
+        style={{ opacity: stuck ? 0.3 : 1, cursor: stuck ? 'default' : 'pointer' }}
       >
         <ChevronsUpDown size={iconSize} color="var(--color-text-secondary)" />
       </button>

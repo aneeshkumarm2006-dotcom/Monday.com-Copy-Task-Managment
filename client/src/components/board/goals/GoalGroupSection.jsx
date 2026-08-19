@@ -103,10 +103,10 @@ const SortHead = ({ label, columnKey, sort, onSort, style, hint, suffix, classNa
  *   moved to the top of a table is at the top of that table for whoever opens
  *   it next. Moved through the control on each row.
  *
- * They cannot both be live at once: while a sort is active the rows on screen
- * are not in stored order, so "move up" would move a goal somewhere the mover
- * cannot see. The move controls go quiet, and the header offers the honest
- * version of what the user is probably after — save THIS order for everyone.
+ * When a sort is on, the two meet: moving a row operates on what is ON SCREEN
+ * and commits that whole order, then drops the sort. So "up" always means what
+ * the eye says it means, and the shared order only ever changes deliberately —
+ * by a move, or by the header's "Save this order". See `handleMove` below.
  */
 const GoalGroupSection = ({
   group,
@@ -154,27 +154,48 @@ const GoalGroupSection = ({
     [goals, sort, typesByKey, columnsById, personName]
   );
 
-  // Empty string means "you can move things"; the rows read it as a tooltip.
-  const reorderDisabledHint = sort.key
-    ? 'Sorted by a column right now — clear the sort, or save it as the order.'
-    : '';
+  const sortActive = !!sort.key;
 
+  /**
+   * Move a goal, against the order actually ON SCREEN.
+   *
+   * `sortedGoals`, never `goals` — and that one word is the whole fix for the
+   * bug this replaced. Moving used to be DISABLED while a column sort was on,
+   * on the reasoning that "up" is ambiguous when the rows are not in stored
+   * order. Correct in theory, useless in practice: a sort on a column that is
+   * entirely blank (Actual, for most of the month) reorders nothing visible, so
+   * the table looked completely normal and the move controls were simply dead,
+   * with only a tooltip to say why.
+   *
+   * Operating on the visible order removes the ambiguity instead of refusing
+   * it. "Up" means what the eye says it means: swap with the row above the one
+   * you are looking at. The sort is then cleared, because the whole visible
+   * order — with the move applied — has just become the stored one, and leaving
+   * the sort on would hide that anything had changed. Without that clear, a
+   * sorted column would also yank the moved row straight back, which reads as
+   * the feature being broken.
+   *
+   * The side effect is real and worth stating: moving one row while sorted
+   * commits the WHOLE sorted order for everyone. That is the honest reading of
+   * the gesture — you are looking at an order you like and adjusting it — and
+   * it is the same thing "Save this order" does, which is why the button says
+   * so out loud before you ever open this menu.
+   */
   const handleMove = useCallback(
     (goal, dir) => {
-      const next = moveGoalId(goals.map((g) => g._id), goal._id, dir);
-      if (next) onReorder?.(group, next);
+      const next = moveGoalId(sortedGoals.map((g) => g._id), goal._id, dir);
+      if (!next) return;
+      onReorder?.(group, next);
+      setSort({ key: null, dir: 'asc' });
     },
-    [goals, group, onReorder]
+    [sortedGoals, group, onReorder]
   );
 
   /**
-   * Freeze the current sort as the order everyone sees, then drop the sort.
+   * Freeze the current sort as the order everyone sees, without moving anything.
    *
-   * The sort has to go: leaving it on would show the same rows in the same
-   * places and give no sign that anything had been saved, and the next thing
-   * the mover does — nudging one row up — has to happen against stored order
-   * anyway. Clearing it turns "this is how I like to look at it" into "this is
-   * how it is", visibly, in one click.
+   * The same commit `handleMove` performs, minus the move — for when the sorted
+   * order is already the one you want everybody to get.
    */
   const saveSortAsOrder = useCallback(() => {
     onReorder?.(group, sortedGoals.map((g) => g._id));
@@ -434,7 +455,7 @@ const GoalGroupSection = ({
                     monthClosable={monthClosable}
                     index={i}
                     rowCount={sortedGoals.length}
-                    reorderDisabledHint={reorderDisabledHint}
+                    sortActive={sortActive}
                     onPatch={(patch) => onPatch(goal, patch)}
                     onEdit={onEdit}
                     onDelete={onDelete}
@@ -472,7 +493,7 @@ const GoalGroupSection = ({
                   monthClosable={monthClosable}
                   index={i}
                   rowCount={sortedGoals.length}
-                  reorderDisabledHint={reorderDisabledHint}
+                  sortActive={sortActive}
                   onPatch={(patch) => onPatch(goal, patch)}
                   onEdit={onEdit}
                   onDelete={onDelete}

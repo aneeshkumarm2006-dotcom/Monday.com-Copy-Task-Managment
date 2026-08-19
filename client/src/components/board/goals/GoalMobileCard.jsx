@@ -34,7 +34,7 @@ const Field = ({ label, children }) => (
 
 const GoalMobileCard = ({
   goal, columns = [], typeSpec, canTrack, canManage, monthClosable = false,
-  index = 0, rowCount = 0, reorderDisabledHint = '',
+  index = 0, rowCount = 0, sortActive = false,
   onPatch, onEdit, onDelete, onMove,
 }) => {
   const c = goal.computed || {};
@@ -88,8 +88,7 @@ const GoalMobileCard = ({
                 index={index}
                 count={rowCount}
                 goalName={goal.name}
-                disabled={!!reorderDisabledHint}
-                disabledHint={reorderDisabledHint}
+                sortActive={sortActive}
                 onMove={(dir) => onMove(goal, dir)}
                 iconSize={15}
                 className="p-1.5"

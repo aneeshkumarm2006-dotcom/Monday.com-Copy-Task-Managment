@@ -8,10 +8,12 @@
  * the order the mover left it. A goal at the top is at the top for the whole
  * team.
  *
- * Which is why the two cannot both be live at once. While a column sort is
- * active the rows on screen are not in stored order, so "move up" has no
- * honest meaning — the section disables the move controls and offers to save
- * the sorted order instead, which is the same act said out loud.
+ * Which is why a move always operates on the order ON SCREEN. While a column
+ * sort is active the rows are not in stored order, so "up" is only honest if it
+ * means "above the row I can see" — the section moves within the sorted list,
+ * commits that whole list, and drops the sort. Refusing to move while sorted
+ * was the first attempt and it was worse: a sort on an all-blank column looks
+ * identical to no sort at all, so the controls just seemed broken.
  *
  * Pure id arithmetic, no React and no goal objects: the desktop row, the mobile
  * card and the "save this order" button all have to agree about what "up"

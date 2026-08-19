@@ -38,7 +38,7 @@ const GoalRow = ({
   // the one currently on screen — see the note on the move menu below.
   index = 0,
   rowCount = 0,
-  reorderDisabledHint = '',
+  sortActive = false,
   onPatch,
   onEdit,
   onDelete,
@@ -269,16 +269,14 @@ const GoalRow = ({
           <>
             {/* Moving a goal writes `Goal.order`, so it moves for everyone —
                 unlike the column sort in the heading above, which is yours
-                alone. `reorderDisabledHint` is set while a sort is active,
-                because the rows on screen are not in stored order then and
-                "up" would move the goal somewhere the user cannot see. */}
+                alone. Always live, sort or no sort: a move acts on the order
+                on screen and commits it. See `handleMove` in the section. */}
             {onMove && (
               <GoalMoveMenu
                 index={index}
                 count={rowCount}
                 goalName={goal.name}
-                disabled={!!reorderDisabledHint}
-                disabledHint={reorderDisabledHint}
+                sortActive={sortActive}
                 onMove={(dir) => onMove(goal, dir)}
               />
             )}
