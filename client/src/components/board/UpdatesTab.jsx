@@ -1,15 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AtSign,
   Paperclip,
-  Smile,
-  Send,
   Mail,
   MessageSquare,
   Trash2,
   Pencil,
   CornerDownLeft,
-  X,
   Check,
   Lock,
   Users,
@@ -20,19 +16,16 @@ import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
 import Mention from '@tiptap/extension-mention';
 import RichEditor from './RichEditor';
+import UpdateComposer from './UpdateComposer';
 import AttachmentList from './AttachmentList';
 import { DriveChip, driveChipify } from './driveChipExtension';
 import * as updateService from '../../services/updateService';
 import * as taskAttachmentService from '../../services/taskAttachmentService';
 import useAuthStore from '../../store/authStore';
 import useToastStore from '../../store/toastStore';
-import useNotificationStore from '../../store/notificationStore';
-import useOrgStore from '../../store/orgStore';
 import { timeAgo, formatDate } from '../../utils/dateUtils';
-
-const COMMON_EMOJIS = ['👍', '🎉', '🙌', '🔥', '❤️', '✅', '🚀', '😄', '👀', '💡', '🤔', '😅'];
-
-const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB — matches server limit
+import { draftKeyFor } from '../../utils/updateDrafts';
+import { replyPreview } from '../../utils/updatePreview';
 
 // Request types + priorities a portal client can pick, labelled exactly as their
 // own portal labels them so both sides are talking about the same thing.
@@ -51,30 +44,6 @@ const REQUEST_PRIORITIES = {
   medium: { label: 'Medium', color: '#2563EB' },
   high: { label: 'High', color: '#EA580C' },
   critical: { label: 'Urgent', color: '#DC2626' },
-};
-
-/**
- * Build a short preview of the update being replied to, so a reply shows *which*
- * message it answers — not just who wrote it. Prefers the text body; when the
- * parent has no text (e.g. a file-only update) it falls back to the attachment
- * name so attachment-only messages are still identifiable.
- *
- * Returns { kind: 'text' | 'file' | 'empty', label }.
- */
-const replyPreview = (parent) => {
-  const text = (parent?.bodyText || '').trim();
-  if (text) {
-    return {
-      kind: 'text',
-      label: text.length > 60 ? text.slice(0, 60).trimEnd() + '…' : text,
-    };
-  }
-  const attachments = Array.isArray(parent?.attachments) ? parent.attachments : [];
-  if (attachments.length > 0) {
-    const extra = attachments.length > 1 ? ` +${attachments.length - 1}` : '';
-    return { kind: 'file', label: (attachments[0].name || 'attachment') + extra };
-  }
-  return { kind: 'empty', label: '' };
 };
 
 /**
@@ -110,8 +79,6 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
   const isInternal = visibility === 'internal';
   const currentUser = useAuthStore((s) => s.user);
   const toast = useToastStore.getState();
-  const refreshNotifications = useNotificationStore((s) => s.fetchNotifications);
-  const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
 
   const [updates, setUpdates] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -124,21 +91,16 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
   // everywhere else there is no request, and the fetch is skipped.
   const [clientRequest, setClientRequest] = useState(null);
 
-  // Composer state
-  const [bodyJson, setBodyJson] = useState(null);
-  const [bodyText, setBodyText] = useState('');
-  const [bodyMentions, setBodyMentions] = useState([]);
-  const [bodyEmpty, setBodyEmpty] = useState(true);
-  const [attachments, setAttachments] = useState([]);
-  const [submitting, setSubmitting] = useState(false);
-  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
-  const [replyingTo, setReplyingTo] = useState(null);
   const [highlightId, setHighlightId] = useState(null);
 
   const highlightTimer = useRef(null);
 
-  const editorRef = useRef(null);
-  const fileInputRef = useRef(null);
+  // The composer owns everything about the message being written, including the
+  // unsent draft. It is mounted under `composerKey` so each thread gets its own
+  // instance — see UpdateComposer.
+  const composerRef = useRef(null);
+  const draftKey = draftKeyFor(currentUser?._id, taskId, audience);
+  const composerKey = `${taskId || 'none'}:${audience}`;
 
   // Report the count only once the feed has actually come back. Before that
   // `updates` is an empty array because nothing has loaded, not because there is
@@ -207,60 +169,11 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
     };
   }, [taskId, isClientThread]);
 
-  const handleEditorChange = useCallback(({ json, text, mentions, isEmpty }) => {
-    setBodyJson(json);
-    setBodyText(text);
-    setBodyMentions(mentions);
-    setBodyEmpty(isEmpty);
+  // A posted update lands at the top of the feed. Posting itself lives in the
+  // composer, which is also what drops the draft once the update exists.
+  const handlePosted = useCallback((created) => {
+    if (created) setUpdates((prev) => [created, ...prev]);
   }, []);
-
-  const handleSubmit = useCallback(async () => {
-    if (!taskId) return;
-    const hasContent = !bodyEmpty || attachments.length > 0;
-    if (!hasContent || submitting) return;
-    setSubmitting(true);
-    setError('');
-    try {
-      const mentionIds = bodyMentions.map((m) => m._id);
-      const created = await updateService.addUpdate(taskId, {
-        body: bodyJson,
-        bodyText,
-        mentions: mentionIds,
-        attachments,
-        replyTo: replyingTo?._id || null,
-        visibility,
-      });
-      setUpdates((prev) => [created, ...prev]);
-      // Reset composer
-      editorRef.current?.commands?.clearContent?.();
-      setBodyJson(null);
-      setBodyText('');
-      setBodyMentions([]);
-      setBodyEmpty(true);
-      setAttachments([]);
-      setReplyingTo(null);
-      refreshNotifications(currentOrgId || undefined);
-    } catch (err) {
-      console.error('Failed to post update:', err);
-      setError(
-        err?.response?.data?.error ||
-          'Failed to post update. Please try again.'
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }, [
-    taskId,
-    bodyEmpty,
-    bodyJson,
-    bodyText,
-    bodyMentions,
-    attachments,
-    submitting,
-    replyingTo,
-    refreshNotifications,
-    visibility,
-  ]);
 
   const handleDelete = useCallback(
     async (updateId) => {
@@ -303,9 +216,7 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
   );
 
   const handleReply = useCallback((update) => {
-    setReplyingTo(update);
-    // Bring the composer into focus so the reply can be typed immediately.
-    editorRef.current?.commands?.focus?.();
+    composerRef.current?.startReply(update);
   }, []);
 
   // Jump from a "Replying to" reference back to the original update, scrolling
@@ -345,30 +256,6 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
     [taskId, toast]
   );
 
-  const handleFilesSelected = useCallback(
-    async (e) => {
-      const files = Array.from(e.target.files || []);
-      if (!files.length || !taskId) return;
-      for (const f of files) {
-        if (f.size > MAX_FILE_SIZE) {
-          toast.error(`${f.name} is too big. Please attach a file under 25MB.`);
-          continue;
-        }
-        try {
-          const attachment = await updateService.uploadAttachment(taskId, f);
-          setAttachments((prev) => [...prev, attachment]);
-        } catch (err) {
-          console.error('Upload failed:', err);
-          toast.error(
-            err?.response?.data?.error || `Couldn't attach ${f.name}. Please try again.`
-          );
-        }
-      }
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    },
-    [taskId, toast]
-  );
-
   // "Update via email" uses Gmail plus-addressing: VITE_INBOUND_EMAIL_ADDRESS is
   // the inbox base (e.g. automations@davnoot.com) and each task gets a tagged
   // reply address `<local>+task-<id>@<domain>` that the inbound poller reads.
@@ -399,17 +286,6 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
       toast.info(taskEmail);
     }
   }, [taskEmail, toast, isClientThread]);
-
-  const insertEmoji = useCallback((emoji) => {
-    const editor = editorRef.current;
-    if (editor) editor.chain().focus().insertContent(emoji).run();
-    setEmojiPickerOpen(false);
-  }, []);
-
-  const focusMention = useCallback(() => {
-    const editor = editorRef.current;
-    if (editor) editor.chain().focus().insertContent('@').run();
-  }, []);
 
   return (
     <div className="flex flex-col h-full" style={{ minHeight: 0 }}>
@@ -651,239 +527,33 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
         </div>
       </div>
 
-      {/* Composer */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          handleSubmit();
-        }}
-        style={{
-          padding: '8px 16px 16px 16px',
-          background: '#FFFFFF',
-          borderTop: '1px solid transparent',
-        }}
-      >
-        {error ? (
-          <p
-            className="font-body"
-            role="alert"
-            style={{
-              fontSize: 12,
-              color: 'var(--color-status-stuck)',
-              marginBottom: 6,
-            }}
-          >
-            {error}
-          </p>
-        ) : null}
-
-        {/* Replying-to banner */}
-        {replyingTo && (
-          <div
-            className="flex items-center gap-2 font-body"
-            style={{
-              fontSize: 12,
-              color: 'var(--color-text-secondary)',
-              background: 'var(--color-bg-subtle, #F3F4F6)',
-              borderRadius: 'var(--radius-md)',
-              padding: '5px 10px',
-              marginBottom: 8,
-            }}
-          >
-            <CornerDownLeft size={12} style={{ color: 'var(--color-accent)', flexShrink: 0 }} aria-hidden="true" />
-            <span
-              className="min-w-0 flex items-center gap-1"
-              style={{ overflow: 'hidden' }}
-            >
-              <span style={{ flexShrink: 0 }}>
-                Replying to{' '}
-                <strong style={{ color: 'var(--color-text-primary)' }}>
-                  {replyingTo.author?.name || 'Unknown'}
-                </strong>
-              </span>
-              {(() => {
-                const preview = replyPreview(replyingTo);
-                if (!preview.label) return null;
-                return (
-                  <>
-                    <span style={{ color: 'var(--color-border-strong)', flexShrink: 0 }}>|</span>
-                    {preview.kind === 'file' ? (
-                      <Paperclip size={11} style={{ flexShrink: 0 }} aria-hidden="true" />
-                    ) : null}
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {preview.label}
-                    </span>
-                  </>
-                );
-              })()}
-            </span>
-            <button
-              type="button"
-              onClick={() => setReplyingTo(null)}
-              aria-label="Cancel reply"
-              className="ml-auto flex items-center justify-center rounded transition-colors hover:bg-[color:var(--color-border)]"
-              style={{ width: 18, height: 18, border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
-            >
-              <X size={11} style={{ color: 'var(--color-text-muted)' }} aria-hidden="true" />
-            </button>
-          </div>
-        )}
-
-        <RichEditor
-          placeholder={
-            isClientThread
-              ? 'Write a message to the client…'
-              : 'Write an update and mention others with @'
-          }
-          onChange={handleEditorChange}
-          editorRef={editorRef}
-        />
-
-        {/* Attachment chips (pending submission) */}
-        {attachments.length > 0 && (
-          <ul
-            className="flex flex-wrap gap-2"
-            style={{ listStyle: 'none', margin: '8px 0 0', padding: 0 }}
-          >
-            {attachments.map((a, i) => (
-              <li
-                key={`${a.url}-${i}`}
-                className="inline-flex items-center gap-1 font-body"
-                style={{
-                  fontSize: 12,
-                  color: 'var(--color-text-secondary)',
-                  background: 'var(--color-bg-subtle, #F3F4F6)',
-                  borderRadius: 'var(--radius-md)',
-                  padding: '3px 6px 3px 10px',
-                }}
-              >
-                <Paperclip size={11} aria-hidden="true" />
-                <span style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {a.name || 'file'}
-                </span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${a.name}`}
-                  onClick={() =>
-                    setAttachments((prev) => prev.filter((_, idx) => idx !== i))
-                  }
-                  style={{
-                    width: 16,
-                    height: 16,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    background: 'transparent',
-                    border: 'none',
-                    color: 'var(--color-text-muted)',
-                    cursor: 'pointer',
-                    fontSize: 14,
-                    lineHeight: 1,
-                    padding: 0,
-                  }}
-                >
-                  ×
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {/* Inline composer toolbar + send */}
-        <div className="mt-2 flex items-center gap-2">
-          <ToolbarIconButton onClick={focusMention} title="Mention someone">
-            <AtSign size={14} aria-hidden="true" />
-          </ToolbarIconButton>
-          <ToolbarIconButton
-            onClick={() => fileInputRef.current?.click()}
-            title="Attach a file"
-          >
-            <Paperclip size={14} aria-hidden="true" />
-          </ToolbarIconButton>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            onChange={handleFilesSelected}
-            style={{ display: 'none' }}
-          />
-
-          <div style={{ position: 'relative' }}>
-            <ToolbarIconButton
-              onClick={() => setEmojiPickerOpen((v) => !v)}
-              title="Insert emoji"
-            >
-              <Smile size={14} aria-hidden="true" />
-            </ToolbarIconButton>
-            {emojiPickerOpen && (
-              <div
-                role="menu"
-                onMouseLeave={() => setEmojiPickerOpen(false)}
-                style={{
-                  position: 'absolute',
-                  bottom: '110%',
-                  left: 0,
-                  background: '#FFFFFF',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 'var(--radius-md)',
-                  boxShadow: 'var(--shadow-md)',
-                  padding: 4,
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(6, 1fr)',
-                  gap: 2,
-                  zIndex: 120,
-                }}
-              >
-                {COMMON_EMOJIS.map((e) => (
-                  <button
-                    key={e}
-                    type="button"
-                    onClick={() => insertEmoji(e)}
-                    style={{
-                      width: 28,
-                      height: 28,
-                      border: 'none',
-                      background: 'transparent',
-                      cursor: 'pointer',
-                      fontSize: 16,
-                      borderRadius: 4,
-                    }}
-                  >
-                    {e}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <button
-            type="submit"
-            disabled={(bodyEmpty && attachments.length === 0) || submitting}
-            className="ml-auto inline-flex items-center justify-center gap-2 font-body whitespace-nowrap transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
-            style={{
-              height: 32,
-              padding: '0 14px',
-              background: 'var(--color-accent)',
-              color: '#FFFFFF',
-              fontWeight: 600,
-              fontSize: 13,
-              border: 'none',
-              borderRadius: 'var(--radius-md)',
-              cursor:
-                !bodyEmpty || attachments.length > 0 ? 'pointer' : 'not-allowed',
-            }}
-          >
-            <Send size={13} aria-hidden="true" />
-            {submitting
-              ? isClientThread
-                ? 'Sending…'
-                : 'Posting…'
-              : isClientThread
-                ? 'Send to client'
-                : 'Update'}
-          </button>
-        </div>
-      </form>
+      {/* Composer. Keyed by thread so switching task or tab never carries the
+          previous thread's half-typed message across, and so the draft for the
+          thread being opened is restored at mount. */}
+      {error ? (
+        <p
+          className="font-body"
+          role="alert"
+          style={{
+            fontSize: 12,
+            color: 'var(--color-status-stuck)',
+            padding: '8px 16px 0 16px',
+            margin: 0,
+            background: '#FFFFFF',
+          }}
+        >
+          {error}
+        </p>
+      ) : null}
+      <UpdateComposer
+        key={composerKey}
+        ref={composerRef}
+        taskId={taskId}
+        visibility={visibility}
+        isClientThread={isClientThread}
+        draftKey={draftKey}
+        onPosted={handlePosted}
+      />
     </div>
   );
 };
@@ -1522,26 +1192,6 @@ export const ReadOnlyRichBody = ({ body, fallbackText }) => {
     </div>
   );
 };
-
-const ToolbarIconButton = ({ children, onClick, title }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    title={title}
-    aria-label={title}
-    className="inline-flex items-center justify-center rounded transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
-    style={{
-      width: 28,
-      height: 28,
-      background: 'transparent',
-      border: 'none',
-      color: 'var(--color-text-secondary)',
-      cursor: 'pointer',
-    }}
-  >
-    {children}
-  </button>
-);
 
 const Avatar = ({ user, size = 28 }) => {
   const [imgError, setImgError] = useState(false);
