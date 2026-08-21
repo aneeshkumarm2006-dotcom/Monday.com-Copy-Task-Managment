@@ -9,6 +9,7 @@ import {
   UserCheck,
   Check,
   CalendarArrowUp,
+  Link2,
 } from 'lucide-react';
 
 /**
@@ -17,6 +18,7 @@ import {
  *   - Status (popover with the board's status chips)
  *   - Priority (popover with critical/high/medium/low chips)
  *   - Move to group (popover with the board's groups)
+ *   - Copy links (one task URL per line, straight to the clipboard)
  *   - Delete (parent owns the confirm modal)
  *   - Clear selection
  *
@@ -33,6 +35,9 @@ import {
  *   onChangePriority — (priorityKey) => void
  *   onMoveToGroup    — (groupId) => void
  *   onAssign         — (memberIds: string[]) => void
+ *   onCopyLinks      — () => Promise<boolean> — true when the clipboard write
+ *                      succeeded, which is the only thing that flips the button
+ *                      to its "Copied" tick
  *   members          — [{ _id, name, profilePic }] org member list
  *   onDelete         — () => void (parent shows confirmation)
  *   onClear          — () => void
@@ -49,6 +54,7 @@ const BulkActionBar = ({
   onMoveToGroup,
   onMoveToMonth,
   onAssign,
+  onCopyLinks,
   onDelete,
   onClear,
   busy = false,
@@ -57,6 +63,12 @@ const BulkActionBar = ({
   // 'priority', 'assign', 'move'.
   const [openMenu, setOpenMenu] = useState(null);
   const [assignSelection, setAssignSelection] = useState([]);
+  // The "Copied" tick on the Copy links button, held as the selection size the
+  // copy was made at rather than a bare boolean: tick a further row and the
+  // tick goes with it, because a tick left over from a different set of rows
+  // would claim the clipboard holds links it doesn't.
+  const [copiedAtCount, setCopiedAtCount] = useState(null);
+  const linksCopied = copiedAtCount !== null && copiedAtCount === count;
   const statusBtnRef = useRef(null);
   const priorityBtnRef = useRef(null);
   const assignBtnRef = useRef(null);
@@ -86,6 +98,18 @@ const BulkActionBar = ({
       document.removeEventListener('keydown', handleKey);
     };
   }, [openMenu]);
+
+  useEffect(() => {
+    if (copiedAtCount === null) return undefined;
+    const timer = setTimeout(() => setCopiedAtCount(null), 2000);
+    return () => clearTimeout(timer);
+  }, [copiedAtCount]);
+
+  const handleCopyLinks = async () => {
+    setOpenMenu(null);
+    const ok = await onCopyLinks?.();
+    if (ok) setCopiedAtCount(count);
+  };
 
   const toggleMenu = (key) => {
     if (key === 'assign') setAssignSelection([]);
@@ -303,6 +327,19 @@ const BulkActionBar = ({
             setOpenMenu(null);
             onMoveToMonth();
           }}
+        />
+      )}
+
+      {/* Copy links — read-only, so it sits apart from the mutating actions
+          and is the one button that reports back inline instead of only by
+          toast. */}
+      {onCopyLinks && (
+        <BarButton
+          icon={linksCopied ? Check : Link2}
+          label={linksCopied ? 'Copied' : 'Copy links'}
+          disabled={busy}
+          onClick={handleCopyLinks}
+          title="Copy a link to each selected task, one per line"
         />
       )}
 

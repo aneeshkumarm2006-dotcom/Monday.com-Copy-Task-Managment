@@ -45,4 +45,23 @@ export const buildTaskLink = (task, { tab = 'updates', origin } = {}) => {
   return `${base}/boards/${boardId}?${params.toString()}`;
 };
 
+/**
+ * Build the shareable links for a LIST of tasks — what the bulk-action bar's
+ * "Copy links" button puts on the clipboard, one URL per line.
+ *
+ * Deliberately the same `buildTaskLink` per row, so a link copied from a
+ * selection of twenty is byte-identical to the one the detail panel's copy
+ * button hands out for the same task. Rows with nothing shareable (a personal
+ * task) are dropped rather than emitting a blank line, so the caller can say
+ * how many links it actually copied.
+ *
+ * @param {Object[]} tasks
+ * @param {Object} [opts] - forwarded to buildTaskLink (tab / origin)
+ * @returns {string[]} absolute URLs, in the order the tasks were given
+ */
+export const buildTaskLinks = (tasks, opts = {}) =>
+  (Array.isArray(tasks) ? tasks : [])
+    .map((task) => buildTaskLink(task, opts))
+    .filter(Boolean);
+
 export default buildTaskLink;

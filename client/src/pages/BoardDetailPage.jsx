@@ -104,6 +104,7 @@ import {
   isTaskPinned,
   sortPinnedFirst,
 } from '../utils/taskPins';
+import { buildTaskLinks } from '../utils/taskLink';
 
 /**
  * Group color cycle — reuses the stat-card palette so groups are visually
@@ -1411,6 +1412,56 @@ const BoardDetailPage = () => {
       );
     }
   };
+
+  // --- Bulk copy links --------------------------------------------------
+  // Read-only companion to the detail panel's single copy-link button: the
+  // same per-task URL, one per line, for every ticked row. Ordered the way the
+  // board reads (group order, then row order) rather than by tick order, so
+  // pasting a selection of twenty produces a list the recipient can follow.
+  //
+  // Returns true only when the clipboard actually took the text — the bar's
+  // "Copied" tick is driven off that, and clipboard writes are refused outside
+  // a secure context.
+
+  const handleBulkCopyLinks = useCallback(async () => {
+    const ordered = [];
+    for (const group of orderedGroups) {
+      for (const task of tasksByGroup[group._id] || []) {
+        if (!selectedTaskIds.has(task._id)) continue;
+        // A board task's `board` is a bare id here (the board list endpoint
+        // does not populate it), so hand buildTaskLink the one we're on.
+        ordered.push({ ...task, board: task.board || boardId });
+      }
+    }
+    const links = buildTaskLinks(ordered);
+    if (links.length === 0) {
+      toastError('None of the selected tasks have a shareable link.');
+      return false;
+    }
+    const text = links.join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      toastSuccess(
+        links.length === 1
+          ? 'Task link copied.'
+          : `${links.length} task links copied — one per line.`
+      );
+      return true;
+    } catch {
+      // Same fallback as the detail panel: show the text so it can be copied
+      // by hand rather than leaving a button that silently does nothing.
+      toastInfo(text);
+      return false;
+    }
+  }, [
+    orderedGroups,
+    tasksByGroup,
+    selectedTaskIds,
+    boardId,
+    toastSuccess,
+    toastError,
+    toastInfo,
+  ]);
 
   // --- Bulk delete ------------------------------------------------------
   // Fire one DELETE per task in parallel. Each success removes from the
@@ -2783,6 +2834,7 @@ const BoardDetailPage = () => {
           busy={bulkBusy}
           members={members}
           onAssign={handleBulkAssign}
+          onCopyLinks={handleBulkCopyLinks}
           onMoveToGroup={handleBulkMoveToGroup}
           onMoveToMonth={
             isTrackerBoard && canOnBoard('task.move')
