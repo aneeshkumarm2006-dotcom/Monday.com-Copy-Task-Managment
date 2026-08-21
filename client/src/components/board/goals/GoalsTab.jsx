@@ -331,6 +331,7 @@ const GoalsTab = ({
           onClose={() => setFormFor(null)}
           onSubmit={submitGoal}
           types={types}
+          columns={columns}
           groupName={formFor.group?.name}
           monthLabel={monthLabel}
           initial={formFor.goal}
