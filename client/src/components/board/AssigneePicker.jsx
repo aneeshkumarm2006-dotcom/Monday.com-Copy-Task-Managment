@@ -5,14 +5,17 @@ import InviteModal from './InviteModal';
 import useDropdownPosition from '../../utils/useDropdownPosition';
 
 /**
- * AssigneePicker — small dropdown listing org members with multi-select.
+ * AssigneePicker — small dropdown listing a board's members with multi-select.
  *
  * Clicking the trigger opens a panel of members (avatar 24px + name + checkbox).
  * Selected avatars stack with 8px overlap on the trigger.
  * See Macan_Design.md Section 11.
  *
  * Props:
- *   members  — org member list: [{ _id, name, profilePic }]
+ *   members  — the BOARD's roster (see hooks/useBoardMembers), NOT the
+ *                workspace's: [{ _id, name, profilePic }]. Passing the org list
+ *                here is how a private board came to offer people who cannot
+ *                open it, and whom the server refuses as assignees anyway.
  *   value    — string[] of selected member ids
  *   onChange — (ids: string[]) => void
  *   disabled — disables the trigger
@@ -380,7 +383,7 @@ export default AssigneePicker;
  *
  * Props:
  *   anchorEl  — DOM element to anchor the menu to
- *   members   — org member list
+ *   members   — the BOARD's roster (see hooks/useBoardMembers)
  *   value     — string[] of selected member ids
  *   onChange  — (ids: string[]) => void
  *   onClose   — () => void

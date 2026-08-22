@@ -330,6 +330,7 @@ const GoalsTab = ({
           open
           onClose={() => setFormFor(null)}
           onSubmit={submitGoal}
+          boardId={boardId}
           types={types}
           columns={columns}
           groupName={formFor.group?.name}

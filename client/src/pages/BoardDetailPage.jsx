@@ -76,6 +76,7 @@ import VaultTab from '../components/vault/VaultTab';
 import MonthSelector from '../components/board/MonthSelector';
 import MoveToMonthModal from '../components/board/MoveToMonthModal';
 import useBoardMonths from '../hooks/useBoardMonths';
+import useBoardMembers from '../hooks/useBoardMembers';
 import { moveTasksToMonth } from '../services/monthService';
 import { findMonth, formatMonthKey } from '../utils/monthKeys';
 import { recordBoardVisit } from '../utils/boardVisits';
@@ -166,8 +167,12 @@ const BoardDetailPage = () => {
   const currentUser = useAuthStore((s) => s.user);
 
   const currentOrg = useOrgStore((s) => s.currentOrg);
-  const members = useOrgStore((s) => s.members);
   const fetchMembers = useOrgStore((s) => s.fetchMembers);
+  // THE roster every picker on this page renders: the people who can actually
+  // read THIS board, resolved server-side. Not `useOrgStore.members` — that is
+  // the whole workspace, and on a private board it listed people who are not on
+  // it, whom the server then refused to accept as assignees.
+  const members = useBoardMembers(boardId);
   const boards = useBoardStore((s) => s.boards);
   const fetchBoards = useBoardStore((s) => s.fetchBoards);
   const getBoardById = useBoardStore((s) => s.getBoardById);
@@ -733,15 +738,15 @@ const BoardDetailPage = () => {
     return () => clearTimeout(timer);
   }, [highlightedTaskId]);
 
-  // Fetch org members (used by the assignee picker + Share modal). Anyone who
-  // can edit the board needs them; the board creator needs them to share; and on
-  // a tracker board the group-owner picker needs them too — `group.manage`
-  // without `task.edit_any` is a real combination, and it would otherwise open an
-  // empty picker.
+  // Fetch ORG members — the whole workspace. The pickers no longer read this
+  // (they read `members` above, the board's own roster): what is left needing it
+  // is the Share modal, which grants access to people who are BY DEFINITION not
+  // on the board yet, plus the @mention list and the activity-log actor filter.
   //
-  // Deliberately NOT widened any further than that. Everyone else — viewers
-  // included — still gets each group's owner populated on the group document
-  // itself, so they see the name and avatar without ever receiving the roster.
+  // Deliberately NOT widened any further than the three roles below. Everyone
+  // else — viewers included — still gets each group's owner populated on the
+  // group document itself, so they see the name and avatar without ever
+  // receiving the workspace roster.
   useEffect(() => {
     if (!orgId) return;
     if (!canEdit && !isBoardCreator && !canOwnGroups) return;

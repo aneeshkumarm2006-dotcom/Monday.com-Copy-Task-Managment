@@ -22,7 +22,7 @@ import { isTaskPinned, sortPinnedFirst } from '../../utils/taskPins';
  * Props:
  *   tasks            — array of populated Task objects, already pinned-first
  *   personalPins     — Set of task ids this user pinned privately
- *   members          — org members (passed into TaskEditRow)
+ *   members          — the board's members (passed into TaskEditRow)
  *   editingTaskId    — id of the task currently being edited (or null)
  *   isCreating       — if true, renders the trailing "new task" edit row
  *   onOpenTask       — called when a task name is clicked

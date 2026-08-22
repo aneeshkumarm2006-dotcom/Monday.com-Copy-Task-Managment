@@ -12,6 +12,7 @@ const TrackerEntry = require('../models/TrackerEntry');
 const Goal = require('../models/Goal');
 const GoalReminder = require('../models/GoalReminder');
 const Organisation = require('../models/Organisation');
+const User = require('../models/User');
 const { isBoardCreator } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
@@ -1169,6 +1170,68 @@ const getConnectableBoards = async (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
+// The board's own roster
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/boards/:id/members
+ *
+ * The people who may be given work ON THIS BOARD: the org roster narrowed to
+ * those `resolveAccess` lets READ it.
+ *
+ * Every picker on a board page — task assignees, the group owner, a `person`
+ * column, a goal's owner — used to render the whole workspace, because the whole
+ * workspace was the only roster the client had. On a PRIVATE board that listed
+ * people who are not on it. Two things went wrong with that. The server refuses
+ * those assignments (`validateAssignees` in taskController applies exactly the
+ * rule below), so the extra names bought nothing but an error message after the
+ * click; and the names themselves are a disclosure — the roster of a workspace,
+ * offered from inside a board those people cannot open.
+ *
+ * The bar is READ, deliberately, and it has to stay in step with
+ * `validateAssignees`: org member AND `canRead`. Narrower would hide people the
+ * server would happily accept — a viewer can be handed a task, and often is.
+ * Wider puts the names straight back.
+ *
+ * Gated on read access alone (`loadBoard` already 403s without it) and NOT on
+ * `org.view_members`: what comes back is not the workspace roster, it is the
+ * membership of a board the caller is already inside, and anyone who can read
+ * the board can already see these names on its tasks and in its updates.
+ */
+const getBoardMembers = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const ctx = await loadBoard(req.params.id, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+
+    const { board, org } = ctx;
+
+    // `org.members` may arrive raw or populated depending on the loader, so go
+    // through `_id` first — a populated Document's toString() is its inspect
+    // string, never the hex id. Same trap idOf() exists for elsewhere.
+    const assignableIds = (org.members || [])
+      .map((m) => String(m?._id || m || ''))
+      .filter(Boolean)
+      .filter((id) => resolveAccess(board, org, id).canRead);
+
+    const users = await User.find({ _id: { $in: assignableIds } })
+      .select('name email profilePic createdAt')
+      .lean();
+
+    // Hand them back in the org's own member order, which is the order every
+    // existing picker already renders — so switching a picker over to this
+    // endpoint does not also reshuffle it.
+    const byId = new Map(users.map((u) => [String(u._id), u]));
+    const members = assignableIds.map((id) => byId.get(id)).filter(Boolean);
+
+    return res.json({ members });
+  } catch (err) {
+    console.error('getBoardMembers error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Per-board access grants (private boards)
 // ---------------------------------------------------------------------------
 
@@ -1374,6 +1437,7 @@ module.exports = {
   deleteBoard,
   reorderBoards,
   getConnectableBoards,
+  getBoardMembers,
   getBoardAccess,
   setBoardAccess,
   // labels

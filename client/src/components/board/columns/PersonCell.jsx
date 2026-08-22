@@ -1,16 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
 import { cellWrapperStyle } from './cellShared';
-import useOrgStore from '../../../store/orgStore';
+import useBoardMembers from '../../../hooks/useBoardMembers';
 
 /**
- * PersonCell — multi-select picker over the current org's members. Shows
+ * PersonCell — multi-select picker over the people on THIS BOARD. Shows
  * stacked initials chips when collapsed; opens a checklist when clicked.
+ *
+ * Scoped to the board, not the workspace: on a private board the org roster
+ * offered people who cannot open it. The board id comes off the row's own task
+ * (`task.board`), which every cell already receives — a personal task has none
+ * and gets an empty picker, which is correct, since it belongs to no board and
+ * nobody else can see it.
  */
-const PersonCell = ({ value, readOnly, onChange }) => {
+const PersonCell = ({ value, readOnly, onChange, task }) => {
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef(null);
-  const members = useOrgStore((s) => s.members || []);
+  const members = useBoardMembers(task?.board?._id || task?.board);
   const selected = Array.isArray(value) ? value.map((v) => v.toString()) : [];
 
   useEffect(() => {

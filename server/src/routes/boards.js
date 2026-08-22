@@ -22,6 +22,7 @@ const {
   deleteGroupTag,
   reorderGroupTags,
   getConnectableBoards,
+  getBoardMembers,
   getBoardAccess,
   setBoardAccess,
 } = require('../controllers/boardController');
@@ -102,6 +103,13 @@ router.delete('/:id/columns/:cid',    deleteColumn);
 // --- Cross-board connectivity (F2) ----------------------------------------
 // Boards a connect_boards column on this board may target.
 router.get('/:id/connectable',        getConnectableBoards);
+
+// --- Board roster ----------------------------------------------------------
+// Who may be ASSIGNED work here: the org roster narrowed to those who can read
+// this board. Every picker on a board page reads this rather than the whole
+// workspace, so a private board stops offering people who are not on it (and
+// whom `validateAssignees` would refuse anyway). Read access is the only gate.
+router.get('/:id/members',            getBoardMembers);
 
 // --- Per-board access grants (private boards) ------------------------------
 // Viewing is open to the owner + editors; changing is limited to the owner and

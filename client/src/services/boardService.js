@@ -53,6 +53,23 @@ export const reorderBoards = async (organisation, orderedIds) => {
   return data.boards;
 };
 
+// --- Board roster ----------------------------------------------------------
+
+/**
+ * GET /api/boards/:id/members — who may be ASSIGNED work on this board.
+ *
+ * The workspace roster narrowed, server-side, to the people who can actually
+ * read this board. Every picker on a board page should source its options here
+ * rather than from `useOrgStore.members`, which is the whole workspace and on a
+ * private board lists people who are not on it.
+ *
+ * Returns the member array: [{ _id, name, email, profilePic }].
+ */
+export const getBoardMembers = async (boardId) => {
+  const { data } = await api.get(`/api/boards/${boardId}/members`);
+  return data.members || [];
+};
+
 // --- Access grants (private boards) ----------------------------------------
 
 /**

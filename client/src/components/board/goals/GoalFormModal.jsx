@@ -7,7 +7,7 @@ import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { SegmentedControl } from '../../ui/FormControls';
 import { WEIGHT_PRESETS, describeGoal } from '../../../utils/goalDisplay';
-import useOrgStore from '../../../store/orgStore';
+import useBoardMembers from '../../../hooks/useBoardMembers';
 import { formatDateInput } from '../columns/cellShared';
 import { dateInputToISO } from '../../../utils/dateUtils';
 
@@ -89,6 +89,7 @@ const GoalFormModal = ({
   open,
   onClose,
   onSubmit,
+  boardId = null,
   types = [],
   columns = [],
   groupName,
@@ -116,7 +117,10 @@ const GoalFormModal = ({
     [types, typeKey]
   );
 
-  const members = useOrgStore((s) => s.members || []);
+  // Options for a `person` goal column: the people on THIS board, not the whole
+  // workspace. Same rule as every other picker — on a private board the org
+  // roster named people who cannot open it.
+  const members = useBoardMembers(boardId, { enabled: open });
 
   // The board's own goal columns, split by whether they have to be answered.
   const liveColumns = useMemo(() => (columns || []).filter((c) => !c.archived), [columns]);

@@ -25,7 +25,7 @@ const sameStringSet = (a, b) => {
  *
  * Props:
  *   board        — board doc with `statuses[]`
- *   members      — org members ({ _id, name, profilePic })
+ *   members      — the board's members ({ _id, name, profilePic })
  *   initialTask  — optional existing task (for edit mode)
  *   onSave       — async (payload) => void
  *   onCancel     — () => void

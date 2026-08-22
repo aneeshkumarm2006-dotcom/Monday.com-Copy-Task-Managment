@@ -19,6 +19,7 @@ import DatePickerPopover from '../ui/DatePickerPopover';
 import { formatDate, dateInputToISO } from '../../utils/dateUtils';
 import { buildTaskLink } from '../../utils/taskLink';
 import useOrgStore from '../../store/orgStore';
+import useBoardMembers from '../../hooks/useBoardMembers';
 import useToastStore from '../../store/toastStore';
 import {
   getColorPair,
@@ -140,6 +141,14 @@ const CommentPanel = ({
   const fetchMembers = useOrgStore((s) => s.fetchMembers);
 
   const taskId = task?._id || null;
+
+  // The assignee picker's options: this BOARD's members, not the workspace's.
+  // The board arrives as a prop from BoardDetailPage and as `task.board` (id or
+  // populated) from My Work and the calendar, which pass no board at all — so
+  // resolve from both. A personal task has neither, and correctly gets nobody.
+  const pickerBoardId =
+    board?._id || task?.board?._id || (typeof task?.board === 'string' ? task.board : null);
+  const boardMembers = useBoardMembers(pickerBoardId, { enabled: isOpen });
 
   // Fetch org members when panel opens (if not already loaded)
   useEffect(() => {
@@ -343,10 +352,11 @@ const CommentPanel = ({
 
   // Members list — used by the inline AssigneePicker. Falls back to the
   // currently-assigned users so the trigger still shows initials before the
-  // org-members fetch lands.
+  // board-roster fetch lands. That fallback is display-only: it never widens the
+  // options beyond people already on the task.
   const pickerMembers =
-    orgMembers && orgMembers.length > 0
-      ? orgMembers
+    boardMembers && boardMembers.length > 0
+      ? boardMembers
       : assignees.map((u) => ({
           _id: typeof u === 'string' ? u : u._id,
           name: u?.name,

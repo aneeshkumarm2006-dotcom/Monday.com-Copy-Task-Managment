@@ -38,7 +38,7 @@ import {
  *   onCopyLinks      — () => Promise<boolean> — true when the clipboard write
  *                      succeeded, which is the only thing that flips the button
  *                      to its "Copied" tick
- *   members          — [{ _id, name, profilePic }] org member list
+ *   members          — [{ _id, name, profilePic }] the BOARD's roster
  *   onDelete         — () => void (parent shows confirmation)
  *   onClear          — () => void
  *   busy             — disables actions while a bulk operation is in flight

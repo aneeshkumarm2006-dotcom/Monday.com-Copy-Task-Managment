@@ -13,10 +13,40 @@ const replaceBoardChips = (boards, boardId, key, list) =>
     b._id === boardId ? { ...b, [key]: list } : b
   );
 
+/**
+ * boardId -> the in-flight roster request, so concurrent callers share one.
+ *
+ * Deliberately module-level rather than store state: a DataGrid can mount fifty
+ * `person` cells in the same tick and every one of them asks for the roster on
+ * its first effect. `boardMembersLoaded` cannot dedupe those — it is only set
+ * once the response lands, by which time all fifty requests are already out. A
+ * promise keyed here is what collapses them into one. Promises are not state and
+ * nothing renders from them, so keeping them out of the store avoids a set()
+ * per request.
+ */
+const inFlightBoardMembers = new Map();
+
 const useBoardStore = create((set, get) => ({
   boards: [],
   loading: false,
   error: null,
+
+  /**
+   * boardId -> the people who may be ASSIGNED work on that board.
+   *
+   * Separate from `useOrgStore.members` on purpose, and not a filtered view of
+   * it: who can read a private board is the AND of an org role and a board
+   * grant, which only the server resolves (see utils/permissions.js). The client
+   * asks rather than derives — deriving it here is exactly the drift the
+   * two-layer model exists to remove.
+   *
+   * Cached per board and shared by every picker on the page, so opening a board
+   * costs one request no matter how many pickers it renders. `boardMembersLoaded`
+   * marks a board as fetched so an empty roster is not mistaken for a pending one
+   * and re-requested forever.
+   */
+  boardMembers: {},
+  boardMembersLoaded: {},
 
   fetchBoards: async (orgId) => {
     if (!orgId) return [];
@@ -91,6 +121,13 @@ const useBoardStore = create((set, get) => ({
     set((s) => ({
       boards: s.boards.map((b) => (b._id === boardId ? board : b)),
     }));
+    // The grant that just changed IS the thing the board's pickers list, so the
+    // cached roster is stale the moment this resolves. Refresh it rather than
+    // only invalidating: the Share modal is usually open over a board whose
+    // pickers are already mounted and will not re-request on their own.
+    get()
+      .fetchBoardMembers(boardId, { force: true })
+      .catch(() => {});
     return board;
   },
 
@@ -106,7 +143,64 @@ const useBoardStore = create((set, get) => ({
   removeBoardLocal: (id) =>
     set((s) => ({ boards: s.boards.filter((b) => b._id !== id) })),
 
-  clearBoards: () => set({ boards: [], error: null }),
+  clearBoards: () => {
+    inFlightBoardMembers.clear();
+    set({ boards: [], error: null, boardMembers: {}, boardMembersLoaded: {} });
+  },
+
+  // --- Board roster --------------------------------------------------------
+
+  /**
+   * Load (once) the roster of people assignable on `boardId`.
+   *
+   * `force` re-fetches — access can change under a board while it is open (the
+   * owner grants or revokes someone in the Share modal), and the pickers should
+   * follow.
+   */
+  fetchBoardMembers: async (boardId, { force = false } = {}) => {
+    if (!boardId) return [];
+    const key = String(boardId);
+
+    if (force) inFlightBoardMembers.delete(key);
+    else if (get().boardMembersLoaded[key]) return get().boardMembers[key] || [];
+
+    const existing = inFlightBoardMembers.get(key);
+    if (existing) return existing;
+
+    const request = boardService
+      .getBoardMembers(key)
+      .then((members) => {
+        set((s) => ({
+          boardMembers: { ...s.boardMembers, [key]: members },
+          boardMembersLoaded: { ...s.boardMembersLoaded, [key]: true },
+        }));
+        return members;
+      })
+      .finally(() => {
+        // Clear on failure too, or one dropped request would pin the rejection
+        // forever and every later caller would re-throw it without retrying.
+        if (inFlightBoardMembers.get(key) === request) {
+          inFlightBoardMembers.delete(key);
+        }
+      });
+
+    inFlightBoardMembers.set(key, request);
+    return request;
+  },
+
+  /**
+   * Drop a board's cached roster so the next read re-fetches it. Called after a
+   * grant changes, where the roster the pickers are showing is now stale.
+   */
+  invalidateBoardMembers: (boardId) =>
+    set((s) => {
+      if (!boardId) return {};
+      const key = String(boardId);
+      inFlightBoardMembers.delete(key);
+      const loaded = { ...s.boardMembersLoaded };
+      delete loaded[key];
+      return { boardMembersLoaded: loaded };
+    }),
 
   // --- Labels --------------------------------------------------------------
 
