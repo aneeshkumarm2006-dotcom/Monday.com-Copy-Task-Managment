@@ -131,6 +131,26 @@ const useBoardStore = create((set, get) => ({
     return board;
   },
 
+  /**
+   * Hand the board to another member. The server returns the board with the
+   * CALLER's permissions re-resolved — after this the caller is usually no longer
+   * the owner, so caching the response is what makes the Share modal and the
+   * board header stop offering owner-only controls.
+   */
+  transferBoardOwnership: async (boardId, userId) => {
+    const { board } = await boardService.transferBoardOwnership(boardId, userId);
+    set((s) => ({
+      boards: s.boards.map((b) => (b._id === boardId ? board : b)),
+    }));
+    // Ownership rewrites `memberAccess` (the outgoing owner gains a grant, the
+    // incoming one loses theirs), and memberAccess IS what the board's pickers
+    // list — same reasoning as setBoardAccess.
+    get()
+      .fetchBoardMembers(boardId, { force: true })
+      .catch(() => {});
+    return board;
+  },
+
   // Local-only helpers
   addBoardLocal: (board) =>
     set((s) => ({ boards: [board, ...s.boards] })),

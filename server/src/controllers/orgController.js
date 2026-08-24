@@ -1,11 +1,12 @@
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const Organisation = require('../models/Organisation');
 const User = require('../models/User');
 const { sendInviteEmail } = require('../services/emailService');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
 const { createNotificationsForUsers } = require('../services/notificationService');
 const { resolveOrgAccess, isOrgOwner } = require('../utils/permissions');
-const { DEFAULT_ROLE_KEY } = require('../utils/capabilities');
+const { DEFAULT_ROLE_KEY, OWNER_ROLE_KEY } = require('../utils/capabilities');
 
 /**
  * Generate a short, unique invite code.
@@ -352,6 +353,114 @@ const sendInvite = async (req, res) => {
 // custom ones, and enforces the no-escalation rules.
 
 /**
+ * POST /api/orgs/:id/transfer-ownership — hand the workspace to another member.
+ *
+ * Body: { userId }
+ *
+ * `org.admin` is the workspace's root of trust: the resolver short-circuits it to
+ * every capability unconditionally, precisely so a bad matrix edit can never lock
+ * the owner out of their own workspace. That is also why ownership could not be
+ * reached through `assignRole` — the owner role is not assignable there, and it
+ * should not be, because moving ownership is not "changing a role". It is moving
+ * the identity the role system refuses to constrain, and it has to be one atomic
+ * write that never leaves the org with zero owners or two.
+ *
+ * Gate: `requireOrgOwner` on the route. Deliberately NOT a capability — like
+ * deleting the org, this is the one action no role may ever be granted, because
+ * a delegate who can appoint an owner can appoint themselves.
+ *
+ * THE OUTGOING OWNER BECOMES AN ADMIN, not a plain member. They lose the
+ * unconditional short-circuit — there is exactly one owner — but keeping the
+ * workspace running is usually still their job the day after they hand over the
+ * title, and silently demoting them to Member would strip the invite, role and
+ * settings powers they had a minute ago. The new owner can change it like any
+ * other role assignment.
+ */
+const transferOrgOwnership = async (req, res) => {
+  try {
+    // requireOrgOwner already loaded the org and proved the caller owns it.
+    const org = req.org;
+    const { userId: targetUserId } = req.body || {};
+
+    if (!targetUserId || !mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ error: 'Valid userId required' });
+    }
+
+    const previousOwnerId = String(org.admin);
+    if (String(targetUserId) === previousOwnerId) {
+      return res.status(400).json({ error: 'You already own this workspace' });
+    }
+
+    const isMember = org.members.some(
+      (m) => String(m?._id || m) === String(targetUserId)
+    );
+    if (!isMember) {
+      return res
+        .status(400)
+        .json({ error: 'User is not a member of this organisation' });
+    }
+
+    org.ensureSystemRoles();
+
+    org.admin = targetUserId;
+
+    // Rewrite BOTH role assignments in one pass. The owner's assignment is
+    // cosmetic — the resolver answers by identity, not by stored role — but a
+    // memberRoles row saying "Member" under the person who owns the workspace is
+    // the kind of stale data somebody eventually trusts.
+    const ownerRole = org.roleByKey(OWNER_ROLE_KEY);
+    const adminRole = org.roleByKey('admin');
+    org.memberRoles = (org.memberRoles || []).filter(
+      (m) =>
+        String(m.user) !== String(targetUserId) &&
+        String(m.user) !== previousOwnerId
+    );
+    if (ownerRole) {
+      org.memberRoles.push({ user: targetUserId, role: ownerRole._id });
+    }
+    if (adminRole) {
+      org.memberRoles.push({ user: previousOwnerId, role: adminRole._id });
+    }
+
+    // Keep the legacy array truthful for the not-yet-migrated fallback path in
+    // `roleForUser`, exactly as assignRole does: the new owner does not need to
+    // be in it (identity wins), the old owner now does.
+    const admins = new Set((org.admins || []).map((a) => String(a)));
+    admins.delete(String(targetUserId));
+    admins.add(previousOwnerId);
+    org.admins = [...admins];
+
+    await org.save();
+
+    const actor = await User.findById(previousOwnerId).select('name email').lean();
+    const actorName = actor?.name || actor?.email || 'The previous owner';
+
+    await createNotificationsForUsers({
+      userIds: [targetUserId],
+      type: 'ownershipTransferred',
+      message: `${actorName} made you the owner of the workspace "${org.name}"`,
+      orgId: org._id,
+      actorId: previousOwnerId,
+    });
+
+    const access = resolveOrgAccess(org, req.user.userId);
+
+    return res.json({
+      message: 'Ownership transferred',
+      org,
+      permissions: {
+        role: access.role,
+        isOwner: access.isOwner,
+        capabilities: [...access.capabilities],
+      },
+    });
+  } catch (err) {
+    console.error('transferOrgOwnership error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
  * DELETE /api/orgs/:id — Permanently delete an organisation (owner only).
  * Cascades through all boards, tasks, groups, comments, updates, notifications,
  * automations, and removes the org reference from every member's profile.
@@ -378,5 +487,6 @@ module.exports = {
   removeMember,
   regenerateInvite,
   sendInvite,
+  transferOrgOwnership,
   deleteOrg,
 };

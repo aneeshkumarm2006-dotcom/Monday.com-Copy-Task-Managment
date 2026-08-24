@@ -12,6 +12,7 @@ import {
   Users,
   Bell,
   Target,
+  Crown,
 } from 'lucide-react';
 
 /**
@@ -31,6 +32,7 @@ export const NOTIF_TYPE_COLOR = {
   invited: 'var(--color-accent)',
   memberJoined: 'var(--color-status-done)',
   goalsDue: 'var(--color-status-working)',
+  ownershipTransferred: 'var(--color-accent)',
 };
 
 /**
@@ -50,6 +52,7 @@ export const NOTIF_TYPE_ICON = {
   invited: Share2,
   memberJoined: Users,
   goalsDue: Target,
+  ownershipTransferred: Crown,
 };
 
 export const getNotifColor = (type) => NOTIF_TYPE_COLOR[type] || 'var(--color-accent)';
@@ -120,6 +123,9 @@ export const resolveNotifLink = (notif) => {
   }
   if (boardId) return `/boards/${boardId}`;
   if (notif.type === 'memberJoined') return '/members';
+  // A workspace ownership transfer carries no board — it is about the members
+  // page, which is where the Owner chip that just moved is shown.
+  if (notif.type === 'ownershipTransferred') return '/members';
   return null;
 };
 

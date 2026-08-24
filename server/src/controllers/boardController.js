@@ -56,11 +56,11 @@ const loadOrgForMember = async (orgId, userId) => {
  * these routes rely on to answer 400 rather than letting Mongoose's cast blow up
  * into a 500. Every permission decision lives in the context it returns.
  */
-const loadBoard = async (boardId, userId) => {
+const loadBoard = async (boardId, userId, opts) => {
   if (!boardId || !mongoose.Types.ObjectId.isValid(boardId)) {
     return { status: 400, error: 'Invalid board id' };
   }
-  return loadBoardContext(boardId, userId);
+  return loadBoardContext(boardId, userId, opts);
 };
 
 /**
@@ -1429,6 +1429,144 @@ const setBoardAccess = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/boards/:id/transfer-ownership
+ *
+ * Body: { userId }
+ *
+ * Hand the board to another workspace member. `createdBy` IS board ownership —
+ * it is the only thing that confers board LIFECYCLE (delete, change visibility,
+ * give out full access), which no rung on the access ladder grants and no org
+ * role confers on a private board. So moving that one field is the whole
+ * operation; everything else here exists to stop the move from stranding people.
+ *
+ * WHO MAY CALL IT:
+ *   - the board owner, always
+ *   - the WORKSPACE owner, as a break-glass. Without it, a board whose owner
+ *     has left the org is permanently unownable: nobody can delete it, flip its
+ *     visibility, or hand out full access on it, ever. That path deliberately
+ *     loads the board with `requireRead: false`, because the whole point is to
+ *     re-home a private board the workspace owner cannot open.
+ *
+ * TWO SIDE EFFECTS, both about not stranding anyone:
+ *
+ *   - The OUTGOING owner is given an explicit `edit` + full-access grant. On a
+ *     private board their access came entirely from `createdBy`; clear it and
+ *     they would be locked out of their own board by the act of handing it over,
+ *     which is not what anyone means by "transfer".
+ *   - The INCOMING owner's grant (if any) is dropped. `createdBy` already gives
+ *     them everything, and a stale rung sitting underneath it is a lie the Share
+ *     modal would render — and the thing that would silently demote them if
+ *     ownership ever moved on again.
+ *
+ * Returns the board with the CALLER's freshly resolved permissions, exactly as
+ * setBoardAccess does — after a transfer the caller is usually no longer the
+ * owner, and the client has to hear that from the server rather than guess.
+ */
+const transferBoardOwnership = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { userId: targetUserId } = req.body || {};
+
+    if (!targetUserId || !mongoose.Types.ObjectId.isValid(targetUserId)) {
+      return res.status(400).json({ error: 'Valid userId required' });
+    }
+
+    // `requireRead: false` — see the break-glass note above. Read access is not
+    // the gate here; ownership is, and it is checked immediately below.
+    const ctx = await loadBoard(req.params.id, userId, { requireRead: false });
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+
+    const { board, org, access } = ctx;
+    const isBoardOwner = access.board.creator;
+
+    if (!isBoardOwner && !access.isOwner) {
+      return res.status(403).json({
+        error:
+          'Only the board owner, or the workspace owner, can transfer this board',
+      });
+    }
+
+    if (isBoardCreator(board, targetUserId)) {
+      return res.status(400).json({ error: 'They already own this board' });
+    }
+
+    const isMember = org.members.some(
+      (m) => String(m?._id || m) === String(targetUserId)
+    );
+    if (!isMember) {
+      return res
+        .status(400)
+        .json({ error: 'User is not a member of this organisation' });
+    }
+
+    const previousOwnerId = board.createdBy ? String(board.createdBy) : null;
+    const previousOwnerStillHere =
+      !!previousOwnerId &&
+      org.members.some((m) => String(m?._id || m) === previousOwnerId);
+
+    board.createdBy = targetUserId;
+
+    // Drop both people's existing grants, then re-add only the one that means
+    // anything: the outgoing owner's. A grant for the incoming owner is dead
+    // weight under `createdBy`.
+    board.memberAccess = (board.memberAccess || []).filter(
+      (e) =>
+        String(e.user) !== String(targetUserId) &&
+        String(e.user) !== previousOwnerId
+    );
+    if (previousOwnerStillHere) {
+      board.memberAccess.push({
+        user: previousOwnerId,
+        level: 'edit',
+        canManage: true,
+      });
+    }
+
+    await board.save();
+
+    const actor = await User.findById(userId).select('name email').lean();
+    const actorName = actor?.name || actor?.email || 'Someone';
+
+    await createNotification({
+      userId: targetUserId,
+      type: 'ownershipTransferred',
+      message: `${actorName} made you the owner of the board "${board.name}"`,
+      orgId: board.organisation,
+      boardId: board._id,
+      actorId: userId,
+    });
+
+    // The outgoing owner only needs telling when somebody else did this to them
+    // — i.e. the workspace-owner break-glass path.
+    if (previousOwnerStillHere && previousOwnerId !== String(userId)) {
+      const target = await User.findById(targetUserId).select('name email').lean();
+      const targetName = target?.name || target?.email || 'another member';
+      await createNotification({
+        userId: previousOwnerId,
+        type: 'ownershipTransferred',
+        message: `${actorName} transferred ownership of the board "${board.name}" to ${targetName}. You still have full access.`,
+        orgId: board.organisation,
+        boardId: board._id,
+        actorId: userId,
+      });
+    }
+
+    const populated = await Board.findById(board._id).populate(
+      'memberAccess.user',
+      'name email profilePic'
+    );
+
+    return res.json({
+      board: withPermissions(board, org, userId),
+      access: populated.memberAccess,
+    });
+  } catch (err) {
+    console.error('transferBoardOwnership error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   getBoards,
   getDashboardStats,
@@ -1440,6 +1578,7 @@ module.exports = {
   getBoardMembers,
   getBoardAccess,
   setBoardAccess,
+  transferBoardOwnership,
   // labels
   listLabels,
   addLabel,

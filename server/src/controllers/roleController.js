@@ -322,9 +322,10 @@ const assignRole = async (req, res) => {
         .json({ error: 'User is not a member of this organisation' });
     }
 
-    // The owner's role is nobody's to change — not even their own. There is no
-    // ownership transfer endpoint, so demoting the owner would orphan the
-    // workspace's root of trust.
+    // The owner's role is nobody's to change — not even their own. Demoting the
+    // owner here would orphan the workspace's root of trust. Ownership moves
+    // through POST /api/orgs/:id/transfer-ownership instead, which is one atomic
+    // write that can never leave the org with zero owners or two.
     if (org.admin && org.admin.toString() === targetUserId) {
       return res
         .status(400)
@@ -340,9 +341,10 @@ const assignRole = async (req, res) => {
     }
     if (!role) return res.status(400).json({ error: 'Unknown role' });
     if (role.key === OWNER_ROLE_KEY) {
-      return res
-        .status(400)
-        .json({ error: 'There can only be one owner, and ownership cannot be assigned' });
+      return res.status(400).json({
+        error:
+          'There can only be one owner — use Transfer ownership rather than assigning the role',
+      });
     }
 
     // You cannot hand out a role more powerful than your own. Without this an

@@ -10,6 +10,7 @@ const {
   removeMember,
   regenerateInvite,
   sendInvite,
+  transferOrgOwnership,
   deleteOrg,
 } = require('../controllers/orgController');
 const {
@@ -82,6 +83,12 @@ router.post(
   requireCapability('org.invite_members'),
   sendInvite
 );
+
+// Transfer ownership of the workspace to another member. Owner-only, and — like
+// deleting the org — deliberately NOT a capability: a delegate who can appoint an
+// owner can appoint themselves. The outgoing owner is left holding the `admin`
+// role rather than being demoted to Member.
+router.post('/:id/transfer-ownership', requireOrgOwner, transferOrgOwnership);
 
 // Delete the organisation. Owner-only, and deliberately NOT a capability: this
 // is the one action no role may ever be granted.

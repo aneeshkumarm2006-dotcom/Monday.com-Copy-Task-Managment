@@ -75,6 +75,21 @@ export const sendInvite = async (orgId, email) => {
   return data;
 };
 
+/**
+ * POST /api/orgs/:id/transfer-ownership — make another member the workspace owner.
+ *
+ * Owner-only, and not a capability anyone can be granted. The outgoing owner is
+ * left holding the `admin` role rather than demoted to Member. Returns
+ * `{ message, org, permissions }`, where `permissions` is the CALLER's freshly
+ * resolved set — after a transfer they are no longer the owner.
+ */
+export const transferOrgOwnership = async (orgId, userId) => {
+  const { data } = await api.post(`/api/orgs/${orgId}/transfer-ownership`, {
+    userId,
+  });
+  return data;
+};
+
 export const deleteOrg = async (orgId) => {
   const { data } = await api.delete(`/api/orgs/${orgId}`);
   return data;

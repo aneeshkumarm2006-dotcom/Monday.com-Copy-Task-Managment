@@ -122,6 +122,30 @@ const useOrgStore = create((set, get) => ({
     }
   },
 
+  /**
+   * Hand the workspace to another member. Owner-only on the server.
+   *
+   * Two things have to be refreshed afterwards, not one: the members table (whose
+   * Owner chip and role chips both moved) and the CALLER's own capabilities — the
+   * outgoing owner just stopped being the owner, and every owner-only affordance
+   * in the app is rendered from `permissionStore`. `fetchMembers` does both,
+   * because listMembers ships the caller's resolved permissions alongside.
+   *
+   * `currentOrg.admin` is patched locally too. It is only a fallback for
+   * `adminId` in the members table, but a fallback that disagrees with the server
+   * is worse than no fallback at all.
+   */
+  transferOwnership: async (orgId, userId) => {
+    const data = await orgService.transferOrgOwnership(orgId, userId);
+    const patch = (o) => (o && o._id === orgId ? { ...o, admin: userId } : o);
+    set((s) => ({
+      orgs: s.orgs.map(patch),
+      currentOrg: patch(s.currentOrg),
+    }));
+    await get().fetchMembers(orgId);
+    return data;
+  },
+
   clearOrgs: () => {
     localStorage.removeItem(CURRENT_ORG_KEY);
     usePermissionStore.getState().clear();

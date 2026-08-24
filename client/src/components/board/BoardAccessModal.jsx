@@ -5,6 +5,7 @@ import Switch from '../ui/Switch';
 import useOrgStore from '../../store/orgStore';
 import useBoardStore from '../../store/boardStore';
 import useAuthStore from '../../store/authStore';
+import usePermissions from '../../hooks/usePermissions';
 import useToastStore from '../../store/toastStore';
 
 /**
@@ -38,6 +39,17 @@ import useToastStore from '../../store/toastStore';
  * A member's ORG ROLE still caps everything here — a Viewer handed 'Can edit'
  * still cannot write, because permission is the AND of the two layers. The rung
  * is a ceiling, not a grant.
+ *
+ * And at the bottom: TRANSFER OWNERSHIP. It lives here rather than in the board's
+ * edit form because ownership is the top of this same ladder — the rung that
+ * carries the board's lifecycle (delete it, flip its visibility, decide who else
+ * gets full access) and that no grant can confer. Handing it over does not evict
+ * the outgoing owner: the server leaves them 'Can edit' with full access, so the
+ * only thing they lose is the lifecycle.
+ *
+ * The board owner sees it, and so does the WORKSPACE owner — the server's
+ * break-glass for a board whose owner has left, without which such a board can
+ * never be deleted or re-shared by anyone, ever.
  */
 
 const LEVELS = [
@@ -146,11 +158,23 @@ const BoardAccessModal = ({
   const members = useOrgStore((s) => s.members);
   const fetchMembers = useOrgStore((s) => s.fetchMembers);
   const setBoardAccess = useBoardStore((s) => s.setBoardAccess);
+  const transferOwnership = useBoardStore((s) => s.transferBoardOwnership);
   const currentUser = useAuthStore((s) => s.user);
+  // The WORKSPACE owner, not this board's. They are the server's break-glass for
+  // a board whose owner has left, so they get the transfer control too — and
+  // nothing else on this modal that they would not otherwise have.
+  const { isOwner: isOrgOwner } = usePermissions();
   const toastError = useToastStore((s) => s.error);
+  const toastSuccess = useToastStore((s) => s.success);
 
   const [savingId, setSavingId] = useState(null);
   const [query, setQuery] = useState('');
+  // Transfer ownership is a two-step control rather than a second modal: pick a
+  // member, then confirm in place. Nesting a modal inside this one to ask "are
+  // you sure" is more machinery than the question deserves.
+  const [transferTo, setTransferTo] = useState('');
+  const [confirmingTransfer, setConfirmingTransfer] = useState(false);
+  const [transferring, setTransferring] = useState(false);
 
   const orgId = board ? idOf(board.organisation) : null;
 
@@ -161,9 +185,15 @@ const BoardAccessModal = ({
     }
   }, [isOpen, orgId, fetchMembers]);
 
-  // Clear the search box each time the modal opens.
+  // Clear the search box — and any half-finished transfer — each time the modal
+  // opens. A confirm state left armed from last time is a click away from giving
+  // the board to whoever happened to be selected.
   useEffect(() => {
-    if (isOpen) setQuery('');
+    if (isOpen) {
+      setQuery('');
+      setTransferTo('');
+      setConfirmingTransfer(false);
+    }
   }, [isOpen]);
 
   // user id -> grant, derived from the live board record.
@@ -242,11 +272,53 @@ const BoardAccessModal = ({
   const handleFullAccessChange = (row, next) =>
     save(row.id, next ? 'edit' : row.level, next);
 
-  const intro = isOwner
-    ? 'This board is private. Choose which workspace members can view or edit it. Give someone full access and they can manage sharing too.'
-    : canManage
-      ? 'This board is private. You have full access, so you can manage who can view or edit it.'
-      : 'This board is private. Only the board owner, and members with full access, can change who has access.';
+  // Who may hand this board over: its owner, and the workspace owner.
+  const canTransfer = isOwner || isOrgOwner;
+  // Who it could be handed to: anyone except whoever owns it now. The viewer is
+  // NOT excluded — a workspace owner re-homing a departed colleague's board is
+  // usually taking it themselves. (When the viewer IS the owner, their row is the
+  // owner row, so this filters them out anyway.)
+  const transferCandidates = useMemo(
+    () => rows.filter((r) => !r.isOwnerRow),
+    [rows]
+  );
+  const transferTarget = transferCandidates.find((r) => r.id === transferTo);
+  const transferName =
+    transferTarget?.member.name || transferTarget?.member.email || '';
+
+  const handleTransfer = async () => {
+    if (!board || !transferTarget) return;
+    setTransferring(true);
+    try {
+      await transferOwnership(board._id, transferTarget.id);
+      toastSuccess(`${transferName} is now the owner of this board.`);
+      setConfirmingTransfer(false);
+      setTransferTo('');
+      // Close, deliberately. The viewer is no longer the owner, so half the
+      // controls behind this modal have just changed meaning — reopening it
+      // shows the truth rather than leaving a stale owner's view on screen.
+      onClose();
+    } catch (err) {
+      toastError(
+        err?.response?.data?.error ||
+          'Failed to transfer ownership. Please try again.'
+      );
+    } finally {
+      setTransferring(false);
+    }
+  };
+
+  // The board's visibility changes what the list MEANS: on a private board a
+  // grant is the only way in, on a public one it is an override of the default
+  // everyone already has.
+  const isPublic = board?.visibility === 'public';
+  const intro = isPublic
+    ? 'This board is public — every workspace member can already reach it. A grant here overrides that default for one person.'
+    : isOwner
+      ? 'This board is private. Choose which workspace members can view or edit it. Give someone full access and they can manage sharing too.'
+      : canManage
+        ? 'This board is private. You have full access, so you can manage who can view or edit it.'
+        : 'This board is private. Only the board owner, and members with full access, can change who has access.';
 
   return (
     <Modal
@@ -433,6 +505,115 @@ const BoardAccessModal = ({
             </>
           )}
         </>
+      )}
+
+      {canTransfer && transferCandidates.length > 0 && (
+        <div
+          style={{
+            marginTop: 24,
+            paddingTop: 16,
+            borderTop: '1px solid var(--color-border)',
+          }}
+        >
+          <p
+            className="font-body"
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: 'var(--color-text-primary)',
+              marginBottom: 4,
+            }}
+          >
+            Transfer ownership
+          </p>
+          <p
+            className="font-body"
+            style={{
+              fontSize: 12,
+              color: 'var(--color-text-muted)',
+              marginBottom: 10,
+            }}
+          >
+            {isOwner
+              ? "You own this board. The new owner can delete it, change its visibility, and decide who has full access. You'll keep edit access and can still manage sharing."
+              : "You own this workspace, so you can re-home this board — for when its owner has left. The current owner keeps edit access and can still manage sharing."}
+          </p>
+
+          {confirmingTransfer && transferTarget ? (
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--color-bg-subtle)',
+              }}
+            >
+              <p
+                className="font-body"
+                style={{
+                  fontSize: 13,
+                  color: 'var(--color-text-primary)',
+                  marginBottom: 10,
+                }}
+              >
+                Make <strong>{transferName}</strong> the owner of “
+                {board?.name}”?{' '}
+                {isOwner
+                  ? 'You will no longer be able to delete this board or change its visibility.'
+                  : 'Only they, or you as the workspace owner, will be able to move it again.'}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setConfirmingTransfer(false)}
+                  disabled={transferring}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="danger"
+                  onClick={handleTransfer}
+                  disabled={transferring}
+                >
+                  {transferring ? 'Transferring…' : 'Yes, transfer'}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <select
+                value={transferTo}
+                onChange={(e) => setTransferTo(e.target.value)}
+                aria-label="New board owner"
+                className="font-body"
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: 13,
+                  padding: '8px 10px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1.5px solid var(--color-border-strong)',
+                  background: 'var(--color-bg-surface)',
+                  color: 'var(--color-text-primary)',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="">Choose a new owner…</option>
+                {transferCandidates.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.member.name || r.member.email}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="secondary"
+                onClick={() => setConfirmingTransfer(true)}
+                disabled={!transferTarget}
+              >
+                Transfer
+              </Button>
+            </div>
+          )}
+        </div>
       )}
     </Modal>
   );

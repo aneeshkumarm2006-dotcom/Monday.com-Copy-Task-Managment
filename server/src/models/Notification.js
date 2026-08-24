@@ -44,6 +44,10 @@ const notificationSchema = new mongoose.Schema(
         // Tracker boards — the month is ending (or has ended) and its goals
         // still need their final numbers.
         'goalsDue',
+        // A board or the workspace itself changed hands. Deliberately NOT
+        // mapped to a preference category in notificationService, so it is
+        // always delivered: who owns your workspace is not a subscription.
+        'ownershipTransferred',
       ],
     },
     message: {

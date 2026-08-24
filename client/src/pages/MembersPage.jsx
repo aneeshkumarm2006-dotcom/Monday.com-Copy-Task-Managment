@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Trash2, ChevronDown, Copy, Check, Mail, Send, Link, Hash } from 'lucide-react';
+import { Trash2, ChevronDown, Copy, Check, Mail, Send, Link, Hash, Crown } from 'lucide-react';
 import PageWrapper from '../components/layout/PageWrapper';
 import Button from '../components/ui/Button';
 import Modal from '../components/ui/Modal';
@@ -90,8 +90,9 @@ const RoleDropdown = ({ roles, currentRoleId, onChange, disabled }) => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // The owner role is not assignable — there is exactly one owner and ownership
-  // is not transferable, so offering it would be a dead end.
+  // The owner role is not assignable HERE. There is exactly one owner, and moving
+  // it is not a role change — it is moving the identity the role system refuses to
+  // constrain, which is what "Make owner" below does in one atomic write.
   const options = (roles || []).filter((r) => r.key !== 'owner');
   const current = options.find((r) => String(r.id) === String(currentRoleId));
 
@@ -393,14 +394,20 @@ const MembersPage = () => {
   const memberRoles = useOrgStore((s) => s.memberRoles);
   const roles = useOrgStore((s) => s.roles);
   const fetchMembers = useOrgStore((s) => s.fetchMembers);
+  const transferOwnership = useOrgStore((s) => s.transferOwnership);
 
   // What the SERVER says this user may do — not a local re-derivation of it.
-  const { can } = usePermissions();
+  // `isOwner` is identity, not a capability: transferring the workspace is the
+  // one action no role may ever be granted, so it cannot be spelled `can(...)`.
+  const { can, isOwner } = usePermissions();
 
   const [confirmMember, setConfirmMember] = useState(null);
   const [removing, setRemoving] = useState(false);
   const [changingRole, setChangingRole] = useState(null);
   const [roleError, setRoleError] = useState('');
+  // Ownership transfer: the member being handed the workspace, pending confirm.
+  const [confirmOwner, setConfirmOwner] = useState(null);
+  const [transferring, setTransferring] = useState(false);
 
   const orgAdminId =
     typeof currentOrg?.admin === 'object' && currentOrg?.admin !== null
@@ -438,6 +445,22 @@ const MembersPage = () => {
       setRoleError(err?.response?.data?.error || 'Could not change that role');
     } finally {
       setChangingRole(null);
+    }
+  };
+
+  const handleTransferOwnership = async () => {
+    if (!confirmOwner || !currentOrg?._id) return;
+    setTransferring(true);
+    setRoleError('');
+    try {
+      await transferOwnership(currentOrg._id, confirmOwner._id);
+      setConfirmOwner(null);
+    } catch (err) {
+      setRoleError(
+        err?.response?.data?.error || 'Could not transfer ownership'
+      );
+    } finally {
+      setTransferring(false);
     }
   };
 
@@ -490,7 +513,7 @@ const MembersPage = () => {
           >
             {/* Table header */}
             <div
-              className="hidden md:grid grid-cols-[1fr_1fr_110px_110px_110px] items-center px-4"
+              className="hidden md:grid grid-cols-[1fr_1fr_110px_110px_180px] items-center px-4"
               style={{
                 height: 40,
                 background: 'var(--color-bg-subtle)',
@@ -524,11 +547,15 @@ const MembersPage = () => {
                 can('org.assign_roles') && !isTheOwner && !isSelf;
               const canRemove =
                 can('org.remove_members') && !isTheOwner && !isSelf;
+              // Only the current owner can hand the workspace over, and only to
+              // somebody who is not already it. Identity, never a capability — a
+              // delegate who can appoint an owner can appoint themselves.
+              const canMakeOwner = isOwner && !isTheOwner && !isSelf;
 
               return (
                 <div
                   key={m._id}
-                  className="grid grid-cols-[1fr_110px] md:grid-cols-[1fr_1fr_110px_110px_110px] items-center gap-2 px-4 py-3"
+                  className="grid grid-cols-[1fr_110px] md:grid-cols-[1fr_1fr_110px_110px_180px] items-center gap-2 px-4 py-3"
                   style={{ borderBottom: '1px solid var(--color-border)' }}
                 >
                   {/* Avatar + name */}
@@ -582,7 +609,18 @@ const MembersPage = () => {
                   </div>
 
                   {/* Actions */}
-                  <div className="flex justify-end md:justify-start">
+                  <div className="flex justify-end md:justify-start items-center gap-3 flex-wrap">
+                    {canMakeOwner && (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmOwner(m)}
+                        className="inline-flex items-center gap-1 font-body font-semibold text-[12px] text-[color:var(--color-accent)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
+                        aria-label={`Make ${m.name || m.email} the workspace owner`}
+                      >
+                        <Crown size={14} aria-hidden="true" />
+                        Make owner
+                      </button>
+                    )}
                     {canRemove ? (
                       <button
                         type="button"
@@ -634,6 +672,57 @@ const MembersPage = () => {
             <VaultEscrowSection orgId={currentOrg._id} />
           </div>
         )}
+
+        {/* Confirm ownership transfer.
+            Spelled out rather than summarised, because this is the one action in
+            the workspace that cannot be undone by the person taking it: the
+            moment it lands, the caller is no longer the owner and cannot transfer
+            it back. */}
+        <Modal
+          isOpen={!!confirmOwner}
+          onClose={() => (transferring ? null : setConfirmOwner(null))}
+          title="Transfer ownership"
+          footer={
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => setConfirmOwner(null)}
+                disabled={transferring}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleTransferOwnership}
+                disabled={transferring}
+              >
+                {transferring ? 'Transferring…' : 'Transfer ownership'}
+              </Button>
+            </>
+          }
+        >
+          <p className="font-body text-[14px] text-[color:var(--color-text-primary)]">
+            Make <strong>{confirmOwner?.name || confirmOwner?.email}</strong> the
+            owner of <strong>{currentOrg?.name}</strong>?
+          </p>
+          <ul
+            className="font-body text-[13px] mt-3 space-y-1.5 list-disc pl-5"
+            style={{ color: 'var(--color-text-secondary)' }}
+          >
+            <li>
+              They gain every permission unconditionally, including deleting the
+              workspace.
+            </li>
+            <li>
+              You become an <strong>Admin</strong> — you keep whatever that role
+              grants in this workspace, but you lose the owner's unconditional
+              access and can no longer delete the workspace.
+            </li>
+            <li>
+              Only the new owner can transfer ownership back to you.
+            </li>
+          </ul>
+        </Modal>
 
         {/* Confirm remove modal */}
         <Modal
