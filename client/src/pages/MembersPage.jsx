@@ -405,8 +405,13 @@ const MembersPage = () => {
   const [removing, setRemoving] = useState(false);
   const [changingRole, setChangingRole] = useState(null);
   const [roleError, setRoleError] = useState('');
-  // Ownership transfer: the member being handed the workspace, pending confirm.
-  const [confirmOwner, setConfirmOwner] = useState(null);
+  // Ownership transfer. One entry point — the owner's own row — rather than a
+  // "Make owner" button beside every member: this is the rarest and least
+  // reversible action on the page, and thirteen copies of it sitting one click
+  // away from Remove is an invitation to a mis-click.
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferTo, setTransferTo] = useState(null);
+  const [transferQuery, setTransferQuery] = useState('');
   const [transferring, setTransferring] = useState(false);
 
   const orgAdminId =
@@ -448,23 +453,43 @@ const MembersPage = () => {
     }
   };
 
+  const openTransfer = () => {
+    setTransferTo(null);
+    setTransferQuery('');
+    setTransferOpen(true);
+  };
+
   const handleTransferOwnership = async () => {
-    if (!confirmOwner || !currentOrg?._id) return;
+    if (!transferTo || !currentOrg?._id) return;
     setTransferring(true);
     setRoleError('');
     try {
-      await transferOwnership(currentOrg._id, confirmOwner._id);
-      setConfirmOwner(null);
+      await transferOwnership(currentOrg._id, transferTo._id);
+      setTransferOpen(false);
+      setTransferTo(null);
     } catch (err) {
       setRoleError(
         err?.response?.data?.error || 'Could not transfer ownership'
       );
+      setTransferOpen(false);
     } finally {
       setTransferring(false);
     }
   };
 
   const resolvedAdminId = adminId || orgAdminId;
+
+  // Everyone the workspace could be handed to: every member except its current
+  // owner, who is the person opening this modal.
+  const transferCandidates = members.filter(
+    (m) => String(m._id) !== String(resolvedAdminId)
+  );
+  const transferNeedle = transferQuery.trim().toLowerCase();
+  const filteredTransferCandidates = transferNeedle
+    ? transferCandidates.filter((m) =>
+        `${m.name || ''} ${m.email || ''}`.toLowerCase().includes(transferNeedle)
+      )
+    : transferCandidates;
 
   return (
     <PageWrapper>
@@ -513,7 +538,7 @@ const MembersPage = () => {
           >
             {/* Table header */}
             <div
-              className="hidden md:grid grid-cols-[1fr_1fr_110px_110px_180px] items-center px-4"
+              className="hidden md:grid grid-cols-[1fr_1fr_110px_110px_170px] items-center px-4"
               style={{
                 height: 40,
                 background: 'var(--color-bg-subtle)',
@@ -547,15 +572,16 @@ const MembersPage = () => {
                 can('org.assign_roles') && !isTheOwner && !isSelf;
               const canRemove =
                 can('org.remove_members') && !isTheOwner && !isSelf;
-              // Only the current owner can hand the workspace over, and only to
-              // somebody who is not already it. Identity, never a capability — a
-              // delegate who can appoint an owner can appoint themselves.
-              const canMakeOwner = isOwner && !isTheOwner && !isSelf;
+              // The transfer control lives on the OWNER'S OWN ROW, and only when
+              // the viewer is that owner. Identity, never a capability — a
+              // delegate who can appoint an owner can appoint themselves. Who it
+              // goes to is chosen inside the modal.
+              const canTransfer = isOwner && isTheOwner && isSelf;
 
               return (
                 <div
                   key={m._id}
-                  className="grid grid-cols-[1fr_110px] md:grid-cols-[1fr_1fr_110px_110px_180px] items-center gap-2 px-4 py-3"
+                  className="grid grid-cols-[1fr_110px] md:grid-cols-[1fr_1fr_110px_110px_170px] items-center gap-2 px-4 py-3"
                   style={{ borderBottom: '1px solid var(--color-border)' }}
                 >
                   {/* Avatar + name */}
@@ -610,18 +636,16 @@ const MembersPage = () => {
 
                   {/* Actions */}
                   <div className="flex justify-end md:justify-start items-center gap-3 flex-wrap">
-                    {canMakeOwner && (
+                    {canTransfer ? (
                       <button
                         type="button"
-                        onClick={() => setConfirmOwner(m)}
+                        onClick={openTransfer}
                         className="inline-flex items-center gap-1 font-body font-semibold text-[12px] text-[color:var(--color-accent)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
-                        aria-label={`Make ${m.name || m.email} the workspace owner`}
                       >
                         <Crown size={14} aria-hidden="true" />
-                        Make owner
+                        Transfer ownership
                       </button>
-                    )}
-                    {canRemove ? (
+                    ) : canRemove ? (
                       <button
                         type="button"
                         onClick={() => setConfirmMember(m)}
@@ -632,6 +656,9 @@ const MembersPage = () => {
                         Remove
                       </button>
                     ) : (
+                      // The owner row seen by anyone who is NOT the owner. The
+                      // Role column already says "Owner"; this keeps the column
+                      // from collapsing to nothing on their line.
                       <span className="md:block hidden">
                         {isTheOwner ? <Chip variant="blue">Owner</Chip> : null}
                       </span>
@@ -673,20 +700,21 @@ const MembersPage = () => {
           </div>
         )}
 
-        {/* Confirm ownership transfer.
-            Spelled out rather than summarised, because this is the one action in
-            the workspace that cannot be undone by the person taking it: the
-            moment it lands, the caller is no longer the owner and cannot transfer
-            it back. */}
+        {/* Transfer ownership — pick the new owner, then confirm.
+            The consequences sit under the list rather than behind a second
+            confirm step: they are the same three facts whoever is chosen, and
+            they need to be on screen at the moment the button is clicked, not
+            one dialog earlier. */}
         <Modal
-          isOpen={!!confirmOwner}
-          onClose={() => (transferring ? null : setConfirmOwner(null))}
+          isOpen={transferOpen}
+          onClose={() => (transferring ? null : setTransferOpen(false))}
           title="Transfer ownership"
+          maxWidth={560}
           footer={
             <>
               <Button
                 variant="secondary"
-                onClick={() => setConfirmOwner(null)}
+                onClick={() => setTransferOpen(false)}
                 disabled={transferring}
               >
                 Cancel
@@ -694,34 +722,141 @@ const MembersPage = () => {
               <Button
                 variant="danger"
                 onClick={handleTransferOwnership}
-                disabled={transferring}
+                disabled={!transferTo || transferring}
               >
-                {transferring ? 'Transferring…' : 'Transfer ownership'}
+                {transferring
+                  ? 'Transferring…'
+                  : transferTo
+                    ? `Make ${transferTo.name || transferTo.email} the owner`
+                    : 'Transfer ownership'}
               </Button>
             </>
           }
         >
-          <p className="font-body text-[14px] text-[color:var(--color-text-primary)]">
-            Make <strong>{confirmOwner?.name || confirmOwner?.email}</strong> the
-            owner of <strong>{currentOrg?.name}</strong>?
-          </p>
-          <ul
-            className="font-body text-[13px] mt-3 space-y-1.5 list-disc pl-5"
-            style={{ color: 'var(--color-text-secondary)' }}
+          <p
+            className="font-body text-[13px]"
+            style={{ color: 'var(--color-text-muted)', marginBottom: 12 }}
           >
-            <li>
-              They gain every permission unconditionally, including deleting the
-              workspace.
-            </li>
-            <li>
-              You become an <strong>Admin</strong> — you keep whatever that role
-              grants in this workspace, but you lose the owner's unconditional
-              access and can no longer delete the workspace.
-            </li>
-            <li>
-              Only the new owner can transfer ownership back to you.
-            </li>
-          </ul>
+            Choose who should own <strong>{currentOrg?.name}</strong>. There is
+            only ever one owner, so this hands yours over.
+          </p>
+
+          {transferCandidates.length === 0 ? (
+            <p
+              className="font-body text-[13px]"
+              style={{ color: 'var(--color-text-muted)' }}
+            >
+              There is nobody else in this workspace to transfer ownership to.
+            </p>
+          ) : (
+            <>
+              {transferCandidates.length > 6 && (
+                <input
+                  type="text"
+                  value={transferQuery}
+                  onChange={(e) => setTransferQuery(e.target.value)}
+                  placeholder="Search members by name or email…"
+                  className="font-body"
+                  style={{
+                    width: '100%',
+                    fontSize: 13,
+                    padding: '8px 12px',
+                    marginBottom: 8,
+                    borderRadius: 'var(--radius-md)',
+                    border: '1.5px solid var(--color-border-strong)',
+                    background: 'var(--color-bg-surface)',
+                    color: 'var(--color-text-primary)',
+                  }}
+                />
+              )}
+
+              <div
+                role="radiogroup"
+                aria-label="New workspace owner"
+                className="flex flex-col"
+                style={{
+                  maxHeight: 260,
+                  overflowY: 'auto',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 'var(--radius-md)',
+                }}
+              >
+                {filteredTransferCandidates.length === 0 ? (
+                  <p
+                    className="font-body text-[13px]"
+                    style={{ color: 'var(--color-text-muted)', padding: 12 }}
+                  >
+                    No members match “{transferQuery.trim()}”.
+                  </p>
+                ) : (
+                  filteredTransferCandidates.map((m, i) => {
+                    const selected = transferTo?._id === m._id;
+                    const role = memberRoles?.[String(m._id)] || null;
+                    // The container already draws a bottom edge; a border on the
+                    // last row doubles it into a 2px line.
+                    const isLast = i === filteredTransferCandidates.length - 1;
+                    return (
+                      <button
+                        key={m._id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => setTransferTo(m)}
+                        disabled={transferring}
+                        className="flex items-center gap-3 text-left w-full"
+                        style={{
+                          padding: '10px 12px',
+                          borderBottom: isLast
+                            ? 'none'
+                            : '1px solid var(--color-border)',
+                          background: selected
+                            ? 'var(--color-accent-light)'
+                            : 'transparent',
+                          cursor: transferring ? 'wait' : 'pointer',
+                        }}
+                      >
+                        <Avatar user={m} size={32} />
+                        <div className="min-w-0 flex-1">
+                          <p className="font-body font-semibold text-[13px] text-[color:var(--color-text-primary)] truncate">
+                            {m.name || 'Unnamed'}
+                          </p>
+                          <p className="font-body text-[12px] text-[color:var(--color-text-muted)] truncate">
+                            {m.email}
+                          </p>
+                        </div>
+                        <Chip variant={role?.key === 'admin' ? 'blue' : 'grey'}>
+                          {role?.name || 'Member'}
+                        </Chip>
+                        {selected && (
+                          <Check
+                            size={16}
+                            aria-hidden="true"
+                            style={{ color: 'var(--color-accent)' }}
+                          />
+                        )}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              <ul
+                className="font-body text-[13px] mt-4 space-y-1.5 list-disc pl-5"
+                style={{ color: 'var(--color-text-secondary)' }}
+              >
+                <li>
+                  They gain every permission unconditionally, including deleting
+                  the workspace.
+                </li>
+                <li>
+                  You become an <strong>Admin</strong> — you keep whatever that
+                  role grants in this workspace, but you lose the owner's
+                  unconditional access and can no longer delete the workspace.
+                </li>
+                <li>Only the new owner can transfer ownership back to you.</li>
+              </ul>
+            </>
+          )}
         </Modal>
 
         {/* Confirm remove modal */}
