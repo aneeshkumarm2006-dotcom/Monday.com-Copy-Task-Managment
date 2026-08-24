@@ -163,7 +163,7 @@ const BoardDetailPage = () => {
   const navigate = useNavigate();
   // Org-wide capabilities. Board-scoped ones come off `board.permissions` below —
   // they are two different questions, and conflating them was the old model's bug.
-  const { can: canOrg, isOwner: isOrgOwner } = usePermissions();
+  const { can: canOrg } = usePermissions();
   const currentUser = useAuthStore((s) => s.user);
 
   const currentOrg = useOrgStore((s) => s.currentOrg);
@@ -1983,11 +1983,10 @@ const BoardDetailPage = () => {
           || canConvertToTracker) && (
           <div className="flex items-center gap-2 flex-wrap justify-end">
             {/* A public board needs no sharing — everyone is already in it — so
-                the button stays hidden there for everyone EXCEPT the two people
-                who reach Transfer ownership through this modal: the board's owner
-                and the workspace owner. Without it a public board could never be
-                handed over at all. */}
-            {canViewAccess && (!isPublic || isBoardCreator || isOrgOwner) && (
+                the button stays hidden there for everyone EXCEPT its owner, who
+                reaches Transfer ownership through this modal and would otherwise
+                have no way to hand a public board over at all. */}
+            {canViewAccess && (!isPublic || isBoardCreator) && (
               <Button
                 variant="secondary"
                 icon={UserPlus}

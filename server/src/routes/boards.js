@@ -120,10 +120,10 @@ router.put('/:id/access',             setBoardAccess);
 
 // --- Ownership transfer ----------------------------------------------------
 // Move `createdBy` — the only thing that confers board lifecycle — to another
-// member. The board owner may always do it; the WORKSPACE owner may too, as the
-// break-glass for a board whose owner has left. The outgoing owner is left with
-// an edit + full-access grant so handing the board over never locks them out of
-// it. All enforced in the controller.
+// member. The board's OWNER and nobody else: anyone else who could do this could
+// take the board rather than be given it. The outgoing owner is left with an
+// edit + full-access grant so handing the board over never locks them out of it.
+// All enforced in the controller.
 router.post('/:id/transfer-ownership', transferBoardOwnership);
 
 // --- Activity export -------------------------------------------------------

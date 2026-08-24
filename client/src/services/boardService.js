@@ -101,12 +101,12 @@ export const setBoardAccess = async (boardId, userId, level, canManage) => {
 
 /**
  * POST /api/boards/:id/transfer-ownership — make another member the board owner.
+ * Board-owner only.
  *
  * The outgoing owner keeps an edit + full-access grant, so this hands over the
  * board's LIFECYCLE (delete, visibility, full access) without taking anyone's
  * working access away. Returns { board, access } — `board.permissions` is the
- * CALLER's, re-resolved, which after a transfer usually says they are no longer
- * the owner.
+ * CALLER's, re-resolved, so it now says they are no longer the owner.
  */
 export const transferBoardOwnership = async (boardId, userId) => {
   const { data } = await api.post(

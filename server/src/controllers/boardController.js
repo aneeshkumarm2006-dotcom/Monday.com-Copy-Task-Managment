@@ -56,11 +56,11 @@ const loadOrgForMember = async (orgId, userId) => {
  * these routes rely on to answer 400 rather than letting Mongoose's cast blow up
  * into a 500. Every permission decision lives in the context it returns.
  */
-const loadBoard = async (boardId, userId, opts) => {
+const loadBoard = async (boardId, userId) => {
   if (!boardId || !mongoose.Types.ObjectId.isValid(boardId)) {
     return { status: 400, error: 'Invalid board id' };
   }
-  return loadBoardContext(boardId, userId, opts);
+  return loadBoardContext(boardId, userId);
 };
 
 /**
@@ -1440,13 +1440,12 @@ const setBoardAccess = async (req, res) => {
  * role confers on a private board. So moving that one field is the whole
  * operation; everything else here exists to stop the move from stranding people.
  *
- * WHO MAY CALL IT:
- *   - the board owner, always
- *   - the WORKSPACE owner, as a break-glass. Without it, a board whose owner
- *     has left the org is permanently unownable: nobody can delete it, flip its
- *     visibility, or hand out full access on it, ever. That path deliberately
- *     loads the board with `requireRead: false`, because the whole point is to
- *     re-home a private board the workspace owner cannot open.
+ * WHO MAY CALL IT: the board's owner, and nobody else. Not the workspace owner,
+ * not a full-access member, not an org admin. There is exactly one owner and the
+ * right to hand the board on is theirs alone — anyone else who could do it could
+ * take the board from them, which is not a transfer, it is a seizure. (The cost
+ * is that a board whose owner leaves the workspace stays theirs; the answer to
+ * that is to transfer it before they go, or to delete the board.)
  *
  * TWO SIDE EFFECTS, both about not stranding anyone:
  *
@@ -1472,19 +1471,15 @@ const transferBoardOwnership = async (req, res) => {
       return res.status(400).json({ error: 'Valid userId required' });
     }
 
-    // `requireRead: false` — see the break-glass note above. Read access is not
-    // the gate here; ownership is, and it is checked immediately below.
-    const ctx = await loadBoard(req.params.id, userId, { requireRead: false });
+    const ctx = await loadBoard(req.params.id, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
     const { board, org, access } = ctx;
-    const isBoardOwner = access.board.creator;
 
-    if (!isBoardOwner && !access.isOwner) {
-      return res.status(403).json({
-        error:
-          'Only the board owner, or the workspace owner, can transfer this board',
-      });
+    if (!access.board.creator) {
+      return res
+        .status(403)
+        .json({ error: 'Only the board owner can transfer this board' });
     }
 
     if (isBoardCreator(board, targetUserId)) {
@@ -1500,10 +1495,10 @@ const transferBoardOwnership = async (req, res) => {
         .json({ error: 'User is not a member of this organisation' });
     }
 
-    const previousOwnerId = board.createdBy ? String(board.createdBy) : null;
-    const previousOwnerStillHere =
-      !!previousOwnerId &&
-      org.members.some((m) => String(m?._id || m) === previousOwnerId);
+    // The outgoing owner is the caller — `access.board.creator` above is exactly
+    // that check — so no membership test is needed here: loadBoardContext already
+    // refused anyone outside the org.
+    const previousOwnerId = String(board.createdBy);
 
     board.createdBy = targetUserId;
 
@@ -1515,19 +1510,19 @@ const transferBoardOwnership = async (req, res) => {
         String(e.user) !== String(targetUserId) &&
         String(e.user) !== previousOwnerId
     );
-    if (previousOwnerStillHere) {
-      board.memberAccess.push({
-        user: previousOwnerId,
-        level: 'edit',
-        canManage: true,
-      });
-    }
+    board.memberAccess.push({
+      user: previousOwnerId,
+      level: 'edit',
+      canManage: true,
+    });
 
     await board.save();
 
     const actor = await User.findById(userId).select('name email').lean();
     const actorName = actor?.name || actor?.email || 'Someone';
 
+    // Only the new owner is told. The old one is the caller — narrating what
+    // somebody just did back to them is noise.
     await createNotification({
       userId: targetUserId,
       type: 'ownershipTransferred',
@@ -1536,21 +1531,6 @@ const transferBoardOwnership = async (req, res) => {
       boardId: board._id,
       actorId: userId,
     });
-
-    // The outgoing owner only needs telling when somebody else did this to them
-    // — i.e. the workspace-owner break-glass path.
-    if (previousOwnerStillHere && previousOwnerId !== String(userId)) {
-      const target = await User.findById(targetUserId).select('name email').lean();
-      const targetName = target?.name || target?.email || 'another member';
-      await createNotification({
-        userId: previousOwnerId,
-        type: 'ownershipTransferred',
-        message: `${actorName} transferred ownership of the board "${board.name}" to ${targetName}. You still have full access.`,
-        orgId: board.organisation,
-        boardId: board._id,
-        actorId: userId,
-      });
-    }
 
     const populated = await Board.findById(board._id).populate(
       'memberAccess.user',
