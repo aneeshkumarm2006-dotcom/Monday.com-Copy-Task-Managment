@@ -391,6 +391,14 @@ const BoardDetailPage = () => {
   // capabilities rather than re-guessed.
   const canEdit = canOnBoard('task.edit_any') && canOnBoard('group.manage');
 
+  // Adding a row is the `contribute` rung, NOT `edit`. These were one bit for a
+  // while and it silently broke the whole middle of the ladder: a plain member
+  // on a public board opening at `contribute` holds `task.create` — the server
+  // happily accepts the POST — but the inline "new task" row was gated on
+  // `canEdit`, so it never rendered and there was no way to reach the endpoint.
+  // Anyone who was the org OWNER (and therefore `edit` everywhere) never saw it.
+  const canCreateTasks = canOnBoard('task.create');
+
   // Client Portal: may this person put a task in front of the client? Board type
   // and capability, matching the server's `denyPortalShare` exactly — a standard
   // board has no portal to share into, and publishing to an outside party is the
@@ -2441,9 +2449,10 @@ const BoardDetailPage = () => {
                               board={board}
                               members={members}
                               editingTaskId={editingTaskId}
-                              isCreating={canEdit && !taskFiltersActive}
+                              isCreating={canCreateTasks && !taskFiltersActive}
                               createKey={newTaskKeysByGroup[group._id] || 0}
                               isAdmin={canEdit}
+                              canCreate={canCreateTasks}
                               highlightedTaskId={highlightedTaskId}
                               highlightedParentId={highlightedParentId}
                               onOpenTask={handleOpenTask}

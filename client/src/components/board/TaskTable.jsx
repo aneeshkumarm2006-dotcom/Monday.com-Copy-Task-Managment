@@ -103,6 +103,12 @@ const TaskTable = ({
   isCreating = false,
   createKey = 0,
   isAdmin = false,
+  // "May this person add a row" — the `contribute` rung's `task.create`, which
+  // sits BELOW `isAdmin` (the `edit` rung). The two are distinct on purpose: a
+  // contributor may add tasks and subtasks without being able to restructure
+  // the board. Defaults to `isAdmin` so a caller that hasn't been taught the
+  // difference behaves exactly as before.
+  canCreate = isAdmin,
   highlightedTaskId = null,
   highlightedParentId = null,
   onOpenTask,
@@ -438,6 +444,7 @@ const TaskTable = ({
                             colSpan={COLUMNS.length}
                             isLast={isLastRow}
                             isAdmin={isAdmin}
+                            canCreate={canCreate}
                             editingTaskId={editingTaskId}
                             highlightedTaskId={highlightedTaskId}
                             onOpenTask={onOpenTask}
@@ -502,6 +509,7 @@ const SubtaskSection = ({
   colSpan,
   isLast,
   isAdmin,
+  canCreate = isAdmin,
   editingTaskId,
   highlightedTaskId = null,
   onOpenTask,
@@ -570,7 +578,7 @@ const SubtaskSection = ({
           // The last subtask only owns the section's closing border when no
           // trailing row (add-subtask / empty state) follows it — i.e. for a
           // read-only viewer.
-          const subIsLast = !isAdmin && idx === items.length - 1 ? isLast : false;
+          const subIsLast = !canCreate && idx === items.length - 1 ? isLast : false;
           return editingTaskId === sub._id ? (
             <TaskEditRow
               key={sub._id}
@@ -604,7 +612,7 @@ const SubtaskSection = ({
       )}
 
       {/* Inline "Add subtask" — same form/fields as creating a top-level task */}
-      {isAdmin ? (
+      {canCreate ? (
         adding ? (
           <TaskEditRow
             board={board}
