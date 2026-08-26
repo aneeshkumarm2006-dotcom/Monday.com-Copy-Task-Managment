@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Camera, Copy, Check, RefreshCw, Trash2, AlertTriangle } from 'lucide-react';
 import PageWrapper from '../components/layout/PageWrapper';
 import SettingsSidebar, { SettingsTabBar } from '../components/settings/SettingsSidebar';
@@ -8,6 +8,7 @@ import Input from '../components/ui/Input';
 import Modal from '../components/ui/Modal';
 import NotificationPreferences from '../components/notifications/NotificationPreferences';
 import ExtraFeaturesTab from '../components/settings/ExtraFeaturesTab';
+import ConnectorsTab from '../components/settings/ConnectorsTab';
 import { hasAnyExtraFeature } from '../utils/extraFeatures';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
@@ -716,6 +717,7 @@ const SettingsPage = () => {
   const permissionsLoading = usePermissionStore((s) => s.loading);
   const loadedForOrg = usePermissionStore((s) => s.loadedForOrg);
   const { can, isOwner } = usePermissions();
+  const [searchParams] = useSearchParams();
 
   // The Organisation tab is nothing but org settings — the invite code lives there.
   const canManageOrg = can('org.manage_settings');
@@ -726,7 +728,14 @@ const SettingsPage = () => {
   const permissionsResolved =
     !!currentOrg && !permissionsLoading && loadedForOrg === currentOrg._id;
 
-  const [activeTab, setActiveTab] = useState('organisation');
+  // Seeded from `?tab=` so a link can point at one section — the connector OAuth
+  // callback returns to `/settings?tab=connectors`, and landing on Organisation
+  // instead would leave the user staring at the wrong screen after a consent.
+  // Deliberately a SEED, not a source of truth: the tab is state from then on,
+  // matching how this page has always worked.
+  const [activeTab, setActiveTab] = useState(
+    () => searchParams.get('tab') || 'organisation'
+  );
   const [orgState, setOrgState] = useState(currentOrg || null);
 
   // Keep local orgState in sync with currentOrg
@@ -740,6 +749,7 @@ const SettingsPage = () => {
   useEffect(() => {
     if (!permissionsResolved) return;
     if (!canManageOrg && activeTab === 'organisation') setActiveTab('profile');
+    if (!canManageOrg && activeTab === 'connectors') setActiveTab('profile');
     if (!canExtraFeatures && activeTab === 'features') setActiveTab('profile');
   }, [permissionsResolved, canManageOrg, canExtraFeatures, activeTab]);
 
@@ -810,6 +820,9 @@ const SettingsPage = () => {
           <NotificationPreferences />
         </div>
       );
+    }
+    if (activeTab === 'connectors' && canManageOrg) {
+      return <ConnectorsTab />;
     }
     if (activeTab === 'features' && canExtraFeatures) {
       return <ExtraFeaturesTab />;

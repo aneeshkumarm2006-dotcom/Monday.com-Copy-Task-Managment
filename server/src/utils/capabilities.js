@@ -136,6 +136,28 @@ const CAPABILITY_GROUPS = [
     ],
   },
   {
+    key: 'connectors',
+    name: 'Connectors',
+    // A pair, and note where the line falls. `connector.view` is "may this
+    // person see the data we already pulled" — which is reading the board, so it
+    // sits on `view` with the other read capabilities.
+    //
+    // `connector.manage` covers mapping a project to a group, editing field
+    // mappings, and pressing Refresh. Refresh is the reason it sits at `edit`
+    // rather than `contribute`: it spends a shared, finite quota against the
+    // org's external account, and a mapping change silently rewires which
+    // client's numbers land on which row. Neither is "doing your own work".
+    //
+    // Connecting an ACCOUNT is not here at all. That is credential handling for
+    // the whole workspace, so it answers to the org-scoped
+    // `org.manage_settings` instead — a board editor should not be able to
+    // attach a new external identity to the organisation.
+    capabilities: [
+      ['connector.view', "See a board's connector data and Add-ons tab"],
+      ['connector.manage', 'Map projects and fields, and refresh connector data'],
+    ],
+  },
+  {
     key: 'insights',
     name: 'Insights',
     capabilities: [
@@ -207,6 +229,12 @@ const BOARD_SCOPED = new Set([
   // than a silent revoke.
   'vault.view',
   'vault.manage',
+  // Same obligation once more: both are conferred by a LEVEL_ADDS rung below —
+  // `connector.view` by `view`, `connector.manage` by `edit` — which is what
+  // makes board-scoping them safe rather than a silent revoke for everyone but
+  // the board's creator.
+  'connector.view',
+  'connector.manage',
 ]);
 
 /**
@@ -235,7 +263,13 @@ const LEVEL_ADDS = {
   // out of band — so making them climb to the `edit` rung as well only meant
   // over-permissioning them everywhere else in order to let them read a
   // password they already had.
-  view: ['tracker.view', 'goal.view', 'vault.view'],
+  //
+  // `connector.view` joins them for the same reason the first two are here:
+  // what a connector has already pulled — this client's ranks, their traffic,
+  // their audit — is board content. Someone who can read the board can read it.
+  // Nothing here spends quota or reaches the provider; every byte comes from our
+  // own snapshots.
+  view: ['tracker.view', 'goal.view', 'vault.view', 'connector.view'],
   // + weigh in without touching the data.
   comment: ['update.create'],
   // + do your own work, without being able to restructure the board.
@@ -263,6 +297,10 @@ const LEVEL_ADDS = {
     // items are gated by the ladder ALONE. An unrecoverable delete needs no
     // password, so it needs the rung.
     'vault.manage',
+    // Mapping decides which client's numbers land on which row, and Refresh
+    // spends a shared quota against the org's external account. Both are
+    // board-shaping acts rather than personal ones, so both sit at the top.
+    'connector.manage',
   ],
 };
 
@@ -417,6 +455,8 @@ const SYSTEM_ROLES = [
       'goal.manage',
       'vault.view',
       'vault.manage',
+      'connector.view',
+      'connector.manage',
       'analytics.view',
       'productivity.view_others',
       // Holding this only makes the export *possible*. Each admin still has to
@@ -480,6 +520,12 @@ const SYSTEM_ROLES = [
       // open its vault would be locked out of a room in their own house.
       'vault.view',
       'vault.manage',
+      // Same shape, same reasoning: board-scoped, so the AND limits `manage` to
+      // boards where they hold `edit`. Note this only lets them switch a
+      // connector on and map its projects — CONNECTING the account itself is
+      // org-scoped `org.manage_settings`, which members do not have.
+      'connector.view',
+      'connector.manage',
     ],
     // NOT granted, on purpose: `analytics.view`. The analytics and productivity
     // pages were admin-only before this system existed, and quietly opening them
@@ -506,9 +552,15 @@ const SYSTEM_ROLES = [
     //
     // The `guest` role below deliberately does NOT get this. That is the line:
     // the team can see the door, external people shared into one board cannot.
+    //
+    // `connector.view` is a read too, and a cheap one: it serves rows out of our
+    // own database and never contacts an external provider, so a viewer opening
+    // the tab spends none of the workspace's API quota. They cannot map a
+    // project, edit a field mapping, or press Refresh — `connector.manage` is
+    // absent here AND sits on the `edit` rung, so both layers refuse it.
     permissions: [
       'org.view_members', 'board.view_public', 'tracker.view', 'goal.view',
-      'vault.view',
+      'vault.view', 'connector.view',
     ],
   },
   {
@@ -525,6 +577,12 @@ const SYSTEM_ROLES = [
     // absence is load-bearing rather than incidental: the vault door opens at
     // the `view` rung, so this org role is the ONLY thing standing between an
     // external collaborator and a board's encrypted credentials. Do not add it.
+    //
+    // `connector.view` is absent for the same load-bearing reason. It also opens
+    // at the `view` rung, and the board endpoint behind it lists EVERY connected
+    // account in the workspace by label so a board can pick projects from any of
+    // them. For a guest shared into one board that is a list of other clients'
+    // account names. Do not add it.
     permissions: [
       'task.create',
       'task.edit_assigned',

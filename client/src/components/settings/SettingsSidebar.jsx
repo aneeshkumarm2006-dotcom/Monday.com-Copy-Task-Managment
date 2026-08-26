@@ -1,4 +1,4 @@
-import { Building2, UserCircle2, Bell, FlaskConical } from 'lucide-react';
+import { Building2, UserCircle2, Bell, FlaskConical, Plug } from 'lucide-react';
 
 /**
  * SettingsSidebar — left-rail tab nav used exclusively by the Settings page.
@@ -18,6 +18,11 @@ const TABS = [
   { key: 'organisation', label: 'Organisation', icon: Building2, adminOnly: true },
   { key: 'profile', label: 'Profile', icon: UserCircle2, adminOnly: false },
   { key: 'notifications', label: 'Notifications', icon: Bell, adminOnly: false },
+  // Connecting an external account is credential handling for the whole
+  // workspace, so it sits with Organisation on `adminOnly` rather than being a
+  // personal setting. Switching a connector on for one board is a separate,
+  // board-level act and lives on that board's Add-ons tab.
+  { key: 'connectors', label: 'Connectors', icon: Plug, adminOnly: true },
   { key: 'features', label: 'Extra features', icon: FlaskConical, featureTab: true },
 ];
 

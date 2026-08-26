@@ -19,3 +19,9 @@ require('./Vault');
 require('./VaultItem');
 require('./VaultAudit');
 require('./VaultEscrow');
+// Connectors. Note ConnectorAccount holds OAuth tokens sealed by
+// utils/connectorCrypto.js — server-readable by design, NOT the zero-knowledge
+// Vault above. See that file's header for why the two must stay distinct.
+require('./ConnectorAccount');
+require('./ConnectorAuthAttempt');
+require('./BoardConnector');

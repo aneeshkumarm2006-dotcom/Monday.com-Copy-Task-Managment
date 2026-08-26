@@ -66,6 +66,11 @@ app.use('/api/portal', require('./routes/portal'));
 // Inbound email webhooks (public, signature-verified) — before the blanket /api
 // routers so their auth middleware never sees it.
 app.use('/api/inbound', require('./routes/inbound'));
+// Connectors — mounted bare at /api, and for the same ordering reason as the two
+// above: it carries a PUBLIC OAuth callback (GET /api/connectors/callback) that
+// a third party redirects a browser to with no session and no Authorization
+// header. Any of the bare /api routers below would 401 it first.
+app.use('/api', require('./routes/connectors'));
 app.use('/api', require('./routes/groups'));
 app.use('/api', require('./routes/automations'));
 app.use('/api', require('./routes/trackers'));
