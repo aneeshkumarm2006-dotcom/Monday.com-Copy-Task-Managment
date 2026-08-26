@@ -13,7 +13,8 @@ import useDropdownPosition from '../../utils/useDropdownPosition';
  *   onChange: (newValue) => void
  *   placeholder: string
  *   disabled: bool
- *   label: optional label above trigger
+ *   label: optional VISIBLE label above trigger
+ *   ariaLabel: accessible name when there is no visible label (row/toolbar use)
  */
 
 const Dropdown = ({
@@ -23,6 +24,7 @@ const Dropdown = ({
   placeholder = 'Select…',
   disabled = false,
   label,
+  ariaLabel,
   className = '',
   size = 'default', // 'default' (38px) | 'sm' (32px)
 }) => {
@@ -77,6 +79,10 @@ const Dropdown = ({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
+        // For dropdowns that sit in a row or a toolbar, where a visible `label`
+        // above the trigger would be repeated on every line. Omitted when a
+        // visible label is already naming this control.
+        aria-label={!label && ariaLabel ? ariaLabel : undefined}
         className={[
           'w-full flex items-center justify-between gap-2 px-3 font-body text-[14px]',
           'bg-[color:var(--color-bg-input)] transition-[border-color,box-shadow,background-color] duration-150 ease-in-out',
@@ -144,11 +150,24 @@ const Dropdown = ({
           )}
           {options.map((opt) => {
             const isSelected = opt.value === value;
+            // Per-option `disabled` is optional: an option that does not set it
+            // behaves exactly as before. It exists so a choice that is
+            // unavailable for a REASON can still be shown — a group already
+            // mapped to another connector project, say — instead of silently
+            // vanishing from the list and leaving the user to wonder.
+            const isDisabled = !!opt.disabled;
             return (
-              <li key={opt.value} role="option" aria-selected={isSelected}>
+              <li
+                key={opt.value}
+                role="option"
+                aria-selected={isSelected}
+                aria-disabled={isDisabled || undefined}
+              >
                 <button
                   type="button"
+                  disabled={isDisabled}
                   onClick={() => {
+                    if (isDisabled) return;
                     onChange?.(opt.value);
                     setOpen(false);
                     triggerRef.current?.focus();
@@ -156,16 +175,19 @@ const Dropdown = ({
                   className={[
                     'w-full flex items-center gap-2 px-3 text-left font-body text-[14px]',
                     'transition-colors duration-100',
-                    'hover:bg-[color:var(--color-bg-subtle)]',
+                    isDisabled ? '' : 'hover:bg-[color:var(--color-bg-subtle)]',
                     'focus:outline-none focus:bg-[color:var(--color-bg-subtle)]',
                   ].join(' ')}
                   style={{
                     height: 36,
                     borderRadius: 'var(--radius-sm)',
-                    color: isSelected
-                      ? 'var(--color-accent-text)'
-                      : 'var(--color-text-primary)',
+                    color: isDisabled
+                      ? 'var(--color-text-muted)'
+                      : isSelected
+                        ? 'var(--color-accent-text)'
+                        : 'var(--color-text-primary)',
                     fontWeight: isSelected ? 500 : 400,
+                    cursor: isDisabled ? 'not-allowed' : 'pointer',
                   }}
                 >
                   <span

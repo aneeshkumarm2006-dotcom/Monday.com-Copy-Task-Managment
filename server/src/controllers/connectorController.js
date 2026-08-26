@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const ConnectorAccount = require('../models/ConnectorAccount');
 const ConnectorAuthAttempt = require('../models/ConnectorAuthAttempt');
 const BoardConnector = require('../models/BoardConnector');
+const ConnectorProject = require('../models/ConnectorProject');
+const TaskGroup = require('../models/TaskGroup');
 
 const {
   loadBoardContext,
@@ -10,6 +12,7 @@ const {
   loadOrgContext,
 } = require('../utils/boardContext');
 const { getConnector, listConnectors } = require('../services/connectors');
+const { refreshOrgProjects } = require('../services/connectors/projectMirror');
 const { isConnectorProvider, connectorProviderLabel } = require('../utils/connectorProviders');
 const connectorCrypto = require('../utils/connectorCrypto');
 
@@ -538,6 +541,252 @@ const setBoardConnector = async (req, res) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Board plane — the project mirror
+// ---------------------------------------------------------------------------
+
+/**
+ * The public shape of a mirrored project. Hand-built for the same reason
+ * `publicAccount` is: a field added to the model later must not leak by default.
+ *
+ * `raw` is the one omission worth naming. It is the provider's payload verbatim,
+ * kept so phases 3-5 can be built against what the API actually returned rather
+ * than what we remember it returning — but it is bulky, undocumented, and of no
+ * use to the tab. It is returned only when explicitly asked for, and only to
+ * someone who could refresh it anyway.
+ */
+const publicProject = (project, { includeRaw = false } = {}) => {
+  const out = {
+    _id: project._id,
+    account: project.account,
+    provider: project.provider,
+    externalId: project.externalId,
+    name: project.name || '',
+    domain: project.domain || null,
+    keywordCount: project.keywordCount ?? null,
+    competitorCount: project.competitorCount ?? null,
+    locations: project.locations || [],
+    hasBrand: !!project.hasBrand,
+    group: project.group || null,
+    board: project.board || null,
+    boundAt: project.boundAt || null,
+    missing: !!project.missing,
+    lastSeenAt: project.lastSeenAt || null,
+  };
+  if (includeRaw) out.raw = project.raw ?? null;
+  return out;
+};
+
+/**
+ * GET /api/boards/:boardId/connectors/:provider/projects
+ *
+ * Every project the org's accounts hold for this provider, with its binding.
+ *
+ * READS OUR OWN DATABASE ONLY. Nothing here contacts the provider and nothing
+ * here spends quota, which is what lets it sit on `connector.view` — the bottom
+ * rung of the board ladder — and be safe to call on every render.
+ *
+ * The listing is org-wide rather than board-wide on purpose. A project bound to
+ * a group on ANOTHER board still has to appear, or it would look available here
+ * and then fail the unique index on save with nothing to explain why.
+ */
+const getBoardConnectorProjects = async (req, res) => {
+  try {
+    const { provider } = req.params;
+
+    const ctx = await gateBoard(req, res, 'connector.view');
+    if (!ctx) return undefined;
+
+    if (!isConnectorProvider(provider) || !getConnector(provider)) {
+      return res.status(400).json({ error: `Unknown connector "${provider}"` });
+    }
+
+    const canManage = !!ctx.can('connector.manage');
+    // Only offered to someone who could re-fetch it anyway. See publicProject.
+    const includeRaw = canManage && req.query?.includeRaw === '1';
+
+    const [projects, accounts] = await Promise.all([
+      ConnectorProject.find({ organisation: ctx.board.organisation, provider })
+        .sort({ missing: 1, name: 1 })
+        .lean(),
+      ConnectorAccount.find({
+        organisation: ctx.board.organisation,
+        provider,
+        status: { $ne: 'revoked' },
+      })
+        .sort({ label: 1 })
+        .lean(),
+    ]);
+
+    return res.json({
+      projects: projects.map((p) => publicProject(p, { includeRaw })),
+      accounts: accounts.map(publicAccount),
+      canManage,
+    });
+  } catch (err) {
+    console.error('getBoardConnectorProjects error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * POST /api/boards/:boardId/connectors/:provider/projects/refresh
+ *
+ * The one endpoint in phase 2 that reaches the provider. `connector.manage`,
+ * because it spends a quota shared by the entire workspace.
+ *
+ * Answers 200 with a per-account report even when some accounts failed. A pool
+ * where one account is out of quota and three are fine is a successful refresh
+ * with one gap, and turning that into a 500 would hide the three.
+ */
+const refreshBoardConnectorProjects = async (req, res) => {
+  try {
+    const { provider } = req.params;
+
+    const ctx = await gateBoard(req, res, 'connector.manage');
+    if (!ctx) return undefined;
+
+    if (!isConnectorProvider(provider) || !getConnector(provider)) {
+      return res.status(400).json({ error: `Unknown connector "${provider}"` });
+    }
+
+    const report = await refreshOrgProjects({
+      organisation: ctx.board.organisation,
+      provider,
+    });
+
+    // Nothing to refresh is not a failure, but it is worth saying out loud —
+    // otherwise the tab shows an empty list and a successful toast.
+    if (!report.accounts.length) {
+      return res.status(409).json({
+        error: `No ${connectorProviderLabel(provider)} account is connected to this workspace yet.`,
+        code: 'NO_ACCOUNT',
+      });
+    }
+
+    await BoardConnector.updateOne(
+      { board: ctx.board._id, provider },
+      {
+        $set: {
+          organisation: ctx.board.organisation,
+          lastRefreshAt: new Date(),
+          lastRefreshBy: req.user.userId,
+        },
+        $setOnInsert: { enabled: true, enabledBy: req.user.userId },
+      },
+      { upsert: true }
+    );
+
+    const projects = await ConnectorProject.find({
+      organisation: ctx.board.organisation,
+      provider,
+    })
+      .sort({ missing: 1, name: 1 })
+      .lean();
+
+    return res.json({
+      projects: projects.map((p) => publicProject(p)),
+      report,
+    });
+  } catch (err) {
+    console.error('refreshBoardConnectorProjects error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PUT /api/boards/:boardId/connectors/:provider/projects/:projectId
+ * Body: { group: string|null }
+ *
+ * Bind a project to one of this board's groups, or unbind it with null.
+ *
+ * The group must be on THIS board. Without that check, a board editor could
+ * point a project at a group on a private board they cannot open — and from
+ * phase 5 that binding is what decides whose numbers land on whose row.
+ */
+const setConnectorProjectGroup = async (req, res) => {
+  try {
+    const { provider, projectId } = req.params;
+
+    const ctx = await gateBoard(req, res, 'connector.manage');
+    if (!ctx) return undefined;
+
+    if (!isConnectorProvider(provider) || !getConnector(provider)) {
+      return res.status(400).json({ error: `Unknown connector "${provider}"` });
+    }
+    if (!isValidId(projectId)) {
+      return res.status(400).json({ error: 'Invalid project id' });
+    }
+
+    const groupId = req.body?.group ?? null;
+    if (groupId !== null && !isValidId(groupId)) {
+      return res.status(400).json({ error: 'Invalid group id' });
+    }
+
+    const project = await ConnectorProject.findOne({
+      _id: projectId,
+      organisation: ctx.board.organisation,
+      provider,
+    });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    if (groupId === null) {
+      project.group = null;
+      project.board = null;
+      project.boundBy = null;
+      project.boundAt = null;
+      await project.save();
+      return res.json({ project: publicProject(project) });
+    }
+
+    const group = await TaskGroup.findById(groupId).select('board name').lean();
+    if (!group || String(group.board) !== String(ctx.board._id)) {
+      return res.status(400).json({ error: 'That group is not on this board.' });
+    }
+
+    // A group holds one project per provider, and so does the unique index. Ask
+    // first so the answer is a sentence naming the project that already has it,
+    // rather than a duplicate-key error the UI has to guess at.
+    const taken = await ConnectorProject.findOne({
+      provider,
+      group: groupId,
+      _id: { $ne: project._id },
+    })
+      .select('name domain')
+      .lean();
+    if (taken) {
+      return res.status(409).json({
+        error: `"${group.name}" is already mapped to ${taken.name || taken.domain}. Unmap that first.`,
+        code: 'GROUP_TAKEN',
+      });
+    }
+
+    project.group = groupId;
+    project.board = ctx.board._id;
+    project.boundBy = req.user.userId;
+    project.boundAt = new Date();
+
+    try {
+      await project.save();
+    } catch (err) {
+      // The index is still the authority — two admins mapping the same group at
+      // the same moment both pass the check above.
+      if (err.code === 11000) {
+        return res.status(409).json({
+          error: 'That group was just mapped to another project. Reload and try again.',
+          code: 'GROUP_TAKEN',
+        });
+      }
+      throw err;
+    }
+
+    return res.json({ project: publicProject(project) });
+  } catch (err) {
+    console.error('setConnectorProjectGroup error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   getCatalog,
   listOrgConnectors,
@@ -546,8 +795,12 @@ module.exports = {
   disconnectAccount,
   getBoardConnectors,
   setBoardConnector,
+  getBoardConnectorProjects,
+  refreshBoardConnectorProjects,
+  setConnectorProjectGroup,
   // Exported for the phases that follow — one gate, not a copy per controller.
   gateBoard,
   gateOrgAdmin,
   publicAccount,
+  publicProject,
 };

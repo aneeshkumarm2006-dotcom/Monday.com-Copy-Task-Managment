@@ -8,7 +8,27 @@ const {
   disconnectAccount,
   getBoardConnectors,
   setBoardConnector,
+  getBoardConnectorProjects,
+  refreshBoardConnectorProjects,
+  setConnectorProjectGroup,
 } = require('../controllers/connectorController');
+const {
+  getConnectorData,
+  refreshConnectorData,
+  runConnectorAction,
+} = require('../controllers/connectorDataController');
+const {
+  getConnectorFields,
+  setConnectorFieldMapping,
+  deleteConnectorFieldMapping,
+} = require('../controllers/connectorFieldController');
+const {
+  getGoalLinks,
+  setGoalLink,
+  clearGoalLink,
+  acceptGoalSuggestions,
+  runBoardWriteback,
+} = require('../controllers/connectorLinkController');
 
 /**
  * Mounted BARE at /api (see app.js), like routes/goals.js and routes/trackers.js,
@@ -64,5 +84,115 @@ router.delete('/connectors/:accountId', disconnectAccount);
 // --- Per-board enablement ---------------------------------------------------
 router.get('/boards/:boardId/connectors', getBoardConnectors);
 router.put('/boards/:boardId/connectors/:provider', setBoardConnector);
+
+// --- The project mirror -----------------------------------------------------
+// `/projects/refresh` is declared BEFORE `/projects/:projectId` so "refresh" is
+// never parsed as a project id. Same reasoning as `/connectors` above the
+// `:accountId` route.
+//
+// Only the refresh reaches the provider; the other two read our own rows, which
+// is why the read sits on `connector.view` and the other two on
+// `connector.manage`. Spending a quota shared by the whole workspace, and
+// deciding which client's numbers land on which group, are both board-shaping
+// acts rather than personal ones.
+router.get('/boards/:boardId/connectors/:provider/projects', getBoardConnectorProjects);
+router.post(
+  '/boards/:boardId/connectors/:provider/projects/refresh',
+  refreshBoardConnectorProjects
+);
+router.put(
+  '/boards/:boardId/connectors/:provider/projects/:projectId',
+  setConnectorProjectGroup
+);
+
+// --- The data plane ---------------------------------------------------------
+//
+// `/data` READS OUR OWN DATABASE and never contacts the provider, which is what
+// lets it sit on `connector.view` and be safe to call on every render. Quota is
+// finite and shared across the whole workspace: a tab that fetched on mount
+// would let ten people with a browser open spend the week on page loads.
+//
+// The other two spend quota and are therefore `connector.manage` — one is a
+// person pressing Refresh, the other is a person starting a site-audit crawl,
+// which is minutes of somebody else's compute and is deliberately something the
+// weekly runner never does on its own.
+//
+// `/refresh` here is the DATA refresh and is a different thing from
+// `/projects/refresh` above, which re-reads the project LIST. Two verbs, two
+// costs, two paths.
+router.get('/boards/:boardId/connectors/:provider/data', getConnectorData);
+router.post('/boards/:boardId/connectors/:provider/refresh', refreshConnectorData);
+// Declared AFTER `/projects/:projectId` above so the literal `refresh` segment
+// there is never shadowed, and specific enough that `actions` cannot be read as
+// a project id.
+router.post(
+  '/boards/:boardId/connectors/:provider/projects/:projectId/actions/:action',
+  runConnectorAction
+);
+
+// --- Field mapping ----------------------------------------------------------
+//
+// Which provider value fills which goal cell. NONE of these contacts the
+// provider — the catalog is static on the descriptor and the mappings are our
+// own rows — which is why the read sits on `connector.view` alongside the data
+// read, and is safe on every render.
+//
+// The two writes are `connector.manage` for the same reason mapping a project to
+// a group is: this is board-shaping wiring, and from phase 5 it decides whose
+// numbers land in whose cell. It is deliberately NOT `goal.manage` — nothing
+// here writes to a goal. The capability a given target IMPLIES for the eventual
+// sync travels on the target itself and is enforced when a value is written.
+//
+// `:field` is a key from the provider's own catalog, validated against the
+// descriptor in the handler. A literal segment (`fields`) sits in front of it,
+// so nothing here can be confused with the project routes above.
+router.get('/boards/:boardId/connectors/:provider/fields', getConnectorFields);
+router.put(
+  '/boards/:boardId/connectors/:provider/fields/:field',
+  setConnectorFieldMapping
+);
+router.delete(
+  '/boards/:boardId/connectors/:provider/fields/:field',
+  deleteConnectorFieldMapping
+);
+
+// --- Goal links and writeback -----------------------------------------------
+//
+// Which tracked keyword each goal is about, and the two human gestures the
+// writeback needs. NONE of these contacts the provider either — including the
+// writeback, which reads snapshots we already hold and is therefore a much
+// cheaper button than the `/refresh` above it. Collecting spends quota;
+// deciding where what was collected goes does not.
+//
+// The capability ladder is the one thing here that is not uniform, and it is
+// deliberate:
+//
+//   connector.view    — reading the links and the keyword lists. The Goals tab
+//                       asks on every render, so it sits on the bottom rung
+//                       alongside the other two reads.
+//   connector.manage  — linking, unlinking, and asking the writeback to run.
+//                       Same rung as mapping a project to a group: board-shaping
+//                       wiring, and none of it writes to a goal by itself.
+//   goal.track        — the base gate on ACCEPT, which does write. Each field is
+//                       then checked again against what ITS target implies, so
+//                       `config.baseline` needs `goal.manage` and a result does
+//                       not. That is the promise/result split
+//                       `goalController.RESULT_ONLY_FIELDS` makes, enforced at
+//                       the moment a value actually lands — which is exactly
+//                       where the phase-4 mapping panel said it would be.
+//
+// The board-scoped read lives at `/boards/:boardId/goal-links` rather than under
+// `/connectors/:provider/…` because the Goals tab is not looking at one
+// connector: a board could have two, and the row needs to say which one filled
+// it. `?provider=` narrows it.
+router.get('/boards/:boardId/goal-links', getGoalLinks);
+router.post('/boards/:boardId/connectors/:provider/writeback', runBoardWriteback);
+
+// A single goal's link. Declared with the literal `connector-link` segment in
+// front, so nothing here can be confused with `PUT /goals/:id` on routes/goals.js
+// — which this router does not define and must not shadow.
+router.put('/goals/:id/connector-link', setGoalLink);
+router.delete('/goals/:id/connector-link', clearGoalLink);
+router.post('/goals/:id/connector-link/accept', acceptGoalSuggestions);
 
 module.exports = router;

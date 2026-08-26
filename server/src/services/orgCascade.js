@@ -14,6 +14,13 @@ const GoalReminder = require('../models/GoalReminder');
 const User = require('../models/User');
 const ActivityLog = require('../models/ActivityLog');
 const BoardConnection = require('../models/BoardConnection');
+const ConnectorAccount = require('../models/ConnectorAccount');
+const ConnectorAuthAttempt = require('../models/ConnectorAuthAttempt');
+const ConnectorProject = require('../models/ConnectorProject');
+const ConnectorSnapshot = require('../models/ConnectorSnapshot');
+const BoardConnector = require('../models/BoardConnector');
+const ConnectorFieldMapping = require('../models/ConnectorFieldMapping');
+const GoalConnectorLink = require('../models/GoalConnectorLink');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const VaultEscrow = require('../models/VaultEscrow');
 const { cascadeDeleteVaults } = require('./vaultCascade');
@@ -59,6 +66,14 @@ const cascadeDeleteOrg = async (orgId) => {
 
   if (boardIds.length) {
     await cascadeDeleteVaults(boardIds);
+    await BoardConnector.deleteMany({ board: { $in: boardIds } });
+    // Field mappings name goal columns embedded on the board documents about to
+    // be deleted. Same reasoning as the board cascade: a dangling reference, not
+    // history worth keeping.
+    await ConnectorFieldMapping.deleteMany({ board: { $in: boardIds } });
+    // Same reasoning for the goal links: they name goals on boards that are
+    // about to go, so there is nothing left for them to be about.
+    await GoalConnectorLink.deleteMany({ board: { $in: boardIds } });
     // Same omission as the board cascade had: notes are only otherwise removed
     // when their GROUP is deleted, so tearing down an org left them behind.
     await Note.deleteMany({ board: { $in: boardIds } });
@@ -74,11 +89,33 @@ const cascadeDeleteOrg = async (orgId) => {
   // gone, and leaving it would keep a wrapped private key alive for a workspace
   // that no longer exists.
   await VaultEscrow.deleteMany({ organisation: orgId });
+  // Connectors. Unlike a board or group teardown — where a mirrored project is
+  // unbound and kept, because it still exists inside the provider and parents a
+  // rank history worth more than the mapping — an org teardown has nothing left
+  // to keep it for. The sealed OAuth tokens in particular must not outlive the
+  // workspace that consented to them.
+  // Snapshots go FIRST, and they are the one thing in this block worth pausing
+  // over: they are the only per-keyword rank history that will ever exist, and
+  // nothing can rebuild them. They are still deleted, because an org teardown is
+  // the one event that ends the relationship the data was collected under — but
+  // they are deleted BEFORE the projects that parent them, so a failure halfway
+  // through leaves orphaned projects rather than orphaned history.
+  await ConnectorSnapshot.deleteMany({ organisation: orgId });
+  await ConnectorProject.deleteMany({ organisation: orgId });
+  await ConnectorAccount.deleteMany({ organisation: orgId });
+  await ConnectorAuthAttempt.deleteMany({ organisation: orgId });
+  await BoardConnector.deleteMany({ organisation: orgId });
+  // By `organisation` as well as by board above, so a mapping whose board was
+  // already gone cannot survive the workspace.
+  await ConnectorFieldMapping.deleteMany({ organisation: orgId });
   await Automation.deleteMany({ organisation: orgId });
   await Tracker.deleteMany({ organisation: orgId });
   await TrackerEntry.deleteMany({ organisation: orgId });
   await Goal.deleteMany({ organisation: orgId });
   await GoalReminder.deleteMany({ organisation: orgId });
+  // By `organisation` as well as by board above, so a link whose board was
+  // already gone cannot survive the workspace.
+  await GoalConnectorLink.deleteMany({ organisation: orgId });
 
   await User.updateMany(
     { organisations: orgId },

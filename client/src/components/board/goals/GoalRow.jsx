@@ -1,9 +1,10 @@
-import { AlertTriangle, Trash2, Pencil } from 'lucide-react';
+import { AlertTriangle, Trash2, Pencil, Link2 } from 'lucide-react';
 import GoalValueCell from './GoalValueCell';
 import GoalProgressBar from './GoalProgressBar';
 import GoalOutcomeBadge from './GoalOutcomeBadge';
 import GoalSparkline from './GoalSparkline';
 import GoalMoveMenu from './GoalMoveMenu';
+import GoalConnectorChip from './GoalConnectorChip';
 import { cellComponentFor } from '../columns';
 import { weightLabel, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
 import {
@@ -39,10 +40,20 @@ const GoalRow = ({
   index = 0,
   rowCount = 0,
   sortActive = false,
+  // ---- Connector, all optional ---------------------------------------------
+  // A board with no connector passes none of these and renders exactly as it
+  // did before: `link` is undefined, the chip returns null, and the link button
+  // is gated off. Nothing about the goals machinery depends on connectors.
+  link = null,
+  canLink = false,
+  canAccept = false,
+  accepting = false,
   onPatch,
   onEdit,
   onDelete,
   onMove,
+  onLink,
+  onAcceptSuggestions,
 }) => {
   const c = goal.computed || {};
   const usesDate = (typeSpec?.actualField?.key || (goal.type === 'deadline' ? 'actualDayKey' : 'actual')) === 'actualDayKey';
@@ -148,6 +159,15 @@ const GoalRow = ({
           {typeSpec?.label || goal.type}
           {goal.weight !== 1 && ` · ${weightLabel(goal.weight)}`}
         </span>
+        {/* Which keyword this row is about, and anything the connector would
+            like to put in it but is not allowed to. Silent on an unlinked row —
+            see GoalConnectorChip for why there is no column for this. */}
+        <GoalConnectorChip
+          link={link}
+          canAccept={canAccept}
+          accepting={accepting}
+          onAccept={() => onAcceptSuggestions?.(goal)}
+        />
       </div>
 
       {/* Admin-defined extra columns, through the existing cell registry. These
@@ -265,6 +285,32 @@ const GoalRow = ({
           justifyContent: 'flex-end',
         }}
       >
+        {/* `connector.manage`, NOT `goal.manage` — pointing a goal at a keyword
+            writes nothing to it, and is the same act as saying which project
+            feeds which group. Someone who wires up connectors and someone who
+            defines goals are not always the same person. */}
+        {canLink && (
+          <button
+            type="button"
+            onClick={() => onLink?.(goal)}
+            aria-label={
+              link
+                ? `Change what ${goal.name} is linked to`
+                : `Link ${goal.name} to a tracked keyword`
+            }
+            title={
+              link
+                ? `Linked to ${link.keyword || 'the whole project'}`
+                : 'Link this goal to a tracked keyword so its numbers fill themselves'
+            }
+            className="p-1 rounded hover:bg-[color:var(--color-bg-subtle)]"
+          >
+            <Link2
+              size={14}
+              color={link ? 'var(--color-accent)' : 'var(--color-text-muted)'}
+            />
+          </button>
+        )}
         {canManage && (
           <>
             {/* Moving a goal writes `Goal.order`, so it moves for everyone —

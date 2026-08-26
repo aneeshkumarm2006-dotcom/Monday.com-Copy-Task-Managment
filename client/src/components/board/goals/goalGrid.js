@@ -28,7 +28,16 @@ const NAME_W = 180;
  * out of the horizontal budget the scoring block is already fighting for.
  */
 const ACTIONS_W = { manage: 84, view: 56 };
-const actionsWidth = (canManage) => (canManage ? ACTIONS_W.manage : ACTIONS_W.view);
+/**
+ * The link button is its own 26px because it is a DIFFERENT permission from the
+ * other three: pointing a goal at a keyword is `connector.manage`, while
+ * editing, deleting and moving are `goal.manage`. On a board with no connector
+ * nobody has it, and the column stays exactly the width it was — which is the
+ * point of paying for it per-board rather than always.
+ */
+const LINK_BTN_W = 26;
+const actionsWidth = (canManage, canLink = false) =>
+  (canManage ? ACTIONS_W.manage : ACTIONS_W.view) + (canLink ? LINK_BTN_W : 0);
 
 /**
  * The full `grid-template-columns` for a table with these extra columns.
@@ -46,7 +55,7 @@ const FIXED_W = { start: 86, target: 86, actual: 92, result: 168 };
 
 const extraW = (c) => Math.max(92, Math.min(c.width || 116, 220));
 
-export const buildGoalGrid = (columns = [], canManage = true) => [
+export const buildGoalGrid = (columns = [], canManage = true, canLink = false) => [
   `${GUTTER_W}px`,                       // flag gutter (frozen)
   `minmax(${NAME_W}px, 1.15fr)`,         // goal name (frozen)
   ...columns.map((c) => `minmax(${extraW(c)}px, 0.7fr)`),
@@ -54,7 +63,7 @@ export const buildGoalGrid = (columns = [], canManage = true) => [
   `${FIXED_W.target}px`,
   `${FIXED_W.actual}px`,
   `minmax(${FIXED_W.result}px, 1.1fr)`,
-  `${actionsWidth(canManage)}px`,        // row actions (frozen)
+  `${actionsWidth(canManage, canLink)}px`, // row actions (frozen)
 ].join(' ');
 
 /**
@@ -69,8 +78,8 @@ export const buildGoalGrid = (columns = [], canManage = true) => [
  * cannot — and the long name simply truncates, which is what `truncate` on it
  * was always for.
  */
-export const goalGridMinWidth = (columns = [], canManage = true) =>
-  GUTTER_W + NAME_W + actionsWidth(canManage)
+export const goalGridMinWidth = (columns = [], canManage = true, canLink = false) =>
+  GUTTER_W + NAME_W + actionsWidth(canManage, canLink)
   + FIXED_W.start + FIXED_W.target + FIXED_W.actual + FIXED_W.result
   + columns.reduce((sum, c) => sum + extraW(c), 0);
 

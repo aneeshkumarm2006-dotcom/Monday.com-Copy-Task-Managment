@@ -25,3 +25,15 @@ require('./VaultEscrow');
 require('./ConnectorAccount');
 require('./ConnectorAuthAttempt');
 require('./BoardConnector');
+require('./ConnectorProject');
+// The durable record. Per-keyword rank history does not exist in the Ubersuggest
+// API — these rows are the only copy that will ever exist. See the model header.
+require('./ConnectorSnapshot');
+// Which provider value fills which goal cell. Per BOARD and keyed by
+// `goalColumns[]._id`, never by the column's slug — see the model header for the
+// live board that already proves why.
+require('./ConnectorFieldMapping');
+// Which tracked keyword a goal is about, and who last wrote each of its cells.
+// Provenance lives here rather than wrapping the values themselves — see the
+// model header for the eight readers that shape change would have rippled into.
+require('./GoalConnectorLink');

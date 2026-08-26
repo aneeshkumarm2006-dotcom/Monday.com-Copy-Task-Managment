@@ -117,17 +117,27 @@ const GoalGroupSection = ({
   canTrack,
   canManage,
   monthClosable = false,
+  // ---- Connector, all optional --------------------------------------------
+  // `linksByGoal` is a Map rather than an array so a row's own link is a lookup
+  // and not a scan per render. A board with no connector passes an empty one and
+  // every row renders exactly as it did before.
+  linksByGoal = null,
+  canLink = false,
+  canAccept = false,
+  acceptingGoalId = null,
   onPatch,
   onEdit,
   onDelete,
   onAdd,
   onReorder,
+  onLink,
+  onAcceptSuggestions,
 }) => {
   const { summary = {}, goals = [], owner = null } = group;
 
   // Gutter, name, …extras, start, target, actual, result, actions — see goalGrid.
   // The actions column is narrower for someone with no row buttons to put in it.
-  const gridTemplate = buildGoalGrid(columns, canManage);
+  const gridTemplate = buildGoalGrid(columns, canManage, canLink);
   const hasRequired = columns.some((c) => c.required);
 
   // Per group, exactly like the board's per-group task table: sorting one
@@ -364,7 +374,7 @@ const GoalGroupSection = ({
           <>
             {/* Desktop grid */}
             <div className="hidden md:block" style={{ overflowX: 'auto' }}>
-              <div role="table" style={{ minWidth: goalGridMinWidth(columns, canManage) }}>
+              <div role="table" style={{ minWidth: goalGridMinWidth(columns, canManage, canLink) }}>
                 <div
                   role="row"
                   className="bg-[color:var(--color-bg-surface)]"
@@ -456,10 +466,16 @@ const GoalGroupSection = ({
                     index={i}
                     rowCount={sortedGoals.length}
                     sortActive={sortActive}
+                    link={linksByGoal?.get(String(goal._id)) || null}
+                    canLink={canLink}
+                    canAccept={canAccept}
+                    accepting={String(acceptingGoalId) === String(goal._id)}
                     onPatch={(patch) => onPatch(goal, patch)}
                     onEdit={onEdit}
                     onDelete={onDelete}
                     onMove={canReorder ? handleMove : undefined}
+                    onLink={onLink}
+                    onAcceptSuggestions={onAcceptSuggestions}
                   />
                 ))}
               </div>
@@ -494,10 +510,16 @@ const GoalGroupSection = ({
                   index={i}
                   rowCount={sortedGoals.length}
                   sortActive={sortActive}
+                  link={linksByGoal?.get(String(goal._id)) || null}
+                  canLink={canLink}
+                  canAccept={canAccept}
+                  accepting={String(acceptingGoalId) === String(goal._id)}
                   onPatch={(patch) => onPatch(goal, patch)}
                   onEdit={onEdit}
                   onDelete={onDelete}
                   onMove={canReorder ? handleMove : undefined}
+                  onLink={onLink}
+                  onAcceptSuggestions={onAcceptSuggestions}
                 />
               ))}
             </div>

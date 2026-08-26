@@ -43,6 +43,19 @@ const FALLBACK_TOKEN_ENDPOINT = `${MCP_ORIGIN}/token`;
 const CLIENT_ID = 'ubersuggest-mcp';
 
 /**
+ * Ubersuggest's own login page, used as an explicit first hop. See the long
+ * note on `buildAuthorizeUrl` in oauth.js for why this exists — in short, their
+ * authorization server's own login handoff nests the entire authorize URL into
+ * a `next=` parameter and re-encodes it on every bounce, so the URL grows
+ * geometrically until CloudFront rejects it with a 414. Doing the handoff
+ * ourselves keeps it to a single hop.
+ *
+ * Verified 2026-08-26: `GET /en/login?next=<encoded absolute url>` returns 200
+ * and the login page, with no redirect of its own.
+ */
+const LOGIN_URL = 'https://app.neilpatel.com/en/login';
+
+/**
  * Everything the server offers. We request the lot because the Add-ons tab
  * surfaces every section — positions, keywords, audit, domain, backlinks, brand
  * — and a narrower grant would mean a second consent the first time somebody
@@ -94,6 +107,7 @@ module.exports = {
   FALLBACK_AUTHORIZATION_ENDPOINT,
   FALLBACK_TOKEN_ENDPOINT,
   CLIENT_ID,
+  LOGIN_URL,
   SCOPES,
   QUOTA_ERROR_PATTERNS,
   RETRYABLE_ERROR_PATTERNS,

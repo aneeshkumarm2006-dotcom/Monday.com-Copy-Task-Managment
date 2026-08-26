@@ -17,6 +17,15 @@ import * as goalService from '../../../services/goalService';
  * Deleting ARCHIVES by default. Losing a chip is a nuisance; losing a number
  * somebody already reported to a client is not, so the hard delete is a second,
  * explicit confirmation that names how many rows hold a value.
+ *
+ * ---- `prefill` and `onAdded` -----------------------------------------------
+ *
+ * Both optional, both additive, and both exist for one caller: the connector
+ * field-mapping panel's "Add a column for this". Somebody looking at "Search
+ * volume — nowhere to put it" should get a column named and typed to match in
+ * one step, and be bound to it without hunting for it in a second dropdown. So
+ * the panel opens this modal already filled in and takes the created column
+ * back. Every existing caller passes neither and behaves exactly as before.
  */
 const COLUMN_KINDS = [
   { type: 'text', label: 'Text', example: 'A note, a name, anything short' },
@@ -27,10 +36,24 @@ const COLUMN_KINDS = [
   { type: 'person', label: 'Person', example: 'Who is on it' },
 ];
 
-const GoalColumnsModal = ({ boardId, columns = [], onClose, onChanged }) => {
+const GoalColumnsModal = ({
+  boardId,
+  columns = [],
+  onClose,
+  onChanged,
+  // { name, type } — opens straight into the add form with those filled in.
+  prefill = null,
+  // Called with the column that was just created, so a caller can bind to it.
+  onAdded,
+}) => {
   const [rows, setRows] = useState(columns);
-  const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState({ name: '', type: 'text', required: false, options: '' });
+  const [adding, setAdding] = useState(!!prefill);
+  const [draft, setDraft] = useState({
+    name: prefill?.name || '',
+    type: prefill?.type || 'text',
+    required: false,
+    options: '',
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [confirmPurge, setConfirmPurge] = useState(null);
@@ -64,11 +87,17 @@ const GoalColumnsModal = ({ boardId, columns = [], onClose, onChanged }) => {
             .map((label, i) => ({ id: `${i}_${label.toLowerCase()}`, label, order: i })),
         }
         : undefined;
+      // Which ids existed before, so the new column can be handed back to a
+      // caller that wants to bind to it. The server returns the whole list and
+      // does not single the new one out.
+      const before = new Set(rows.map((c) => String(c._id)));
       const next = await goalService.addGoalColumn(boardId, {
         name: draft.name.trim(), type: draft.type, required: draft.required, settings,
       });
       setAdding(false);
       setDraft({ name: '', type: 'text', required: false, options: '' });
+      const added = next.find((c) => !before.has(String(c._id)));
+      if (added) onAdded?.(added);
       return next;
     });
   };

@@ -8,8 +8,15 @@ import GoalsSummaryStrip from './GoalsSummaryStrip';
 import GoalGroupSection from './GoalGroupSection';
 import GoalFormModal from './GoalFormModal';
 import GoalColumnsModal from './GoalColumnsModal';
+import GoalLinkModal from './GoalLinkModal';
 import UnclosedMonthBanner from './UnclosedMonthBanner';
 import * as goalService from '../../../services/goalService';
+import {
+  getGoalLinks,
+  setGoalLink,
+  clearGoalLink,
+  acceptGoalSuggestions,
+} from '../../../services/connectorService';
 import { loadGoalPrefs, saveGoalPrefs } from '../../../utils/goalDisplay';
 import { applyGoalOrder } from '../../../utils/goalOrder';
 import useTaskStore from '../../../store/taskStore';
@@ -42,6 +49,11 @@ const GoalsTab = ({
   canTrack = false,
   canManage = false,
   canManageColumns = false,
+  // `connector.manage` on this board. Only decides whether the link control is
+  // offered — pointing a goal at a keyword is connector wiring and writes
+  // nothing to a goal, so it is deliberately NOT one of the goal capabilities
+  // above. Every write below is gated again server-side.
+  canLinkConnector = false,
   onGoalsChanged,
 }) => {
   const [data, setData] = useState(null);
@@ -57,6 +69,19 @@ const GoalsTab = ({
   const [saving, setSaving] = useState(false);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
+
+  /**
+   * The connector half. Deliberately its OWN piece of state and its own request
+   * rather than folded into `getGoals`: the goals payload is what every tracker
+   * board needs, and most of them have no connector at all. A board with none
+   * gets `{ links: [] }` and renders identically, and a connector endpoint that
+   * failed must never be able to blank the goals table.
+   */
+  const [linkData, setLinkData] = useState(null);
+  const [linkFor, setLinkFor] = useState(null);   // the goal whose modal is open
+  const [linkSaving, setLinkSaving] = useState(false);
+  const [linkError, setLinkError] = useState(null);
+  const [acceptingGoalId, setAcceptingGoalId] = useState(null);
 
   const boardRefreshSignal = useTaskStore((s) => s.boardRefreshSignal);
   const boardRefreshTarget = useTaskStore((s) => s.boardRefreshTarget);
@@ -82,6 +107,25 @@ const GoalsTab = ({
 
   useEffect(() => { fetchGoals(); }, [fetchGoals]);
 
+  /**
+   * The links for this month, and what a link can be made against.
+   *
+   * Swallows its own failure on purpose. A 403 here means the person cannot see
+   * connectors, which is information rather than an error, and a provider plane
+   * that is having a bad day must not take the goals table down with it — the
+   * chips simply do not appear.
+   */
+  const fetchLinks = useCallback(async () => {
+    if (!boardId || !monthKey) return;
+    try {
+      setLinkData(await getGoalLinks(boardId, monthKey));
+    } catch {
+      setLinkData(null);
+    }
+  }, [boardId, monthKey]);
+
+  useEffect(() => { fetchLinks(); }, [fetchLinks]);
+
   // Drop the old board's rows the instant the board changes. Two reasons, and
   // the second is the subtle one: the collapse-on-open effect below keys off
   // `data`, so leaving the previous board's groups in state lets THEM satisfy
@@ -104,7 +148,14 @@ const GoalsTab = ({
   // same reason as DeliveryTab: five quick edits must not fire five refetches.
   useEffect(() => {
     if (boardRefreshTarget !== boardId) return undefined;
-    const t = setTimeout(() => fetchGoals({ quiet: true }), 1500);
+    const t = setTimeout(() => {
+      fetchGoals({ quiet: true });
+      // The runner writes goals AND links in the same pass, so a refresh that
+      // reloaded only the rows would show new numbers with stale provenance —
+      // and an offer that had just been superseded would sit there until the
+      // next reload.
+      fetchLinks();
+    }, 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardRefreshSignal]);
@@ -215,6 +266,66 @@ const GoalsTab = ({
     }
   };
 
+  // ---- Connector links ------------------------------------------------------
+
+  /** goalId → its link, so a row is a lookup rather than a scan per render. */
+  const linksByGoal = useMemo(
+    () => new Map((linkData?.links || []).map((l) => [String(l.goal), l])),
+    [linkData]
+  );
+
+  const saveLink = async (payload) => {
+    setLinkSaving(true);
+    setLinkError(null);
+    try {
+      await setGoalLink(linkFor._id, payload);
+      setLinkFor(null);
+      await fetchLinks();
+    } catch (err) {
+      setLinkError(err?.response?.data?.error || 'Could not link that goal.');
+    } finally {
+      setLinkSaving(false);
+    }
+  };
+
+  const unlink = async () => {
+    setLinkSaving(true);
+    setLinkError(null);
+    try {
+      await clearGoalLink(linkFor._id);
+      setLinkFor(null);
+      await fetchLinks();
+    } catch (err) {
+      setLinkError(err?.response?.data?.error || 'Could not unlink that goal.');
+    } finally {
+      setLinkSaving(false);
+    }
+  };
+
+  /**
+   * Take the connector's numbers for a row it is no longer allowed to write to.
+   *
+   * Reports BOTH halves, because the server gates each field on what its target
+   * implies: somebody who can report the month but not redefine it gets the rank
+   * and not the starting point, in one call. Saying "3 accepted" while silently
+   * dropping the fourth is how a permission model becomes folklore.
+   */
+  const acceptSuggestions = async (goal) => {
+    setAcceptingGoalId(goal._id);
+    try {
+      const res = await acceptGoalSuggestions(goal._id);
+      await Promise.all([fetchGoals({ quiet: true }), fetchLinks()]);
+      onGoalsChanged?.();
+      if (res.refused?.length) {
+        toastError(res.refused[0].reason);
+      }
+    } catch (err) {
+      toastError(err?.response?.data?.error || 'Could not accept that value.');
+    } finally {
+      setAcceptingGoalId(null);
+    }
+  };
+
   const submitGoal = async (payload) => {
     setSaving(true);
     setFormErrors([]);
@@ -306,6 +417,16 @@ const GoalsTab = ({
               onDelete={setPendingDelete}
               onAdd={(g) => { setFormErrors([]); setFormFor({ group: g }); }}
               onReorder={canManage ? reorderGoalsInGroup : undefined}
+              linksByGoal={linksByGoal}
+              // Both answers come from the SERVER's own resolution against the
+              // live board, falling back to what the page loaded. Hiding a
+              // control was never the enforcement anyway — every write is gated
+              // again server-side.
+              canLink={linkData ? !!linkData.canManage : canLinkConnector}
+              canAccept={linkData ? !!linkData.canTrack : canTrack}
+              acceptingGoalId={acceptingGoalId}
+              onLink={(goal) => { setLinkError(null); setLinkFor(goal); }}
+              onAcceptSuggestions={acceptSuggestions}
             />
           </div>
         ))
@@ -338,6 +459,23 @@ const GoalsTab = ({
           initial={formFor.goal}
           saving={saving}
           serverErrors={formErrors}
+        />
+      )}
+
+      {linkFor && (
+        <GoalLinkModal
+          open
+          goal={linkFor}
+          groupName={groups.find((g) => String(g._id) === String(linkFor.group))?.name}
+          monthLabel={monthLabel}
+          link={linksByGoal.get(String(linkFor._id)) || null}
+          sources={linkData?.sources || []}
+          mappedFields={linkData?.mappedFields || []}
+          saving={linkSaving}
+          error={linkError}
+          onClose={() => setLinkFor(null)}
+          onSave={saveLink}
+          onUnlink={unlink}
         />
       )}
 

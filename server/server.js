@@ -22,6 +22,9 @@ const {
 const { mountMirrorRefresh } = require('./src/services/mirrorRefresh');
 const notificationStream = require('./src/services/notificationStream');
 const { startInboundMailPoller } = require('./src/services/inboundMailPoller');
+const {
+  startConnectorSyncRunner,
+} = require('./src/services/connectorSyncRunner');
 const connectorCrypto = require('./src/utils/connectorCrypto');
 const { checkRegistry } = require('./src/services/connectors');
 
@@ -62,6 +65,10 @@ const start = async () => {
   startAutomationRunner();
   startGoalReminderRunner();
   reportConnectorReadiness();
+  // Hourly tick, weekly WORK — the freshness decision is per (project, kind) and
+  // lives in the snapshot service, so a missed window is caught within the hour
+  // instead of within the week. See the runner's header.
+  startConnectorSyncRunner();
   // Non-critical: never let the optional email poller block the server booting.
   try {
     startInboundMailPoller();

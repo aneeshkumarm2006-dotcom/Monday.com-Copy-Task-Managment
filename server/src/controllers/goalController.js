@@ -23,6 +23,7 @@
 const mongoose = require('mongoose');
 const Board = require('../models/Board');
 const Goal = require('../models/Goal');
+const GoalConnectorLink = require('../models/GoalConnectorLink');
 const TaskGroup = require('../models/TaskGroup');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const {
@@ -516,6 +517,12 @@ const deleteGoal = async (req, res) => {
     const loaded = await gateByGoal(req, res, 'goal.manage');
     if (!loaded) return undefined;
     await Goal.deleteOne({ _id: loaded.goal._id });
+    // The connector link goes with it. Unlike a mirrored project — which is
+    // unbound and kept, because it parents a rank history worth more than the
+    // mapping — a link is nothing but a reference to this row plus the record of
+    // which of its cells the connector owned. With the row gone there is nothing
+    // for either half to be about.
+    await GoalConnectorLink.deleteOne({ goal: loaded.goal._id });
     return res.json({ deleted: true });
   } catch (err) {
     console.error('deleteGoal error:', err);

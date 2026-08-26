@@ -97,3 +97,345 @@ export const setBoardConnector = async (boardId, provider, payload) => {
   );
   return data.connector;
 };
+
+// ---- Board plane — the project mirror --------------------------------------
+
+/**
+ * The provider's projects as we last mirrored them, plus their group bindings.
+ *
+ * Reads OUR database, never the provider: rendering the Add-ons tab must not
+ * spend a quota that is shared by the whole workspace, or one person with the
+ * tab open would exhaust the week for everybody. Only `refreshConnectorProjects`
+ * below reaches out.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @returns {Promise<{projects: Array, accounts: Array, canManage: boolean}>}
+ */
+export const getConnectorProjects = async (boardId, provider) => {
+  const { data } = await api.get(
+    `/api/boards/${boardId}/connectors/${provider}/projects`,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
+ * Re-read the project list from the provider. Spends quota, so it is a button
+ * and never an effect.
+ *
+ * Resolves even when some accounts failed — the pool is plural and each account
+ * has its own quota and its own grant, so `report.accounts` carries a row per
+ * account and the caller decides what to say about it.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @returns {Promise<{projects: Array, report: Object}>}
+ */
+export const refreshConnectorProjects = async (boardId, provider) => {
+  const { data } = await api.post(
+    `/api/boards/${boardId}/connectors/${provider}/projects/refresh`,
+    {},
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
+ * Bind a project to one of this board's groups, or pass null to unbind it.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {string} projectId
+ * @param {string|null} groupId
+ * @returns {Promise<Object>} the updated project
+ */
+export const setConnectorProjectGroup = async (
+  boardId,
+  provider,
+  projectId,
+  groupId
+) => {
+  const { data } = await api.put(
+    `/api/boards/${boardId}/connectors/${provider}/projects/${projectId}`,
+    { group: groupId },
+    { suppressErrorToast: true }
+  );
+  return data.project;
+};
+
+// ---- Board plane — the data ------------------------------------------------
+
+/**
+ * Everything the connector data tab renders, out of OUR database.
+ *
+ * Nothing here contacts the provider. That is the load-bearing property of this
+ * whole feature: quota is finite and shared across the entire workspace, so a
+ * tab that fetched on mount would let ten people with a browser open spend the
+ * week on page loads — and would put a third-party outage between somebody and
+ * data we already hold. Only `refreshConnectorData` and `runConnectorAction`
+ * below reach out, and both are buttons.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {Object} [params]
+ * @param {string} [params.project] - a ConnectorProject id; defaults server-side
+ *   to the first project mapped on this board
+ * @param {string} [params.variant] - a rank-tracking variant, `desktop|en|2840`
+ * @param {string} [params.from] - `YYYY-MM-DD`
+ * @param {string} [params.to] - `YYYY-MM-DD`
+ * @param {string} [params.keyword] - adds that one keyword's stored history,
+ *   which is the series the provider's own API cannot produce at all
+ * @returns {Promise<Object>}
+ */
+export const getConnectorData = async (boardId, provider, params = {}) => {
+  const query = new URLSearchParams(
+    Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')
+  ).toString();
+  const { data } = await api.get(
+    `/api/boards/${boardId}/connectors/${provider}/data${query ? `?${query}` : ''}`,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
+ * Collect now instead of waiting for the weekly pass. SPENDS QUOTA.
+ *
+ * Resolves even when some accounts failed — the pool is plural and each account
+ * has its own quota and its own grant, so `report.accounts` carries a row per
+ * account and the caller decides what to say about it.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {{project?: string, kinds?: string[]}} [payload] - omit `project` to
+ *   refresh every project mapped on this board
+ * @returns {Promise<{report: Object}>}
+ */
+export const refreshConnectorData = async (boardId, provider, payload = {}) => {
+  const { data } = await api.post(
+    `/api/boards/${boardId}/connectors/${provider}/refresh`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
+ * Run one of the provider's user-triggered actions — today, starting a
+ * site-audit crawl.
+ *
+ * Kept apart from the scheduled read because a crawl is minutes of somebody
+ * else's compute and is capped by plan; it is deliberately something the weekly
+ * runner never starts on its own. The result usually says "started" rather than
+ * carrying a finished audit — a crawl takes a few minutes and lands on a later
+ * refresh.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {string} projectId
+ * @param {string} action - a key from the connector's `availableActions`
+ * @returns {Promise<{action: string, status: string, note: string}>}
+ */
+export const runConnectorAction = async (boardId, provider, projectId, action) => {
+  const { data } = await api.post(
+    `/api/boards/${boardId}/connectors/${provider}/projects/${projectId}/actions/${action}`,
+    {},
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+// ---- Board plane — field mapping -------------------------------------------
+
+/**
+ * The mapping panel's whole payload: the provider's field catalog, this board's
+ * targets, the refusals, and the mappings that already exist.
+ *
+ * Reads our own database and the descriptor's static catalog — nothing here
+ * contacts the provider, which is why it sits on `connector.view` alongside the
+ * data read and is safe on every render.
+ *
+ * The REFUSALS are the part worth understanding. `fields[i].refusals` is keyed
+ * by target id and carries the SENTENCE explaining why that field cannot go
+ * there; a target with no entry is allowed. The client must never re-derive that
+ * rule — it comes out of the same `checkCompatibility` the save path uses, so
+ * the option the panel greys out and the save the server would reject are one
+ * decision made once. Two implementations of a rule agree until they quietly do
+ * not.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @returns {Promise<{fields: Array, targets: Array, builtins: Array, mappings: Array, canManage: boolean}>}
+ */
+export const getConnectorFields = async (boardId, provider) => {
+  const { data } = await api.get(
+    `/api/boards/${boardId}/connectors/${provider}/fields`,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
+ * Bind one provider field to one place on the goal, replacing whatever it was
+ * bound to before.
+ *
+ * `targetId` is the flattened wire form — `column:<goalColumnId>` or
+ * `builtin:<key>` — which is why the panel can use it straight as a `Dropdown`
+ * value. A column is always named by its `_id` and never by its key: the boards
+ * in this workspace use disjoint column ids and disagree about the spelling of
+ * the difficulty key, so a slug would bind on one board and silently miss on
+ * the others.
+ *
+ * Rejects with a readable sentence when the types do not fit. That refusal is
+ * the point of the endpoint: an incompatible mapping breaks nothing at save
+ * time and everything at 3am, where the only symptom is a cell that never fills.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {string} field - a key from the catalog
+ * @param {{targetId: string, autoFill?: boolean}} payload
+ * @returns {Promise<Object>} the saved mapping
+ */
+export const setConnectorFieldMapping = async (boardId, provider, field, payload) => {
+  const { data } = await api.put(
+    `/api/boards/${boardId}/connectors/${provider}/fields/${field}`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data.mapping;
+};
+
+/**
+ * Unbind a field. Nothing already written is touched — a value the connector
+ * put in a cell is a real reading somebody may have reported to a client, and
+ * removing the wiring is not a statement about it. Only the future stops.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {string} field
+ */
+export const clearConnectorFieldMapping = async (boardId, provider, field) => {
+  const { data } = await api.delete(
+    `/api/boards/${boardId}/connectors/${provider}/fields/${field}`,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+// ---- Board plane — goal links and writeback ---------------------------------
+
+/**
+ * Every goal link for one month, plus what a link can be made against.
+ *
+ * Reads our own database and the descriptor's static catalog — nothing here
+ * contacts the provider, which is why the Goals tab can ask on every render.
+ * The KEYWORD LISTS in particular come out of the newest stored rank snapshot
+ * rather than from a live call, so the picker opens instantly, spends no quota,
+ * and still works during a provider outage. The cost is that a keyword added at
+ * the provider since the last collection is not in the list — which is why the
+ * link accepts a free-typed phrase too.
+ *
+ * @param {string} boardId
+ * @param {string} monthKey - 'YYYY-MM'
+ * @param {{provider?: string}} [opts]
+ * @returns {Promise<{links: Array, sources: Array, mappedFields: Array,
+ *   canManage: boolean, canTrack: boolean, canManageGoals: boolean}>}
+ */
+export const getGoalLinks = async (boardId, monthKey, { provider } = {}) => {
+  const { data } = await api.get(`/api/boards/${boardId}/goal-links`, {
+    params: { month: monthKey, ...(provider ? { provider } : {}) },
+    suppressErrorToast: true,
+  });
+  return data;
+};
+
+/**
+ * Point one goal at one tracked keyword, replacing whatever it was pointed at.
+ *
+ * The keyword is OPTIONAL and a link without one is a real link: it binds the
+ * goal to its group's project and fills the PROJECT-scoped fields (organic
+ * traffic, domain authority, health score) and nothing else. Keyword-scoped
+ * fields — rank, volume, difficulty — need the phrase, because a rank is a fact
+ * about one keyword and a project tracks hundreds.
+ *
+ * `connector.manage`, not `goal.manage`: this writes nothing to a goal. It is
+ * the same act as saying which project feeds which group.
+ *
+ * @param {string} goalId
+ * @param {{provider: string, keyword?: string|null, variant?: string|null,
+ *   autoFill?: boolean}} payload
+ * @returns {Promise<{link: Object, project: Object}>}
+ */
+export const setGoalLink = async (goalId, payload) => {
+  const { data } = await api.put(
+    `/api/goals/${goalId}/connector-link`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
+ * Unlink. Nothing already written is touched — a value the connector put in a
+ * cell is a real reading somebody may have reported to a client, and removing
+ * the wiring is not a statement about it.
+ *
+ * The PROVENANCE goes with it, which is the one consequence worth knowing:
+ * re-linking the same goal later starts a fresh link, whose first run claims the
+ * cells again.
+ *
+ * @param {string} goalId
+ */
+export const clearGoalLink = async (goalId) => {
+  const { data } = await api.delete(`/api/goals/${goalId}/connector-link`, {
+    suppressErrorToast: true,
+  });
+  return data;
+};
+
+/**
+ * "Ubersuggest says 1,400 — accept?" Says yes.
+ *
+ * Resolves with BOTH halves: `accepted` and `refused`. Each field is gated on
+ * what its target implies — `goal.track` for a result, `goal.manage` for
+ * anything that changes what was promised — so somebody who can report the month
+ * but not redefine it gets the rank and not the starting point, in one call.
+ * Refusing five acceptable values because a sixth needed a higher rung would be
+ * a worse answer than doing the five.
+ *
+ * @param {string} goalId
+ * @param {string[]} [fields] - omit for every outstanding suggestion
+ * @returns {Promise<{accepted: Array, refused: Array, link: Object, goal: Object}>}
+ */
+export const acceptGoalSuggestions = async (goalId, fields) => {
+  const { data } = await api.post(
+    `/api/goals/${goalId}/connector-link/accept`,
+    fields?.length ? { fields } : {},
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
+ * Fill the linked goals now, from data we already hold. SPENDS NO QUOTA.
+ *
+ * A different and much cheaper button from `refreshConnectorData` above it: that
+ * one calls the provider, this one only decides where what was already collected
+ * goes. It runs with the CALLER as the principal, which is why a person holding
+ * `goal.manage` gets their starting points filled where the weekly pass — which
+ * has nobody behind it — would only have offered them.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {{month?: string}} [payload]
+ * @returns {Promise<{report: Object}>}
+ */
+export const runConnectorWriteback = async (boardId, provider, payload = {}) => {
+  const { data } = await api.post(
+    `/api/boards/${boardId}/connectors/${provider}/writeback`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data.report;
+};

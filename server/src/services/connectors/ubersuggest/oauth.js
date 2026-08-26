@@ -6,6 +6,7 @@ const {
   FALLBACK_AUTHORIZATION_ENDPOINT,
   FALLBACK_TOKEN_ENDPOINT,
   CLIENT_ID,
+  LOGIN_URL,
   SCOPES,
   HTTP_TIMEOUT_MS,
 } = require('./constants');
@@ -114,6 +115,44 @@ const createState = () => crypto.randomBytes(24).toString('base64url');
 /**
  * Build the URL to send the admin's browser to.
  *
+ * ## Why this returns a LOGIN url and not the authorization url
+ *
+ * Sending an unauthenticated browser straight at the authorization endpoint
+ * fails with a CloudFront **414 URI Too Long**, and it is worth writing down why
+ * because the cause is not obvious and the obvious "simplification" brings it
+ * straight back.
+ *
+ * Ubersuggest's authorization server handles a logged-out visitor by bouncing to
+ * its own login page and packing THE ENTIRE authorize URL into a `next=` query
+ * parameter — url-encoded. Observed 2026-08-26:
+ *
+ *     /authorize?…                          (ours, 464 chars)
+ *       -> app.neilpatel.com/api/oauth2/auth?…
+ *       -> /en/login?next=<the whole thing, encoded>   (512 chars)
+ *
+ * That handoff does not stick. The browser comes back from login, is judged
+ * unauthenticated again, and is bounced again — only now the URL being packed
+ * away already CONTAINS an encoded copy of itself, so every `/` that was `%2F`
+ * becomes `%252F`. Each bounce roughly doubles the length. From our 512-char
+ * start it takes four bounces to cross CloudFront's 8192-byte limit, and the
+ * user sees a bare 414 error page on neilpatel.com with no way back.
+ *
+ * Trimming the request only buys time: dropping to four scopes and a short
+ * callback path gets the start down to 430 chars, which is one extra bounce and
+ * still fails. The growth is geometric, so nothing we can shorten wins.
+ *
+ * So we do the login handoff ourselves, once, explicitly. `/en/login?next=<our
+ * authorize url>` returns a plain 200 login page — no redirect of its own, so
+ * nothing nests. After signing in, the user is delivered to the authorize
+ * endpoint WITH a live session, which is the state that works. A user who is
+ * already signed in passes through it.
+ *
+ * This is a workaround for a provider bug, and it lives here rather than in the
+ * generic connector interface because it is Ubersuggest's bug alone. If they fix
+ * the nesting, this whole wrapper can be deleted and the function can return
+ * `url.toString()` directly — but verify with a logged-out browser first,
+ * because that is the only state in which the bug appears.
+ *
  * @param {Object} args
  * @param {string} args.redirectUri - must match the token request exactly
  * @param {string} args.state
@@ -141,7 +180,11 @@ const buildAuthorizeUrl = async ({
   // token to the resource it is for is both supported and free.
   url.searchParams.set('resource', MCP_ENDPOINT);
 
-  return url.toString();
+  // The explicit login hop. See the note above — without this an unauthenticated
+  // browser 414s, and with it the flow is one predictable redirect.
+  const login = new URL(LOGIN_URL);
+  login.searchParams.set('next', url.toString());
+  return login.toString();
 };
 
 // ---------------------------------------------------------------------------

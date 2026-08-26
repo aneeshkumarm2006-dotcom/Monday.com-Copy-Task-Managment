@@ -1,8 +1,9 @@
-import { AlertTriangle, Trash2, Pencil } from 'lucide-react';
+import { AlertTriangle, Trash2, Pencil, Link2 } from 'lucide-react';
 import GoalValueCell from './GoalValueCell';
 import GoalProgressBar from './GoalProgressBar';
 import GoalOutcomeBadge from './GoalOutcomeBadge';
 import GoalMoveMenu from './GoalMoveMenu';
+import GoalConnectorChip from './GoalConnectorChip';
 import { cellComponentFor } from '../columns';
 import { formatGoalValue, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
 
@@ -35,7 +36,9 @@ const Field = ({ label, children }) => (
 const GoalMobileCard = ({
   goal, columns = [], typeSpec, canTrack, canManage, monthClosable = false,
   index = 0, rowCount = 0, sortActive = false,
-  onPatch, onEdit, onDelete, onMove,
+  // Connector, all optional — a board without one renders exactly as before.
+  link = null, canLink = false, canAccept = false, accepting = false,
+  onPatch, onEdit, onDelete, onMove, onLink, onAcceptSuggestions,
 }) => {
   const c = goal.computed || {};
   const usesDate = (typeSpec?.actualField?.key || (goal.type === 'deadline' ? 'actualDayKey' : 'actual')) === 'actualDayKey';
@@ -78,12 +81,33 @@ const GoalMobileCard = ({
           <p className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
             {typeSpec?.label || goal.type}
           </p>
+          {/* Same chip as the desktop row, and the same rule: silent until this
+              goal is actually about something. */}
+          <GoalConnectorChip
+            link={link}
+            canAccept={canAccept}
+            accepting={accepting}
+            onAccept={() => onAcceptSuggestions?.(goal)}
+          />
         </div>
-        {canManage && (
+        {(canManage || canLink) && (
           <div className="flex gap-1 shrink-0">
+            {canLink && (
+              <button
+                type="button"
+                onClick={() => onLink?.(goal)}
+                aria-label={link ? 'Change what this goal is linked to' : 'Link this goal to a tracked keyword'}
+                className="p-1.5"
+              >
+                <Link2
+                  size={15}
+                  color={link ? 'var(--color-accent)' : 'var(--color-text-muted)'}
+                />
+              </button>
+            )}
             {/* Same control, same shared write as the desktop row — a phone is
                 not a reason to be handed a different set of verbs. */}
-            {onMove && (
+            {canManage && onMove && (
               <GoalMoveMenu
                 index={index}
                 count={rowCount}
@@ -94,12 +118,16 @@ const GoalMobileCard = ({
                 className="p-1.5"
               />
             )}
-            <button type="button" onClick={() => onEdit(goal)} aria-label="Edit goal" className="p-1.5">
-              <Pencil size={15} color="var(--color-text-secondary)" />
-            </button>
-            <button type="button" onClick={() => onDelete(goal)} aria-label="Delete goal" className="p-1.5">
-              <Trash2 size={15} color="var(--color-status-stuck)" />
-            </button>
+            {canManage && (
+              <>
+                <button type="button" onClick={() => onEdit(goal)} aria-label="Edit goal" className="p-1.5">
+                  <Pencil size={15} color="var(--color-text-secondary)" />
+                </button>
+                <button type="button" onClick={() => onDelete(goal)} aria-label="Delete goal" className="p-1.5">
+                  <Trash2 size={15} color="var(--color-status-stuck)" />
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

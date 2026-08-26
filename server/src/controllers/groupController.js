@@ -9,6 +9,8 @@ const ClientContact = require('../models/ClientContact');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
 const Goal = require('../models/Goal');
+const GoalConnectorLink = require('../models/GoalConnectorLink');
+const ConnectorProject = require('../models/ConnectorProject');
 const eventBus = require('../services/eventBus');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { requireFeature } = require('../utils/userFeatures');
@@ -485,8 +487,20 @@ const deleteGroup = async (req, res) => {
     // this query, so it is never touched) and disable only the ones the pull
     // actually emptied.
     await TrackerEntry.deleteMany({ group: id });
-    // A goal belongs to exactly one group, so deleting the group deletes them.
+    // A goal belongs to exactly one group, so deleting the group deletes them —
+    // and a connector link is nothing but a reference to a goal plus the record
+    // of which of its cells the connector owned, so it goes with them.
     await Goal.deleteMany({ group: id });
+    await GoalConnectorLink.deleteMany({ group: id });
+    // Connector projects are UNBOUND, never deleted. The row mirrors something
+    // that still exists inside the provider and is the parent of every
+    // ConnectorSnapshot ever taken for that domain — deleting the group is a
+    // statement about this board, not about the client's rank history. The
+    // project simply returns to the pool and can be mapped somewhere else.
+    await ConnectorProject.updateMany(
+      { group: id },
+      { $set: { group: null, board: null, boundBy: null, boundAt: null } }
+    );
     const scopedTrackerIds = await Tracker.distinct('_id', {
       board: group.board,
       groups: id,

@@ -11,6 +11,10 @@ const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
 const Goal = require('../models/Goal');
 const GoalReminder = require('../models/GoalReminder');
+const BoardConnector = require('../models/BoardConnector');
+const ConnectorProject = require('../models/ConnectorProject');
+const ConnectorFieldMapping = require('../models/ConnectorFieldMapping');
+const GoalConnectorLink = require('../models/GoalConnectorLink');
 const Organisation = require('../models/Organisation');
 const User = require('../models/User');
 const { isBoardCreator } = require('../utils/boardAccess');
@@ -633,11 +637,33 @@ const deleteBoard = async (req, res) => {
     // that is about to go.
     await Goal.deleteMany({ board: id });
     await GoalReminder.deleteMany({ board: id });
+    // The connector links go with the goals they name, for the same reason the
+    // field mappings below go with the columns they name: a link with no goal is
+    // a dangling reference, not history worth keeping.
+    await GoalConnectorLink.deleteMany({ board: id });
     // Group notes. They were missing from this cascade entirely — `Note` was
     // only ever deleted by groupController's DELETE GROUP, so removing a board
     // outright left every note on it orphaned in the collection forever. The
     // denormalised `board` field is exactly what makes this a one-liner.
     await Note.deleteMany({ board: id });
+    // Connectors. The per-board enablement row goes with the board it describes;
+    // the mirrored PROJECTS do not — they belong to the org's external account,
+    // not to this board, and are simply unbound so they can be mapped elsewhere.
+    // Deleting them would discard the ConnectorSnapshot rows they parent — the
+    // only per-keyword rank history that will ever exist — in response to a
+    // board being tidied away. The snapshots are untouched here for the same
+    // reason: they hang off the PROJECT, not off this board.
+    await BoardConnector.deleteMany({ board: id });
+    // The field mappings go too, and for the opposite reason to the projects
+    // below: a mapping names a `goalColumns[]._id` that lives ON this board
+    // document, so once the board is gone it points at nothing and could never
+    // be re-pointed. Keeping it would be keeping a dangling reference, not
+    // keeping history.
+    await ConnectorFieldMapping.deleteMany({ board: id });
+    await ConnectorProject.updateMany(
+      { board: id },
+      { $set: { group: null, board: null, boundBy: null, boundAt: null } }
+    );
     // The board vault: key material, item ciphertexts, the audit trail, and the
     // encrypted blobs behind any file items. See services/vaultCascade.js for
     // why a surviving vault is worse than the usual orphan.

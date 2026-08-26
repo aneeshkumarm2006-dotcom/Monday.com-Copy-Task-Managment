@@ -25,6 +25,8 @@ import {
   CalendarRange,
   Users,
   ShieldCheck,
+  Blocks,
+  Activity,
 } from 'lucide-react';
 import {
   DndContext,
@@ -73,6 +75,9 @@ import BoardTimezoneModal from '../components/board/BoardTimezoneModal';
 import GoalsTab from '../components/board/goals/GoalsTab';
 import ScoreboardTab from '../components/board/scoreboard/ScoreboardTab';
 import VaultTab from '../components/vault/VaultTab';
+import AddonsTab from '../components/board/addons/AddonsTab';
+import ConnectorDataTab from '../components/board/addons/connector/ConnectorDataTab';
+import useBoardConnectors from '../hooks/useBoardConnectors';
 import MonthSelector from '../components/board/MonthSelector';
 import MoveToMonthModal from '../components/board/MoveToMonthModal';
 import useBoardMonths from '../hooks/useBoardMonths';
@@ -155,6 +160,27 @@ const VIEW_TABS = [
   // what makes the tab bar appear there for the first time. That is intended:
   // the bar exists to switch between views, and there are now two.
   { value: 'vault', label: 'Vault', icon: ShieldCheck, visible: (g) => g.canViewVault },
+  // Add-ons is the BOARD half of connectors — which external projects feed which
+  // group. The ACCOUNT half lives in Settings, once, for the whole workspace.
+  // Tracker-only, like Delivery and Goals: a connector pulls a time series into
+  // a month-partitioned board, and there is nowhere for it to land otherwise.
+  { value: 'addons', label: 'Add-ons', icon: Blocks, visible: (g) => g.canViewAddons },
+  // The DATA half of connectors — the readings themselves, as opposed to
+  // Add-ons, which is the wiring. It appears only once a connector is actually
+  // switched on for this board, because until then there is nothing in it.
+  //
+  // One entry, not one per provider: `connectorProvider` below names whichever
+  // connector is enabled, and the tab renders its sections from the kind catalog
+  // the SERVER sends. A second provider is a second entry here and no change to
+  // the tab. A board with two enabled connectors shows the first; splitting them
+  // into two tabs is the change to make when that actually happens rather than
+  // in anticipation of it.
+  {
+    value: 'connector',
+    label: (g) => g.connectorLabel || 'Data',
+    icon: Activity,
+    visible: (g) => g.canViewAddons && !!g.connectorProvider,
+  },
 ];
 
 const BoardDetailPage = () => {
@@ -468,6 +494,26 @@ const BoardDetailPage = () => {
   // server's answer rather than this flag.
   const canViewVault = canOnBoard('vault.view');
 
+  // Add-ons: board type AND capability, the same shape as Delivery and Goals.
+  //
+  // `connector.view` sits on the bottom rung of the board ladder because nothing
+  // this tab renders costs anything — every row comes out of our own database.
+  // Reaching the provider is `connector.manage`, and the tab asks the server for
+  // that answer rather than trusting this flag: mapping a project decides whose
+  // numbers land on whose row, and Refresh spends a quota shared by the whole
+  // workspace.
+  const canViewAddons = isTrackerBoard && canOnBoard('connector.view');
+  const canManageConnectors = canViewAddons && canOnBoard('connector.manage');
+
+  // Which connectors this board has switched on. Reads our own database only —
+  // that is why `connector.view` is on the bottom rung of the board ladder and
+  // why this is safe on every board load. Gated on `canViewAddons` so a standard
+  // board, or a reader without the capability, makes no request at all.
+  const { enabledConnectors } = useBoardConnectors(boardId, { enabled: canViewAddons });
+  const activeConnector = enabledConnectors[0] || null;
+  const connectorProvider = activeConnector?.name || null;
+  const connectorLabel = activeConnector?.label || null;
+
   // Converting a board changes what it IS, so it answers to the same capability
   // as flipping public/private rather than to an ordinary edit right. Client
   // boards are refused by the server and get no button here.
@@ -482,13 +528,31 @@ const BoardDetailPage = () => {
 
   // Which tabs exist on this board, resolved once so the bar and the view
   // validation below cannot disagree about it.
-  const visibleTabs = useMemo(
-    () =>
-      VIEW_TABS.filter((t) =>
-        t.visible({ canViewDelivery, canViewGoals, canViewScoreboard, canViewVault })
-      ),
-    [canViewDelivery, canViewGoals, canViewScoreboard, canViewVault]
-  );
+  const visibleTabs = useMemo(() => {
+    const gate = {
+      canViewDelivery,
+      canViewGoals,
+      canViewScoreboard,
+      canViewVault,
+      canViewAddons,
+      connectorProvider,
+      connectorLabel,
+    };
+    return (
+      VIEW_TABS.filter((t) => t.visible(gate))
+        // A tab may name itself from the gate — the connector tab is titled
+        // after whichever provider is switched on, so the bar reads "Ubersuggest"
+        // rather than a generic word nobody would look under. Resolved HERE
+        // rather than at the render site, because the bar renders `tab.label`
+        // straight into JSX and a function there is a runtime error.
+        .map((t) =>
+          typeof t.label === 'function' ? { ...t, label: t.label(gate) } : t
+        )
+    );
+  }, [
+      canViewDelivery, canViewGoals, canViewScoreboard, canViewVault,
+      canViewAddons, connectorProvider, connectorLabel,
+  ]);
 
   // Derived from the URL rather than mirrored into state — two sources of truth
   // for "which view am I on" is the classic bug here, and `?view=delivery` is
@@ -2130,6 +2194,11 @@ const BoardDetailPage = () => {
             canTrack={canTrackGoals}
             canManage={canManageGoals}
             canManageColumns={canManageGoalColumns}
+            // Only offers the link control on each row. Pointing a goal at a
+            // tracked keyword is connector wiring — the same act as saying which
+            // project feeds which group — and writes nothing to a goal, which is
+            // why it is `connector.manage` and not one of the three above.
+            canLinkConnector={canManageConnectors}
             onGoalsChanged={refreshMonths}
           />
         </ErrorBoundary>
@@ -2141,6 +2210,37 @@ const BoardDetailPage = () => {
               deliberately NOT kept mounted across tab switches — unmounting is
               what locks it. See VaultTab's cleanup. */}
           <VaultTab boardId={boardId} boardName={board?.name} />
+        </ErrorBoundary>
+      )}
+
+      {view === 'addons' && (
+        <ErrorBoundary label="Add-ons" resetKey={view}>
+          <AddonsTab
+            boardId={boardId}
+            // The board's own groups — mapping is project-to-GROUP, because one
+            // Ubersuggest project is one domain and this board holds a client
+            // per group.
+            groups={groups}
+            canManage={canManageConnectors}
+            // Only enables the "Add a column for this" shortcut inside the
+            // field-mapping panel — the mapping itself is `connector.manage`,
+            // because nothing about it writes to a goal. Creating a column does.
+            canManageGoalColumns={canManageGoalColumns}
+          />
+        </ErrorBoundary>
+      )}
+
+      {view === 'connector' && connectorProvider && (
+        <ErrorBoundary label={connectorLabel || 'Connector'} resetKey={view}>
+          {/* Reads snapshots out of our own database and never contacts the
+              provider — quota is finite and shared across the whole workspace,
+              and it is spent on FETCH, never on view. Refresh is a button inside
+              the tab, gated server-side on `connector.manage`. */}
+          <ConnectorDataTab
+            boardId={boardId}
+            provider={connectorProvider}
+            providerLabel={connectorLabel}
+          />
         </ErrorBoundary>
       )}
 

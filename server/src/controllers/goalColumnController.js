@@ -26,6 +26,7 @@
 
 const mongoose = require('mongoose');
 const Goal = require('../models/Goal');
+const ConnectorFieldMapping = require('../models/ConnectorFieldMapping');
 const { loadBoardContext } = require('../utils/boardContext');
 
 const COLUMN_TYPES = ['text', 'number', 'date', 'dropdown', 'link', 'person'];
@@ -241,6 +242,17 @@ const deleteGoalColumn = async (req, res) => {
         { board: board._id },
         { $unset: { [`columnValues.${req.params.cid}`]: '' } }
       );
+      // A connector field mapped to this column now names an `_id` that no
+      // longer exists. Deleted rather than left dangling: the unique partial
+      // index on `(board, target.columnId)` would otherwise reserve the dead id
+      // forever, and the mapping panel would show a binding to a column nobody
+      // can find. ARCHIVING deliberately does NOT do this — an archived column
+      // keeps its values and can be restored, so its mapping is worth keeping
+      // and the panel flags it instead.
+      await ConnectorFieldMapping.deleteMany({
+        board: board._id,
+        'target.columnId': col._id,
+      });
       return res.json({ columns: board.goalColumns, purged: true, valuedRowCount });
     }
 
