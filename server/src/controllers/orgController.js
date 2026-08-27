@@ -648,34 +648,26 @@ const setHoliday = async (req, res) => {
 
     const { date } = one.value;
 
-    // Update the matching element in place, touching only the fields the caller
-    // actually sent. Two overlapping edits to the SAME day therefore compose
-    // instead of one overwriting the other with the stale half it was holding.
-    const $set = { 'holidays.$[el].by': req.user.userId, 'holidays.$[el].at': new Date() };
-    if (req.body.name !== undefined) $set['holidays.$[el].name'] = one.value.name;
-    if (req.body.affects !== undefined) {
-      $set['holidays.$[el].affects.delivery'] = one.value.affects.delivery;
-      $set['holidays.$[el].affects.automations'] = one.value.affects.automations;
-    }
+    const current = await Organisation.findById(org._id).select('holidays').lean();
+    const list = current?.holidays || [];
 
-    const updated = await Organisation.updateOne(
-      { _id: org._id },
-      { $set },
-      { arrayFilters: [{ 'el.date': date }] }
-    );
-
-    if (updated.matchedCount === 0 || updated.modifiedCount === 0) {
-      // Not there yet. Guard the cap and push it, keeping the array sorted in
-      // the same operation so no read-modify-write is needed to stay ordered.
-      const current = await Organisation.findById(org._id).select('holidays').lean();
-      if ((current?.holidays || []).some((h) => h.date === date)) {
-        // It appeared between the two statements, or nothing needed changing.
-        return rereadAndReturn(org._id, res);
-      }
-      if ((current?.holidays || []).length >= MAX_HOLIDAYS) {
+    // ADD, when the day is not marked yet.
+    //
+    // `$push` is used rather than an `arrayFilters` upsert because it is the
+    // only one of the two that works when the `holidays` field is ABSENT — the
+    // state of every organisation created before this feature existed. Mongo
+    // rejects the other with "The path 'holidays' must exist in the document in
+    // order to apply array updates", which is a 500 on the very first click for
+    // exactly the workspaces that have been around longest.
+    //
+    // `$ne` guards it so two concurrent creates cannot double-insert, and
+    // `$sort` keeps the array ordered without a read-modify-write.
+    if (!list.some((h) => h.date === date)) {
+      if (list.length >= MAX_HOLIDAYS) {
         return res.status(400).json({ error: `At most ${MAX_HOLIDAYS} holidays` });
       }
-      await Organisation.updateOne(
+
+      const inserted = await Organisation.updateOne(
         { _id: org._id, 'holidays.date': { $ne: date } },
         {
           $push: {
@@ -686,7 +678,30 @@ const setHoliday = async (req, res) => {
           },
         }
       );
+
+      if (inserted.modifiedCount > 0) return rereadAndReturn(org._id, res);
+      // Somebody else created it between the read and the push. Fall through
+      // and apply this request's fields to the row that won.
     }
+
+    // UPDATE in place, touching only the fields the caller actually sent, so
+    // two overlapping edits to the same day compose instead of one overwriting
+    // the other with the stale half it was holding.
+    const $set = {
+      'holidays.$[el].by': req.user.userId,
+      'holidays.$[el].at': new Date(),
+    };
+    if (req.body.name !== undefined) $set['holidays.$[el].name'] = one.value.name;
+    if (req.body.affects !== undefined) {
+      $set['holidays.$[el].affects.delivery'] = one.value.affects.delivery;
+      $set['holidays.$[el].affects.automations'] = one.value.affects.automations;
+    }
+
+    await Organisation.updateOne(
+      { _id: org._id },
+      { $set },
+      { arrayFilters: [{ 'el.date': date }] }
+    );
 
     return rereadAndReturn(org._id, res);
   } catch (err) {
@@ -694,6 +709,7 @@ const setHoliday = async (req, res) => {
     return res.status(500).json({ error: 'Server error' });
   }
 };
+
 
 /** DELETE /api/orgs/:id/holidays/:date — unmark one day. */
 const deleteHoliday = async (req, res) => {

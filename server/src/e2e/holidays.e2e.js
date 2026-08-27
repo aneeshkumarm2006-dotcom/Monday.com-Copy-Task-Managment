@@ -547,6 +547,60 @@ const main = async () => {
   );
 
   // =========================================================================
+  console.log('\n--- 12. an org created BEFORE this feature existed -----------');
+
+  // The raw document has no `holidays` key at all. This is not a hypothetical:
+  // it is every workspace in a live database, and it broke on the first click
+  // because `arrayFilters` refuses to create a missing path — "The path
+  // 'holidays' must exist in the document in order to apply array updates."
+  const legacyId = (await Organisation.collection.insertOne({
+    name: 'Legacy Workspace',
+    admin: owner._id,
+    members: [owner._id],
+    roles: [],
+    memberRoles: [],
+    inviteCode: 'legacy-e2e',
+  })).insertedId;
+
+  const rawBefore = await Organisation.collection.findOne({ _id: legacyId });
+  check('the fixture really has no holidays field', !('holidays' in rawBefore));
+
+  const firstMark = await call('PUT', `/api/orgs/${legacyId}/holidays/2026-08-15`, {
+    name: 'Independence Day',
+  });
+  check('marking the FIRST holiday on a legacy org works', firstMark.status === 200,
+    `${firstMark.status}: ${JSON.stringify(firstMark.body)}`);
+  check(
+    'and it is stored with the default effects',
+    firstMark.body?.holidays?.length === 1
+      && firstMark.body.holidays[0].name === 'Independence Day'
+      && firstMark.body.holidays[0].affects.delivery === true,
+    JSON.stringify(firstMark.body?.holidays)
+  );
+
+  const secondMark = await call('PUT', `/api/orgs/${legacyId}/holidays/2026-08-15`, {
+    affects: { delivery: true, automations: false },
+  });
+  check(
+    'editing it afterwards still works, and stays partial',
+    secondMark.status === 200
+      && secondMark.body.holidays[0].name === 'Independence Day'
+      && secondMark.body.holidays[0].affects.automations === false,
+    JSON.stringify(secondMark.body?.holidays)
+  );
+
+  const legacyDelete = await call('DELETE', `/api/orgs/${legacyId}/holidays/2026-08-15`);
+  check('and deleting works',
+    legacyDelete.status === 200 && legacyDelete.body.holidays.length === 0,
+    JSON.stringify(legacyDelete.body));
+
+  const legacyBulk = await call('PUT', `/api/orgs/${legacyId}/holidays`, {
+    year: '2026', holidays: [{ date: '2026-12-25', name: 'Christmas' }],
+  });
+  check('the bulk save works on a legacy org too', legacyBulk.status === 200,
+    `${legacyBulk.status}: ${JSON.stringify(legacyBulk.body)}`);
+
+  // =========================================================================
   console.log('\n' + '='.repeat(62));
   console.log(failures === 0 ? `ALL ${results.length} CHECKS PASSED` : `${failures} of ${results.length} FAILED`);
 
