@@ -31,19 +31,19 @@ import { MIN_PASSWORD_LENGTH, passwordStrength } from '../../utils/vaultCrypto';
 const CURRENT_SECRET = {
   password: {
     label: 'Current vault password',
-    type: 'password',
+    masked: true,
     placeholder: '••••••••••',
     opened: 'its password',
   },
   recovery: {
     label: 'Recovery key',
-    type: 'text',
+    masked: false,
     placeholder: 'A1B2C3-D4E5F6-…',
     opened: 'its recovery key',
   },
   escrow: {
     label: 'Workspace recovery passphrase',
-    type: 'password',
+    masked: true,
     placeholder: '••••••••••',
     opened: "the workspace's recovery key",
   },
@@ -181,7 +181,7 @@ const VaultPasswordModal = ({ isOpen, boardId, boardName, forced = false, onClos
 
         <Input
           label={current.label}
-          type={current.type}
+          masked={current.masked}
           value={currentSecret}
           onChange={(e) => setCurrentSecret(e.target.value)}
           placeholder={current.placeholder}
@@ -194,11 +194,10 @@ const VaultPasswordModal = ({ isOpen, boardId, boardName, forced = false, onClos
         <div>
           <Input
             label="New vault password"
-            type="password"
+            masked
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="A long passphrase you can remember"
-            autoComplete="new-password"
             error={tooShort ? `At least ${MIN_PASSWORD_LENGTH} characters.` : undefined}
             required
           />
@@ -211,11 +210,10 @@ const VaultPasswordModal = ({ isOpen, boardId, boardName, forced = false, onClos
 
         <Input
           label="Confirm new password"
-          type="password"
+          masked
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
           placeholder="Type it again"
-          autoComplete="new-password"
           error={mismatch ? 'These do not match.' : undefined}
           required
         />

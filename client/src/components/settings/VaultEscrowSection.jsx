@@ -318,7 +318,7 @@ const EscrowPassphraseModal = ({ isOpen, mode, orgId, kdf, onClose, onDone }) =>
         {isRotate && (
           <Input
             label="Current workspace passphrase"
-            type="password"
+            masked
             value={current}
             onChange={(e) => setCurrent(e.target.value)}
             placeholder="••••••••••"
@@ -331,11 +331,10 @@ const EscrowPassphraseModal = ({ isOpen, mode, orgId, kdf, onClose, onDone }) =>
         <div>
           <Input
             label={isRotate ? 'New workspace passphrase' : 'Workspace passphrase'}
-            type="password"
+            masked
             value={passphrase}
             onChange={(e) => setPassphrase(e.target.value)}
             placeholder="A long passphrase, kept offline"
-            autoComplete="new-password"
             error={tooShort ? `At least ${MIN_PASSWORD_LENGTH} characters.` : undefined}
             required
             autoFocus={!isRotate}
@@ -349,11 +348,10 @@ const EscrowPassphraseModal = ({ isOpen, mode, orgId, kdf, onClose, onDone }) =>
 
         <Input
           label="Confirm passphrase"
-          type="password"
+          masked
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
           placeholder="Type it again"
-          autoComplete="new-password"
           error={mismatch ? 'These do not match.' : undefined}
           required
         />

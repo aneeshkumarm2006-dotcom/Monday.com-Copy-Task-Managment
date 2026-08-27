@@ -156,7 +156,7 @@ const VaultEscrowModal = ({ isOpen, boardId, escrow, onClose, onChanged }) => {
           <>
             <Input
               label={secretLabel}
-              type={session?.kind === 'recovery' ? 'text' : 'password'}
+              masked={session?.kind !== 'recovery'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••••"

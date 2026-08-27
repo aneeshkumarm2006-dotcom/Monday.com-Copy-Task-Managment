@@ -123,7 +123,7 @@ const VaultLockScreen = ({ boardId, meta, onUnlocked }) => {
         ) : (
           <Input
             label={door.label}
-            type="password"
+            masked
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
             placeholder="••••••••••"

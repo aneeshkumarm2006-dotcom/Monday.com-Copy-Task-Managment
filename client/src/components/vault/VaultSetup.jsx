@@ -129,11 +129,10 @@ const VaultSetup = ({ boardId, boardName, escrow, onDone }) => {
         <div>
           <Input
             label="Vault password"
-            type="password"
+            masked
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="A long passphrase you can remember"
-            autoComplete="new-password"
             error={tooShort ? `At least ${MIN_PASSWORD_LENGTH} characters.` : undefined}
             required
             autoFocus
@@ -171,11 +170,10 @@ const VaultSetup = ({ boardId, boardName, escrow, onDone }) => {
 
         <Input
           label="Confirm password"
-          type="password"
+          masked
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
           placeholder="Type it again"
-          autoComplete="new-password"
           error={mismatch ? 'These do not match.' : undefined}
           required
         />
