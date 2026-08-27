@@ -39,8 +39,13 @@ const DayOffPopover = ({
   anchorRef.current = anchorEl;
   const { top, left, openUpward } = useDropdownPosition(anchorRef, !!anchorEl, POSITION_OPTIONS);
 
-  const [tag, setTag] = useState(dayOff?.tag || 'holiday');
-  const [label, setLabel] = useState(dayOff?.label || '');
+  // Where the existing day off came from. An org holiday is REFERENCE here, not
+  // something this popover can edit — writing from here would create a
+  // per-tracker override, which is a different act and is worded as one.
+  const fromOrg = dayOff?.source === 'org';
+
+  const [tag, setTag] = useState(fromOrg ? 'event' : dayOff?.tag || 'holiday');
+  const [label, setLabel] = useState(fromOrg ? '' : dayOff?.label || '');
   const [busy, setBusy] = useState(false);
   const panelRef = useRef(null);
 
@@ -107,9 +112,11 @@ const DayOffPopover = ({
         </p>
         {/* The sentence that keeps this from being mistaken for Excuse. */}
         <p style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginTop: 2 }}>
-          {dayOff
-            ? `Marked off for every client on “${tracker.name}”.`
-            : `Nothing is owed on a day off — no client on “${tracker.name}” is marked missed.`}
+          {fromOrg
+            ? `A company holiday${dayOff.label ? ` — ${dayOff.label}` : ''}. Every tracker in the workspace has it off; remove it in Settings → Holidays.`
+            : dayOff
+              ? `Marked off for every client on “${tracker.name}”.`
+              : `Nothing is owed on a day off — no client on “${tracker.name}” is marked missed.`}
         </p>
       </div>
 
@@ -205,14 +212,25 @@ const DayOffPopover = ({
           disabled={busy}
           onClick={() => run(() => onSave({ tag, label: label.trim() }))}
         >
-          {busy ? 'Saving…' : dayOff ? 'Update' : 'Mark day off'}
+          {busy
+            ? 'Saving…'
+            : fromOrg
+              ? 'Give this tracker its own reason'
+              : dayOff
+                ? 'Update'
+                : 'Mark day off'}
         </Button>
-        {dayOff && (
+        {/*
+          Undo removes THIS TRACKER's entry. A day that is off because of the
+          workspace holiday calendar has no such entry, so offering it would be
+          a button that silently does nothing.
+        */}
+        {dayOff && !fromOrg && (
           <Button variant="secondary" size="sm" icon={Undo2} disabled={busy} onClick={() => run(onRemove)}>
             Undo
           </Button>
         )}
-        {!dayOff && (
+        {(!dayOff || fromOrg) && (
           <Button variant="secondary" size="sm" disabled={busy} onClick={onClose}>
             Cancel
           </Button>

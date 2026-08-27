@@ -23,9 +23,29 @@
  * holiday added retroactively must not renumber periods and orphan somebody's
  * TrackerEntry.
  *
- * Scope is deliberately per-tracker. A board can run "Daily activity" and
- * "Monthly report" side by side, and a day the team was at an event is a day off
- * for the first and irrelevant to the second — the month is still owed.
+ * TWO LAYERS, merged HERE and nowhere else:
+ *
+ *   Organisation.holidays — "the office was closed". One workspace-wide list,
+ *                           edited once in Settings, applying to every tracker
+ *                           on every board. See utils/orgHolidays.js.
+ *   Tracker.daysOff       — "this particular commitment was not owed, and here
+ *                           is why". Per-tracker, and the override: if a day
+ *                           appears in both, the tracker's own reason wins,
+ *                           because somebody typed it on purpose.
+ *
+ * This file used to argue that a shared calendar could not work, on the grounds
+ * that "a day the team was at an event is a day off for the daily tracker and
+ * irrelevant to the monthly one — the month is still owed". That is true, and it
+ * was never this module's job: trackerPeriods.js computes
+ * `isOff = workingDays.length === 0`, so a holiday empties a one-day period
+ * while leaving a monthly period holding thirty other working days. The engine
+ * already draws that line. The objection was about shared EVENTS — which is why
+ * `Organisation.holidays` carries no tag and cannot express one — not about a
+ * shared HOLIDAY calendar.
+ *
+ * A tracker that genuinely runs through public holidays sets
+ * `observesOrgHolidays: false` and sees only its own list.
+
  */
 
 const { isDayKey, parseDayKey, compareDayKeys } = require('./tzDay');
@@ -77,23 +97,64 @@ const sanitizeDaysOff = (raw) => {
   };
 };
 
-/** Map<'YYYY-MM-DD', {date, tag, label}> for the tracker's labelled days off. */
-const dayOffIndex = (tracker) => {
+/**
+ * Does this tracker follow the workspace holiday calendar?
+ *
+ * `undefined !== false`, deliberately: every tracker that existed before the
+ * calendar did starts observing it, which is the whole point of the feature.
+ * Opting out has to be a decision somebody made.
+ */
+const observesOrgHolidays = (tracker) =>
+  !tracker || tracker.observesOrgHolidays !== false;
+
+/**
+ * The labelled days off this tracker sees, per date, from both layers.
+ *
+ * Org holidays surface with `tag: 'holiday'` and the holiday's name as the
+ * label, so the grid header renders them through the same icon and copy tables
+ * as a hand-marked day and learns nothing new. A per-tracker entry on the same
+ * date REPLACES the org one — "we were at a client shoot" is more specific than
+ * "public holiday", and the person who typed it meant it.
+ */
+const dayOffIndex = (tracker, orgHolidays = []) => {
   const out = new Map();
-  for (const d of (tracker && tracker.daysOff) || []) {
-    if (isDayKey(d.date)) out.set(d.date, d);
+
+  if (observesOrgHolidays(tracker)) {
+    for (const h of orgHolidays || []) {
+      if (h && isDayKey(h.date)) {
+        out.set(h.date, {
+          date: h.date,
+          tag: 'holiday',
+          label: h.name || '',
+          source: 'org',
+        });
+      }
+    }
   }
+
+  for (const d of (tracker && tracker.daysOff) || []) {
+    if (isDayKey(d.date)) {
+      out.set(d.date, { date: d.date, tag: d.tag, label: d.label, source: 'tracker' });
+    }
+  }
+
   return out;
 };
 
+
 /**
- * Every day key this tracker treats as non-working, from BOTH sources.
+ * Every day key this tracker treats as non-working, from ALL THREE sources.
  *
  * `skipDates` predates `daysOff` and never had a UI, so in practice it is empty
  * — but unioning costs one line and means an old row cannot silently start
  * counting as a miss the day this ships.
+ *
+ * `orgHolidays` is the workspace calendar. It is skipped entirely when the
+ * tracker opts out, which is the ONLY thing `observesOrgHolidays` does — the
+ * flag never filters individual dates, because "observe the holiday calendar,
+ * but not that holiday" is a per-tracker day off and already has a UI.
  */
-const skipDayKeysOf = (tracker) => {
+const skipDayKeysOf = (tracker, orgHolidays = []) => {
   const out = new Set();
   for (const d of (tracker && tracker.skipDates) || []) {
     if (isDayKey(d)) out.add(d);
@@ -101,8 +162,14 @@ const skipDayKeysOf = (tracker) => {
   for (const d of (tracker && tracker.daysOff) || []) {
     if (isDayKey(d.date)) out.add(d.date);
   }
+  if (observesOrgHolidays(tracker)) {
+    for (const h of orgHolidays || []) {
+      if (h && isDayKey(h.date)) out.add(h.date);
+    }
+  }
   return [...out].sort();
 };
+
 
 /**
  * Hang each period's labelled days off onto it as `daysOff: [{date, tag, label}]`.
@@ -112,8 +179,8 @@ const skipDayKeysOf = (tracker) => {
  * one of these, a monthly period may hold ten, and the grid should not have to
  * know which kind it is looking at.
  */
-const annotateDaysOff = (periods, tracker) => {
-  const index = dayOffIndex(tracker);
+const annotateDaysOff = (periods, tracker, orgHolidays = []) => {
+  const index = dayOffIndex(tracker, orgHolidays);
   if (index.size === 0) return periods;
 
   const entries = [...index.values()];
@@ -129,13 +196,23 @@ const annotateDaysOff = (periods, tracker) => {
       ...period,
       daysOff: inside
         .sort((a, b) => compareDayKeys(a.date, b.date))
-        .map((d) => ({ date: d.date, tag: d.tag || 'other', label: d.label || '' })),
+        .map((d) => ({
+          date: d.date,
+          tag: d.tag || 'other',
+          label: d.label || '',
+          // WHERE it came from, so the grid can offer the right action. A day
+          // that is off because of the workspace calendar has nothing for the
+          // per-tracker Undo to remove, and a button that does nothing is worse
+          // than no button.
+          source: d.source === 'org' ? 'org' : 'tracker',
+        })),
     };
   });
 };
 
 module.exports = {
   DAY_OFF_TAGS,
+  observesOrgHolidays,
   MAX_DAYS_OFF,
   MAX_DAY_OFF_LABEL,
   sanitizeDayOff,

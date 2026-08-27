@@ -9,6 +9,7 @@ import Modal from '../components/ui/Modal';
 import NotificationPreferences from '../components/notifications/NotificationPreferences';
 import ExtraFeaturesTab from '../components/settings/ExtraFeaturesTab';
 import ConnectorsTab from '../components/settings/ConnectorsTab';
+import HolidaysTab from '../components/settings/HolidaysTab';
 import { hasAnyExtraFeature } from '../utils/extraFeatures';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
@@ -750,6 +751,7 @@ const SettingsPage = () => {
     if (!permissionsResolved) return;
     if (!canManageOrg && activeTab === 'organisation') setActiveTab('profile');
     if (!canManageOrg && activeTab === 'connectors') setActiveTab('profile');
+    if (!canManageOrg && activeTab === 'holidays') setActiveTab('profile');
     if (!canExtraFeatures && activeTab === 'features') setActiveTab('profile');
   }, [permissionsResolved, canManageOrg, canExtraFeatures, activeTab]);
 
@@ -823,6 +825,9 @@ const SettingsPage = () => {
     }
     if (activeTab === 'connectors' && canManageOrg) {
       return <ConnectorsTab />;
+    }
+    if (activeTab === 'holidays' && canManageOrg) {
+      return <HolidaysTab />;
     }
     if (activeTab === 'features' && canExtraFeatures) {
       return <ExtraFeaturesTab />;

@@ -14,7 +14,16 @@ import useBoardStore from '../store/boardStore';
 import { getCalendarTasks } from '../services/taskService';
 import { getPriorityColor } from '../utils/priorityColors';
 import { isStatusDone } from '../utils/statusUtils';
-import { DONE_GREEN, taskToEvent, eventPropGetter } from '../utils/calendarEvents';
+import {
+  DONE_GREEN,
+  taskToEvent,
+  eventPropGetter,
+  holidayDayPropGetter,
+} from '../utils/calendarEvents';
+import { holidayIndex, toDayKey, formatDayKey } from '../utils/orgHolidays';
+import useToastStore from '../store/toastStore';
+import usePermissions from '../hooks/usePermissions';
+import Modal from '../components/ui/Modal';
 
 /**
  * CalendarPage — month/week calendar view of all tasks with a due date.
@@ -347,6 +356,57 @@ const CalendarPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedTask, setSelectedTask] = useState(null);
+  // --- company holidays ------------------------------------------------------
+  //
+  // Shading is for everyone; marking a day needs `org.manage_settings`, the
+  // same capability the Settings editor is behind. Clicking an empty day is the
+  // quick path for "tomorrow is off" — the year grid in Settings is where a
+  // whole year gets entered.
+  const holidays = useOrgStore((s) => s.holidays);
+  const ensureHolidays = useOrgStore((s) => s.ensureHolidays);
+  const setHoliday = useOrgStore((s) => s.setHoliday);
+  const deleteHoliday = useOrgStore((s) => s.deleteHoliday);
+  const toastError = useToastStore((s) => s.error);
+  const { can } = usePermissions();
+  const canMarkHolidays = can('org.manage_settings');
+
+  const [dayMenu, setDayMenu] = useState(null); // { dayKey, holiday }
+
+  useEffect(() => {
+    if (orgId) ensureHolidays(orgId);
+  }, [orgId, ensureHolidays]);
+
+  const holidayMap = useMemo(() => holidayIndex(holidays), [holidays]);
+  const dayPropGetter = useMemo(
+    () => holidayDayPropGetter(holidayMap),
+    [holidayMap]
+  );
+
+  const handleSelectSlot = useCallback(
+    (slot) => {
+      if (!canMarkHolidays || !orgId) return;
+      // Month view hands back a range; the first day is the one clicked.
+      const dayKey = toDayKey(slot?.start);
+      if (!dayKey) return;
+      setDayMenu({ dayKey, holiday: holidayMap.get(dayKey) || null });
+    },
+    [canMarkHolidays, orgId, holidayMap]
+  );
+
+  const toggleHoliday = useCallback(async () => {
+    if (!dayMenu || !orgId) return;
+    const { dayKey, holiday } = dayMenu;
+    setDayMenu(null);
+    try {
+      if (holiday) await deleteHoliday(orgId, dayKey);
+      else await setHoliday(orgId, dayKey, '');
+    } catch (err) {
+      toastError(
+        err?.response?.data?.error || 'Could not change that day. Please try again.'
+      );
+    }
+  }, [dayMenu, orgId, setHoliday, deleteHoliday, toastError]);
+
 
   // --- URL-backed filter state -------------------------------------------
   // `?boards=id1,id2&assignees=id3,unassigned` survives month navigation and
@@ -569,6 +629,12 @@ const CalendarPage = () => {
                   onView={setView}
                   onSelectEvent={handleSelectEvent}
                   eventPropGetter={eventPropGetter}
+                  dayPropGetter={dayPropGetter}
+                  // Selecting an empty day is how a holiday gets marked without
+                  // a trip to Settings. Off entirely for anyone who could not
+                  // act on it, so the grid never offers a dead gesture.
+                  selectable={canMarkHolidays}
+                  onSelectSlot={handleSelectSlot}
                   views={['month', 'week']}
                   popup
                   toolbar={false}
@@ -593,6 +659,67 @@ const CalendarPage = () => {
       />
 
       <CalendarThemeStyles />
+
+      <Modal
+        isOpen={!!dayMenu}
+        onClose={() => setDayMenu(null)}
+        title={dayMenu ? formatDayKey(dayMenu.dayKey) : ''}
+        maxWidth={380}
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setDayMenu(null)}
+              className="font-body"
+              style={{
+                height: 34,
+                padding: '0 14px',
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--color-border)',
+                background: 'var(--color-bg-surface)',
+                color: 'var(--color-text-secondary)',
+                fontSize: 13,
+                cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={toggleHoliday}
+              className="font-body"
+              style={{
+                height: 34,
+                padding: '0 14px',
+                borderRadius: 'var(--radius-md)',
+                border: 'none',
+                background: 'var(--color-accent)',
+                color: '#fff',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              {dayMenu?.holiday ? 'Remove holiday' : 'Mark as holiday'}
+            </button>
+          </div>
+        }
+      >
+        <p className="font-body text-[13px] text-[color:var(--color-text-secondary)]">
+          {dayMenu?.holiday ? (
+            <>
+              Marked as a company holiday
+              {dayMenu.holiday.name ? ` — ${dayMenu.holiday.name}` : ''}. Removing
+              it makes the day count again on every tracker in the workspace.
+            </>
+          ) : (
+            <>
+              Nothing will be owed on this day: tracker columns go grey rather
+              than red across the whole workspace. Name it in Settings, Holidays.
+            </>
+          )}
+        </p>
+      </Modal>
     </>
   );
 };

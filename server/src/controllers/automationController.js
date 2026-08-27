@@ -4,6 +4,7 @@ const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
 const User = require('../models/User');
 const Automation = require('../models/Automation');
+const Organisation = require('../models/Organisation');
 const {
   createNotificationsForUsers,
   filterByEmailPreference,
@@ -17,6 +18,7 @@ const { resolveBoardAccess } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 const { buildTaskDeepLink } = require('../utils/taskDeepLink');
+const { holidayDayKeySetOf } = require('../utils/orgHolidays');
 
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -326,6 +328,7 @@ const sanitizeSchedule = (raw) => {
     frequency: raw?.frequency,
     hour: Number.isInteger(raw?.hour) ? raw.hour : 9,
     timezone: raw?.timezone || 'UTC',
+    skipHolidays: raw?.skipHolidays === true,
   };
   if (s.frequency === 'weekly') {
     s.daysOfWeek = Array.isArray(raw?.daysOfWeek)
@@ -343,6 +346,32 @@ const sanitizeSchedule = (raw) => {
     }
   }
   return s;
+};
+
+/**
+ * The workspace holiday calendar as a Set of day keys, for computeNextRunAt.
+ *
+ * Returns an empty Set unless the schedule actually opted in, so an automation
+ * that does not care never costs a query. Exported because the cron runner
+ * recomputes `nextRunAt` too and the two must agree — a runner that skipped
+ * holidays while the controller did not would drift a day every holiday.
+ */
+const holidayKeysForAutomation = async (automation) => {
+  if (!automation?.schedule?.skipHolidays || !automation.organisation) {
+    return new Set();
+  }
+  try {
+    const org = await Organisation.findById(automation.organisation)
+      .select('holidays')
+      .lean();
+    return holidayDayKeySetOf(org);
+  } catch (err) {
+    // A holiday lookup failing must not stop an automation from being
+    // scheduled — firing on a holiday is a much smaller problem than never
+    // firing again.
+    console.error('holidayKeysForAutomation error:', err);
+    return new Set();
+  }
 };
 
 /**
@@ -917,7 +946,11 @@ const createAutomation = async (req, res) => {
         note: tpl.note ? String(tpl.note) : undefined,
         dueInDays,
       };
-      doc.nextRunAt = computeNextRunAt(schedule, new Date());
+      doc.nextRunAt = computeNextRunAt(
+        schedule,
+        new Date(),
+        await holidayKeysForAutomation(doc)
+      );
     }
 
     const automation = await Automation.create(doc);
@@ -1067,7 +1100,11 @@ const updateAutomation = async (req, res) => {
       } else if (!automation.enabled) {
         automation.nextRunAt = null;
       } else if (automation.schedule) {
-        automation.nextRunAt = computeNextRunAt(automation.schedule, new Date());
+        automation.nextRunAt = computeNextRunAt(
+          automation.schedule,
+          new Date(),
+          await holidayKeysForAutomation(automation)
+        );
       }
     }
 
@@ -1154,6 +1191,9 @@ module.exports = {
   runAutomationOnce,
   // Used by the dispatcher's synchronous positioning path (createTask response).
   runPositionActionOnce,
+  // Used by the cron runner, which recomputes nextRunAt and must apply the same
+  // holiday rule this controller does.
+  holidayKeysForAutomation,
   // Exported for unit testing the POSITION_ITEM sort + validation logic.
   computePositionedOrder,
   sanitizeActionConfig,

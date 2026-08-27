@@ -1,6 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, ChevronRight, Calendar } from 'lucide-react';
+import useOrgStore from '../../store/orgStore';
+import {
+  toDayKey,
+  getDaysInMonth,
+  getFirstDayOfMonth,
+  holidayIndex,
+  describeHoliday,
+} from '../../utils/orgHolidays';
 
 const DAYS   = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 const MONTHS = [
@@ -19,13 +27,9 @@ const parseDate = (value) => {
   return isNaN(d.getTime()) ? null : d;
 };
 
-const toValue = (date) => {
-  if (!date) return '';
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-};
+// The picker and the holiday calendar must agree on what day a cell is, so both
+// go through the one helper. Local time, deliberately — see orgHolidays.js.
+const toValue = toDayKey;
 
 const formatDisplay = (date) => {
   if (!date) return null;
@@ -33,9 +37,6 @@ const formatDisplay = (date) => {
     month: 'short', day: 'numeric', year: 'numeric',
   });
 };
-
-const getDaysInMonth  = (y, m) => new Date(y, m + 1, 0).getDate();
-const getFirstDayOfMonth = (y, m) => new Date(y, m, 1).getDay();
 
 const NAV_BTN = {
   display: 'inline-flex',
@@ -152,6 +153,13 @@ const DatePickerPopover = ({
   const daysInMonth = getDaysInMonth(viewYear, viewMonth);
   const firstDay    = getFirstDayOfMonth(viewYear, viewMonth);
   const todayVal    = toValue(today);
+
+  // Company holidays, marked but never blocked: assigning work on a holiday is
+  // a legitimate thing to do on purpose, and the picker only has to make sure
+  // it is not done by accident. Read straight from the store rather than
+  // threaded as a prop — this component has dozens of call sites.
+  const holidays   = useOrgStore((s) => s.holidays);
+  const holidayMap = useMemo(() => holidayIndex(holidays), [holidays]);
   const selVal      = value || '';
 
   return (
@@ -303,13 +311,16 @@ const DatePickerPopover = ({
               const dayVal = toValue(new Date(viewYear, viewMonth, day));
               const isSel  = dayVal === selVal;
               const isTod  = dayVal === todayVal;
+              const holiday = holidayMap.get(dayVal) || null;
               return (
                 <button
                   key={day}
                   type="button"
                   onClick={() => selectDay(day)}
+                  title={holiday ? describeHoliday(holiday) : undefined}
                   className="font-body font-medium hover:opacity-80"
                   style={{
+                    position: 'relative',
                     height: 30,
                     borderRadius: 'var(--radius-sm)',
                     fontSize: 12,
@@ -330,6 +341,21 @@ const DatePickerPopover = ({
                   }}
                 >
                   {day}
+                  {holiday && (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: 'absolute',
+                        left: '50%',
+                        bottom: 3,
+                        transform: 'translateX(-50%)',
+                        width: 3,
+                        height: 3,
+                        borderRadius: '50%',
+                        background: isSel ? '#fff' : 'var(--color-text-muted)',
+                      }}
+                    />
+                  )}
                 </button>
               );
             })}

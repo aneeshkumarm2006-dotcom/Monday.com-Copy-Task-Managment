@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
 const TaskGroup = require('../models/TaskGroup');
+const Organisation = require('../models/Organisation');
 
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const {
@@ -288,6 +289,12 @@ const sanitizeTrackerPayload = async (body, board, { partial = false } = {}) => 
     out.requireSameTask = raw.requireSameTask !== false;
   }
 
+  // Partial-aware like everything else here, so a rename cannot silently opt a
+  // tracker out of the workspace holiday calendar.
+  if (!partial || raw.observesOrgHolidays !== undefined) {
+    out.observesOrgHolidays = raw.observesOrgHolidays !== false;
+  }
+
   if (raw.enabled !== undefined) out.enabled = !!raw.enabled;
 
   return { value: out };
@@ -364,6 +371,9 @@ const serialiseTracker = (tracker) => ({
   match: tracker.match || {},
   requirements: tracker.requirements || [],
   requireSameTask: tracker.requireSameTask !== false,
+  // `!== false` on purpose — see models/Tracker.js. A tracker written before the
+  // holiday calendar existed has no field, and it observes.
+  observesOrgHolidays: tracker.observesOrgHolidays !== false,
   targetCount: tracker.targetCount || 1,
   createdBy: tracker.createdBy,
   createdAt: tracker.createdAt,
@@ -678,12 +688,17 @@ const getDelivery = async (req, res) => {
     // deliberately shaped as two parallel batches rather than five sequential
     // awaits. Anything that does not depend on a previous result goes in the
     // same batch.
-    const [trackers, allGroups] = await Promise.all([
+    const [trackers, allGroups, org] = await Promise.all([
       Tracker.find({ board: board._id }).sort({ createdAt: 1 }).lean(),
       TaskGroup.find({ board: board._id })
         .select('name order createdAt')
         .sort({ order: 1, createdAt: 1 })
         .lean(),
+      // The workspace holiday calendar. Rides in the batch that was already
+      // going out rather than costing its own round trip, and is handed to
+      // planDelivery untouched — the merge with each tracker's own days off is
+      // trackerDaysOff.js's job, not this endpoint's.
+      Organisation.findById(board.organisation).select('holidays').lean(),
     ]);
 
     if (trackers.length === 0) {
@@ -709,6 +724,7 @@ const getDelivery = async (req, res) => {
       allGroups,
       now,
       maxCells: MAX_CELLS,
+      orgHolidays: org?.holidays || [],
       /**
        * The window is the SELECTED MONTH — both ends of it — for a daily or
        * weekly cadence, and a run of months ending at the selected one for a

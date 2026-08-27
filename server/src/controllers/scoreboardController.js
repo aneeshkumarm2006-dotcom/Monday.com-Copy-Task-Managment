@@ -39,6 +39,7 @@ const User = require('../models/User');
 const Goal = require('../models/Goal');
 const Tracker = require('../models/Tracker');
 const TaskGroup = require('../models/TaskGroup');
+const Organisation = require('../models/Organisation');
 
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { scoreGroup, scoreGoal } = require('../utils/goalTypes');
@@ -126,7 +127,7 @@ const getScoreboard = async (req, res) => {
 
     // BATCH 1. Groups carry `ownerTimeline` here — the ONE place outside
     // groupController that reads it, and it never leaves this function.
-    const [groups, goals, trackers] = await Promise.all([
+    const [groups, goals, trackers, org] = await Promise.all([
       TaskGroup.find({ board: board._id })
         .select('name order createdAt ownerTimeline')
         .sort({ order: 1, createdAt: 1 })
@@ -137,6 +138,12 @@ const getScoreboard = async (req, res) => {
       canSeeDelivery
         ? Tracker.find({ board: board._id }).sort({ createdAt: 1 }).lean()
         : [],
+      // The workspace holiday calendar. This endpoint and the Delivery grid MUST
+      // pass the same list to planDelivery or the People tab and the grid will
+      // quietly disagree about which days were owed.
+      canSeeDelivery
+        ? Organisation.findById(board.organisation).select('holidays').lean()
+        : null,
     ]);
 
     // Resolve ownership for the requested month. Carry-forward is structural —
@@ -175,6 +182,7 @@ const getScoreboard = async (req, res) => {
         allGroups: groups,
         now,
         maxCells: MAX_EVAL_CELLS,
+        orgHolidays: org?.holidays || [],
         // Clamped to today so a month still running does not paint the rest of
         // itself as missed — the same reason the Delivery grid clamps.
         resolveRange: ({ todayKey }) => ({

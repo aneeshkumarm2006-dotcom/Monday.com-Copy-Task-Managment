@@ -94,3 +94,38 @@ export const deleteOrg = async (orgId) => {
   const { data } = await api.delete(`/api/orgs/${orgId}`);
   return data;
 };
+
+// --- company holidays --------------------------------------------------------
+//
+// Reading is open to any member; writing needs `org.manage_settings`. Every
+// write returns the WHOLE list, so the store replaces rather than merges and
+// two tabs cannot drift.
+
+/** `{ holidays }` — the whole calendar, or one year with `year`. */
+export const listHolidays = async (orgId, year) => {
+  const { data } = await api.get(`/api/orgs/${orgId}/holidays`, {
+    params: year ? { year } : undefined,
+  });
+  return data.holidays;
+};
+
+/**
+ * Replace ONE year's holidays. The server rejects any date outside `year`
+ * rather than filing it, so a stale tab cannot smuggle a neighbouring year in
+ * and have the next save of that year wipe it.
+ */
+export const saveHolidays = async (orgId, year, holidays) => {
+  const { data } = await api.put(`/api/orgs/${orgId}/holidays`, { year, holidays });
+  return data.holidays;
+};
+
+/** Mark one day — the quick path from a calendar cell. */
+export const setHoliday = async (orgId, date, name = '') => {
+  const { data } = await api.put(`/api/orgs/${orgId}/holidays/${date}`, { name });
+  return data.holidays;
+};
+
+export const deleteHoliday = async (orgId, date) => {
+  const { data } = await api.delete(`/api/orgs/${orgId}/holidays/${date}`);
+  return data.holidays;
+};

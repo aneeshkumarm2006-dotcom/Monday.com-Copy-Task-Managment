@@ -53,6 +53,50 @@ const CalendarThemeStyles = () => (
     .macan-calendar-wrap .rbc-today {
       background: var(--color-accent-light);
     }
+    /*
+     * A company holiday. Applied through react-big-calendar's dayPropGetter —
+     * see utils/orgHolidays.js for the reasoning and utils/calendarEvents.js
+     * for the getter itself.
+     *
+     * A tint plus a corner label rather than a coloured block: the grid already
+     * spends its colour budget on priority pills, and a fifth strong hue behind
+     * them would read as another task state. The custom property --holiday-name
+     * is set inline by the getter, so one CSS rule serves every holiday.
+     */
+    .macan-calendar-wrap .rbc-day-bg.macan-holiday {
+      background: repeating-linear-gradient(
+        135deg,
+        var(--color-bg-subtle),
+        var(--color-bg-subtle) 6px,
+        var(--color-bg-surface) 6px,
+        var(--color-bg-surface) 12px
+      );
+      position: relative;
+    }
+    .macan-calendar-wrap .rbc-day-bg.macan-holiday.rbc-today {
+      background: var(--color-accent-light);
+      box-shadow: inset 0 0 0 1px var(--color-border);
+    }
+    .macan-calendar-wrap .rbc-day-bg.macan-holiday::after {
+      content: var(--holiday-name, 'Holiday');
+      position: absolute;
+      left: 6px;
+      bottom: 4px;
+      max-width: calc(100% - 12px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--color-text-muted);
+      pointer-events: none;
+    }
+    /* Week and day views have no day-bg, so tint the column instead. */
+    .macan-calendar-wrap .rbc-day-slot.macan-holiday,
+    .macan-calendar-wrap .rbc-time-column.macan-holiday {
+      background: var(--color-bg-subtle);
+    }
     .macan-calendar-wrap .rbc-date-cell {
       text-align: right;
       padding: 6px 8px;

@@ -15,7 +15,9 @@ const { SYSTEM_ROLES, sanitizePermissions } = require('../utils/capabilities');
 
 const {
   getGoalLinks,
+  getGoalLinkMatches,
   setGoalLink,
+  bulkSetGoalLinks,
   clearGoalLink,
   acceptGoalSuggestions,
   runBoardWriteback,
@@ -45,6 +47,7 @@ const ORG = '6c466b99ea3ab35ff1378d10';
 const BOARD = '6c466b99ea3ab35ff1378d20';
 const GROUP = '6c466b99ea3ab35ff1378d30';
 const GOAL = '6c466b99ea3ab35ff1378d40';
+const GOAL_2 = '6c466b99ea3ab35ff1378d41';
 const PROJECT = '6c466b99ea3ab35ff1378d50';
 const LINK = '6c466b99ea3ab35ff1378d60';
 
@@ -178,6 +181,7 @@ const stubModels = ({
   board = makeBoard(),
   org = makeOrg(),
   goal = makeGoalDoc(),
+  goals = null,
   link = null,
   links = [],
   project = { _id: PROJECT, group: GROUP, provider: 'ubersuggest', name: 'Acme', domain: 'acme.com' },
@@ -207,7 +211,7 @@ const stubModels = ({
   Board.findById = () => Promise.resolve(board);
   Organisation.findById = () => Promise.resolve(org);
   Goal.findById = () => Promise.resolve(goal);
-  Goal.find = () => chain(goal ? [goal] : []);
+  Goal.find = () => chain(goals || (goal ? [goal] : []));
   GoalConnectorLink.find = () => chain(links);
   GoalConnectorLink.findOne = () => chain(link);
   GoalConnectorLink.findOneAndUpdate = (filter, update) => {
@@ -609,6 +613,237 @@ test('the writeback endpoint reports a month with no links rather than failing',
 // ---------------------------------------------------------------------------
 // publicLink
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// getGoalLinkMatches — proposes, and cannot write
+// ---------------------------------------------------------------------------
+
+/** A `positions` snapshot carrying the phrases a project actually tracks. */
+const positionsSnapshot = (keywords) => [
+  {
+    project: PROJECT,
+    variant: 'desktop|en|1',
+    periodKey: '2026-08-27',
+    data: { keywords },
+  },
+];
+
+const leanGoal = (id, name, overrides = {}) => ({
+  _id: id,
+  name,
+  group: GROUP,
+  monthKey: '2026-08',
+  type: 'numeric',
+  ...overrides,
+});
+
+test('a match is proposed by EXACT name, and carries the rank it would fill', async () => {
+  const { res, calls } = await run(getGoalLinkMatches, req({ query: { month: '2026-08' } }), {
+    goals: [leanGoal(GOAL, 'thca quarter pound')],
+    snapshots: positionsSnapshot([
+      { keyword: 'thca quarter pound', position: 12, previousPosition: 19 },
+      { keyword: 'unrelated phrase', position: 3, previousPosition: 3 },
+    ]),
+  });
+
+  assert.equal(res.statusCode, 200);
+  const [group] = res.body.groups;
+  assert.equal(group.proposals.length, 1);
+  assert.deepEqual(
+    { keyword: group.proposals[0].keyword, position: group.proposals[0].position },
+    { keyword: 'thca quarter pound', position: 12 }
+  );
+  assert.equal(group.unmatched.length, 0);
+  // The whole safety property of this endpoint: it proposes and cannot write.
+  assert.equal(calls.upserts.length, 0);
+});
+
+test('matching ignores case and repeated spaces — and NOTHING else', async () => {
+  const { res } = await run(getGoalLinkMatches, req(), {
+    goals: [
+      leanGoal(GOAL, '  THCA   Quarter Pound '),
+      // The near miss that matters. A matcher clever enough to join a singular
+      // to its plural puts one keyword's rank on the other's row, and both are
+      // real phrases that rank differently.
+      leanGoal(GOAL_2, 'thca pound'),
+    ],
+    snapshots: positionsSnapshot([
+      { keyword: 'thca quarter pound', position: 12, previousPosition: null },
+      { keyword: 'thca pounds', position: 15, previousPosition: null },
+    ]),
+  });
+
+  const [group] = res.body.groups;
+  assert.deepEqual(
+    group.proposals.map((p) => [p.goal, p.keyword]),
+    [[GOAL, 'thca quarter pound']]
+  );
+  assert.deepEqual(
+    group.unmatched.map((u) => [u.goal, u.reason]),
+    [[GOAL_2, 'no-match']]
+  );
+});
+
+test('a goal matching TWO tracked keywords is ambiguous, never resolved for you', async () => {
+  const { res } = await run(getGoalLinkMatches, req(), {
+    goals: [leanGoal(GOAL, 'thca pound')],
+    snapshots: positionsSnapshot([
+      { keyword: 'thca pound', position: 17, previousPosition: null },
+      { keyword: 'THCA  POUND', position: 4, previousPosition: null },
+    ]),
+  });
+
+  const [group] = res.body.groups;
+  assert.equal(group.proposals.length, 0);
+  assert.equal(group.unmatched[0].reason, 'ambiguous');
+});
+
+test('a goal already pointed at that exact keyword is flagged, not offered as new', async () => {
+  const { res } = await run(getGoalLinkMatches, req(), {
+    goals: [leanGoal(GOAL, 'thca pound')],
+    links: [{ goal: GOAL, provider: 'ubersuggest', keyword: 'thca pound' }],
+    snapshots: positionsSnapshot([
+      { keyword: 'thca pound', position: 17, previousPosition: null },
+    ]),
+  });
+
+  const [proposal] = res.body.groups[0].proposals;
+  assert.equal(proposal.alreadyLinked, true);
+  assert.equal(proposal.relinkFrom, null);
+});
+
+test('a goal pointed SOMEWHERE ELSE says so, so taking the match is a deliberate act', async () => {
+  const { res } = await run(getGoalLinkMatches, req(), {
+    goals: [leanGoal(GOAL, 'thca pound')],
+    links: [{ goal: GOAL, provider: 'ubersuggest', keyword: 'thca pounds' }],
+    snapshots: positionsSnapshot([
+      { keyword: 'thca pound', position: 17, previousPosition: null },
+    ]),
+  });
+
+  const [proposal] = res.body.groups[0].proposals;
+  assert.equal(proposal.alreadyLinked, false);
+  assert.equal(proposal.relinkFrom, 'thca pounds');
+});
+
+test('the proposal says what a link would FILL, so nobody links a month into nothing', async () => {
+  const { res } = await run(getGoalLinkMatches, req(), {
+    goals: [leanGoal(GOAL, 'thca pound')],
+    snapshots: positionsSnapshot([{ keyword: 'thca pound', position: 17 }]),
+    mappings: [
+      {
+        provider: 'ubersuggest',
+        sourceField: 'rank',
+        target: { kind: 'goalBuiltin', columnId: null, builtin: 'actual' },
+        autoFill: true,
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    res.body.mappedFields.map((f) => [f.key, f.scope, f.targetLabel]),
+    [['rank', 'keyword', 'Result']]
+  );
+});
+
+test('proposing is connector.manage — a viewer who may READ links cannot ask for it', async () => {
+  const { res } = await run(getGoalLinkMatches, req({ userId: VIEWER }));
+  assert.equal(res.statusCode, 403);
+});
+
+// ---------------------------------------------------------------------------
+// bulkSetGoalLinks — writes explicit pairs, and does no matching
+// ---------------------------------------------------------------------------
+
+test('the bulk write stores exactly the pairs it is handed, keyed on each GOAL', async () => {
+  const { res, calls } = await run(
+    bulkSetGoalLinks,
+    req({
+      params: { provider: 'ubersuggest' },
+      body: {
+        links: [
+          { goal: GOAL, keyword: '  thca pound  ' },
+          { goal: GOAL_2, keyword: 'thca pounds' },
+        ],
+      },
+    }),
+    { goals: [leanGoal(GOAL, 'thca pound'), leanGoal(GOAL_2, 'thca pounds')] }
+  );
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.linked.length, 2);
+  assert.deepEqual(
+    calls.upserts.map((u) => [String(u.filter.goal), u.update.$set.keyword]),
+    [[GOAL, 'thca pound'], [GOAL_2, 'thca pounds']]
+  );
+  // Re-pointing a link must never hand the connector permission to overwrite a
+  // cell a human corrected after the first sync.
+  assert.ok(calls.upserts.every((u) => !('claimedAt' in u.update.$set)));
+});
+
+test('one stale row is skipped with a sentence; the rest are still linked', async () => {
+  const { res, calls } = await run(
+    bulkSetGoalLinks,
+    req({
+      params: { provider: 'ubersuggest' },
+      body: {
+        links: [
+          { goal: GOAL, keyword: 'thca pound' },
+          // Deleted, or on another board — either way `Goal.find` does not
+          // return it, and refusing the good pair over it would be worse.
+          { goal: GOAL_2, keyword: 'thca pounds' },
+          { goal: 'not-an-id', keyword: 'x' },
+        ],
+      },
+    }),
+    { goals: [leanGoal(GOAL, 'thca pound')] }
+  );
+
+  assert.equal(res.body.linked.length, 1);
+  assert.equal(calls.upserts.length, 1);
+  assert.deepEqual(
+    res.body.skipped.map((sk) => sk.goal).sort(),
+    [GOAL_2, 'not-an-id'].sort()
+  );
+});
+
+test('a goal whose group lost its project is skipped, not linked to nothing', async () => {
+  const { res, calls } = await run(
+    bulkSetGoalLinks,
+    req({
+      params: { provider: 'ubersuggest' },
+      body: { links: [{ goal: GOAL, keyword: 'thca pound' }] },
+    }),
+    { goals: [leanGoal(GOAL, 'thca pound')], projects: [] }
+  );
+
+  assert.equal(res.body.linked.length, 0);
+  assert.equal(calls.upserts.length, 0);
+  assert.match(res.body.skipped[0].reason, /not mapped to a project/);
+});
+
+test('the bulk write refuses a batch bigger than one month of goals', async () => {
+  const { res } = await run(
+    bulkSetGoalLinks,
+    req({
+      params: { provider: 'ubersuggest' },
+      body: { links: Array.from({ length: 301 }, () => ({ goal: GOAL, keyword: 'k' })) },
+    })
+  );
+  assert.equal(res.statusCode, 400);
+});
+
+test('the bulk write is connector.manage, the same rung as linking one goal', async () => {
+  const { res } = await run(
+    bulkSetGoalLinks,
+    req({
+      userId: VIEWER,
+      params: { provider: 'ubersuggest' },
+      body: { links: [{ goal: GOAL, keyword: 'thca pound' }] },
+    })
+  );
+  assert.equal(res.statusCode, 403);
+});
 
 test('publicLink is hand-built, so a field added to the model cannot leak', () => {
   const shaped = publicLink({

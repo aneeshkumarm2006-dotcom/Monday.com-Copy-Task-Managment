@@ -24,7 +24,9 @@ const {
 } = require('../controllers/connectorFieldController');
 const {
   getGoalLinks,
+  getGoalLinkMatches,
   setGoalLink,
+  bulkSetGoalLinks,
   clearGoalLink,
   acceptGoalSuggestions,
   runBoardWriteback,
@@ -187,6 +189,22 @@ router.delete(
 // it. `?provider=` narrows it.
 router.get('/boards/:boardId/goal-links', getGoalLinks);
 router.post('/boards/:boardId/connectors/:provider/writeback', runBoardWriteback);
+
+// Linking a whole month in one act. TWO routes, deliberately, and the split is
+// the safety property: `/matches` proposes a keyword per goal by exact name and
+// can write nothing, and `/bulk` writes an explicit list of pairs and does no
+// matching of its own. Neither can become the fuzzy match `GoalLinkModal`
+// refuses to make on its own, because the person in between is not optional.
+//
+// `/goal-links/matches` sits under the board rather than under a provider for
+// the same reason the read above it does: a board can have two connectors and
+// the screen shows both. `?provider=` narrows it. The WRITE is provider-scoped
+// because a link names one.
+router.get('/boards/:boardId/goal-links/matches', getGoalLinkMatches);
+router.post(
+  '/boards/:boardId/connectors/:provider/goal-links/bulk',
+  bulkSetGoalLinks
+);
 
 // A single goal's link. Declared with the literal `connector-link` segment in
 // front, so nothing here can be confused with `PUT /goals/:id` on routes/goals.js

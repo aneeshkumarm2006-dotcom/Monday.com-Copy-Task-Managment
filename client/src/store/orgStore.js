@@ -16,6 +16,67 @@ const useOrgStore = create((set, get) => ({
   /** The org's role list, for the assignment dropdown. */
   roles: [],
   loading: false,
+  // --- company holidays ------------------------------------------------------
+  //
+  // The workspace holiday calendar, cached here beside `currentOrg` because that
+  // is its scope. Loaded once per org and refreshed only by a write: it changes
+  // a few times a year, and every date-aware screen in the app reads it, so
+  // re-fetching per screen would be a lot of requests for a list that is almost
+  // always identical.
+  //
+  // Every mutator REPLACES the list from the server's response rather than
+  // patching locally — the same no-optimistic-update rule the board chips
+  // follow, and for the same reason: the server is the one that de-duplicates,
+  // sorts and caps.
+
+  /** [{ date: 'YYYY-MM-DD', name }] — the whole calendar, every year. */
+  holidays: [],
+  /** The org id `holidays` was loaded for; null means "not loaded yet". */
+  holidaysLoadedFor: null,
+
+  fetchHolidays: async (orgId) => {
+    const id = orgId || get().currentOrg?._id;
+    if (!id) return [];
+    try {
+      const holidays = await orgService.listHolidays(id);
+      set({ holidays, holidaysLoadedFor: id });
+      return holidays;
+    } catch (err) {
+      // A member without the org loaded yet, or an offline blip. Holidays are
+      // decoration on every screen except Settings, so failing to load them
+      // must never break the screen that asked.
+      console.error('fetchHolidays failed:', err);
+      return get().holidays;
+    }
+  },
+
+  /** Load once per org. Safe to call from every screen that paints a day. */
+  ensureHolidays: async (orgId) => {
+    const id = orgId || get().currentOrg?._id;
+    if (!id || get().holidaysLoadedFor === id) return get().holidays;
+    return get().fetchHolidays(id);
+  },
+
+  /** Replace one year wholesale — the Settings year grid's save. */
+  saveHolidays: async (orgId, year, holidays) => {
+    const next = await orgService.saveHolidays(orgId, year, holidays);
+    set({ holidays: next, holidaysLoadedFor: orgId });
+    return next;
+  },
+
+  /** Mark one day — the quick path from a calendar cell. */
+  setHoliday: async (orgId, date, name = '') => {
+    const next = await orgService.setHoliday(orgId, date, name);
+    set({ holidays: next, holidaysLoadedFor: orgId });
+    return next;
+  },
+
+  deleteHoliday: async (orgId, date) => {
+    const next = await orgService.deleteHoliday(orgId, date);
+    set({ holidays: next, holidaysLoadedFor: orgId });
+    return next;
+  },
+
 
   /**
    * Hydrate orgs list from a user object (usually from authStore).
@@ -65,7 +126,16 @@ const useOrgStore = create((set, get) => ({
       localStorage.setItem(CURRENT_ORG_KEY, org._id);
       // Capabilities are per-org. Switching workspaces must re-resolve them, or
       // the UI keeps rendering affordances earned by the PREVIOUS org's role.
-      set({ currentOrg: org, members: [], memberRoles: {}, roles: [] });
+      // Holidays are per-org too, and a stale calendar would shade the wrong
+      // days rather than merely showing too much.
+      set({
+        currentOrg: org,
+        members: [],
+        memberRoles: {},
+        roles: [],
+        holidays: [],
+        holidaysLoadedFor: null,
+      });
       usePermissionStore.getState().fetchPermissions(org._id);
     }
   },
@@ -184,6 +254,8 @@ const useOrgStore = create((set, get) => ({
       adminIds: [],
       memberRoles: {},
       roles: [],
+      holidays: [],
+      holidaysLoadedFor: null,
     });
     usePermissionStore.getState().fetchPermissions(nextCurrent?._id || null);
     return nextCurrent;

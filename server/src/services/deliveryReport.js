@@ -55,11 +55,23 @@ const {
  *   are applied to whatever it returns.
  * @param {Date}     args.now
  * @param {number}   args.maxCells   guard; see the callers for why they differ
+ * @param {Object[]} [args.orgHolidays]  the workspace holiday calendar,
+ *   `[{date, name}]`. Passed in rather than read here so this stays pure, and
+ *   merged INSIDE trackerDaysOff.js rather than at either call site — that is
+ *   what stops the Delivery grid and the People scoreboard disagreeing about
+ *   which days were owed.
  * @returns {{plans: Object[], scanFrom: string|null, scanTo: string|null,
  *            overCap: {tracker: Object, cells: number}|null}}
  *   plan = { tracker, tz, todayKey, from, to, periods, groups }
  */
-const planDelivery = ({ trackers, allGroups, resolveRange, now, maxCells }) => {
+const planDelivery = ({
+  trackers,
+  allGroups,
+  resolveRange,
+  now,
+  maxCells,
+  orgHolidays = [],
+}) => {
   const groupById = new Map(allGroups.map((g) => [String(g._id), g]));
   const plans = [];
 
@@ -96,8 +108,11 @@ const planDelivery = ({ trackers, allGroups, resolveRange, now, maxCells }) => {
     // would lose the first week of tracking entirely.
     const windowStart = requested.from;
     const periods = annotateDaysOff(
-      periodsBetween(tracker.cadence, from, to, { skipDates: skipDayKeysOf(tracker) }),
-      tracker
+      periodsBetween(tracker.cadence, from, to, {
+        skipDates: skipDayKeysOf(tracker, orgHolidays),
+      }),
+      tracker,
+      orgHolidays
     ).filter((p) => compareDayKeys(p.startDayKey, windowStart) >= 0);
 
     // An empty `tracker.groups` means EVERY group — see models/Tracker.js.

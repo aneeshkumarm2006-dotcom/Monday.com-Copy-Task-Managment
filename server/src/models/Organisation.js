@@ -1,6 +1,18 @@
 const mongoose = require('mongoose');
 const { SYSTEM_ROLES, sanitizePermissions } = require('../utils/capabilities');
 
+// 'YYYY-MM-DD'. Same convention, and the same reasoning, as Tracker.js: a
+// holiday is a CALENDAR DATE with no time and no zone, and a Date would
+// silently attach both. utils/tzDay.js is what turns a UTC instant into one of
+// these; nothing here ever needs to.
+const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const dayKeyField = (extra = {}) => ({
+  type: String,
+  match: DAY_KEY_RE,
+  ...extra,
+});
+
 /**
  * A role is a NAMED BUNDLE OF CAPABILITY KEYS — see
  * [capabilities.js](../utils/capabilities.js) for the catalog.
@@ -83,6 +95,35 @@ const organisationSchema = new mongoose.Schema({
   }],
   roles: { type: [roleSchema], default: [] },
   memberRoles: { type: [memberRoleSchema], default: [] },
+  /**
+   * The workspace holiday calendar — days the office was closed.
+   *
+   * The FIRST org-level config field, and deliberately a plain array of
+   * subdocuments rather than a settings blob: there is one thing here, and a
+   * bag named `settings` invites everything else to move in beside it.
+   *
+   * There is no `tag`. An entry here IS a holiday — that is what separates it
+   * from `Tracker.daysOff`, which carries a reason precisely because it can be
+   * an event or a day the team was pulled onto other work. When a holiday
+   * surfaces in the Delivery grid it reports `tag: 'holiday'`, so the existing
+   * icon and copy tables handle it with no new vocabulary.
+   *
+   * Years are entered independently. Most holidays outside a handful of fixed
+   * civil dates move every year, so an auto-repeat would be wrong more often
+   * than right; the Settings editor offers a copy-last-year button instead.
+   *
+   * Merged with the per-tracker list in utils/trackerDaysOff.js and NOWHERE
+   * else. See utils/orgHolidays.js for why the scope widened.
+   */
+  holidays: [
+    {
+      _id: false,
+      date: dayKeyField({ required: true }),
+      name: { type: String, default: '', trim: true },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: { type: Date, default: Date.now },
+    },
+  ],
   inviteCode: {
     type: String,
     unique: true,

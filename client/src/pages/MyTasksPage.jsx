@@ -28,7 +28,12 @@ import Button from '../components/ui/Button';
 import useOrgStore from '../store/orgStore';
 import { getMyTasks, updateTask, deleteTask } from '../services/taskService';
 import { isStatusDone } from '../utils/statusUtils';
-import { taskToEvent, eventPropGetter } from '../utils/calendarEvents';
+import {
+  taskToEvent,
+  eventPropGetter,
+  holidayDayPropGetter,
+} from '../utils/calendarEvents';
+import { holidayIndex } from '../utils/orgHolidays';
 import { PRIORITY_COLORS } from '../utils/priorityColors';
 import {
   EMPTY_WORK_FILTERS,
@@ -766,6 +771,21 @@ const FilterChip = ({ label, active, onClick, activeColor }) => (
 const CalendarTab = ({ events, onSelect }) => {
   const [view, setView] = useState('month');
   const [date, setDate] = useState(() => new Date());
+
+  // Company holidays. Read-only here — marking one is a workspace act and
+  // belongs on the org calendar and in Settings, not in one person's My Work.
+  const orgId = useOrgStore((s) => s.currentOrg?._id) || null;
+  const holidays = useOrgStore((s) => s.holidays);
+  const ensureHolidays = useOrgStore((s) => s.ensureHolidays);
+
+  useEffect(() => {
+    if (orgId) ensureHolidays(orgId);
+  }, [orgId, ensureHolidays]);
+
+  const dayPropGetter = useMemo(
+    () => holidayDayPropGetter(holidayIndex(holidays)),
+    [holidays]
+  );
   // Filters — empty arrays mean "no constraint". Categories compose with AND;
   // values within a category are OR'd. `hideDone` strips completed tasks.
   const [priorityFilter, setPriorityFilter] = useState([]);
@@ -1029,6 +1049,7 @@ const CalendarTab = ({ events, onSelect }) => {
           onView={setView}
           onSelectEvent={(event) => onSelect(event.resource)}
           eventPropGetter={eventPropGetter}
+          dayPropGetter={dayPropGetter}
           views={['month', 'week']}
           popup
           toolbar={false}

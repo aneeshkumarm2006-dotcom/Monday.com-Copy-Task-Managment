@@ -351,6 +351,56 @@ export const getGoalLinks = async (boardId, monthKey, { provider } = {}) => {
 };
 
 /**
+ * What each goal in a month would be linked to, if it were matched by name.
+ *
+ * PROPOSES ONLY — this endpoint cannot write. The rule is exact
+ * (case-insensitive, spaces collapsed), never fuzzy: a goal whose name matches
+ * two tracked keywords comes back as `ambiguous` rather than resolved, and one
+ * that matches none comes back under `unmatched`. Nothing is linked until the
+ * list is confirmed and posted to `bulkSetGoalLinks` below.
+ *
+ * Reads stored snapshots, so it spends no quota and opens instantly.
+ *
+ * @param {string} boardId
+ * @param {string} monthKey - 'YYYY-MM'
+ * @param {{provider?: string}} [opts]
+ * @returns {Promise<{monthKey: string, groups: Array, mappedFields: Array}>}
+ */
+export const getGoalLinkMatches = async (boardId, monthKey, { provider } = {}) => {
+  const { data } = await api.get(`/api/boards/${boardId}/goal-links/matches`, {
+    params: { month: monthKey, ...(provider ? { provider } : {}) },
+    suppressErrorToast: true,
+  });
+  return data;
+};
+
+/**
+ * Link many goals in one act, from an explicit list of pairs.
+ *
+ * The server does no matching here — it writes exactly the pairs it is handed,
+ * which is what keeps "a name looked similar" and "a number appeared in a
+ * client's report" separated by a person.
+ *
+ * Resolves with BOTH halves. One stale row never fails the batch: a goal that
+ * has moved, or a group whose project was unmapped, comes back in `skipped`
+ * with a sentence while the rest are linked.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {Array<{goal: string, keyword?: string|null, variant?: string|null,
+ *   autoFill?: boolean}>} links
+ * @returns {Promise<{linked: Array, skipped: Array}>}
+ */
+export const bulkSetGoalLinks = async (boardId, provider, links) => {
+  const { data } = await api.post(
+    `/api/boards/${boardId}/connectors/${provider}/goal-links/bulk`,
+    { links },
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
  * Point one goal at one tracked keyword, replacing whatever it was pointed at.
  *
  * The keyword is OPTIONAL and a link without one is a real link: it binds the

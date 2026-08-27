@@ -12,6 +12,10 @@ const {
   sendInvite,
   transferOrgOwnership,
   deleteOrg,
+  listHolidays,
+  saveHolidays,
+  setHoliday,
+  deleteHoliday,
 } = require('../controllers/orgController');
 const {
   listRoles,
@@ -68,6 +72,39 @@ router.get('/:id/roles', listRoles);
 router.post('/:id/roles', createRole);
 router.put('/:id/roles/:roleId', updateRole);
 router.delete('/:id/roles/:roleId', deleteRole);
+
+// ---------------------------------------------------------------------------
+// Company holidays — the workspace calendar of days the office was closed.
+//
+// Reading is open to any member, for the same reason reading the roles matrix
+// is: the client needs it on the calendar, in every date picker and on every
+// Delivery grid, and "the office is shut on the 15th" is not a secret. Writing
+// needs `org.manage_settings` — the same capability that already guards the
+// invite code, and NOT a new key, so this ships without a role migration.
+//
+// The bulk PUT is scoped to one year and replaces only that year. The
+// single-date PUT/DELETE pair is the quick-mark path used from a calendar day
+// cell, so marking tomorrow off never means resending the whole year.
+// ---------------------------------------------------------------------------
+router.get('/:id/holidays', listHolidays);
+
+router.put(
+  '/:id/holidays',
+  requireCapability('org.manage_settings'),
+  saveHolidays
+);
+
+router.put(
+  '/:id/holidays/:date',
+  requireCapability('org.manage_settings'),
+  setHoliday
+);
+
+router.delete(
+  '/:id/holidays/:date',
+  requireCapability('org.manage_settings'),
+  deleteHoliday
+);
 
 // ---------------------------------------------------------------------------
 // Invites + workspace settings

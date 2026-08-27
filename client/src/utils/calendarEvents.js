@@ -5,6 +5,7 @@
  * page so both stay visually consistent.
  */
 import { getPriorityColor } from './priorityColors';
+import { toDayKey, describeHoliday } from './orgHolidays';
 import { isStatusDone } from './statusUtils';
 
 // Canonical "done" green from globals.css → --color-status-done.
@@ -94,3 +95,38 @@ export const eventPropGetter = (event) => {
     },
   };
 };
+/**
+ * Shade the company holidays in a react-big-calendar grid.
+ *
+ * `dayPropGetter` is the library's per-day-cell hook, the sibling of the
+ * `eventPropGetter` above, and it was unused until holidays needed it. Pass the
+ * Map from `holidayIndex()` and hand the result straight to `<Calendar>`:
+ *
+ *   dayPropGetter={holidayDayPropGetter(index)}
+ *
+ * The holiday NAME travels as a CSS custom property rather than as markup,
+ * because react-big-calendar only lets this hook return className and style —
+ * there is no slot for a child node. CalendarThemeStyles reads it in a ::after.
+ *
+ * Returns a stable empty object when there are no holidays, so calendars in a
+ * workspace that has none pay nothing.
+ */
+export const holidayDayPropGetter = (holidayIndexMap) => {
+  if (!holidayIndexMap || holidayIndexMap.size === 0) return undefined;
+
+  return (date) => {
+    const holiday = holidayIndexMap.get(toDayKey(date));
+    if (!holiday) return {};
+
+    return {
+      className: 'macan-holiday',
+      style: {
+        // CSS content: needs a quoted string, and a name containing a quote
+        // would otherwise break out of the declaration.
+        '--holiday-name': JSON.stringify(holiday.name || 'Holiday'),
+      },
+      title: describeHoliday(holiday),
+    };
+  };
+};
+

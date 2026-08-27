@@ -1,4 +1,11 @@
-import { Building2, UserCircle2, Bell, FlaskConical, Plug } from 'lucide-react';
+import {
+  Building2,
+  UserCircle2,
+  Bell,
+  FlaskConical,
+  Plug,
+  CalendarDays,
+} from 'lucide-react';
 
 /**
  * SettingsSidebar — left-rail tab nav used exclusively by the Settings page.
@@ -23,6 +30,10 @@ const TABS = [
   // personal setting. Switching a connector on for one board is a separate,
   // board-level act and lives on that board's Add-ons tab.
   { key: 'connectors', label: 'Connectors', icon: Plug, adminOnly: true },
+  // The workspace holiday calendar. Admin-only for the same reason Connectors
+  // is: one person marking a day off changes what every board in the workspace
+  // counts as owed. Everyone still SEES holidays everywhere; only editing is gated.
+  { key: 'holidays', label: 'Holidays', icon: CalendarDays, adminOnly: true },
   { key: 'features', label: 'Extra features', icon: FlaskConical, featureTab: true },
 ];
 

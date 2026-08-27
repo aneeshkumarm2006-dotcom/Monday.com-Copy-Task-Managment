@@ -9,6 +9,7 @@ const {
   isValidTimezone,
   localToUtcMs,
   getLastDayOfMonth,
+  makeDayKey,
 } = require('../utils/tzDay');
 
 const VALID_FREQUENCIES = ['daily', 'weekly', 'monthly'];
@@ -63,8 +64,16 @@ const validateSchedule = (schedule) => {
 /**
  * Compute the next Date strictly after `fromDate` matching the schedule.
  * Walks forward day-by-day in the schedule's timezone.
+ *
+ * `holidayKeys` is an optional Set of 'YYYY-MM-DD' day keys — the workspace
+ * holiday calendar, from utils/orgHolidays.js. It is consulted only when the
+ * schedule opted in with `skipHolidays`, and a holiday makes the candidate day
+ * fail to match rather than aborting: the walk continues, so a daily automation
+ * due on a holiday lands on the next working day and a weekly one whose only
+ * weekday is a holiday rolls a full week. The existing 366-iteration bound
+ * already guarantees this terminates.
  */
-const computeNextRunAt = (schedule, fromDate = new Date()) => {
+const computeNextRunAt = (schedule, fromDate = new Date(), holidayKeys = null) => {
   const v = validateSchedule(schedule);
   if (!v.valid) return null;
 
@@ -98,6 +107,13 @@ const computeNextRunAt = (schedule, fromDate = new Date()) => {
       } else {
         matches = candParts.day === schedule.dayOfMonth;
       }
+    }
+
+    // The day matched the pattern, but the office was shut. Fall through and
+    // keep walking rather than returning it.
+    if (matches && schedule.skipHolidays && holidayKeys && holidayKeys.size > 0) {
+      const dayKey = makeDayKey(candParts.year, candParts.month, candParts.day);
+      if (holidayKeys.has(dayKey)) matches = false;
     }
 
     if (matches && candidateMs > fromMs) {

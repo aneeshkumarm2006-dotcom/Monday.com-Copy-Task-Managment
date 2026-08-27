@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Target, Settings2 } from 'lucide-react';
+import { Target, Settings2, Link2 } from 'lucide-react';
 import EmptyState from '../../ui/EmptyState';
 import Spinner from '../../ui/Spinner';
 import Modal from '../../ui/Modal';
@@ -9,6 +9,7 @@ import GoalGroupSection from './GoalGroupSection';
 import GoalFormModal from './GoalFormModal';
 import GoalColumnsModal from './GoalColumnsModal';
 import GoalLinkModal from './GoalLinkModal';
+import GoalBulkLinkModal from './GoalBulkLinkModal';
 import UnclosedMonthBanner from './UnclosedMonthBanner';
 import * as goalService from '../../../services/goalService';
 import {
@@ -82,6 +83,7 @@ const GoalsTab = ({
   const [linkSaving, setLinkSaving] = useState(false);
   const [linkError, setLinkError] = useState(null);
   const [acceptingGoalId, setAcceptingGoalId] = useState(null);
+  const [bulkLinkOpen, setBulkLinkOpen] = useState(false);
 
   const boardRefreshSignal = useTaskStore((s) => s.boardRefreshSignal);
   const boardRefreshTarget = useTaskStore((s) => s.boardRefreshTarget);
@@ -268,6 +270,21 @@ const GoalsTab = ({
 
   // ---- Connector links ------------------------------------------------------
 
+  /**
+   * `connector.manage` on this board, from the SERVER's own resolution against
+   * the live board and falling back to what the page loaded. Hoisted because
+   * two things read it now — every row's link icon, and the footer's bulk
+   * button — and they must not be able to disagree.
+   */
+  const canLink = linkData ? !!linkData.canManage : canLinkConnector;
+
+  /**
+   * The bulk-link button, offered only where there is something to link TO. A
+   * tracker board with no connector project mapped never sees it, which is most
+   * of them.
+   */
+  const canBulkLink = canLink && (linkData?.sources || []).length > 0;
+
   /** goalId → its link, so a row is a lookup rather than a scan per render. */
   const linksByGoal = useMemo(
     () => new Map((linkData?.links || []).map((l) => [String(l.goal), l])),
@@ -422,7 +439,7 @@ const GoalsTab = ({
               // live board, falling back to what the page loaded. Hiding a
               // control was never the enforcement anyway — every write is gated
               // again server-side.
-              canLink={linkData ? !!linkData.canManage : canLinkConnector}
+              canLink={canLink}
               canAccept={linkData ? !!linkData.canTrack : canTrack}
               acceptingGoalId={acceptingGoalId}
               onLink={(goal) => { setLinkError(null); setLinkFor(goal); }}
@@ -438,11 +455,18 @@ const GoalsTab = ({
         </Suspense>
       )}
 
-      {canManageColumns && (
-        <div className="flex justify-end">
-          <Button variant="ghost" icon={Settings2} onClick={() => setColumnsOpen(true)}>
-            Goal columns
-          </Button>
+      {(canBulkLink || canManageColumns) && (
+        <div className="flex justify-end gap-1">
+          {canBulkLink && (
+            <Button variant="ghost" icon={Link2} onClick={() => setBulkLinkOpen(true)}>
+              Link goals to keywords
+            </Button>
+          )}
+          {canManageColumns && (
+            <Button variant="ghost" icon={Settings2} onClick={() => setColumnsOpen(true)}>
+              Goal columns
+            </Button>
+          )}
         </div>
       )}
 
@@ -476,6 +500,23 @@ const GoalsTab = ({
           onClose={() => setLinkFor(null)}
           onSave={saveLink}
           onUnlink={unlink}
+        />
+      )}
+
+      {bulkLinkOpen && (
+        <GoalBulkLinkModal
+          open
+          boardId={boardId}
+          monthKey={monthKey}
+          monthLabel={monthLabel}
+          groupNames={new Map(groups.map((g) => [String(g._id), g.name]))}
+          onClose={() => setBulkLinkOpen(false)}
+          // Links AND cells moved in the same act, so both halves are re-read.
+          onLinked={() => {
+            fetchGoals({ quiet: true });
+            fetchLinks();
+            onGoalsChanged?.();
+          }}
         />
       )}
 

@@ -50,6 +50,7 @@ const emptyForm = () => ({
   showTargetCount: false,
   requirements: ['TASK_EXISTS', 'UPDATE_POSTED'],
   requireSameTask: true,
+  observesOrgHolidays: true,
   allGroups: true,
   groups: [],
   nameContains: '',
@@ -70,6 +71,7 @@ const formFromSeed = (seed) => {
     showTargetCount: (seed.targetCount || 1) > 1,
     requirements: seed.requirements,
     requireSameTask: seed.requireSameTask !== false,
+    observesOrgHolidays: seed.observesOrgHolidays !== false,
     allGroups: (seed.groups || []).length === 0,
     groups: seed.groups || [],
     nameContains: seed.match?.nameContains || '',
@@ -92,6 +94,7 @@ const formFromTracker = (t) => ({
   showTargetCount: (t.targetCount || 1) > 1,
   requirements: t.requirements?.length ? t.requirements : ['TASK_EXISTS'],
   requireSameTask: t.requireSameTask !== false,
+  observesOrgHolidays: t.observesOrgHolidays !== false,
   allGroups: (t.groups || []).length === 0,
   groups: (t.groups || []).map(String),
   nameContains: t.match?.nameContains || '',
@@ -123,6 +126,7 @@ const trackerFromForm = (form) => ({
   },
   requirements: form.requirements,
   requireSameTask: form.requireSameTask,
+  observesOrgHolidays: form.observesOrgHolidays,
   targetCount: form.showTargetCount ? form.targetCount || 1 : 1,
   // NOT sent: `skipDates` / `daysOff`. Update is partial, so omitting them leaves
   // them alone — sending `[]` here would silently wipe every day off the team
@@ -470,6 +474,25 @@ const TrackersModal = ({ isOpen, onClose, boardId, groups = [], canManage, initi
         <WeekdayChips value={form.weekdays} onChange={setField('weekdays')} disabled={saving} />
         <p className="font-body mt-1.5" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>
           Periods with no working day in them show as “day off” and are left out of the score.
+        </p>
+      </div>
+
+      {/*
+        The escape hatch for the workspace holiday calendar. On for everything
+        by default — a shared calendar that had to be switched on tracker by
+        tracker would be no better than marking each day by hand.
+      */}
+      <div>
+        <Toggle
+          checked={form.observesOrgHolidays}
+          onChange={setField('observesOrgHolidays')}
+          disabled={saving}
+          label="Follow the company holiday calendar"
+        />
+        <p className="font-body mt-1.5" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>
+          {form.observesOrgHolidays
+            ? 'Days marked in Settings → Holidays count as days off here too.'
+            : 'This tracker is scored on public holidays like any other day.'}
         </p>
       </div>
 

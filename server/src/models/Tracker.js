@@ -150,6 +150,21 @@ const trackerSchema = new mongoose.Schema(
         at: { type: Date, default: Date.now },
       },
     ],
+    /**
+     * Does this tracker follow the workspace holiday calendar
+     * (`Organisation.holidays`)?
+     *
+     * Defaults to true, and the resolver in utils/trackerDaysOff.js tests
+     * `!== false` so every tracker created before the calendar existed starts
+     * observing it — that is the point of a shared calendar, and needing a
+     * migration to get it would be a design smell.
+     *
+     * Turn it off for a commitment that genuinely runs through public holidays:
+     * a monitoring check, an out-of-hours rota, a client in another country.
+     * It is all-or-nothing on purpose. "Observe the calendar, except that one
+     * day" is a per-tracker day off, and that already has a UI.
+     */
+    observesOrgHolidays: { type: Boolean, default: true },
     // EMPTY MEANS ALL GROUPS, including ones added later. That default is the
     // one an agency wants: a client onboarded next month is covered without
     // anyone remembering to edit this.

@@ -7,6 +7,14 @@ const { cascadeDeleteOrg } = require('../services/orgCascade');
 const { createNotificationsForUsers } = require('../services/notificationService');
 const { resolveOrgAccess, isOrgOwner } = require('../utils/permissions');
 const { DEFAULT_ROLE_KEY, OWNER_ROLE_KEY } = require('../utils/capabilities');
+const {
+  sanitizeHoliday,
+  sanitizeHolidays,
+  sanitizeYear,
+  holidayListOf,
+  holidaysInYear,
+  MAX_HOLIDAYS,
+} = require('../utils/orgHolidays');
 
 /**
  * Generate a short, unique invite code.
@@ -479,6 +487,194 @@ const deleteOrg = async (req, res) => {
   }
 };
 
+/* -------------------------------------------------------------------------- */
+/* Company holidays                                                           */
+/*                                                                            */
+/* The workspace holiday calendar. Reading is open to any member — knowing the */
+/* office is shut on the 15th is not a privilege, and every date-aware surface */
+/* in the client needs it to render honestly. Writing needs                    */
+/* `org.manage_settings`, enforced by the route middleware, which also hands   */
+/* us `req.org` already loaded.                                               */
+/*                                                                            */
+/* Shape and sanitizers live in utils/orgHolidays.js.                         */
+/* -------------------------------------------------------------------------- */
+
+/** Stamp who marked a day and when. Dropped on read; kept for the audit. */
+const withHolidayProvenance = (h, userId) => ({
+  date: h.date,
+  name: h.name,
+  by: userId,
+  at: new Date(),
+});
+
+/**
+ * Re-stamp only what actually changed.
+ *
+ * The bulk save resends a whole year, most of which is untouched. Stamping every
+ * row would rewrite "marked by Ali in January" into "marked by Sam just now" the
+ * moment Sam renamed one unrelated day.
+ */
+const mergeHolidayProvenance = (next, previous, userId) => {
+  const before = new Map((previous || []).map((h) => [h.date, h]));
+  return next.map((h) => {
+    const old = before.get(h.date);
+    if (old && (old.name || '') === h.name) {
+      return { date: h.date, name: h.name, by: old.by, at: old.at };
+    }
+    return withHolidayProvenance(h, userId);
+  });
+};
+
+/**
+ * Persist a cleaned list and reply with the canonical collection.
+ *
+ * Everything is flattened to PLAIN objects before it is assigned. Handing a
+ * Mongoose DocumentArray back to the path it came from — or splicing subdocs
+ * from it into a new array — is the kind of thing that works until it does not,
+ * and `markModified` is needed anyway because an in-place sort on a document
+ * array is invisible to Mongoose.
+ */
+const saveHolidaysAndReturn = async (org, list, res) => {
+  org.holidays = (list || []).map((h) => ({
+    date: h.date,
+    name: h.name || '',
+    by: h.by,
+    at: h.at,
+  }));
+  org.markModified('holidays');
+  await org.save();
+  return res.json({ holidays: holidayListOf(org) });
+};
+
+/**
+ * GET /api/orgs/:id/holidays[?year=2026] — any member.
+ */
+const listHolidays = async (req, res) => {
+  try {
+    const org = await Organisation.findById(req.params.id).select('members holidays');
+    if (!org) return res.status(404).json({ error: 'Organisation not found' });
+
+    const isMember = org.members.some((m) => m.toString() === req.user.userId);
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this organisation' });
+    }
+
+    if (req.query.year !== undefined) {
+      const y = sanitizeYear(req.query.year);
+      if (y.error) return res.status(400).json({ error: y.error });
+      return res.json({ holidays: holidaysInYear(org, y.value) });
+    }
+
+    return res.json({ holidays: holidayListOf(org) });
+  } catch (err) {
+    console.error('listHolidays error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PUT /api/orgs/:id/holidays — bulk save ONE year: { year, holidays: [...] }.
+ *
+ * REPLACES ONLY THAT YEAR. This is the one endpoint here that can lose data, so
+ * the rule is explicit rather than implied: every other year is carried through
+ * untouched, and a date in the payload that falls outside `year` is rejected
+ * rather than quietly filed. Without that check a stale tab showing 2026 could
+ * post a 2027 date, which the next save of 2027 would then wipe.
+ */
+const saveHolidays = async (req, res) => {
+  try {
+    const org = req.org;
+
+    const y = sanitizeYear(req.body.year);
+    if (y.error) return res.status(400).json({ error: y.error });
+
+    const cleaned = sanitizeHolidays(req.body.holidays);
+    if (cleaned.error) return res.status(400).json({ error: cleaned.error });
+
+    const prefix = y.value + '-';
+    const stray = cleaned.value.find((h) => !h.date.startsWith(prefix));
+    if (stray) {
+      return res.status(400).json({ error: stray.date + ' is not in ' + y.value });
+    }
+
+    const otherYears = (org.holidays || []).filter(
+      (h) => !String(h.date).startsWith(prefix)
+    );
+
+    if (otherYears.length + cleaned.value.length > MAX_HOLIDAYS) {
+      return res.status(400).json({ error: 'At most ' + MAX_HOLIDAYS + ' holidays' });
+    }
+
+    const thisYear = mergeHolidayProvenance(
+      cleaned.value,
+      (org.holidays || []).filter((h) => String(h.date).startsWith(prefix)),
+      req.user.userId
+    );
+
+    const merged = [...otherYears, ...thisYear].sort((a, b) =>
+      String(a.date).localeCompare(String(b.date))
+    );
+
+    return await saveHolidaysAndReturn(org, merged, res);
+  } catch (err) {
+    console.error('saveHolidays error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PUT /api/orgs/:id/holidays/:date — upsert one day, { name }.
+ *
+ * The quick-mark path used from the calendar day cell. Deliberately its own
+ * route rather than a degenerate bulk save: marking tomorrow off should not
+ * require the client to hold, and resend, the whole year.
+ */
+const setHoliday = async (req, res) => {
+  try {
+    const org = req.org;
+
+    const one = sanitizeHoliday({ date: req.params.date, name: req.body.name });
+    if (one.error) return res.status(400).json({ error: one.error });
+
+    const existing = (org.holidays || []).find((h) => h.date === one.value.date);
+    if (existing) {
+      existing.name = one.value.name;
+      existing.by = req.user.userId;
+      existing.at = new Date();
+    } else {
+      if ((org.holidays || []).length >= MAX_HOLIDAYS) {
+        return res.status(400).json({ error: 'At most ' + MAX_HOLIDAYS + ' holidays' });
+      }
+      org.holidays.push(withHolidayProvenance(one.value, req.user.userId));
+    }
+
+    const sorted = [...org.holidays].sort((a, b) =>
+      String(a.date).localeCompare(String(b.date))
+    );
+    return await saveHolidaysAndReturn(org, sorted, res);
+  } catch (err) {
+    console.error('setHoliday error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/** DELETE /api/orgs/:id/holidays/:date — unmark one day. */
+const deleteHoliday = async (req, res) => {
+  try {
+    const org = req.org;
+
+    if (sanitizeHoliday({ date: req.params.date }).error) {
+      return res.status(400).json({ error: 'Invalid date' });
+    }
+
+    const next = (org.holidays || []).filter((h) => h.date !== req.params.date);
+    return await saveHolidaysAndReturn(org, next, res);
+  } catch (err) {
+    console.error('deleteHoliday error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   createOrg,
   getOrg,
@@ -489,4 +685,8 @@ module.exports = {
   sendInvite,
   transferOrgOwnership,
   deleteOrg,
+  listHolidays,
+  saveHolidays,
+  setHoliday,
+  deleteHoliday,
 };
