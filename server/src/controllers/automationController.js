@@ -18,7 +18,7 @@ const { resolveBoardAccess } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 const { buildTaskDeepLink } = require('../utils/taskDeepLink');
-const { holidayDayKeySetOf } = require('../utils/orgHolidays');
+const { automationHolidayKeySetOf } = require('../utils/orgHolidays');
 
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -328,7 +328,7 @@ const sanitizeSchedule = (raw) => {
     frequency: raw?.frequency,
     hour: Number.isInteger(raw?.hour) ? raw.hour : 9,
     timezone: raw?.timezone || 'UTC',
-    skipHolidays: raw?.skipHolidays === true,
+    skipHolidays: raw?.skipHolidays !== false,
   };
   if (s.frequency === 'weekly') {
     s.daysOfWeek = Array.isArray(raw?.daysOfWeek)
@@ -357,14 +357,18 @@ const sanitizeSchedule = (raw) => {
  * holidays while the controller did not would drift a day every holiday.
  */
 const holidayKeysForAutomation = async (automation) => {
-  if (!automation?.schedule?.skipHolidays || !automation.organisation) {
+  // `!== false` — an automation saved before the calendar existed pauses on
+  // holidays, because that is what marking a day as a holiday is supposed to do.
+  // An automation that must run regardless says so explicitly.
+  if (automation?.schedule?.skipHolidays === false || !automation?.organisation) {
     return new Set();
   }
   try {
     const org = await Organisation.findById(automation.organisation)
       .select('holidays')
       .lean();
-    return holidayDayKeySetOf(org);
+    // Only the holidays that say they stop automations.
+    return automationHolidayKeySetOf(org);
   } catch (err) {
     // A holiday lookup failing must not stop an automation from being
     // scheduled — firing on a holiday is a much smaller problem than never

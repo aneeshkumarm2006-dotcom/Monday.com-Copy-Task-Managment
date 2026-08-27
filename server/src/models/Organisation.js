@@ -112,6 +112,14 @@ const organisationSchema = new mongoose.Schema({
    * civil dates move every year, so an auto-repeat would be wrong more often
    * than right; the Settings editor offers a copy-last-year button instead.
    *
+   * `affects` is WHAT THIS DAY STOPS, asked when the day is marked. Not every
+   * closed day means the same thing: a public holiday stops everything, while a
+   * company offsite means no client work was owed but the nightly digest should
+   * still go out. Both default to true because that is what "holiday" means
+   * unqualified, and each is ANDed with the opt-out on the other side
+   * (`Tracker.observesOrgHolidays`, `Automation.schedule.skipHolidays`) so
+   * either end can decline.
+   *
    * Merged with the per-tracker list in utils/trackerDaysOff.js and NOWHERE
    * else. See utils/orgHolidays.js for why the scope widened.
    */
@@ -120,6 +128,12 @@ const organisationSchema = new mongoose.Schema({
       _id: false,
       date: dayKeyField({ required: true }),
       name: { type: String, default: '', trim: true },
+      affects: {
+        // Tracker columns go grey instead of red, and the day leaves the ratio.
+        delivery: { type: Boolean, default: true },
+        // Scheduled automations roll forward to the next working day.
+        automations: { type: Boolean, default: true },
+      },
       by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       at: { type: Date, default: Date.now },
     },

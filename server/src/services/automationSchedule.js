@@ -66,8 +66,9 @@ const validateSchedule = (schedule) => {
  * Walks forward day-by-day in the schedule's timezone.
  *
  * `holidayKeys` is an optional Set of 'YYYY-MM-DD' day keys — the workspace
- * holiday calendar, from utils/orgHolidays.js. It is consulted only when the
- * schedule opted in with `skipHolidays`, and a holiday makes the candidate day
+ * holiday calendar, already filtered to the days that say they stop automations
+ * (see utils/orgHolidays.js). It is skipped when the schedule opted OUT with
+ * `skipHolidays: false`, and a holiday makes the candidate day
  * fail to match rather than aborting: the walk continues, so a daily automation
  * due on a holiday lands on the next working day and a weekly one whose only
  * weekday is a holiday rolls a full week. The existing 366-iteration bound
@@ -111,7 +112,7 @@ const computeNextRunAt = (schedule, fromDate = new Date(), holidayKeys = null) =
 
     // The day matched the pattern, but the office was shut. Fall through and
     // keep walking rather than returning it.
-    if (matches && schedule.skipHolidays && holidayKeys && holidayKeys.size > 0) {
+    if (matches && schedule.skipHolidays !== false && holidayKeys && holidayKeys.size > 0) {
       const dayKey = makeDayKey(candParts.year, candParts.month, candParts.day);
       if (holidayKeys.has(dayKey)) matches = false;
     }

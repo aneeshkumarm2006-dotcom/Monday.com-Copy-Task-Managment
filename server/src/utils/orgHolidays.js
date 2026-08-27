@@ -52,6 +52,21 @@ const MAX_HOLIDAY_NAME = 60;
 const YEAR_RE = /^\d{4}$/;
 
 /**
+ * WHAT THIS DAY STOPS.
+ *
+ * Read as `!== false` throughout, so a holiday stored before these flags existed
+ * — and one saved by a client that does not send them — stops everything, which
+ * is what "holiday" means unqualified.
+ */
+const normaliseAffects = (raw) => {
+  const a = raw && typeof raw === 'object' ? raw : {};
+  return {
+    delivery: a.delivery !== false,
+    automations: a.automations !== false,
+  };
+};
+
+/**
  * One holiday, cleaned. Returns { value } or { error }, matching the sanitizer
  * convention in the controllers.
  *
@@ -69,7 +84,7 @@ const sanitizeHoliday = (raw) => {
     .trim()
     .slice(0, MAX_HOLIDAY_NAME);
 
-  return { value: { date: h.date, name } };
+  return { value: { date: h.date, name, affects: normaliseAffects(h.affects) } };
 };
 
 /** Sanitize a whole list, de-duplicated by date (last one wins) and sorted. */
@@ -113,11 +128,32 @@ const holidayListOf = (orgOrList) => {
   const byDate = new Map();
   for (const h of raw) {
     if (h && isDayKey(h.date)) {
-      byDate.set(h.date, { date: h.date, name: h.name || '' });
+      byDate.set(h.date, {
+        date: h.date,
+        name: h.name || '',
+        affects: normaliseAffects(h.affects),
+      });
     }
   }
   return [...byDate.values()].sort((a, b) => compareDayKeys(a.date, b.date));
 };
+
+/**
+ * The holidays that stop a given thing.
+ *
+ * Every consumer filters through here rather than reading `affects` itself, so
+ * "which holidays does the Delivery grid care about" has one answer and adding
+ * a third consequence later is one more call site, not a new convention.
+ */
+const holidaysAffecting = (orgOrList, what) =>
+  holidayListOf(orgOrList).filter((h) => h.affects[what] !== false);
+
+/** The holidays that make a tracker day non-working. */
+const deliveryHolidaysOf = (orgOrList) => holidaysAffecting(orgOrList, 'delivery');
+
+/** The day keys a scheduled automation should roll past, as a Set. */
+const automationHolidayKeySetOf = (orgOrList) =>
+  new Set(holidaysAffecting(orgOrList, 'automations').map((h) => h.date));
 
 /** Map<'YYYY-MM-DD', {date, name}> for fast per-day lookup. */
 const holidayIndex = (orgOrList) => {
@@ -128,9 +164,6 @@ const holidayIndex = (orgOrList) => {
 
 /** Every day key the org treats as a holiday, sorted. */
 const holidayDayKeysOf = (orgOrList) => holidayListOf(orgOrList).map((h) => h.date);
-
-/** A Set of the same, for the schedulers that only ever ask "is this day one?". */
-const holidayDayKeySetOf = (orgOrList) => new Set(holidayDayKeysOf(orgOrList));
 
 /**
  * Just the entries in one year. A day key starts with its year, so this is a
@@ -143,15 +176,59 @@ const holidaysInYear = (orgOrList, year) => {
   return holidayListOf(orgOrList).filter((h) => h.date.startsWith(`${y}-`));
 };
 
+/**
+ * Stamp who marked a day and when. Dropped on read; kept for the audit.
+ */
+const withProvenance = (h, userId) => ({
+  date: h.date,
+  name: h.name,
+  affects: normaliseAffects(h.affects),
+  by: userId,
+  at: new Date(),
+});
+
+/**
+ * Re-stamp only what actually changed.
+ *
+ * The bulk save resends a whole year, most of which is untouched. Stamping
+ * every row would rewrite "marked by Ali in January" into "marked by Sam just
+ * now" the moment Sam renamed one unrelated day.
+ *
+ * Pure, and lives here rather than in the controller so it stays testable
+ * without a database — `now` is injected for the same reason.
+ */
+const mergeProvenance = (next, previous, userId, now = new Date()) => {
+  const before = new Map((previous || []).map((h) => [h.date, h]));
+  return next.map((h) => {
+    const affects = normaliseAffects(h.affects);
+    const old = before.get(h.date);
+    const unchanged =
+      old
+      && (old.name || '') === h.name
+      && normaliseAffects(old.affects).delivery === affects.delivery
+      && normaliseAffects(old.affects).automations === affects.automations;
+
+    if (unchanged) {
+      return { date: h.date, name: h.name, affects, by: old.by, at: old.at };
+    }
+    return { date: h.date, name: h.name, affects, by: userId, at: now };
+  });
+};
+
 module.exports = {
   MAX_HOLIDAYS,
   MAX_HOLIDAY_NAME,
+  normaliseAffects,
+  withProvenance,
+  mergeProvenance,
+  holidaysAffecting,
+  deliveryHolidaysOf,
+  automationHolidayKeySetOf,
   sanitizeHoliday,
   sanitizeHolidays,
   sanitizeYear,
   holidayListOf,
   holidayIndex,
   holidayDayKeysOf,
-  holidayDayKeySetOf,
   holidaysInYear,
 };

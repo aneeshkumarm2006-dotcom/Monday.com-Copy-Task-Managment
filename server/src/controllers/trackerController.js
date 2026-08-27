@@ -6,6 +6,7 @@ const TaskGroup = require('../models/TaskGroup');
 const Organisation = require('../models/Organisation');
 
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const { deliveryHolidaysOf } = require('../utils/orgHolidays');
 const {
   isMonthKey,
   firstDayKeyOf,
@@ -724,7 +725,9 @@ const getDelivery = async (req, res) => {
       allGroups,
       now,
       maxCells: MAX_CELLS,
-      orgHolidays: org?.holidays || [],
+      // Only the holidays that say they stop delivery — an offsite can mean
+      // "no client work owed" while leaving the automations alone.
+      orgHolidays: deliveryHolidaysOf(org),
       /**
        * The window is the SELECTED MONTH — both ends of it — for a daily or
        * weekly cadence, and a run of months ending at the selected one for a

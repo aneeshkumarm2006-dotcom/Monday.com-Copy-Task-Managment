@@ -19,6 +19,8 @@ import {
   holidaysInYear,
   formatDayKey,
   sameDayInYear,
+  normaliseAffects,
+  HOLIDAY_EFFECTS,
 } from '../../utils/orgHolidays';
 
 const NAV_BTN = {
@@ -183,21 +185,31 @@ const HolidaysTab = () => {
     return marked.find((h) => h.date === dayKey)?.name || '';
   };
 
+  /** What a marked day currently stops. */
+  const affectsFor = (h) => normaliseAffects(h.affects);
+
   const dropDraft = (dayKey) =>
     setDrafts((d) => {
       const { [dayKey]: _drop, ...rest } = d;
       return rest;
     });
 
+  // `busy` drives the spinner ONLY. It deliberately does not gate the call:
+  // clicking an effect immediately after typing a name is the natural flow, and
+  // those are two overlapping requests. Dropping the second silently would flip
+  // a checkbox back with no explanation. The endpoint is partial, so they can
+  // land in either order without overwriting each other.
+  const inFlight = useRef(0);
   const guard = async (fn, failure) => {
-    if (busy) return;
+    inFlight.current += 1;
     setBusy(true);
     try {
       await fn();
     } catch (err) {
       toastError(err?.response?.data?.error || failure);
     } finally {
-      setBusy(false);
+      inFlight.current -= 1;
+      if (inFlight.current === 0) setBusy(false);
     }
   };
 
@@ -210,6 +222,8 @@ const HolidaysTab = () => {
         'Could not remove that day. Please try again.'
       );
     } else {
+      // A fresh day: no name yet, and both effects on — what a holiday means
+      // unqualified. Both are refined in the row below.
       guard(
         () => setHoliday(orgId, dayKey, ''),
         'Could not mark that day. Please try again.'
@@ -217,7 +231,12 @@ const HolidaysTab = () => {
     }
   };
 
-  /** Persist a name draft, but only when it actually changed. */
+  /**
+   * Persist a name draft, but only when it actually changed.
+   *
+   * Sends ONLY the name. The endpoint is partial, so an effect toggle racing
+   * this one cannot be undone by a stale `affects` riding along.
+   */
   const flushName = (dayKey) => {
     const draft = draftsRef.current[dayKey];
     if (draft === undefined) return;
@@ -227,6 +246,18 @@ const HolidaysTab = () => {
     guard(
       () => setHoliday(orgId, dayKey, draft.trim()),
       'Could not save that name. Please try again.'
+    );
+  };
+
+  /** Turn one consequence on or off. Sends ONLY the effects, for the same reason. */
+  const setAffect = (holiday, key, value) => {
+    guard(
+      () =>
+        setHoliday(orgId, holiday.date, undefined, {
+          ...affectsFor(holiday),
+          [key]: value,
+        }),
+      'Could not save that. Please try again.'
     );
   };
 
@@ -251,7 +282,10 @@ const HolidaysTab = () => {
         continue;
       }
       if (existing.has(date)) continue;
-      carried.push({ date, name: h.name });
+      // `affects` rides along. The bulk save reads an absent flag as true, so
+      // dropping it here would quietly re-arm every consequence somebody had
+      // deliberately switched off.
+      carried.push({ date, name: h.name, affects: affectsFor(h) });
     }
 
     if (carried.length === 0) {
@@ -260,7 +294,9 @@ const HolidaysTab = () => {
     }
 
     const next = [
-      ...already.map((h) => ({ date: h.date, name: h.name })),
+      // The target year is resent wholesale because the save replaces the year,
+      // so its existing rows must carry their own effects through untouched.
+      ...already.map((h) => ({ date: h.date, name: h.name, affects: affectsFor(h) })),
       ...carried,
     ];
 
@@ -424,65 +460,103 @@ const HolidaysTab = () => {
                 {marked.map((h, i) => (
                   <div
                     key={h.date}
-                    className="flex items-center gap-3 px-3"
                     style={{
-                      height: 44,
+                      padding: '10px 12px',
                       borderTop: i === 0 ? 'none' : '1px solid var(--color-border)',
                     }}
                   >
-                    <TreePalm
-                      size={15}
-                      aria-hidden="true"
-                      style={{ color: 'var(--color-text-muted)', flexShrink: 0 }}
-                    />
-                    <span
-                      className="font-body text-[13px] text-[color:var(--color-text-primary)] shrink-0"
-                      style={{ width: 92 }}
-                    >
-                      {formatDayKey(h.date)}
-                    </span>
-                    <input
-                      value={nameFor(h.date)}
-                      onChange={(e) =>
-                        setDrafts((d) => ({ ...d, [h.date]: e.target.value }))
-                      }
-                      onBlur={() => flushName(h.date)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') e.currentTarget.blur();
-                        if (e.key === 'Escape') {
-                          dropDraft(h.date);
-                          e.currentTarget.blur();
+                    <div className="flex items-center gap-3">
+                      <TreePalm
+                        size={15}
+                        aria-hidden="true"
+                        style={{ color: 'var(--color-text-muted)', flexShrink: 0 }}
+                      />
+                      <span
+                        className="font-body text-[13px] text-[color:var(--color-text-primary)] shrink-0"
+                        style={{ width: 92 }}
+                      >
+                        {formatDayKey(h.date)}
+                      </span>
+                      <input
+                        value={nameFor(h.date)}
+                        onChange={(e) =>
+                          setDrafts((d) => ({ ...d, [h.date]: e.target.value }))
                         }
-                      }}
-                      maxLength={60}
-                      placeholder="Name this day (optional)"
-                      aria-label={`Name for ${formatDayKey(h.date)}`}
-                      className="flex-1 min-w-0 font-body text-[13px] bg-transparent"
-                      style={{
-                        border: 'none',
-                        outline: 'none',
-                        color: 'var(--color-text-primary)',
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => toggleDay(h.date)}
-                      aria-label={`Remove ${formatDayKey(h.date)}`}
-                      className="shrink-0 flex items-center justify-center"
-                      style={{
-                        width: 28,
-                        height: 28,
-                        borderRadius: 'var(--radius-sm)',
-                        border: 'none',
-                        background: 'transparent',
-                        color: 'var(--color-text-muted)',
-                        cursor: 'pointer',
-                      }}
+                        onBlur={() => flushName(h.date)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') e.currentTarget.blur();
+                          if (e.key === 'Escape') {
+                            dropDraft(h.date);
+                            e.currentTarget.blur();
+                          }
+                        }}
+                        maxLength={60}
+                        placeholder="Name this day (optional)"
+                        aria-label={`Name for ${formatDayKey(h.date)}`}
+                        className="flex-1 min-w-0 font-body text-[13px] bg-transparent"
+                        style={{
+                          border: 'none',
+                          outline: 'none',
+                          color: 'var(--color-text-primary)',
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleDay(h.date)}
+                        aria-label={`Remove ${formatDayKey(h.date)}`}
+                        className="shrink-0 flex items-center justify-center"
+                        style={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: 'var(--radius-sm)',
+                          border: 'none',
+                          background: 'transparent',
+                          color: 'var(--color-text-muted)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+
+                    {/*
+                      What this particular day stops. Per-day rather than one
+                      global rule, because a public holiday and a company
+                      offsite are not the same event: one stops everything, the
+                      other means no client work was owed while the nightly
+                      digest should still go out.
+                    */}
+                    <div
+                      className="flex items-center gap-4 flex-wrap"
+                      style={{ paddingLeft: 110, marginTop: 4 }}
                     >
-                      <Trash2 size={14} />
-                    </button>
+                      {HOLIDAY_EFFECTS.map((effect) => (
+                        <label
+                          key={effect.key}
+                          className="flex items-center gap-1.5"
+                          style={{ cursor: 'pointer' }}
+                          title={effect.hint}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={affectsFor(h)[effect.key]}
+                            onChange={(e) =>
+                              setAffect(h, effect.key, e.target.checked)
+                            }
+                            style={{ width: 13, height: 13 }}
+                          />
+                          <span
+                            className="font-body"
+                            style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
+                          >
+                            {effect.label}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
                   </div>
                 ))}
+
               </div>
             )}
           </section>

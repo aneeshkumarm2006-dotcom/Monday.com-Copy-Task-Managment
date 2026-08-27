@@ -17,12 +17,23 @@ const localDay = (date) =>
     day: '2-digit',
   }).format(date);
 
-test('skipHolidays is off by default, so an existing automation is unchanged', () => {
+test('a schedule with no flag pauses on a holiday', () => {
+  // `!== false`. Telling someone their automations will pause and then firing
+  // anyway, because each one had to opt in separately, is a broken promise —
+  // the decision lives on the holiday and this is the default side of it.
   const schedule = { frequency: 'daily', hour: 9, timezone: TZ };
-  const holidays = new Set(['2026-08-15']);
 
   assert.strictEqual(
-    localDay(computeNextRunAt(schedule, FRIDAY_NOON, holidays)),
+    localDay(computeNextRunAt(schedule, FRIDAY_NOON, new Set(['2026-08-15']))),
+    '2026-08-16'
+  );
+});
+
+test('an automation that must never pause opts out explicitly', () => {
+  const schedule = { frequency: 'daily', hour: 9, timezone: TZ, skipHolidays: false };
+
+  assert.strictEqual(
+    localDay(computeNextRunAt(schedule, FRIDAY_NOON, new Set(['2026-08-15']))),
     '2026-08-15'
   );
 });

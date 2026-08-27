@@ -100,17 +100,20 @@ const describeSchedule = (s) => {
   if (!s) return '';
   const hh = String(s.hour ?? 9).padStart(2, '0');
   const tz = s.timezone && s.timezone !== 'UTC' ? ` (${s.timezone})` : '';
-  if (s.frequency === 'daily') return `Daily at ${hh}:00${tz}`;
+  // Worth a word in the summary: an automation that quietly declines to run on
+  // a day it looks scheduled for is otherwise indistinguishable from a broken one.
+  const holi = s.skipHolidays === false ? ' · runs on holidays' : '';
+  if (s.frequency === 'daily') return `Daily at ${hh}:00${tz}${holi}`;
   if (s.frequency === 'weekly') {
     const days = (s.daysOfWeek || []).slice().sort();
     const labels = days.map((d) => WEEKDAY_SHORT[d]).join(', ');
-    return `Weekly · ${labels || '—'} at ${hh}:00${tz}`;
+    return `Weekly · ${labels || '—'} at ${hh}:00${tz}${holi}`;
   }
   if (s.frequency === 'monthly') {
     if (s.useLastDayOfMonth) {
-      return `Monthly · last day at ${hh}:00${tz}`;
+      return `Monthly · last day at ${hh}:00${tz}${holi}`;
     }
-    return `Monthly · day ${s.dayOfMonth} at ${hh}:00${tz}`;
+    return `Monthly · day ${s.dayOfMonth} at ${hh}:00${tz}${holi}`;
   }
   return '';
 };
@@ -255,6 +258,7 @@ const buildInitialForm = (groups) => ({
   useLastDayOfMonth: false,
   hour: 9,
   timezone: getBrowserTimezone(),
+  skipHolidays: true,
   templateName: '',
   group: groups?.[0]?._id || '',
   priority: 'medium',
@@ -332,6 +336,7 @@ const formFromAutomation = (a, groups) => {
     useLastDayOfMonth: s.useLastDayOfMonth === true,
     hour: typeof s.hour === 'number' ? s.hour : 9,
     timezone: s.timezone || getBrowserTimezone(),
+    skipHolidays: s.skipHolidays !== false,
     templateName: t.name || '',
     group: groupId || groups?.[0]?._id || '',
     priority: t.priority || 'medium',
@@ -1387,6 +1392,7 @@ const AutomationsModal = ({
       frequency: form.frequency,
       hour: Number(form.hour),
       timezone: form.timezone || 'UTC',
+      skipHolidays: form.skipHolidays !== false,
     };
     if (form.frequency === 'weekly') {
       schedule.daysOfWeek = form.daysOfWeek;
@@ -1960,6 +1966,31 @@ const AutomationsModal = ({
           )}
         </div>
       </div>
+      )}
+
+      {/*
+        Company holidays. ON by default: the decision about whether a given day
+        stops automations is made on the HOLIDAY itself, and marking a day off
+        only for every automation to fire anyway would be a broken promise. This
+        is the escape hatch for the jobs that must never pause.
+      */}
+      {form.triggerType === 'SCHEDULE' && (
+        <div>
+          <Toggle
+            checked={form.skipHolidays}
+            onChange={(v) => setForm((f) => ({ ...f, skipHolidays: v }))}
+            disabled={saving}
+            label="Pause on company holidays"
+          />
+          <p
+            className="font-body mt-1.5"
+            style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
+          >
+            {form.skipHolidays
+              ? 'Runs on the next working day instead of a holiday that pauses automations.'
+              : 'Always runs, even on a company holiday. For work that cannot wait — a backup, a health check.'}
+          </p>
+        </div>
       )}
 
       {form.triggerType === 'SCHEDULE' && (

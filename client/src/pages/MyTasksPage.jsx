@@ -774,13 +774,8 @@ const CalendarTab = ({ events, onSelect }) => {
 
   // Company holidays. Read-only here — marking one is a workspace act and
   // belongs on the org calendar and in Settings, not in one person's My Work.
-  const orgId = useOrgStore((s) => s.currentOrg?._id) || null;
+  // Loaded once per workspace in App.jsx.
   const holidays = useOrgStore((s) => s.holidays);
-  const ensureHolidays = useOrgStore((s) => s.ensureHolidays);
-
-  useEffect(() => {
-    if (orgId) ensureHolidays(orgId);
-  }, [orgId, ensureHolidays]);
 
   const dayPropGetter = useMemo(
     () => holidayDayPropGetter(holidayIndex(holidays)),

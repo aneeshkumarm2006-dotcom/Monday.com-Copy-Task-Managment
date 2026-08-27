@@ -20,7 +20,13 @@ import {
   eventPropGetter,
   holidayDayPropGetter,
 } from '../utils/calendarEvents';
-import { holidayIndex, toDayKey, formatDayKey } from '../utils/orgHolidays';
+import {
+  holidayIndex,
+  toDayKey,
+  formatDayKey,
+  normaliseAffects,
+  HOLIDAY_EFFECTS,
+} from '../utils/orgHolidays';
 import useToastStore from '../store/toastStore';
 import usePermissions from '../hooks/usePermissions';
 import Modal from '../components/ui/Modal';
@@ -362,19 +368,22 @@ const CalendarPage = () => {
   // same capability the Settings editor is behind. Clicking an empty day is the
   // quick path for "tomorrow is off" — the year grid in Settings is where a
   // whole year gets entered.
+  // The list itself is loaded once per workspace in App.jsx — every date picker
+  // in the app needs it, not just this page.
   const holidays = useOrgStore((s) => s.holidays);
-  const ensureHolidays = useOrgStore((s) => s.ensureHolidays);
   const setHoliday = useOrgStore((s) => s.setHoliday);
   const deleteHoliday = useOrgStore((s) => s.deleteHoliday);
   const toastError = useToastStore((s) => s.error);
   const { can } = usePermissions();
   const canMarkHolidays = can('org.manage_settings');
 
-  const [dayMenu, setDayMenu] = useState(null); // { dayKey, holiday }
-
-  useEffect(() => {
-    if (orgId) ensureHolidays(orgId);
-  }, [orgId, ensureHolidays]);
+  // { dayKey, holiday } — the day the user clicked, plus its existing entry.
+  const [dayMenu, setDayMenu] = useState(null);
+  // What the day being marked should stop. Asked rather than assumed: a public
+  // holiday stops everything, a company offsite means no client work was owed
+  // while the nightly digest should still go out.
+  const [dayName, setDayName] = useState('');
+  const [dayAffects, setDayAffects] = useState({ delivery: true, automations: true });
 
   const holidayMap = useMemo(() => holidayIndex(holidays), [holidays]);
   const dayPropGetter = useMemo(
@@ -388,24 +397,39 @@ const CalendarPage = () => {
       // Month view hands back a range; the first day is the one clicked.
       const dayKey = toDayKey(slot?.start);
       if (!dayKey) return;
-      setDayMenu({ dayKey, holiday: holidayMap.get(dayKey) || null });
+      const holiday = holidayMap.get(dayKey) || null;
+      setDayName(holiday?.name || '');
+      setDayAffects(normaliseAffects(holiday?.affects));
+      setDayMenu({ dayKey, holiday });
     },
     [canMarkHolidays, orgId, holidayMap]
   );
 
-  const toggleHoliday = useCallback(async () => {
+  const saveDay = useCallback(async () => {
     if (!dayMenu || !orgId) return;
-    const { dayKey, holiday } = dayMenu;
+    const { dayKey } = dayMenu;
     setDayMenu(null);
     try {
-      if (holiday) await deleteHoliday(orgId, dayKey);
-      else await setHoliday(orgId, dayKey, '');
+      await setHoliday(orgId, dayKey, dayName.trim(), dayAffects);
     } catch (err) {
       toastError(
-        err?.response?.data?.error || 'Could not change that day. Please try again.'
+        err?.response?.data?.error || 'Could not save that day. Please try again.'
       );
     }
-  }, [dayMenu, orgId, setHoliday, deleteHoliday, toastError]);
+  }, [dayMenu, orgId, dayName, dayAffects, setHoliday, toastError]);
+
+  const removeDay = useCallback(async () => {
+    if (!dayMenu || !orgId) return;
+    const { dayKey } = dayMenu;
+    setDayMenu(null);
+    try {
+      await deleteHoliday(orgId, dayKey);
+    } catch (err) {
+      toastError(
+        err?.response?.data?.error || 'Could not remove that day. Please try again.'
+      );
+    }
+  }, [dayMenu, orgId, deleteHoliday, toastError]);
 
 
   // --- URL-backed filter state -------------------------------------------
@@ -666,60 +690,162 @@ const CalendarPage = () => {
         title={dayMenu ? formatDayKey(dayMenu.dayKey) : ''}
         maxWidth={380}
         footer={
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setDayMenu(null)}
-              className="font-body"
-              style={{
-                height: 34,
-                padding: '0 14px',
-                borderRadius: 'var(--radius-md)',
-                border: '1px solid var(--color-border)',
-                background: 'var(--color-bg-surface)',
-                color: 'var(--color-text-secondary)',
-                fontSize: 13,
-                cursor: 'pointer',
-              }}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={toggleHoliday}
-              className="font-body"
-              style={{
-                height: 34,
-                padding: '0 14px',
-                borderRadius: 'var(--radius-md)',
-                border: 'none',
-                background: 'var(--color-accent)',
-                color: '#fff',
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
-            >
-              {dayMenu?.holiday ? 'Remove holiday' : 'Mark as holiday'}
-            </button>
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              {dayMenu?.holiday && (
+                <button
+                  type="button"
+                  onClick={removeDay}
+                  className="font-body"
+                  style={{
+                    height: 34,
+                    padding: '0 12px',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--color-border)',
+                    background: 'var(--color-bg-surface)',
+                    color: 'var(--color-danger, #DC2626)',
+                    fontSize: 13,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Remove holiday
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setDayMenu(null)}
+                className="font-body"
+                style={{
+                  height: 34,
+                  padding: '0 14px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--color-border)',
+                  background: 'var(--color-bg-surface)',
+                  color: 'var(--color-text-secondary)',
+                  fontSize: 13,
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveDay}
+                className="font-body"
+                style={{
+                  height: 34,
+                  padding: '0 14px',
+                  borderRadius: 'var(--radius-md)',
+                  border: 'none',
+                  background: 'var(--color-accent)',
+                  color: '#fff',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                {dayMenu?.holiday ? 'Save' : 'Mark as holiday'}
+              </button>
+            </div>
           </div>
         }
       >
-        <p className="font-body text-[13px] text-[color:var(--color-text-secondary)]">
-          {dayMenu?.holiday ? (
-            <>
-              Marked as a company holiday
-              {dayMenu.holiday.name ? ` — ${dayMenu.holiday.name}` : ''}. Removing
-              it makes the day count again on every tracker in the workspace.
-            </>
-          ) : (
-            <>
-              Nothing will be owed on this day: tracker columns go grey rather
-              than red across the whole workspace. Name it in Settings, Holidays.
-            </>
-          )}
-        </p>
+        <div className="flex flex-col gap-4">
+          <div>
+            <label
+              htmlFor="holiday-name"
+              className="block mb-1.5 font-body font-medium text-xs uppercase tracking-wide"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              Name (optional)
+            </label>
+            <input
+              id="holiday-name"
+              value={dayName}
+              onChange={(e) => setDayName(e.target.value)}
+              maxLength={60}
+              placeholder="e.g. Independence Day"
+              className="w-full font-body"
+              style={{
+                height: 38,
+                padding: '0 10px',
+                borderRadius: 'var(--radius-md)',
+                border: '1.5px solid var(--color-border)',
+                background: 'var(--color-bg-input)',
+                color: 'var(--color-text-primary)',
+                fontSize: 14,
+              }}
+            />
+          </div>
+
+          {/*
+            What the day actually stops. Asked rather than assumed: not every
+            closed day means the same thing, and a holiday that silently paused
+            a billing job would be worse than one that paused nothing.
+          */}
+          <fieldset style={{ border: 'none', padding: 0, margin: 0 }}>
+            <legend
+              className="font-body font-medium text-xs uppercase tracking-wide"
+              style={{ color: 'var(--color-text-secondary)', marginBottom: 8 }}
+            >
+              What should this day stop?
+            </legend>
+
+            <div className="flex flex-col gap-2.5">
+              {HOLIDAY_EFFECTS.map((effect) => (
+                <label
+                  key={effect.key}
+                  className="flex items-start gap-2.5"
+                  style={{ cursor: 'pointer' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={dayAffects[effect.key]}
+                    onChange={(e) =>
+                      setDayAffects((a) => ({ ...a, [effect.key]: e.target.checked }))
+                    }
+                    style={{ marginTop: 2, width: 15, height: 15, flexShrink: 0 }}
+                  />
+                  <span>
+                    <span
+                      className="font-body block"
+                      style={{ fontSize: 13, color: 'var(--color-text-primary)' }}
+                    >
+                      {effect.label}
+                    </span>
+                    <span
+                      className="font-body block"
+                      style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
+                    >
+                      {effect.hint}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+
+            {!dayAffects.delivery && !dayAffects.automations && (
+              <p
+                className="font-body"
+                style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginTop: 8 }}
+              >
+                Nothing will change — the day is just noted on the calendar.
+              </p>
+            )}
+          </fieldset>
+
+          <p
+            className="font-body"
+            style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
+          >
+            Applies to the whole workspace. A tracker or automation can still opt
+            out on its own.
+          </p>
+        </div>
       </Modal>
+
     </>
   );
 };

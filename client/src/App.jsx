@@ -111,6 +111,7 @@ function App() {
   const fetchCurrentUser = useAuthStore((s) => s.fetchCurrentUser);
   const setOrgsFromUser = useOrgStore((s) => s.setOrgsFromUser);
   const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
+  const ensureHolidays = useOrgStore((s) => s.ensureHolidays);
   const fetchNotifications = useNotificationStore((s) => s.fetchNotifications);
   const clearNotifications = useNotificationStore((s) => s.clear);
 
@@ -139,6 +140,16 @@ function App() {
     } else {
       clearNotifications();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?._id, currentOrgId]);
+
+  // Load the workspace holiday calendar once per org, up here rather than per
+  // page, because the surfaces that need it are not just the calendars: every
+  // DatePickerPopover in the app marks holidays, and those live on board pages
+  // that would otherwise never have loaded the list. `ensureHolidays` is a
+  // no-op once loaded, so this costs one request per workspace per session.
+  useEffect(() => {
+    if (user && currentOrgId) ensureHolidays(currentOrgId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?._id, currentOrgId]);
 

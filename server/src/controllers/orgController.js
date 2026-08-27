@@ -13,6 +13,8 @@ const {
   sanitizeYear,
   holidayListOf,
   holidaysInYear,
+  withProvenance,
+  mergeProvenance,
   MAX_HOLIDAYS,
 } = require('../utils/orgHolidays');
 
@@ -499,52 +501,49 @@ const deleteOrg = async (req, res) => {
 /* Shape and sanitizers live in utils/orgHolidays.js.                         */
 /* -------------------------------------------------------------------------- */
 
-/** Stamp who marked a day and when. Dropped on read; kept for the audit. */
-const withHolidayProvenance = (h, userId) => ({
-  date: h.date,
-  name: h.name,
-  by: userId,
-  at: new Date(),
-});
-
-/**
- * Re-stamp only what actually changed.
- *
- * The bulk save resends a whole year, most of which is untouched. Stamping every
- * row would rewrite "marked by Ali in January" into "marked by Sam just now" the
- * moment Sam renamed one unrelated day.
- */
-const mergeHolidayProvenance = (next, previous, userId) => {
-  const before = new Map((previous || []).map((h) => [h.date, h]));
-  return next.map((h) => {
-    const old = before.get(h.date);
-    if (old && (old.name || '') === h.name) {
-      return { date: h.date, name: h.name, by: old.by, at: old.at };
-    }
-    return withHolidayProvenance(h, userId);
-  });
-};
 
 /**
  * Persist a cleaned list and reply with the canonical collection.
  *
- * Everything is flattened to PLAIN objects before it is assigned. Handing a
- * Mongoose DocumentArray back to the path it came from — or splicing subdocs
- * from it into a new array — is the kind of thing that works until it does not,
- * and `markModified` is needed anyway because an in-place sort on a document
- * array is invisible to Mongoose.
+ * Writes through `updateOne` rather than `doc.save()`.
+ *
+ * WHY: the Settings editor saves the name on blur and each effect on click, so
+ * two writes to this array overlap on the natural flow. Both requests load
+ * their own copy of the org, and `save()` carries an optimistic-concurrency
+ * check on `__v` — the second one lost the race with a VersionError, which
+ * surfaced as a 500 AND silently dropped the edit. An unconditional `$set` has
+ * no version to disagree about.
+ *
+ * Everything is flattened to PLAIN objects on the way in; handing a Mongoose
+ * DocumentArray back to the path it came from is the kind of thing that works
+ * until it does not.
  */
+const normaliseHolidayRow = (h) => ({
+  date: h.date,
+  name: h.name || '',
+  affects: {
+    delivery: h.affects?.delivery !== false,
+    automations: h.affects?.automations !== false,
+  },
+  by: h.by,
+  at: h.at,
+});
+
 const saveHolidaysAndReturn = async (org, list, res) => {
-  org.holidays = (list || []).map((h) => ({
-    date: h.date,
-    name: h.name || '',
-    by: h.by,
-    at: h.at,
-  }));
-  org.markModified('holidays');
-  await org.save();
-  return res.json({ holidays: holidayListOf(org) });
+  const holidays = (list || []).map(normaliseHolidayRow);
+  await Organisation.updateOne({ _id: org._id }, { $set: { holidays } });
+  return res.json({ holidays: holidayListOf(holidays) });
 };
+
+/**
+ * Re-read and reply. Used by the atomic single-date paths, which do not hold a
+ * correct in-memory copy after the write.
+ */
+const rereadAndReturn = async (orgId, res) => {
+  const fresh = await Organisation.findById(orgId).select('holidays').lean();
+  return res.json({ holidays: holidayListOf(fresh) });
+};
+
 
 /**
  * GET /api/orgs/:id/holidays[?year=2026] — any member.
@@ -605,7 +604,7 @@ const saveHolidays = async (req, res) => {
       return res.status(400).json({ error: 'At most ' + MAX_HOLIDAYS + ' holidays' });
     }
 
-    const thisYear = mergeHolidayProvenance(
+    const thisYear = mergeProvenance(
       cleaned.value,
       (org.holidays || []).filter((h) => String(h.date).startsWith(prefix)),
       req.user.userId
@@ -623,35 +622,73 @@ const saveHolidays = async (req, res) => {
 };
 
 /**
- * PUT /api/orgs/:id/holidays/:date — upsert one day, { name }.
+ * PUT /api/orgs/:id/holidays/:date — upsert one day, { name?, affects? }.
  *
  * The quick-mark path used from the calendar day cell. Deliberately its own
  * route rather than a degenerate bulk save: marking tomorrow off should not
  * require the client to hold, and resend, the whole year.
+ *
+ * PARTIAL on an existing day: a field the caller omits is left alone. The
+ * Settings editor saves the name on blur and each effect on click, and those
+ * are separate requests that can overlap — a whole-entry PUT would mean
+ * whichever landed second overwrote the other with the stale half it was
+ * holding. Creating a day still applies the defaults, so an omitted `affects`
+ * on a NEW day means "stops everything", which is what a holiday means.
  */
 const setHoliday = async (req, res) => {
   try {
     const org = req.org;
 
-    const one = sanitizeHoliday({ date: req.params.date, name: req.body.name });
+    const one = sanitizeHoliday({
+      date: req.params.date,
+      name: req.body.name,
+      affects: req.body.affects,
+    });
     if (one.error) return res.status(400).json({ error: one.error });
 
-    const existing = (org.holidays || []).find((h) => h.date === one.value.date);
-    if (existing) {
-      existing.name = one.value.name;
-      existing.by = req.user.userId;
-      existing.at = new Date();
-    } else {
-      if ((org.holidays || []).length >= MAX_HOLIDAYS) {
-        return res.status(400).json({ error: 'At most ' + MAX_HOLIDAYS + ' holidays' });
-      }
-      org.holidays.push(withHolidayProvenance(one.value, req.user.userId));
+    const { date } = one.value;
+
+    // Update the matching element in place, touching only the fields the caller
+    // actually sent. Two overlapping edits to the SAME day therefore compose
+    // instead of one overwriting the other with the stale half it was holding.
+    const $set = { 'holidays.$[el].by': req.user.userId, 'holidays.$[el].at': new Date() };
+    if (req.body.name !== undefined) $set['holidays.$[el].name'] = one.value.name;
+    if (req.body.affects !== undefined) {
+      $set['holidays.$[el].affects.delivery'] = one.value.affects.delivery;
+      $set['holidays.$[el].affects.automations'] = one.value.affects.automations;
     }
 
-    const sorted = [...org.holidays].sort((a, b) =>
-      String(a.date).localeCompare(String(b.date))
+    const updated = await Organisation.updateOne(
+      { _id: org._id },
+      { $set },
+      { arrayFilters: [{ 'el.date': date }] }
     );
-    return await saveHolidaysAndReturn(org, sorted, res);
+
+    if (updated.matchedCount === 0 || updated.modifiedCount === 0) {
+      // Not there yet. Guard the cap and push it, keeping the array sorted in
+      // the same operation so no read-modify-write is needed to stay ordered.
+      const current = await Organisation.findById(org._id).select('holidays').lean();
+      if ((current?.holidays || []).some((h) => h.date === date)) {
+        // It appeared between the two statements, or nothing needed changing.
+        return rereadAndReturn(org._id, res);
+      }
+      if ((current?.holidays || []).length >= MAX_HOLIDAYS) {
+        return res.status(400).json({ error: `At most ${MAX_HOLIDAYS} holidays` });
+      }
+      await Organisation.updateOne(
+        { _id: org._id, 'holidays.date': { $ne: date } },
+        {
+          $push: {
+            holidays: {
+              $each: [withProvenance(one.value, req.user.userId)],
+              $sort: { date: 1 },
+            },
+          },
+        }
+      );
+    }
+
+    return rereadAndReturn(org._id, res);
   } catch (err) {
     console.error('setHoliday error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -667,13 +704,18 @@ const deleteHoliday = async (req, res) => {
       return res.status(400).json({ error: 'Invalid date' });
     }
 
-    const next = (org.holidays || []).filter((h) => h.date !== req.params.date);
-    return await saveHolidaysAndReturn(org, next, res);
+    await Organisation.updateOne(
+      { _id: org._id },
+      { $pull: { holidays: { date: req.params.date } } }
+    );
+
+    return rereadAndReturn(org._id, res);
   } catch (err) {
     console.error('deleteHoliday error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
+
 
 module.exports = {
   createOrg,

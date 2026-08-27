@@ -64,9 +64,9 @@ const useOrgStore = create((set, get) => ({
     return next;
   },
 
-  /** Mark one day — the quick path from a calendar cell. */
-  setHoliday: async (orgId, date, name = '') => {
-    const next = await orgService.setHoliday(orgId, date, name);
+  /** Mark one day, or change part of one. Omitted fields are left alone. */
+  setHoliday: async (orgId, date, name, affects) => {
+    const next = await orgService.setHoliday(orgId, date, name, affects);
     set({ holidays: next, holidaysLoadedFor: orgId });
     return next;
   },

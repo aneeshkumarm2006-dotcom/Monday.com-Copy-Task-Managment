@@ -37,17 +37,20 @@ const scheduleSchema = new mongoose.Schema(
      * Roll past days in the workspace holiday calendar (`Organisation.holidays`)
      * instead of firing on them.
      *
-     * Opt-in, so every automation that already exists keeps firing exactly as it
-     * does today. Off is also the right default in general: plenty of scheduled
-     * work — a backup, a digest, an out-of-hours check — has no opinion about
-     * whether the office was open.
+     * DEFAULTS TO TRUE, and is read as `!== false`. Marking a day as a holiday
+     * and being told automations will pause, only for them to fire anyway
+     * because each one had to opt in separately, is a broken promise — so the
+     * decision lives on the HOLIDAY (`Organisation.holidays[].affects`) and this
+     * is the per-automation escape hatch for the jobs that must never pause: a
+     * backup, a health check, an out-of-hours rota.
      *
      * Skipping ROLLS FORWARD rather than cancelling: computeNextRunAt keeps
      * walking, so a daily automation due on a holiday runs the next working day.
+     * Nothing is ever silently dropped.
      */
     skipHolidays: {
       type: Boolean,
-      default: false,
+      default: true,
     },
   },
   { _id: false }

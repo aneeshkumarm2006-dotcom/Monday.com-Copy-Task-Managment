@@ -56,10 +56,6 @@ export const toDayKey = (date) => {
 export const makeDayKey = (year, monthIndex, day) =>
   `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
-/** The year a day key belongs to, as a number. */
-export const yearOfDayKey = (dayKey) =>
-  isDayKey(dayKey) ? Number(dayKey.slice(0, 4)) : null;
-
 /** Shared month-grid math, so the pickers and the year grid cannot disagree. */
 export const getDaysInMonth = (year, monthIndex) =>
   new Date(year, monthIndex + 1, 0).getDate();
@@ -68,7 +64,30 @@ export const getFirstDayOfMonth = (year, monthIndex) =>
   new Date(year, monthIndex, 1).getDay();
 
 /**
- * Map<'YYYY-MM-DD', {date, name}> from whatever the API handed back.
+ * WHAT A HOLIDAY STOPS. Mirrors normaliseAffects in server/src/utils/orgHolidays.js
+ * — `!== false`, so a row saved before these flags existed stops everything,
+ * which is what "holiday" means unqualified.
+ */
+export const HOLIDAY_EFFECTS = [
+  {
+    key: 'delivery',
+    label: 'Pause tracker scoring',
+    hint: 'Columns go grey instead of red. Nobody is marked missed, and the day leaves the ratio.',
+  },
+  {
+    key: 'automations',
+    label: 'Pause scheduled automations',
+    hint: 'Anything scheduled for this day runs on the next working day instead.',
+  },
+];
+
+export const normaliseAffects = (raw) => ({
+  delivery: raw?.delivery !== false,
+  automations: raw?.automations !== false,
+});
+
+/**
+ * Map<'YYYY-MM-DD', {date, name, affects}> from whatever the API handed back.
  *
  * Every consumer wants the map, not the list, so this is the single conversion
  * and the components just look days up.
@@ -76,14 +95,16 @@ export const getFirstDayOfMonth = (year, monthIndex) =>
 export const holidayIndex = (holidays) => {
   const out = new Map();
   for (const h of holidays || []) {
-    if (h && isDayKey(h.date)) out.set(h.date, { date: h.date, name: h.name || '' });
+    if (h && isDayKey(h.date)) {
+      out.set(h.date, {
+        date: h.date,
+        name: h.name || '',
+        affects: normaliseAffects(h.affects),
+      });
+    }
   }
   return out;
 };
-
-/** The entry for a day, or null. Takes the Map from `holidayIndex`. */
-export const holidayOn = (index, dayKey) =>
-  (index && dayKey && index.get(dayKey)) || null;
 
 /** Just the holidays in one year, sorted — what the Settings editor renders. */
 export const holidaysInYear = (holidays, year) => {

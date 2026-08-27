@@ -119,9 +119,19 @@ export const saveHolidays = async (orgId, year, holidays) => {
   return data.holidays;
 };
 
-/** Mark one day — the quick path from a calendar cell. */
-export const setHoliday = async (orgId, date, name = '') => {
-  const { data } = await api.put(`/api/orgs/${orgId}/holidays/${date}`, { name });
+/**
+ * Mark one day, or change part of one — the quick path from a calendar cell.
+ *
+ * PARTIAL on a day that already exists: pass only what you are changing and the
+ * rest is left alone, so the name flush and an effect toggle cannot overwrite
+ * each other when they overlap. On a NEW day an omitted `affects` means both,
+ * which is what a holiday means unqualified.
+ */
+export const setHoliday = async (orgId, date, name, affects) => {
+  const body = {};
+  if (name !== undefined) body.name = name;
+  if (affects !== undefined) body.affects = affects;
+  const { data } = await api.put(`/api/orgs/${orgId}/holidays/${date}`, body);
   return data.holidays;
 };
 

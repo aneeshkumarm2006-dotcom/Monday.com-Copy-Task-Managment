@@ -42,6 +42,7 @@ const TaskGroup = require('../models/TaskGroup');
 const Organisation = require('../models/Organisation');
 
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const { deliveryHolidaysOf } = require('../utils/orgHolidays');
 const { scoreGroup, scoreGoal } = require('../utils/goalTypes');
 const { ownerForMonth } = require('../utils/groupOwner');
 const { foldDeliveryByGroup, buildScoreboard } = require('../utils/scoreboard');
@@ -182,7 +183,7 @@ const getScoreboard = async (req, res) => {
         allGroups: groups,
         now,
         maxCells: MAX_EVAL_CELLS,
-        orgHolidays: org?.holidays || [],
+        orgHolidays: deliveryHolidaysOf(org),
         // Clamped to today so a month still running does not paint the rest of
         // itself as missed — the same reason the Delivery grid clamps.
         resolveRange: ({ todayKey }) => ({
