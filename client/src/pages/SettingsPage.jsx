@@ -726,6 +726,9 @@ const SettingsPage = () => {
   // Derived from the feature table itself, so a new entry brings its own audience
   // with it rather than needing a capability added to a list over here too.
   const canExtraFeatures = hasAnyExtraFeature(can);
+  // The holiday calendar has its own row in the permissions matrix, so this is
+  // NOT derived from canManageOrg — a role can hold one without the other.
+  const canManageHolidays = can('org.manage_holidays');
   const permissionsResolved =
     !!currentOrg && !permissionsLoading && loadedForOrg === currentOrg._id;
 
@@ -751,9 +754,9 @@ const SettingsPage = () => {
     if (!permissionsResolved) return;
     if (!canManageOrg && activeTab === 'organisation') setActiveTab('profile');
     if (!canManageOrg && activeTab === 'connectors') setActiveTab('profile');
-    if (!canManageOrg && activeTab === 'holidays') setActiveTab('profile');
+    if (!canManageHolidays && activeTab === 'holidays') setActiveTab('profile');
     if (!canExtraFeatures && activeTab === 'features') setActiveTab('profile');
-  }, [permissionsResolved, canManageOrg, canExtraFeatures, activeTab]);
+  }, [permissionsResolved, canManageOrg, canExtraFeatures, canManageHolidays, activeTab]);
 
   // Fetch org details (with inviteCode) for Organisation tab
   useEffect(() => {
@@ -826,7 +829,7 @@ const SettingsPage = () => {
     if (activeTab === 'connectors' && canManageOrg) {
       return <ConnectorsTab />;
     }
-    if (activeTab === 'holidays' && canManageOrg) {
+    if (activeTab === 'holidays' && canManageHolidays) {
       return <HolidaysTab />;
     }
     if (activeTab === 'features' && canExtraFeatures) {
@@ -873,12 +876,14 @@ const SettingsPage = () => {
             onTabChange={setActiveTab}
             showAdminTabs={canManageOrg}
             canExtraFeatures={canExtraFeatures}
+            canHolidays={canManageHolidays}
           />
           <SettingsTabBar
             activeTab={activeTab}
             onTabChange={setActiveTab}
             showAdminTabs={canManageOrg}
             canExtraFeatures={canExtraFeatures}
+            canHolidays={canManageHolidays}
           />
           <div className="flex-1 p-5 md:p-8">
             {renderTab()}

@@ -20,6 +20,10 @@ import {
  *     folded into `showAdminTabs`, because the two answer different questions:
  *     one is "may you run the workspace", the other is "is there anything in
  *     here for you".
+ *   canHolidays: boolean — `org.manage_holidays`. Its own flag for the same
+ *     reason: the holiday calendar has its own row in the permissions matrix,
+ *     so a role can hold it WITHOUT holding org.manage_settings, and folding it
+ *     into `showAdminTabs` would hide the tab from exactly those people.
  */
 const TABS = [
   { key: 'organisation', label: 'Organisation', icon: Building2, adminOnly: true },
@@ -30,18 +34,20 @@ const TABS = [
   // personal setting. Switching a connector on for one board is a separate,
   // board-level act and lives on that board's Add-ons tab.
   { key: 'connectors', label: 'Connectors', icon: Plug, adminOnly: true },
-  // The workspace holiday calendar. Admin-only for the same reason Connectors
-  // is: one person marking a day off changes what every board in the workspace
-  // counts as owed. Everyone still SEES holidays everywhere; only editing is gated.
-  { key: 'holidays', label: 'Holidays', icon: CalendarDays, adminOnly: true },
+  // The workspace holiday calendar. Gated on its own capability rather than on
+  // "is an admin": one person marking a day off changes what every board counts
+  // as owed, but that is a job an ops lead can hold without also being able to
+  // rename the org. Everyone still SEES holidays everywhere; only editing is gated.
+  { key: 'holidays', label: 'Holidays', icon: CalendarDays, holidayTab: true },
   { key: 'features', label: 'Extra features', icon: FlaskConical, featureTab: true },
 ];
 
-const visibleTabs = (showAdminTabs, canExtraFeatures) =>
+const visibleTabs = (showAdminTabs, canExtraFeatures, canHolidays) =>
   TABS.filter(
     (t) =>
       (showAdminTabs || !t.adminOnly) &&
-      (!t.featureTab || canExtraFeatures)
+      (!t.featureTab || canExtraFeatures) &&
+      (!t.holidayTab || canHolidays)
   );
 
 const SettingsSidebar = ({
@@ -49,8 +55,9 @@ const SettingsSidebar = ({
   onTabChange,
   showAdminTabs = true,
   canExtraFeatures = false,
+  canHolidays = false,
 }) => {
-  const tabs = visibleTabs(showAdminTabs, canExtraFeatures);
+  const tabs = visibleTabs(showAdminTabs, canExtraFeatures, canHolidays);
 
   return (
     <aside
@@ -116,8 +123,9 @@ export const SettingsTabBar = ({
   onTabChange,
   showAdminTabs = true,
   canExtraFeatures = false,
+  canHolidays = false,
 }) => {
-  const tabs = visibleTabs(showAdminTabs, canExtraFeatures);
+  const tabs = visibleTabs(showAdminTabs, canExtraFeatures, canHolidays);
   return (
     <div
       className="md:hidden flex items-center gap-1 overflow-x-auto"

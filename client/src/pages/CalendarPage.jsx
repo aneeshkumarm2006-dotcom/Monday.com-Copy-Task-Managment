@@ -364,10 +364,10 @@ const CalendarPage = () => {
   const [selectedTask, setSelectedTask] = useState(null);
   // --- company holidays ------------------------------------------------------
   //
-  // Shading is for everyone; marking a day needs `org.manage_settings`, the
-  // same capability the Settings editor is behind. Clicking an empty day is the
-  // quick path for "tomorrow is off" — the year grid in Settings is where a
-  // whole year gets entered.
+  // Shading is for everyone; marking a day needs `org.manage_holidays`, the same
+  // capability the Settings editor is behind and its own row in the permissions
+  // matrix. Clicking an empty day is the quick path for "tomorrow is off" — the
+  // year grid in Settings is where a whole year gets entered.
   // The list itself is loaded once per workspace in App.jsx — every date picker
   // in the app needs it, not just this page.
   const holidays = useOrgStore((s) => s.holidays);
@@ -375,7 +375,7 @@ const CalendarPage = () => {
   const deleteHoliday = useOrgStore((s) => s.deleteHoliday);
   const toastError = useToastStore((s) => s.error);
   const { can } = usePermissions();
-  const canMarkHolidays = can('org.manage_settings');
+  const canMarkHolidays = can('org.manage_holidays');
 
   // { dayKey, holiday } — the day the user clicked, plus its existing entry.
   const [dayMenu, setDayMenu] = useState(null);

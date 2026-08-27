@@ -601,6 +601,132 @@ const main = async () => {
     `${legacyBulk.status}: ${JSON.stringify(legacyBulk.body)}`);
 
   // =========================================================================
+  console.log('\n--- 13. only owner and admin may EDIT ------------------------');
+
+  // The owner holds every capability unconditionally — the resolver short-circuits
+  // for them — so an owner passing proves nothing about the capability wiring.
+  // These two go through the permissions matrix for real.
+  const adminUser = await User.create({
+    name: 'Admin', email: 'admin@example.com', googleId: 'g-admin',
+  });
+  const viewerUser = await User.create({
+    name: 'Viewer', email: 'viewer@example.com', googleId: 'g-viewer',
+  });
+
+  const freshOrg = await Organisation.findById(org._id);
+  freshOrg.members.push(adminUser._id, viewerUser._id);
+  freshOrg.memberRoles.push(
+    { user: adminUser._id, role: freshOrg.roleByKey('admin')._id },
+    { user: viewerUser._id, role: freshOrg.roleByKey('viewer')._id }
+  );
+  await freshOrg.save();
+
+  const tokenFor = (u) => jwt.sign(
+    { userId: u._id.toString(), email: u.email, name: u.name },
+    process.env.JWT_SECRET, { expiresIn: '1h' }
+  );
+  const adminToken = tokenFor(adminUser);
+  const viewerToken = tokenFor(viewerUser);
+
+  const adminWrite = await call(
+    'PUT', `/api/orgs/${org._id}/holidays/2026-01-26`, { name: 'Republic Day' }, adminToken
+  );
+  check('an ADMIN can mark a holiday (via org.manage_holidays)', adminWrite.status === 200,
+    `${adminWrite.status}: ${JSON.stringify(adminWrite.body)}`);
+
+  const adminBulk = await call(
+    'PUT', `/api/orgs/${org._id}/holidays`,
+    { year: '2029', holidays: [{ date: '2029-01-01', name: 'NY' }] }, adminToken
+  );
+  check('an ADMIN can bulk-save a year', adminBulk.status === 200, `${adminBulk.status}`);
+
+  const adminDelete = await call(
+    'DELETE', `/api/orgs/${org._id}/holidays/2026-01-26`, undefined, adminToken
+  );
+  check('an ADMIN can delete a holiday', adminDelete.status === 200, `${adminDelete.status}`);
+
+  const viewerRead = await call('GET', `/api/orgs/${org._id}/holidays`, undefined, viewerToken);
+  check('a VIEWER can still read them', viewerRead.status === 200, `${viewerRead.status}`);
+
+  // Snapshot BEFORE the refused attempts, so "nothing changed" is measured
+  // against reality rather than against a date an earlier section may have
+  // already removed.
+  const beforeRefusals = JSON.stringify(
+    ((await call('GET', `/api/orgs/${org._id}/holidays`)).body?.holidays || [])
+  );
+
+  for (const [label, r] of [
+    ['single-date PUT', await call('PUT', `/api/orgs/${org._id}/holidays/2026-03-01`, { name: 'No' }, viewerToken)],
+    ['bulk PUT', await call('PUT', `/api/orgs/${org._id}/holidays`, { year: '2026', holidays: [] }, viewerToken)],
+    ['DELETE', await call('DELETE', `/api/orgs/${org._id}/holidays/2026-08-15`, undefined, viewerToken)],
+  ]) {
+    check(`a VIEWER is refused on ${label}`, r.status === 403,
+      `${r.status}: ${JSON.stringify(r.body)}`);
+  }
+
+  const afterRefusals = JSON.stringify(
+    ((await call('GET', `/api/orgs/${org._id}/holidays`)).body?.holidays || [])
+  );
+  check(
+    'and none of those refusals changed a single byte',
+    afterRefusals === beforeRefusals,
+    `before ${beforeRefusals}
+        after  ${afterRefusals}`
+  );
+
+  // =========================================================================
+  console.log('\n--- 14. the capability migration hazard ----------------------');
+
+  // A workspace that predates the capability keeps its STORED permission list,
+  // and ensureSystemRoles only seeds missing ROLES — never missing capabilities
+  // on roles that already exist. So its admin is refused until someone runs
+  // `npm run migrate:holidays` or ticks the box in Members -> Permissions.
+  const legacyRoleOrg = await Organisation.findById(org._id);
+  const adminRole = legacyRoleOrg.roleByKey('admin');
+  adminRole.permissions = (adminRole.permissions || [])
+    .filter((c) => c !== 'org.manage_holidays');
+  legacyRoleOrg.markModified('roles');
+  await legacyRoleOrg.save();
+
+  const beforeMigration = await call(
+    'PUT', `/api/orgs/${org._id}/holidays/2026-04-01`, { name: 'Nope' }, adminToken
+  );
+  check(
+    'an admin WITHOUT the capability is refused — this is the migration hazard',
+    beforeMigration.status === 403,
+    `${beforeMigration.status}: ${JSON.stringify(beforeMigration.body)}`
+  );
+  check(
+    'and the refusal names the capability it wanted',
+    beforeMigration.body?.required === 'org.manage_holidays',
+    JSON.stringify(beforeMigration.body)
+  );
+
+  // Exactly what grantHolidayCapabilities.js does.
+  const migrated = await Organisation.findById(org._id);
+  const role = migrated.roleByKey('admin');
+  role.permissions = [...(role.permissions || []), 'org.manage_holidays'];
+  migrated.markModified('roles');
+  await migrated.save();
+
+  const afterMigration = await call(
+    'PUT', `/api/orgs/${org._id}/holidays/2026-04-01`, { name: 'Now allowed' }, adminToken
+  );
+  check(
+    'granting the capability lets that same admin straight in',
+    afterMigration.status === 200,
+    `${afterMigration.status}: ${JSON.stringify(afterMigration.body)}`
+  );
+
+  // The owner never needed it — the resolver short-circuits them to the full
+  // catalog, which is why an owner passing proves nothing about the wiring.
+  const ownerDuring = await call(
+    'DELETE', `/api/orgs/${org._id}/holidays/2026-04-01`
+  );
+  check('the OWNER is unaffected either way', ownerDuring.status === 200,
+    `${ownerDuring.status}`);
+
+  // =========================================================================
   console.log('\n' + '='.repeat(62));
   console.log(failures === 0 ? `ALL ${results.length} CHECKS PASSED` : `${failures} of ${results.length} FAILED`);
 

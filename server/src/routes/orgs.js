@@ -78,9 +78,13 @@ router.delete('/:id/roles/:roleId', deleteRole);
 //
 // Reading is open to any member, for the same reason reading the roles matrix
 // is: the client needs it on the calendar, in every date picker and on every
-// Delivery grid, and "the office is shut on the 15th" is not a secret. Writing
-// needs `org.manage_settings` — the same capability that already guards the
-// invite code, and NOT a new key, so this ships without a role migration.
+// Delivery grid, and "the office is shut on the 15th" is not a secret.
+//
+// Writing needs `org.manage_holidays`, its OWN capability with its own row in
+// the permissions matrix. Marking a day off changes what every board in the
+// workspace counts as owed, and an ops lead may need that without also being
+// able to rename the organisation. Workspaces that predate the capability need
+// `npm run migrate:holidays` once, or an owner ticking the box by hand.
 //
 // The bulk PUT is scoped to one year and replaces only that year. The
 // single-date PUT/DELETE pair is the quick-mark path used from a calendar day
@@ -90,19 +94,19 @@ router.get('/:id/holidays', listHolidays);
 
 router.put(
   '/:id/holidays',
-  requireCapability('org.manage_settings'),
+  requireCapability('org.manage_holidays'),
   saveHolidays
 );
 
 router.put(
   '/:id/holidays/:date',
-  requireCapability('org.manage_settings'),
+  requireCapability('org.manage_holidays'),
   setHoliday
 );
 
 router.delete(
   '/:id/holidays/:date',
-  requireCapability('org.manage_settings'),
+  requireCapability('org.manage_holidays'),
   deleteHoliday
 );
 

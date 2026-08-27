@@ -13,6 +13,7 @@
     "migrate:tracker-boards": "node src/scripts/migrateTrackerBoards.js",
     "migrate:goals": "node src/scripts/grantGoalCapabilities.js",
     "migrate:vault": "node src/scripts/grantVaultCapabilities.js",
+    "migrate:holidays": "node src/scripts/grantHolidayCapabilities.js",
     "migrate:connectors": "node src/scripts/grantConnectorCapabilities.js"
   },
   "keywords": [],

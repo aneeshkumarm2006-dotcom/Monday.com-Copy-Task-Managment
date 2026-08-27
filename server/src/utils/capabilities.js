@@ -41,6 +41,11 @@ const CAPABILITY_GROUPS = [
       ['org.assign_roles', 'Change which role a person has'],
       ['org.manage_roles', 'Create and edit roles — edit this matrix'],
       ['org.manage_settings', 'Rename the org, rotate the invite code'],
+      // Its own capability rather than riding on org.manage_settings: marking a
+      // day off changes what every board in the workspace counts as owed, which
+      // an ops lead may well need to do without also being able to rename the
+      // organisation or rotate its invite code.
+      ['org.manage_holidays', 'Set the company holiday calendar'],
     ],
   },
   {
@@ -424,6 +429,7 @@ const SYSTEM_ROLES = [
       'org.assign_roles',
       'org.manage_roles',
       'org.manage_settings',
+      'org.manage_holidays',
       'board.create',
       'board.rename',
       'board.delete',
