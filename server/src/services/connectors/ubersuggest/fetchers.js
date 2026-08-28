@@ -41,7 +41,6 @@ const N = require('./normalise');
 // ---------------------------------------------------------------------------
 
 const TOOL_POSITIONS = 'project_position_info';
-const TOOL_MATCH_KEYWORDS = 'match_keywords';
 const TOOL_SITE_AUDIT = 'site_audit';
 const TOOL_SITE_AUDIT_STATUS = 'site_audit_status';
 const TOOL_DOMAIN_OVERVIEW = 'domain_overview';
@@ -54,23 +53,15 @@ const TOOL_ANCHOR_TEXTS = 'anchor_texts';
 // ---------------------------------------------------------------------------
 
 /**
- * How many tracked keywords we ask `match_keywords` about per project, per run.
+ * There is no keyword cap any more, and there is nothing left to tune here.
  *
- * This is a REAL cap with a real cost, and it is capped rather than unbounded
- * because a keyword is its own report subject: 300 tracked keywords on 15
- * projects would be 4,500 report subjects against a 900/day ceiling, and the
- * run would die a third of the way through the first project having spent the
- * whole workspace's day. At 100 the same fleet costs 1,500 across two days,
- * which is survivable and degrades predictably.
- *
- * The snapshot records `truncated` and the real tracked total so the tab says
- * "metrics for 100 of 240 tracked keywords" rather than quietly showing 100 and
- * letting somebody conclude the other 140 stopped being tracked.
+ * `KEYWORD_METRICS_MAX` (100) and `KEYWORD_BATCH_SIZE` (25) used to bound a
+ * `match_keywords` lookup that could not work — the tool takes one to three
+ * seeds, not twenty-five — and whose cost was one billable report per keyword.
+ * `fetchKeywordMetrics` now reads the metrics off the rank report, which carries
+ * them already, so every tracked keyword is covered at no cost and a cap would
+ * only hide rows. See that function's header.
  */
-const KEYWORD_METRICS_MAX = 100;
-
-/** `match_keywords` takes an array but documents no ceiling. Chunked to be safe. */
-const KEYWORD_BATCH_SIZE = 25;
 
 /** Upstream caps `anchor_texts` at 25 regardless of what we ask for. */
 const ANCHOR_LIMIT = 25;
@@ -114,13 +105,6 @@ const resolveRange = (range = {}, now = new Date()) => {
   const from = new Date(to);
   from.setUTCDate(from.getUTCDate() - POSITIONS_WINDOW_DAYS);
   return { from: isoDay(from), to };
-};
-
-/** Split an array into fixed-size chunks. */
-const chunk = (list, size) => {
-  const out = [];
-  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
-  return out;
 };
 
 /**
@@ -226,17 +210,44 @@ const fetchPositions = async (client, { project, range, variant }) => {
 };
 
 /**
- * Volume, difficulty, CPC and intent for the tracked keywords.
+ * Volume, difficulty and competition for the tracked keywords.
  *
- * Reads its keyword list out of the `positions` result taken moments earlier in
- * the same run. The alternative — `get_project` — is a second report for a list
- * we already hold, and there is no third way to enumerate tracked keywords.
+ * ---- This fetcher makes NO provider calls, and that is the fix --------------
+ *
+ * It used to call `match_keywords` in batches of 25. Two things were wrong with
+ * that, and together they meant the Keywords section had never rendered a single
+ * row on a live account:
+ *
+ *   1. THE TOOL REFUSES THE BATCH. `match_keywords` accepts one to three seed
+ *      terms — "Input validation error: Provide 1 to 3 seed keywords" — so every
+ *      call threw, every run, for every project. It is a keyword EXPANSION tool
+ *      ("find keywords matching seed terms"), never a bulk metrics lookup, and
+ *      no batch size would have made it into one.
+ *
+ *   2. THE DATA WAS ALREADY IN HAND. `project_position_info` returns `volume`,
+ *      `sd` and `competition` on every keyword row it sends — 74 of 74 on the
+ *      live project checked. Looking them up again means one BILLABLE REPORT
+ *      SUBJECT PER KEYWORD: a 100-keyword project would spend 100 reports, per
+ *      run, to be told what the rank report said for free. Across a mapped board
+ *      that is the whole workspace's daily allowance, gone before the second
+ *      project.
+ *
+ * So the keyword list and its metrics now come from the same place, which also
+ * settles the locale question for free — the volume beside a rank is by
+ * construction the volume for the market that rank was measured in, rather than
+ * something a second call had to be talked into matching.
+ *
+ * CPC and search intent are the honest casualties. Neither is on the positions
+ * payload, and the only tools that carry them (`keyword_overview`,
+ * `keyword_metrics`) are strictly per-keyword and therefore per-report. They
+ * stay null, and the tab already renders a null as an em dash rather than a
+ * zero — see KeywordsSection's note on why that distinction matters.
  */
-const fetchKeywordMetrics = async (client, { project, variant, previous }) => {
+const fetchKeywordMetrics = async (client, { variant, previous }) => {
   const positions = previous?.positions;
-  const tracked = (positions?.keywords || [])
-    .map((k) => k.keyword)
-    .filter((k) => typeof k === 'string' && k.trim() !== '');
+  const tracked = (positions?.keywords || []).filter(
+    (k) => k && typeof k.keyword === 'string' && k.keyword.trim() !== ''
+  );
 
   if (!tracked.length) {
     // Not a failure. A project with no tracked keywords, or one whose position
@@ -248,64 +259,65 @@ const fetchKeywordMetrics = async (client, { project, variant, previous }) => {
       status: 'ok',
       note: positions
         ? 'This project has no tracked keywords yet.'
-        : 'Rank tracking did not run, so there was no keyword list to price.',
+        : 'Rank tracking did not run, so there was no keyword list to read.',
       collectedAt: null,
     };
   }
 
-  const unique = [...new Set(tracked.map((k) => k.trim()))];
-  const asked = unique.slice(0, KEYWORD_METRICS_MAX);
-
-  // Locale is taken from the same variant the positions report used, so the
-  // volume next to a rank is the volume for the market that rank was measured
-  // in. Mixing them would put US volume beside a UK rank on the same row.
-  const locale = {};
-  if (variant?.lang) locale.language = String(variant.lang);
-  if (variant?.locId) locale.locId = Number(variant.locId);
-
-  const rows = [];
-  for (const batch of chunk(asked, KEYWORD_BATCH_SIZE)) {
-    // Sequential. These share one account's quota and firing them in parallel
-    // turns "we ran out partway through" into "several calls raced past the
-    // limit and we cannot say which of them landed".
-    // eslint-disable-next-line no-await-in-loop
-    const { data } = await client.callTool(TOOL_MATCH_KEYWORDS, {
-      keywords: batch,
-      // The seed metrics are what we want; suggestions are the expensive half
-      // and nothing renders them. 1 is the smallest ask the parameter allows.
-      limit: 1,
-      ...locale,
-    });
-    rows.push(...N.normaliseKeywordMetrics(data));
+  // First row wins per phrase: a project tracking the same phrase twice is
+  // tracking one keyword, and the rank report sends it once per configuration.
+  const byKeyword = new Map();
+  for (const row of tracked) {
+    const key = row.keyword.trim().toLowerCase();
+    if (!byKeyword.has(key)) byKeyword.set(key, row);
   }
 
-  const byKeyword = new Map(rows.map((r) => [r.keyword.toLowerCase(), r]));
+  const rows = [...byKeyword.values()].map((row) => ({
+    keyword: row.keyword.trim(),
+    volume: row.volume ?? null,
+    // SEO difficulty. Never paid difficulty — the two are one letter apart at
+    // this provider (`sd` and `pd`) and the column is labelled "SEO difficulty".
+    difficulty: row.difficulty ?? null,
+    competition: row.competition ?? null,
+    // Not carried by the rank report at any price. See the header.
+    cpc: null,
+    paidDifficulty: null,
+    intent: null,
+  }));
+
+  const withMetrics = rows.filter((r) => r.volume !== null || r.difficulty !== null);
 
   return {
     data: {
-      // Ordered by the tracked list, not by the provider's response order, so
-      // the Keywords table and the Positions table read down in the same order.
-      keywords: asked.map(
-        (k) => byKeyword.get(k.toLowerCase()) || {
-          keyword: k,
-          volume: null,
-          cpc: null,
-          difficulty: null,
-          paidDifficulty: null,
-          competition: null,
-          intent: null,
-        }
-      ),
-      trackedTotal: unique.length,
-      truncated: unique.length > asked.length,
-      cap: KEYWORD_METRICS_MAX,
+      // Ordered as the rank report ordered them, so the Keywords table and the
+      // Positions table read down in the same order.
+      keywords: rows,
+      trackedTotal: rows.length,
+      // Nothing is capped any more: this costs no quota, so there is no reason
+      // to show a person 100 of their 240 keywords. Kept in the shape because
+      // the section reads it.
+      truncated: false,
+      cap: null,
+      variant: variant?.key || 'default',
     },
-    raw: null, // Several batched payloads; the normalised rows are the record.
-    status: 'ok',
-    note: unique.length > asked.length
-      ? `Metrics fetched for the first ${asked.length} of ${unique.length} tracked keywords.`
-      : '',
-    collectedAt: null,
+    raw: null, // Derived from the positions snapshot, which keeps its own raw.
+    /**
+     * PARTIAL when the phrases arrived but their metrics did not.
+     *
+     * `isFresh` treats a partial reading as never current, so the runner comes
+     * back for it — which is exactly right here, because the thing to come back
+     * for is a newer POSITIONS snapshot. A rank report collected before this
+     * fetcher started reading metrics off it carries none, and marking that
+     * `ok` would freeze a table of em dashes in place for the full week the
+     * positions snapshot stays fresh. It costs nothing to retry: this fetcher
+     * makes no provider calls.
+     */
+    status: withMetrics.length ? 'ok' : 'partial',
+    note: withMetrics.length
+      ? ''
+      : 'The rankings this was read from carry no volume or difficulty yet. '
+        + 'Refresh to re-collect them.',
+    collectedAt: positions?.updatedAt || null,
   };
 };
 
@@ -534,13 +546,9 @@ module.exports = {
   fetchSiteAudit,
   fetchDomainOverview,
   fetchBacklinks,
-  chunk,
-  KEYWORD_METRICS_MAX,
-  KEYWORD_BATCH_SIZE,
   MAX_POSITION_VARIANTS,
   POSITIONS_WINDOW_DAYS,
   TOOL_POSITIONS,
-  TOOL_MATCH_KEYWORDS,
   TOOL_SITE_AUDIT,
   TOOL_SITE_AUDIT_STATUS,
   TOOL_DOMAIN_OVERVIEW,

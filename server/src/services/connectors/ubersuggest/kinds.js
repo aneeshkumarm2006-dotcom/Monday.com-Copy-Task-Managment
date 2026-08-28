@@ -66,14 +66,18 @@ const KINDS = [
   {
     key: 'keyword_metrics',
     label: 'Keywords',
-    blurb: 'Search volume, difficulty, CPC and intent for the tracked keywords.',
+    blurb: 'Search volume, difficulty and competition for the tracked keywords.',
     subject: 'project',
-    tools: ['match_keywords'],
+    // NO TOOLS. This kind spends nothing: `project_position_info` already
+    // returns `volume`, `sd` and `competition` on every keyword row, so the
+    // whole section is derived from the positions snapshot. It used to name
+    // `match_keywords`, which cost one billable report per keyword and — more
+    // to the point — rejects more than three seed terms, so it never once
+    // succeeded. See `fetchKeywordMetrics`.
+    tools: [],
     requires: null,
-    // The tracked keyword list is not separately retrievable without spending
-    // another report on `get_project`, and `project_position_info` already
-    // returned it. So this kind reads the phrases out of the positions snapshot
-    // taken moments earlier in the same run, and is skipped when that failed.
+    // Both the phrases AND their metrics come from the positions snapshot taken
+    // moments earlier in the same run. Skipped when that failed.
     dependsOn: ['positions'],
     manualOnly: false,
   },

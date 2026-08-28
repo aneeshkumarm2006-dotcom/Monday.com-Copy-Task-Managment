@@ -285,6 +285,88 @@ test('site_audit: every category exists even when the payload omits it', () => {
   }
 });
 
+/**
+ * The shape the provider ACTUALLY sends, captured live on 2026-08-28 from
+ * `site_audit_status` for a real crawled domain.
+ *
+ * Three things differ from the hypothetical fixture above, and all three used to
+ * be read as nothing: the health score is `overall_score` and not `health_score`,
+ * the page count lives on `report.overview.crawled` and not on the result root,
+ * and a category is `{ count, issues: [...] }` rather than a bare array. The card
+ * rendered a crawl of 1,137 pages scoring 70 with 1,334 findings as an em dash
+ * and three zeros.
+ */
+const liveAuditPayload = {
+  result: {
+    done: true,
+    report: {
+      overview: {
+        crawled: 1137,
+        overall_score: 70,
+        total_issues_count: 1334,
+        previous_overall_score: 70,
+        health_check: { broken: 41, redirected: 4, successful: 1091, blocked: 1 },
+      },
+      extended_status: 'no_errors',
+      issues_per_category: {
+        errors: {
+          count: 740,
+          issues: [
+            { id: 'content_count_words', count: 170, seo_impact: 'high' },
+            { id: 'duplicate_meta_descriptions', count: 294, seo_impact: 'high' },
+            { id: 'have_title_duplicates', count: 275, seo_impact: 'high' },
+            { id: 'page_allowed', count: 1, seo_impact: 'high' },
+            { id: 'absent_h1_tag', count: 0, seo_impact: 'high' },
+          ],
+        },
+        warnings: { count: 594, issues: [{ id: 'low_word_count', count: 594 }] },
+        recommendations: {
+          count: 0,
+          issues: [{ id: 'ssl_certificate_expiration', count: 0 }],
+        },
+      },
+    },
+  },
+};
+
+test('site_audit: the LIVE payload yields a health score, a page count and real totals', () => {
+  const out = N.normaliseSiteAudit(liveAuditPayload);
+  assert.equal(out.healthScore, 70, 'overall_score is the health score');
+  assert.equal(out.previousHealthScore, 70);
+  assert.equal(out.crawled, 1137, 'the page count is on report.overview.crawled');
+  assert.equal(out.extendedStatus, 'no_errors', 'extended_status sits on report');
+  assert.equal(out.totals.errors, 740);
+  assert.equal(out.totals.warnings, 594);
+  assert.equal(out.totals.recommendations, 0);
+});
+
+test('site_audit: a category is an envelope, not an array, and its issues unwrap', () => {
+  const out = N.normaliseSiteAudit(liveAuditPayload);
+  assert.deepEqual(
+    out.categories.errors.map((i) => i.id),
+    ['duplicate_meta_descriptions', 'have_title_duplicates', 'content_count_words', 'page_allowed']
+  );
+});
+
+test('site_audit: checks that PASSED are not listed as findings', () => {
+  // The provider returns every check it ran, including the ones with a count of
+  // zero, so a client can render a full checklist. This section lists work to
+  // do; `absent_h1_tag: 0` is not work to do, and burying four real findings
+  // under a list of clean checks is worse than not showing them.
+  const out = N.normaliseSiteAudit(liveAuditPayload);
+  assert.ok(!out.categories.errors.some((i) => i.count === 0));
+  assert.deepEqual(out.categories.recommendations, []);
+});
+
+test('site_audit: the category count wins over the sum, and the two agree anyway', () => {
+  // 170 + 294 + 275 + 1 = 740, which is what the provider says. Reading its own
+  // number keeps the headline right if it ever sends a truncated issue list.
+  const out = N.normaliseSiteAudit(liveAuditPayload);
+  const summed = out.categories.errors.reduce((s, i) => s + i.count, 0);
+  assert.equal(summed, 740);
+  assert.equal(out.totals.errors, 740);
+});
+
 // ---------------------------------------------------------------------------
 // domain_overview + backlinks — wholly undocumented payloads
 // ---------------------------------------------------------------------------
@@ -343,6 +425,82 @@ test('backlinks: totals and anchors, anchors ordered by link count', () => {
 test('backlinks: a missing anchor list is an empty array, not undefined', () => {
   const out = N.normaliseBacklinks({ backlinks: 1 }, null);
   assert.deepEqual(out.anchors, []);
+});
+
+/**
+ * The two undocumented payloads as they actually arrive, captured live
+ * 2026-08-28. Both mix camelCase with the snake_case the docs imply, inside a
+ * single response — which is why `pick` compares on a canonical spelling now
+ * rather than on an enumerated list of casings.
+ */
+test('backlinks: the LIVE payload fills referring domains and the follow split', () => {
+  const out = N.normaliseBacklinks(
+    {
+      domainAuthority: 44,
+      backlinks: 43230,
+      refDomains: 950,
+      refDomainsGovEdu: 0,
+      follow: 42138,
+      noFollow: 1092,
+    },
+    null
+  );
+  assert.equal(out.backlinks, 43230);
+  assert.equal(out.domainAuthority, 44);
+  // `refDomains` — one capital letter away from the `refdomains` the candidate
+  // list already had, and it read as null on every backlink snapshot until the
+  // comparison stopped being case-sensitive.
+  assert.equal(out.referringDomains, 950);
+  // `follow` is not a casing of `dofollow`; it had to be named.
+  assert.equal(out.dofollow, 42138);
+  assert.equal(out.nofollow, 1092);
+});
+
+test('domain_overview: the LIVE payload counts organic keywords, not the sample array', () => {
+  // `organicKeywords` is a fifty-row sample; `organic` is the count. A `pick`
+  // that stopped at the first PRESENT key stopped at the array, `num` turned it
+  // into null, and the count sitting in the same object was never read.
+  const out = N.normaliseDomainOverview(
+    {
+      domain: 'dopethc.com',
+      organic: 1275,
+      traffic: 901,
+      domainAuthority: 44,
+      backlinks: 43230,
+      refDomains: 950,
+      organicKeywords: [{ keyword: 'thca shake qp' }, { keyword: 'blackout strain' }],
+    },
+    null
+  );
+  assert.equal(out.organicKeywords, 1275);
+  assert.equal(out.organicTraffic, 901);
+  assert.equal(out.domainAuthority, 44);
+  assert.equal(out.referringDomains, 950);
+});
+
+test('domain_overview: traffic_value is unavailable on this plan and that is survivable', () => {
+  // `traffic_value` answers HTTP 403 on every call for a tier3 account. The
+  // number is null; nothing else about the card is.
+  const out = N.normaliseDomainOverview({ organic: 1275, traffic: 901 }, null);
+  assert.equal(out.trafficValue, null);
+  assert.equal(out.organicTraffic, 901);
+});
+
+test('pickNum steps over a candidate that is not a number', () => {
+  // The property that makes a candidate list a list of ALTERNATIVES rather than
+  // a list where one bad entry shadows every later one.
+  assert.equal(N.pickNum({ a: [1, 2], b: 7 }, ['a', 'b']), 7);
+  assert.equal(N.pickNum({ a: 'not a number', b: 7 }, ['a', 'b']), 7);
+  assert.equal(N.pickNum({ a: 3, b: 7 }, ['a', 'b']), 3);
+  assert.equal(N.pickNum({}, ['a']), null);
+});
+
+test('pick falls back to a canonical spelling but never reorders a literal hit', () => {
+  assert.equal(N.pick({ refDomains: 950 }, ['ref_domains']), 950);
+  assert.equal(N.pick({ noFollow: 5 }, ['nofollow']), 5);
+  // An exact match still wins in the order the caller gave, even when a
+  // canonical match for an earlier key also exists.
+  assert.equal(N.pick({ ref_domains: 1, refDomains: 2 }, ['refDomains']), 2);
 });
 
 // ---------------------------------------------------------------------------

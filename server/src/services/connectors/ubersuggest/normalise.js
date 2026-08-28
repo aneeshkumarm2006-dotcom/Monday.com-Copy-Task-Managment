@@ -36,19 +36,47 @@
 // ---------------------------------------------------------------------------
 
 /**
+ * One key, reduced to the only part of its spelling that carries meaning.
+ *
+ * The undocumented payloads mix conventions inside a SINGLE response — the live
+ * `backlinks_overview` body is `{ domainAuthority, backlinks, refDomains,
+ * refDomainsGovEdu, follow, noFollow }`, which is camelCase next to a field the
+ * documentation calls `referring_domains`. Enumerating every casing of every
+ * field is how `refDomains` came to be missed by a candidate list that already
+ * contained `refdomains`, so the comparison is done on a canonical form instead.
+ */
+const canon = (key) => String(key).toLowerCase().replace(/[_\-\s]/g, '');
+
+/**
  * First present value among several candidate keys.
  *
  * The same defensive spelling list as `projects.js`, and for the same reason:
  * the documented tools use snake_case, the undocumented passthrough payloads
  * have been seen using both, and picking one would be a coin flip.
  *
- * Note `null` is SKIPPED here but is meaningful elsewhere — see `numOrNull`,
+ * Exact matches are tried first and in the order given, so a caller's preference
+ * between two keys that BOTH exist is still honoured. Only when none of them
+ * matches literally does the canonical pass run — it is a fallback, not a
+ * replacement, and it cannot reorder anything.
+ *
+ * Note `null` is SKIPPED here but is meaningful elsewhere — see `positionOf`,
  * which is what the position readers use.
  */
 const pick = (obj, keys) => {
   if (!obj || typeof obj !== 'object') return null;
   for (const key of keys) {
     const value = obj[key];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+
+  const byCanon = new Map();
+  for (const [k, v] of Object.entries(obj)) {
+    // First spelling wins, so the canonical pass is deterministic on a payload
+    // that somehow carries both `ref_domains` and `refDomains`.
+    if (!byCanon.has(canon(k))) byCanon.set(canon(k), v);
+  }
+  for (const key of keys) {
+    const value = byCanon.get(canon(key));
     if (value !== undefined && value !== null && value !== '') return value;
   }
   return null;
@@ -65,8 +93,25 @@ const num = (value) => {
   return null;
 };
 
-/** `pick`, then `num`. */
-const pickNum = (obj, keys) => num(pick(obj, keys));
+/**
+ * The first candidate key that yields an actual NUMBER.
+ *
+ * Not `num(pick(...))`, and the difference is load-bearing. `domain_overview`
+ * answers with BOTH `organicKeywords` — an array of fifty sample keywords — and
+ * `organic`, the count. A plain `pick` stops at the array because it is present,
+ * `num` then turns it into null, and the count that was sitting right there in
+ * the same object never gets read. Skipping candidates that are not numeric
+ * costs one extra lookup and makes a candidate list a list of ALTERNATIVES
+ * rather than a list where one bad entry shadows the rest.
+ */
+const pickNum = (obj, keys) => {
+  if (!obj || typeof obj !== 'object') return null;
+  for (const key of keys) {
+    const value = num(pick(obj, [key]));
+    if (value !== null) return value;
+  }
+  return null;
+};
 
 /**
  * A rank, preserving the difference between "not in the top 100" and "the field
@@ -200,6 +245,25 @@ const normalisePositionRow = (raw) => {
     status,
     position: current.value,
     previousPosition: previous.value,
+    /**
+     * The keyword's own metrics, which this payload carries and nothing else
+     * needs to be spent to obtain.
+     *
+     * Undocumented — the response table for `project_position_info` stops at the
+     * positions — but present on every row: verified live 2026-08-28, 74 of 74
+     * tracked keywords carried `volume`, `sd` and `competition`. `sd` is SEO
+     * difficulty, the same field and the same 0–100 scale `match_keywords`
+     * returns under that name.
+     *
+     * Carrying them here is what lets the Keywords section be free. Every
+     * keyword is its own billable report subject at this provider, so looking
+     * these up one at a time costs one report PER KEYWORD PER PROJECT — a
+     * hundred-keyword project would spend a hundred reports to be told what the
+     * rank report already said. `cpc` is genuinely absent and stays null.
+     */
+    volume: pickNum(raw, ['volume', 'search_volume', 'searchVolume']),
+    difficulty: pickNum(raw, ['sd', 'seo_difficulty', 'seoDifficulty']),
+    competition: pickNum(raw, ['competition']),
     // Kept so a row where the provider omitted the object entirely is
     // distinguishable from one where it sent an explicit null. The first is a
     // shape we did not anticipate; the second is "not in the top 100".
@@ -413,15 +477,27 @@ const normaliseSiteAudit = (payload) => {
   const categories = {};
   const totals = {};
   for (const name of AUDIT_CATEGORIES) {
-    const issues = unwrapArray(perCategory[name], [name])
+    const bucket = perCategory[name];
+    // A category is `{ count, issues: [...] }`, verified live 2026-08-28. The
+    // `issues` key is passed explicitly because `unwrapArray`'s default envelope
+    // names — data/results/items/rows/list — do not include it, and without it
+    // every category unwrapped to `[]`: no issue rows, and totals of 0 sitting
+    // under a crawl that had found 1,334 of them.
+    const issues = unwrapArray(bucket, [name, 'issues'])
       .map(normaliseAuditIssue)
       .filter(Boolean)
+      // Issues with a count of 0 are checks that PASSED. The provider returns
+      // them so a client can show a full checklist; the section lists findings,
+      // and a list of things that are fine would bury the four that are not.
+      .filter((i) => i.count > 0)
       .sort((a, b) => b.count - a.count);
     categories[name] = issues;
-    // The category total is the sum of its issues rather than a headline field,
-    // because the headline fields in `overview` are not documented and have been
-    // seen counting pages rather than issues.
-    totals[name] = issues.reduce((sum, i) => sum + (i.count || 0), 0);
+
+    // The bucket's own `count` is authoritative — it is the number the provider
+    // shows for the category. Summing the rows is the fallback for a payload
+    // that omits it, and the two agree on live data (errors: 740 = 170+294+275+1).
+    totals[name] = pickNum(bucket, ['count', 'total'])
+      ?? issues.reduce((sum, i) => sum + (i.count || 0), 0);
   }
 
   return {
@@ -430,16 +506,37 @@ const normaliseSiteAudit = (payload) => {
     // ("47 of 150 pages, 12 errors so far") and throwing it away would leave the
     // section blank for the minutes a crawl takes.
     done: root.done === true || root.done === 'true',
-    crawled: pickNum(root, ['crawl_count', 'crawlCount']),
-    crawlMaxPages: pickNum(root, ['crawl_max_pages', 'crawlMaxPages']),
+    /**
+     * Pages crawled, and it lives on `report.overview.crawled` — NOT on the
+     * result root, where this used to look for a `crawl_count` that no live
+     * payload has ever contained. `report` is searched too, because the root is
+     * where a still-running crawl reports progress.
+     */
+    crawled: pickNum(overview, ['crawled', 'crawl_count', 'crawlCount', 'pages_crawled'])
+      ?? pickNum(root, ['crawl_count', 'crawlCount', 'crawled']),
+    crawlMaxPages: pickNum(overview, ['crawl_max_pages', 'crawlMaxPages'])
+      ?? pickNum(root, ['crawl_max_pages', 'crawlMaxPages']),
     // 'no_errors' on success; anything else means the crawl itself failed, which
     // is different from a crawl that succeeded and found errors on the site.
+    // Sent on `report`, with the root kept as a fallback.
     extendedStatus: (() => {
-      const v = pick(root, ['extended_status', 'extendedStatus']);
+      const v = pick(report, ['extended_status', 'extendedStatus'])
+        ?? pick(root, ['extended_status', 'extendedStatus']);
       return v ? String(v) : null;
     })(),
+    /**
+     * The 0–100 health score, which the provider spells `overall_score`.
+     *
+     * That spelling was not in the candidate list, so this returned null on
+     * every audit ever collected and the card showed an em dash next to a
+     * perfectly good score of 70.
+     */
     healthScore: pickNum(overview, [
+      'overall_score', 'overallScore',
       'health_score', 'healthScore', 'score', 'site_health', 'health',
+    ]),
+    previousHealthScore: pickNum(overview, [
+      'previous_overall_score', 'previousOverallScore',
     ]),
     categories,
     totals,
@@ -482,8 +579,12 @@ const normaliseDomainOverview = (overviewPayload, trafficValuePayload) => {
     organicTraffic: pickNum(body, [
       'organic_traffic', 'organicTraffic', 'traffic', 'monthly_traffic', 'visits',
     ]),
+    // `organic` is the COUNT. `organicKeywords` is a sample array of fifty rows
+    // that happens to sort first here — see `pickNum`, which now steps over a
+    // candidate that is not a number instead of stopping at it.
     organicKeywords: pickNum(body, [
-      'organic_keywords', 'organicKeywords', 'keywords', 'keyword_count', 'keywords_count',
+      'organic_keywords', 'organicKeywords', 'organic',
+      'keywords', 'keyword_count', 'keywords_count',
     ]),
     domainAuthority: pickNum(body, [
       'domain_authority', 'domainAuthority', 'da', 'authority', 'domain_score',
@@ -547,8 +648,11 @@ const normaliseBacklinks = (overviewPayload, anchorsPayload) => {
     domainAuthority: pickNum(body, [
       'domain_authority', 'domainAuthority', 'da', 'authority', 'domain_score',
     ]),
+    // The live payload spells these `noFollow` and `follow` — the first now
+    // resolves through the canonical pass in `pick`, the second needed naming
+    // because "follow" is not a casing of "dofollow".
     nofollow: pickNum(body, ['nofollow', 'nofollow_backlinks', 'no_follow']),
-    dofollow: pickNum(body, ['dofollow', 'dofollow_backlinks', 'do_follow']),
+    dofollow: pickNum(body, ['dofollow', 'dofollow_backlinks', 'do_follow', 'follow']),
     anchors,
     overview: body,
   };

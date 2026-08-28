@@ -84,8 +84,46 @@ const SCOPES = [
  * string-matching the body is the only detection available, and getting it
  * wrong means either retrying into a wall all day or treating a transient blip
  * as a hard stop.
+ *
+ * ---- Why a bare 403 is NOT in this list any more ---------------------------
+ *
+ * It used to be, and it cost this integration every reading it was supposed to
+ * collect. Verified live on 2026-08-28 against a tier3 account with quota to
+ * spare: `traffic_value` answers
+ *
+ *     Error: HTTP 403 /traffic_value: Request failed with status code 403
+ *
+ * on EVERY call. That is an endpoint the plan does not carry — a permanent
+ * property of one tool, not a workspace that has run out of reports. Matching it
+ * as quota set `quotaExhausted`, which is an ACCOUNT-LEVEL STOP: `syncAccount`
+ * breaks out of the project loop the moment it sees one. So a single unavailable
+ * secondary tool aborted the whole pass, and Traffic, Backlinks and every
+ * project after the first silently collected nothing, week after week, while the
+ * account reported "no quota left".
+ *
+ * A 403 is now classified `forbidden` — fatal for the one call, survivable for
+ * everything else. Real exhaustion still says "limit reached"; the rate-limit
+ * spellings are kept alongside it so a 429 is never mistaken for a blip.
  */
-const QUOTA_ERROR_PATTERNS = [/limit reached/i, /\b403\b/];
+const QUOTA_ERROR_PATTERNS = [
+  /limit reached/i,
+  /quota/i,
+  /\b429\b/,
+  /too many requests/i,
+];
+
+/**
+ * Tool-result error text that means "this account may not call this tool".
+ *
+ * Distinct from quota on purpose, and the distinction is the whole point: quota
+ * stops the ACCOUNT for the run, this stops the CALL. Retrying either is
+ * pointless, but only one of them should take the other four kinds down with it.
+ */
+const FORBIDDEN_ERROR_PATTERNS = [
+  /\b403\b/,
+  /forbidden/i,
+  /not available on (your|this) plan/i,
+];
 
 /**
  * Tool-result error text the docs explicitly bless as retryable. Anything else
@@ -110,6 +148,7 @@ module.exports = {
   LOGIN_URL,
   SCOPES,
   QUOTA_ERROR_PATTERNS,
+  FORBIDDEN_ERROR_PATTERNS,
   RETRYABLE_ERROR_PATTERNS,
   HTTP_TIMEOUT_MS,
 };

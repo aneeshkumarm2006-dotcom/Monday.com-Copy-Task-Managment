@@ -143,6 +143,38 @@ test('quota wins over retryable when a message could read as both', () => {
   assert.equal(classifyToolError('Error: 403 limit reached; timed out'), 'quota');
 });
 
+test('a bare 403 is FORBIDDEN, never quota', () => {
+  /**
+   * The regression this whole distinction exists for.
+   *
+   * `traffic_value` answers exactly this on every call for a tier3 account with
+   * quota to spare — the tool is not included in the plan. Classifying it as
+   * quota set `quotaExhausted`, which is an ACCOUNT-LEVEL STOP: `syncAccount`
+   * breaks out of its project loop on sight. So one unavailable SECONDARY tool
+   * ended the entire pass, and Traffic, Backlinks and every project after the
+   * first collected nothing at all while the account reported "no quota left".
+   */
+  assert.equal(
+    classifyToolError('Error: HTTP 403 /traffic_value: Request failed with status code 403'),
+    'forbidden'
+  );
+  assert.equal(classifyToolError('Error: 403 Forbidden'), 'forbidden');
+  assert.equal(classifyToolError('This is not available on your plan'), 'forbidden');
+});
+
+test('forbidden is decided before retryable, so a refusal is never hammered', () => {
+  // A 403 is an answer. It will be the same answer on the retry, and each retry
+  // is a call against a shared budget.
+  assert.equal(classifyToolError('Error: 403 forbidden; timed out'), 'forbidden');
+});
+
+test('real exhaustion still stops the account', () => {
+  // Narrowing quota must not have narrowed it out of existence.
+  assert.equal(classifyToolError('Error: monthly limit reached'), 'quota');
+  assert.equal(classifyToolError('Error: keyword quota exceeded'), 'quota');
+  assert.equal(classifyToolError('Error: 429 Too Many Requests'), 'quota');
+});
+
 // ---------------------------------------------------------------------------
 // Wire format
 // ---------------------------------------------------------------------------

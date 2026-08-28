@@ -2,6 +2,7 @@ const {
   MCP_ENDPOINT,
   HTTP_TIMEOUT_MS,
   QUOTA_ERROR_PATTERNS,
+  FORBIDDEN_ERROR_PATTERNS,
   RETRYABLE_ERROR_PATTERNS,
 } = require('./constants');
 
@@ -63,6 +64,7 @@ class McpCallError extends Error {
     message,
     {
       quotaExhausted = false,
+      forbidden = false,
       retryable = false,
       needsReauth = false,
       status = null,
@@ -72,6 +74,13 @@ class McpCallError extends Error {
     super(message);
     this.name = 'McpCallError';
     this.quotaExhausted = quotaExhausted;
+    /**
+     * This ACCOUNT may not call this TOOL — a plan boundary, not a spent budget.
+     * Deliberately not `quotaExhausted`: that flag is an account-level stop and
+     * would abandon every remaining kind and project over one tool the plan does
+     * not include. See the note on FORBIDDEN_ERROR_PATTERNS in constants.js.
+     */
+    this.forbidden = forbidden;
     this.retryable = retryable;
     this.needsReauth = needsReauth;
     this.status = status;
@@ -82,20 +91,25 @@ class McpCallError extends Error {
 /**
  * What a tool-level error message means.
  *
- * Order matters: quota is checked FIRST. The provider's quota message is
- * "Error: ... 403 / limit reached", and a 403 is not a thing to retry — but a
- * future message that paired it with a word like "timed out" would otherwise
- * fall into the retryable branch and be hammered.
+ * Order matters: quota is checked FIRST, then forbidden. Quota is the only
+ * classification that stops the whole account, so it has to be the narrowest —
+ * a message that says "limit reached" is exhaustion, a message that only says
+ * 403 is a tool this plan does not carry, and conflating them cost this
+ * integration every reading it was supposed to collect. See
+ * FORBIDDEN_ERROR_PATTERNS in constants.js for the live evidence.
  *
  * Anything unrecognised is FATAL by choice. Retrying an unknown failure spends
  * a quota shared by the whole workspace to learn nothing.
  *
  * @param {string} text - the tool result's text content
- * @returns {'quota'|'retryable'|'fatal'}
+ * @returns {'quota'|'forbidden'|'retryable'|'fatal'}
  */
 const classifyToolError = (text) => {
   const s = String(text || '');
   if (QUOTA_ERROR_PATTERNS.some((re) => re.test(s))) return 'quota';
+  // Before `retryable`, so a refusal that happens to mention a timeout is never
+  // hammered: a 403 is an answer, and it will be the same answer next time.
+  if (FORBIDDEN_ERROR_PATTERNS.some((re) => re.test(s))) return 'forbidden';
   if (RETRYABLE_ERROR_PATTERNS.some((re) => re.test(s))) return 'retryable';
   return 'fatal';
 };
@@ -394,6 +408,13 @@ const createMcpClient = (
           throw new McpCallError(
             'Ubersuggest has no quota left on this account. Report limits reset daily and credits monthly.',
             { quotaExhausted: true, tool: name }
+          );
+        }
+        if (kind === 'forbidden') {
+          throw new McpCallError(
+            `Ubersuggest will not run "${name}" for this account — it is not ` +
+              `included in the current plan. ${text.slice(0, 200)}`.trim(),
+            { forbidden: true, tool: name }
           );
         }
         if (kind === 'retryable' && attempt < retries) {

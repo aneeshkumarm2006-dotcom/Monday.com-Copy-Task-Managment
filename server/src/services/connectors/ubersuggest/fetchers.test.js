@@ -99,8 +99,19 @@ test('resolveKinds: a selection of nothing but junk falls back to everything', (
 test('every kind names the tools it spends, for the audit trail', () => {
   for (const key of KIND_KEYS) {
     const kind = getKind(key);
-    assert.ok(kind.tools.length > 0, `${key} declares no tools`);
+    assert.ok(Array.isArray(kind.tools), `${key} declares no tools array`);
     assert.ok(['project', 'domain'].includes(kind.subject));
+
+    // An empty list is a CLAIM, not an omission: this kind spends nothing. The
+    // only way to earn it is to be derived entirely from another kind's
+    // snapshot, which is exactly what `keyword_metrics` does — so a kind with no
+    // tools and no dependency would be a kind that produces data from nowhere.
+    if (kind.tools.length === 0) {
+      assert.ok(
+        kind.dependsOn.length > 0,
+        `${key} spends no tools and depends on nothing — where would its data come from?`
+      );
+    }
   }
 });
 
@@ -213,51 +224,71 @@ test('positions: a quota error propagates untouched', async () => {
 // keyword_metrics
 // ---------------------------------------------------------------------------
 
+/**
+ * A normalised positions body, as `normalisePositions` produces it.
+ *
+ * The metrics ride along on each row, because the rank report carries them:
+ * `volume`, `sd` and `competition` are on every keyword `project_position_info`
+ * returns. That is the whole basis of this kind now — see the note on the first
+ * test below.
+ */
 const positionsResult = (keywords) => ({
-  keywords: keywords.map((k) => ({ keyword: k, status: 'ok', position: null })),
+  keywords: keywords.map((k, i) =>
+    typeof k === 'string'
+      ? {
+          keyword: k,
+          status: 'ok',
+          position: null,
+          volume: (i + 1) * 100,
+          difficulty: (i + 1) * 10,
+          competition: 0.5,
+        }
+      : k
+  ),
 });
 
-test('keyword_metrics: takes its keyword list from the positions result', async () => {
-  // The alternative is `get_project`, which is a second report for a list we
-  // already hold. There is no third way to enumerate tracked keywords.
-  const client = stubClient({
-    [F.TOOL_MATCH_KEYWORDS]: {
-      searched_keywords: [
-        { keyword: 'alpha', volume: 100, sd: 20 },
-        { keyword: 'beta', volume: 200, sd: 30 },
-      ],
-    },
-  });
+test('keyword_metrics: spends NOTHING — the rank report already carried the metrics', async () => {
+  // This is the fix for a section that had never rendered a row on a live
+  // account. It used to call `match_keywords` in batches of 25, and that tool
+  // rejects anything over three seed terms ("Provide 1 to 3 seed keywords"), so
+  // every call threw. It was also the expensive way to ask: a keyword is its own
+  // billable report subject, so a 100-keyword project cost 100 reports to be
+  // told what `project_position_info` had already said for free.
+  const client = stubClient({});
 
   const res = await F.fetchKeywordMetrics(client, {
     project: project(),
-    variant: { lang: 'en', locId: 2840 },
+    variant: { key: 'desktop|en|2840', lang: 'en', locId: 2840 },
     previous: { positions: positionsResult(['alpha', 'beta']) },
   });
 
-  assert.equal(client.calls.length, 1);
-  assert.deepEqual(client.calls[0].args.keywords, ['alpha', 'beta']);
+  assert.equal(client.calls.length, 0, 'no provider call may be made');
+  assert.deepEqual(res.data.keywords.map((k) => k.keyword), ['alpha', 'beta']);
   assert.deepEqual(res.data.keywords.map((k) => k.volume), [100, 200]);
+  assert.deepEqual(res.data.keywords.map((k) => k.difficulty), [10, 20]);
 });
 
-test('keyword_metrics: asks in the SAME locale the ranks were measured in', async () => {
-  // Otherwise the table shows US volume beside a UK rank on one row.
-  const client = stubClient({ [F.TOOL_MATCH_KEYWORDS]: { searched_keywords: [] } });
-  await F.fetchKeywordMetrics(client, {
+test('keyword_metrics: the locale question answers itself', async () => {
+  // The old code had to be talked into asking for metrics in the same market the
+  // ranks were measured in, or the table showed US volume beside a UK rank.
+  // Reading them off the rank report makes that true by construction: there is
+  // only one payload, and it is the one for this variant.
+  const client = stubClient({});
+  const res = await F.fetchKeywordMetrics(client, {
     project: project(),
-    variant: { lang: 'pt', locId: 2076 },
+    variant: { key: 'desktop|pt|2076', lang: 'pt', locId: 2076 },
     previous: { positions: positionsResult(['x']) },
   });
-  assert.equal(client.calls[0].args.language, 'pt');
-  assert.equal(client.calls[0].args.locId, 2076);
+  assert.equal(client.calls.length, 0);
+  assert.equal(res.data.variant, 'desktop|pt|2076');
 });
 
-test('keyword_metrics: batches, and never asks about more than the cap', async () => {
-  // A keyword is its own report SUBJECT. 300 tracked keywords across 15 projects
-  // would be 4,500 subjects against a 900/day ceiling — the run would die a
-  // third of the way through the first project having spent the whole day.
+test('keyword_metrics: nothing is capped, because nothing is spent', async () => {
+  // The old 100-keyword cap existed only to bound a per-keyword report cost that
+  // no longer exists. Showing somebody 100 of their 250 keywords now would hide
+  // rows for no reason at all.
   const many = Array.from({ length: 250 }, (_, i) => `kw-${i}`);
-  const client = stubClient({ [F.TOOL_MATCH_KEYWORDS]: { searched_keywords: [] } });
+  const client = stubClient({});
 
   const res = await F.fetchKeywordMetrics(client, {
     project: project(),
@@ -265,30 +296,66 @@ test('keyword_metrics: batches, and never asks about more than the cap', async (
     previous: { positions: positionsResult(many) },
   });
 
-  const asked = client.calls.reduce((n, c) => n + c.args.keywords.length, 0);
-  assert.equal(asked, F.KEYWORD_METRICS_MAX);
-  assert.equal(client.calls.length, F.KEYWORD_METRICS_MAX / F.KEYWORD_BATCH_SIZE);
-
-  // And the truncation is REPORTED. A cap nobody can see reads as "we covered
-  // everything" — somebody would conclude the other 150 stopped being tracked.
-  assert.equal(res.data.truncated, true);
+  assert.equal(client.calls.length, 0);
+  assert.equal(res.data.keywords.length, 250);
   assert.equal(res.data.trackedTotal, 250);
-  assert.match(res.note, /100 of 250/);
+  assert.equal(res.data.truncated, false);
+  assert.equal(res.note, '');
 });
 
-test('keyword_metrics: a keyword the provider skipped still gets a row', async () => {
+test('keyword_metrics: a keyword the provider sent no metrics for still gets a row', async () => {
   // The Keywords table and the Positions table have to read down in the same
-  // order, or comparing them by eye is impossible.
-  const client = stubClient({
-    [F.TOOL_MATCH_KEYWORDS]: { searched_keywords: [{ keyword: 'b', volume: 5 }] },
-  });
+  // order, or comparing them by eye is impossible. A missing volume is an em
+  // dash, never a zero.
+  const client = stubClient({});
   const res = await F.fetchKeywordMetrics(client, {
     project: project(),
     variant: {},
-    previous: { positions: positionsResult(['a', 'b']) },
+    previous: {
+      positions: positionsResult([
+        { keyword: 'a', status: 'ok', position: null },
+        { keyword: 'b', status: 'ok', position: 4, volume: 5, difficulty: 9 },
+      ]),
+    },
   });
   assert.deepEqual(res.data.keywords.map((k) => k.keyword), ['a', 'b']);
   assert.equal(res.data.keywords[0].volume, null);
+  assert.equal(res.data.keywords[0].difficulty, null);
+  assert.equal(res.data.keywords[1].volume, 5);
+});
+
+test('keyword_metrics: CPC and intent are null, never invented', async () => {
+  // Neither is on the rank report, and the only tools that carry them are
+  // strictly one keyword per billable report. A null renders as an em dash; a
+  // zero would read as "this keyword is worth nothing".
+  const client = stubClient({});
+  const res = await F.fetchKeywordMetrics(client, {
+    project: project(),
+    variant: {},
+    previous: { positions: positionsResult(['alpha']) },
+  });
+  assert.equal(res.data.keywords[0].cpc, null);
+  assert.equal(res.data.keywords[0].intent, null);
+  assert.equal(res.data.keywords[0].paidDifficulty, null);
+});
+
+test('keyword_metrics: phrases without metrics are PARTIAL, so the runner comes back', async () => {
+  // A positions snapshot collected before this fetcher started reading metrics
+  // off it carries none. Marking that `ok` would freeze a table of em dashes in
+  // place for the whole week the positions snapshot stays fresh — `isFresh`
+  // never counts a partial as current, and re-deriving costs no provider call.
+  const client = stubClient({});
+  const res = await F.fetchKeywordMetrics(client, {
+    project: project(),
+    variant: {},
+    previous: {
+      positions: { keywords: [{ keyword: 'a', status: 'ok', position: 3 }] },
+    },
+  });
+  assert.equal(client.calls.length, 0);
+  assert.equal(res.status, 'partial');
+  assert.equal(res.data.keywords.length, 1);
+  assert.match(res.note, /Refresh/);
 });
 
 test('keyword_metrics: no tracked keywords spends nothing at all', async () => {
@@ -300,19 +367,19 @@ test('keyword_metrics: no tracked keywords spends nothing at all', async () => {
   });
   assert.equal(client.calls.length, 0);
   // Recorded as a successful empty reading, so the runner does not come back
-  // hourly for a project that simply has nothing to price.
+  // hourly for a project that simply has nothing to read.
   assert.equal(res.status, 'ok');
   assert.deepEqual(res.data.keywords, []);
 });
 
-test('keyword_metrics: duplicate phrases are asked about once', async () => {
-  const client = stubClient({ [F.TOOL_MATCH_KEYWORDS]: { searched_keywords: [] } });
-  await F.fetchKeywordMetrics(client, {
+test('keyword_metrics: duplicate phrases collapse to one row', async () => {
+  const client = stubClient({});
+  const res = await F.fetchKeywordMetrics(client, {
     project: project(),
     variant: {},
     previous: { positions: positionsResult(['dup', 'dup', 'other']) },
   });
-  assert.deepEqual(client.calls[0].args.keywords, ['dup', 'other']);
+  assert.deepEqual(res.data.keywords.map((k) => k.keyword), ['dup', 'other']);
 });
 
 // ---------------------------------------------------------------------------
