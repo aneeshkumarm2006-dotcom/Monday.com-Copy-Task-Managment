@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { MONTH_KEY_RE } = require('../utils/monthKey');
 
 const taskSchema = new mongoose.Schema(
   {
@@ -238,6 +239,65 @@ const taskSchema = new mongoose.Schema(
       ],
       default: [],
     },
+
+    /**
+     * EVIDENCE: which of this month's goals this task counted towards.
+     *
+     * Tracker boards only. Read by nothing that scores — `utils/goalTypes.js`
+     * never sees this array, and attaching a task cannot move a goal's number.
+     * `utils/goalEvidence.js` is the only place that interprets it.
+     *
+     * Embedded rather than a join collection so the board grid can render its
+     * marker with no extra request: the links ride on task documents the grid
+     * has already fetched.
+     *
+     * `monthKey` and `group` are the task's values AT LINK TIME. Not
+     * denormalisation for speed — they are the staleness input. A task later
+     * reopened, refiled to another month, or moved to another group has drifted
+     * from what was claimed about it, and the drift is only visible because the
+     * claim was written down. The link is never auto-deleted to resolve it.
+     */
+    goalLinks: {
+      type: [
+        new mongoose.Schema(
+          {
+            goal: {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: 'Goal',
+              required: true,
+            },
+            monthKey: { type: String, required: true, match: MONTH_KEY_RE },
+            group: {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: 'TaskGroup',
+              required: true,
+            },
+            linkedBy: {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: 'User',
+              required: true,
+            },
+          },
+          { _id: true, timestamps: { createdAt: true, updatedAt: false } }
+        ),
+      ],
+      default: [],
+    },
+
+    /**
+     * "Not goal work" — a done task deliberately marked as needing no goal, so
+     * it stops showing the orphan marker. A timestamp rather than a boolean
+     * because "who decided this, and when" is the question that gets asked.
+     *
+     * Setting any goalLink clears this: a task cannot be both attached and
+     * deliberately unattached.
+     */
+    goalLinkDismissedAt: { type: Date, default: null },
+    goalLinkDismissedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -310,5 +370,11 @@ taskSchema.index({ board: 1, createdAt: -1 });
 // query implies the filter — not worth the risk of silently falling back to a
 // collection scan on the board's main read to save index entries on a null.
 taskSchema.index({ board: 1, monthKey: 1, group: 1, order: 1 });
+
+// "Which tasks count towards this goal?" — the Goals tab's evidence chip and
+// the popover behind it. Board-prefixed rather than a bare multikey on
+// `goalLinks.goal` so it stays selective on a multi-tenant collection; every
+// read of it is board-scoped anyway.
+taskSchema.index({ board: 1, 'goalLinks.goal': 1 });
 
 module.exports = mongoose.model('Task', taskSchema);

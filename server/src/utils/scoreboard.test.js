@@ -397,3 +397,86 @@ test('an empty board produces an empty, non-throwing scoreboard', () => {
   assert.strictEqual(sb.totals.goalPct, null);
   assert.strictEqual(sb.totals.peopleCount, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Evidence — done work attached to a goal, folded per owner
+// ---------------------------------------------------------------------------
+
+const evidence = (map) =>
+  new Map(Object.entries(map).map(([g, e]) => [g, {
+    done: 0, attributed: 0, orphaned: 0, dismissed: 0, ...e,
+  }]));
+
+test('evidence is absent, not zeroed, when no map is supplied', () => {
+  // Every caller that predates this feature passes nothing, and must be
+  // unaffected — the same contract `deliveryByGroupId: null` already has.
+  const built = buildScoreboard({
+    groups: groups('g1'),
+    ownerByGroupId: owners({ g1: ALICE }),
+    usersById: USERS,
+    goalSummaryByGroupId: summaries({ g1: [goal(100)] }),
+  });
+  assert.strictEqual(built.people[0].evidence, null);
+  assert.strictEqual(built.people[0].groups[0].attributed, null);
+});
+
+test('a person’s evidence is the sum across the groups they owned', () => {
+  const built = buildScoreboard({
+    groups: groups('g1', 'g2'),
+    ownerByGroupId: owners({ g1: ALICE, g2: ALICE }),
+    usersById: USERS,
+    goalSummaryByGroupId: summaries({ g1: [goal(100)], g2: [goal(50)] }),
+    evidenceByGroupId: evidence({
+      g1: { done: 5, attributed: 4, orphaned: 1 },
+      g2: { done: 3, attributed: 1, orphaned: 1, dismissed: 1 },
+    }),
+  });
+  assert.deepStrictEqual(built.people[0].evidence, {
+    done: 8,
+    attributed: 5,
+    orphaned: 2,
+    dismissed: 1,
+  });
+});
+
+test('a group with no evidence row still contributes zeroes, not undefined', () => {
+  const built = buildScoreboard({
+    groups: groups('g1', 'g2'),
+    ownerByGroupId: owners({ g1: BOB, g2: BOB }),
+    usersById: USERS,
+    goalSummaryByGroupId: summaries({ g1: [goal(100)], g2: [goal(100)] }),
+    evidenceByGroupId: evidence({ g1: { done: 2, attributed: 2 } }),
+  });
+  assert.deepStrictEqual(built.people[0].evidence, {
+    done: 2,
+    attributed: 2,
+    orphaned: 0,
+    dismissed: 0,
+  });
+});
+
+test('the per-group drill-down carries its own numerator AND denominator', () => {
+  // Never a bare numerator: "1 attached" means nothing without knowing whether
+  // 1 or 100 tasks were finished. Same rule the delivery column follows.
+  const built = buildScoreboard({
+    groups: groups('g1'),
+    ownerByGroupId: owners({ g1: ALICE }),
+    usersById: USERS,
+    goalSummaryByGroupId: summaries({ g1: [goal(100)] }),
+    evidenceByGroupId: evidence({ g1: { done: 9, attributed: 1, orphaned: 8 } }),
+  });
+  assert.strictEqual(built.people[0].groups[0].attributed, 1);
+  assert.strictEqual(built.people[0].groups[0].doneTasks, 9);
+});
+
+test('evidence follows ownership into the Unassigned row', () => {
+  const built = buildScoreboard({
+    groups: groups('g1'),
+    ownerByGroupId: owners({ g1: null }),
+    usersById: USERS,
+    goalSummaryByGroupId: summaries({ g1: [goal(100)] }),
+    evidenceByGroupId: evidence({ g1: { done: 4, attributed: 4 } }),
+  });
+  assert.strictEqual(built.people.length, 0, 'nobody owns it');
+  assert.strictEqual(built.unassigned.evidence.attributed, 4);
+});

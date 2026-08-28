@@ -56,6 +56,7 @@ const GoalsTab = ({
   // nothing to a goal, so it is deliberately NOT one of the goal capabilities
   // above. Every write below is gated again server-side.
   canLinkConnector = false,
+  onOpenTask,
   onGoalsChanged,
 }) => {
   const [data, setData] = useState(null);
@@ -84,6 +85,7 @@ const GoalsTab = ({
    * failed must never be able to blank the goals table.
    */
   const [linkData, setLinkData] = useState(null);
+  const [evidence, setEvidence] = useState(null);
   const [linkFor, setLinkFor] = useState(null);   // the goal whose modal is open
   const [linkSaving, setLinkSaving] = useState(false);
   const [linkError, setLinkError] = useState(null);
@@ -133,6 +135,25 @@ const GoalsTab = ({
 
   useEffect(() => { fetchLinks(); }, [fetchLinks]);
 
+  /**
+   * How much done work is attached to each goal this month.
+   *
+   * Its own request, swallowing its own failure, for exactly the reason the
+   * connector links above are: this is a secondary fact about the rows, and a
+   * hiccup fetching it must never be able to blank the goals table. The chips
+   * simply do not appear.
+   */
+  const fetchEvidence = useCallback(async () => {
+    if (!boardId || !monthKey) return;
+    try {
+      setEvidence(await goalService.getGoalEvidence(boardId, monthKey));
+    } catch {
+      setEvidence(null);
+    }
+  }, [boardId, monthKey]);
+
+  useEffect(() => { fetchEvidence(); }, [fetchEvidence]);
+
   // Drop the old board's rows the instant the board changes. Two reasons, and
   // the second is the subtle one: the collapse-on-open effect below keys off
   // `data`, so leaving the previous board's groups in state lets THEM satisfy
@@ -162,6 +183,10 @@ const GoalsTab = ({
       // and an offer that had just been superseded would sit there until the
       // next reload.
       fetchLinks();
+      // Attaching a task writes a Task, not a Goal, and bumps the board so
+      // this signal fires — without refetching here another person's attach
+      // would not show up until a reload.
+      fetchEvidence();
     }, 1500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -303,6 +328,10 @@ const GoalsTab = ({
   const canBulkLink = canLink && (linkData?.sources || []).length > 0;
 
   /** goalId → its link, so a row is a lookup rather than a scan per render. */
+  // Plain lookup by goal id, mirroring linksByGoal so a row resolves both of
+  // its side-facts the same way.
+  const evidenceByGoal = useMemo(() => evidence?.byGoal || {}, [evidence]);
+
   const linksByGoal = useMemo(
     () => new Map((linkData?.links || []).map((l) => [String(l.goal), l])),
     [linkData]
@@ -452,6 +481,8 @@ const GoalsTab = ({
               onAdd={(g) => { setFormErrors([]); setFormFor({ group: g }); }}
               onReorder={canManage ? reorderGoalsInGroup : undefined}
               linksByGoal={linksByGoal}
+              evidenceByGoal={evidenceByGoal}
+              onOpenTask={onOpenTask}
               // Both answers come from the SERVER's own resolution against the
               // live board, falling back to what the page loaded. Hiding a
               // control was never the enforcement anyway — every write is gated

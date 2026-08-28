@@ -490,8 +490,19 @@ const deleteGroup = async (req, res) => {
     // A goal belongs to exactly one group, so deleting the group deletes them —
     // and a connector link is nothing but a reference to a goal plus the record
     // of which of its cells the connector owned, so it goes with them.
+    // Collected BEFORE the delete: a task that was MOVED OUT of this group can
+    // still hold evidence links to goals that are about to stop existing, and
+    // once the goals are gone there is nothing left to find them by. The tasks
+    // still IN the group are deleted above, links and all.
+    const goalIds = await Goal.distinct('_id', { group: id });
     await Goal.deleteMany({ group: id });
     await GoalConnectorLink.deleteMany({ group: id });
+    if (goalIds.length > 0) {
+      await Task.updateMany(
+        { board: group.board, 'goalLinks.goal': { $in: goalIds } },
+        { $pull: { goalLinks: { goal: { $in: goalIds } } } }
+      );
+    }
     // Connector projects are UNBOUND, never deleted. The row mirrors something
     // that still exists inside the provider and is the parent of every
     // ConnectorSnapshot ever taken for that domain — deleting the group is a

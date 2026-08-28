@@ -31,6 +31,22 @@ const useTaskStore = create((set, get) => ({
   subitemsByParent: {}, // { [parentTaskId]: Task[] }
   notesByGroup: {},      // { [groupId]: Note[] }  — loaded lazily when a panel opens
   notesCountByGroup: {}, // { [groupId]: number }  — loaded eagerly for header badges
+
+  // Tracker boards: the ids of groups that have at least one goal in the
+  // month currently on screen. Carried on the task read (not fetched
+  // separately) and used only to decide whether a done task's missing goal
+  // link is worth flagging. Empty on every other board type.
+  groupsWithGoals: [],
+
+  // The last status transition this tab made, or null. Written by
+  // `updateTask` below and read by the board page, which turns it into the
+  // "attach this to a goal?" prompt on tracker boards.
+  //
+  // The store deliberately does NOT decide whether the new status means
+  // "done": that answer lives in `board.statuses`, which the store has no
+  // access to. It records a fact; the page interprets it. That split is what
+  // keeps a tracker-board feature out of the generic task store.
+  lastStatusChange: null,
   loading: false,
   error: null,
   // Bumped when a realtime "board.changed" SSE frame arrives so the board view
@@ -55,14 +71,15 @@ const useTaskStore = create((set, get) => ({
     if (!boardId) return;
     set({ loading: true, error: null });
     try {
-      const [groups, tasks, noteCounts] = await Promise.all([
+      const [groups, taskPayload, noteCounts] = await Promise.all([
         taskService.getGroups(boardId, { month }),
-        taskService.getTasks(boardId, { month }),
+        taskService.getTasks(boardId, { month, meta: true }),
         // Cheap per-group note counts for the header badges. Non-essential —
         // don't let a counts hiccup break the whole board load.
         noteService.getNoteCounts(boardId).catch(() => ({})),
       ]);
 
+      const tasks = taskPayload.tasks || [];
       const tasksByGroup = {};
       for (const g of groups) tasksByGroup[g._id] = [];
       for (const t of tasks) {
@@ -72,7 +89,13 @@ const useTaskStore = create((set, get) => ({
         tasksByGroup[gid].push(t);
       }
 
-      set({ groups, tasksByGroup, notesCountByGroup: noteCounts, loading: false });
+      set({
+        groups,
+        tasksByGroup,
+        notesCountByGroup: noteCounts,
+        groupsWithGoals: taskPayload.groupsWithGoals || [],
+        loading: false,
+      });
     } catch (err) {
       set({ loading: false, error: err });
       throw err;
@@ -88,7 +111,8 @@ const useTaskStore = create((set, get) => ({
   refreshBoardTasks: async (boardId, { month } = {}) => {
     if (!boardId) return;
     try {
-      const tasks = await taskService.getTasks(boardId, { month });
+      const payload = await taskService.getTasks(boardId, { month, meta: true });
+      const tasks = payload.tasks || [];
       set((s) => {
         const tasksByGroup = {};
         for (const g of s.groups) tasksByGroup[g._id] = [];
@@ -98,7 +122,10 @@ const useTaskStore = create((set, get) => ({
           if (!tasksByGroup[gid]) tasksByGroup[gid] = [];
           tasksByGroup[gid].push(t);
         }
-        return { tasksByGroup };
+        return {
+          tasksByGroup,
+          groupsWithGoals: payload.groupsWithGoals || [],
+        };
       });
     } catch {
       // Background refresh — stay silent; the next full load reconciles.
@@ -171,7 +198,27 @@ const useTaskStore = create((set, get) => ({
    */
   updateTask: (task) =>
     set((s) => {
-      const replace = (t) => (t._id === task._id ? mergeServerTask(t, task) : t);
+      // Captured inside `replace` because that is the only place holding BOTH
+      // the stored row and the incoming one. Every path that changes a status
+      // — the row chip, the detail panel, and the flexible-columns grid cell —
+      // funnels through here, which is why the prompt can be driven from one
+      // place instead of three.
+      let statusChange = null;
+      const replace = (t) => {
+        if (t._id !== task._id) return t;
+        if (
+          task.status !== undefined
+          && String(t.status ?? '') !== String(task.status ?? '')
+        ) {
+          statusChange = {
+            taskId: task._id,
+            from: t.status ?? null,
+            to: task.status ?? null,
+            at: Date.now(),
+          };
+        }
+        return mergeServerTask(t, task);
+      };
       const parentId = task?.parent ? task.parent.toString() : null;
       if (parentId) {
         const list = s.subitemsByParent[parentId] || [];
@@ -180,6 +227,7 @@ const useTaskStore = create((set, get) => ({
             ...s.subitemsByParent,
             [parentId]: list.map(replace),
           },
+          ...(statusChange ? { lastStatusChange: statusChange } : {}),
         };
       }
       const gid = task.group;
@@ -190,8 +238,12 @@ const useTaskStore = create((set, get) => ({
           ...s.tasksByGroup,
           [gid]: existing.map(replace),
         },
+        ...(statusChange ? { lastStatusChange: statusChange } : {}),
       };
     }),
+
+  /** Consume the recorded transition, so one status change prompts once. */
+  clearLastStatusChange: () => set({ lastStatusChange: null }),
 
   /**
    * Set the updates count for a single task (top-level or subitem). Used by

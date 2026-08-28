@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Plus, MoreHorizontal, Pin } from 'lucide-react';
+import GoalEvidenceMarker from './GoalEvidenceMarker';
 import { cellComponentFor } from './columns';
 import AddColumnButton from './AddColumnButton';
 import useBoardStore from '../../store/boardStore';
@@ -275,6 +276,7 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
             valueFor={valueFor}
             readOnly={readOnly}
             pinned={isTaskPinned(task, personalPins)}
+            board={board}
           />
         ))}
         {tasks.length === 0 && (
@@ -398,7 +400,7 @@ const MobileCard = ({ columns, task, valueFor, onChange, readOnly }) => (
   </div>
 );
 
-const Row = ({ columns, task, ri, onChange, valueFor, readOnly, pinned = false }) => {
+const Row = ({ columns, task, ri, onChange, valueFor, readOnly, pinned = false, board = null }) => {
   const stripe = ri % 2 === 1 ? 'var(--color-bg-subtle)' : 'transparent';
   return (
     <>
@@ -426,6 +428,14 @@ const Row = ({ columns, task, ri, onChange, valueFor, readOnly, pinned = false }
               >
                 <Pin size={12} fill="currentColor" aria-hidden="true" />
                 <span className="sr-only">Pinned to top</span>
+              </span>
+            )}
+            {/* Tracker boards: same marker the classic grid shows, in the
+            same first-column slot, so a board's evidence reads identically
+            whichever grid it happens to render through. */}
+            {ci === 0 && (
+              <span className="inline-flex items-center shrink-0" style={{ paddingLeft: 6 }}>
+                <GoalEvidenceMarker task={task} board={board} />
               </span>
             )}
             <Cell

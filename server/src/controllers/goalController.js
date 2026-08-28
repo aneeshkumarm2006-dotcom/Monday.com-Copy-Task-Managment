@@ -25,7 +25,17 @@ const ActivityLog = require('../models/ActivityLog');
 const Board = require('../models/Board');
 const Goal = require('../models/Goal');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
+const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
+const { isResolvedStatus } = require('../utils/doneStatus');
+const {
+  linkedGoalIds,
+  isDismissed,
+  isAttachable,
+  staleReasonsFor,
+  foldEvidenceByGroup,
+} = require('../utils/goalEvidence');
+
 const User = require('../models/User');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const {
@@ -584,6 +594,14 @@ const deleteGoal = async (req, res) => {
     // which of its cells the connector owned. With the row gone there is nothing
     // for either half to be about.
     await GoalConnectorLink.deleteOne({ goal: loaded.goal._id });
+    // Evidence links go too. A task keeps its link when it is reopened or
+    // refiled — that drift is flagged, not corrected — but a link to a goal
+    // that no longer exists is not drift, it is a dangling reference, and the
+    // chip that counts it would be counting nothing.
+    await Task.updateMany(
+      { board: loaded.goal.board, 'goalLinks.goal': loaded.goal._id },
+      { $pull: { goalLinks: { goal: loaded.goal._id } } }
+    );
     return res.json({ deleted: true });
   } catch (err) {
     console.error('deleteGoal error:', err);
@@ -822,6 +840,215 @@ const getGoalTrend = async (req, res) => {
   }
 };
 
+
+/**
+ * The month's tasks, in the shape every evidence read needs: enough to test
+ * done-ness and to derive staleness, and nothing else. `parent: null` because
+ * subitems carry no evidence; personal tasks are never on a board anyway but
+ * the filter is cheap and says so out loud.
+ */
+const evidenceTasksFor = (boardId, monthKey) =>
+  Task.find({
+    board: boardId,
+    monthKey,
+    parent: null,
+    isPersonal: { $ne: true },
+  })
+    .select('_id name group status monthKey goalLinks goalLinkDismissedAt assignedTo')
+    .lean();
+
+/**
+ * GET /api/boards/:boardId/goals/evidence?month=YYYY-MM
+ *
+ * How much work was attached to each goal this month, and how well each group
+ * is keeping up. `goal.view` — it is a fact about the board, same as the scores.
+ *
+ * DELIBERATELY NOT FOLDED INTO getGoals. That handler is what makes the tab
+ * render at all, and the reasoning GoalsTab.jsx already writes down for
+ * connector links applies unchanged here: a secondary feature failing must
+ * never be able to blank the goals table. Separate request, separate state,
+ * swallowed failure.
+ */
+const getGoalEvidence = async (req, res) => {
+  try {
+    const ctx = await gate(req, res, 'goal.view');
+    if (!ctx) return undefined;
+
+    const month = String(req.query.month || '');
+    if (!isMonthKey(month)) {
+      return res.status(400).json({ error: 'month must be YYYY-MM' });
+    }
+
+    const [goals, tasks] = await Promise.all([
+      Goal.find({ board: ctx.board._id, monthKey: month }).select('_id group').lean(),
+      evidenceTasksFor(ctx.board._id, month),
+    ]);
+
+    // The "does this group have goals this month" rule, in bulk. Without it the
+    // orphan count is a nag at every group that never set a goal.
+    const goalGroupIds = new Set(goals.map((g) => String(g.group)));
+    const liveGoalIds = new Set(goals.map((g) => String(g._id)));
+
+    const byGoal = {};
+    for (const id of liveGoalIds) byGoal[id] = { count: 0, stale: 0 };
+
+    for (const task of tasks) {
+      for (const link of task.goalLinks || []) {
+        const goalId = String(link.goal);
+        // Counts only goals that still exist. A missed cascade then shows up as
+        // an undercount rather than a chip promising tasks the popover cannot
+        // produce — a phantom count is worse than no count.
+        const row = byGoal[goalId];
+        if (!row) continue;
+        row.count += 1;
+        if (staleReasonsFor(task, link, ctx.board).length > 0) row.stale += 1;
+      }
+    }
+
+    const byGroup = {};
+    for (const [groupId, counts] of foldEvidenceByGroup(tasks, ctx.board, goalGroupIds)) {
+      byGroup[groupId] = counts;
+    }
+
+    return res.json({
+      evidence: {
+        monthKey: month,
+        canAttach: ctx.can('task.change_status') && ctx.can('goal.view'),
+        byGoal,
+        byGroup,
+      },
+    });
+  } catch (err) {
+    console.error('getGoalEvidence error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/goals/:id/tasks
+ *
+ * The work behind one goal — what the count chip opens. `goal.view`.
+ *
+ * Sorted stale-first, because the only reason to open this list rather than
+ * trust the number is to find what needs reconciling.
+ */
+const getGoalTasks = async (req, res) => {
+  try {
+    const loaded = await gateByGoal(req, res, 'goal.view');
+    if (!loaded) return undefined;
+    const { ctx, goal } = loaded;
+
+    const tasks = await Task.find({
+      board: goal.board,
+      'goalLinks.goal': goal._id,
+    })
+      .select('_id name group status monthKey parent goalLinks assignedTo')
+      .populate('assignedTo', 'name profilePic email')
+      .lean();
+
+    const rows = [];
+    for (const task of tasks) {
+      const link = (task.goalLinks || []).find(
+        (l) => String(l.goal) === String(goal._id)
+      );
+      if (!link) continue;
+      rows.push({
+        _id: task._id,
+        name: task.name,
+        // `board` and `monthKey` are here so the client can hand the row
+        // straight to buildTaskLink, which carries the month — a task that
+        // drifted to September must open on September's board.
+        board: goal.board,
+        monthKey: task.monthKey,
+        parent: task.parent || null,
+        group: task.group,
+        assignedTo: task.assignedTo || [],
+        linkedBy: link.linkedBy,
+        linkedAt: link.createdAt || null,
+        stale: staleReasonsFor(task, link, ctx.board),
+      });
+    }
+
+    rows.sort((a, b) => {
+      if (a.stale.length !== b.stale.length) return b.stale.length - a.stale.length;
+      return a.name.localeCompare(b.name);
+    });
+
+    return res.json({ tasks: rows });
+  } catch (err) {
+    console.error('getGoalTasks error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/tasks/:id/goal-options
+ *
+ * What this task may be attached to, and what it is attached to now. Feeds BOTH
+ * the on-done prompt and the panel picker, so the two can never offer different
+ * choices.
+ *
+ * Lives in goalController because it reads Goals and already owns `gate`; it is
+ * mounted from routes/goals.js, which already carries two prefixes.
+ */
+const getTaskGoalOptions = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidId(id)) return res.status(400).json({ error: 'Invalid task id' });
+
+    const task = await Task.findById(id).select(
+      '_id board group monthKey status parent isPersonal goalLinks goalLinkDismissedAt'
+    );
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+    // A personal task lives on no board, so there is no board to gate against
+    // and no goals to offer. Said plainly here rather than letting the empty
+    // board id fall through to gate()'s 'Invalid board id'.
+    if (!task.board) {
+      return res.status(400).json({ error: 'This task is not on a board' });
+    }
+
+    req.params.boardId = String(task.board);
+    const ctx = await gate(req, res, 'goal.view');
+    if (!ctx) return undefined;
+
+    const attachable = isAttachable(task);
+    const goals = attachable
+      ? await Goal.find({
+          board: task.board,
+          group: task.group,
+          monthKey: task.monthKey,
+        })
+          .select('_id name type order')
+          .sort({ order: 1 })
+          .lean()
+      : [];
+
+    const linked = new Set(linkedGoalIds(task));
+
+    return res.json({
+      options: {
+        taskId: task._id,
+        monthKey: task.monthKey,
+        // False for a subitem or a task with no month — the client uses this to
+        // hide the field rather than render an empty picker.
+        attachable,
+        canAttach:
+          attachable && ctx.can('task.change_status') && ctx.can('goal.view'),
+        done: isResolvedStatus(ctx.board, task.status),
+        dismissed: isDismissed(task),
+        goals: goals.map((g) => ({
+          _id: g._id,
+          name: g.name,
+          type: g.type,
+          linked: linked.has(String(g._id)),
+        })),
+      },
+    });
+  } catch (err) {
+    console.error('getTaskGoalOptions error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
 module.exports = {
   gate,
   getGoalTypes,
@@ -832,6 +1059,9 @@ module.exports = {
   getGoalActivity,
   reorderGoals,
   getGoalTrend,
+  getGoalEvidence,
+  getGoalTasks,
+  getTaskGoalOptions,
   liveColumns,
   decorate,
 };

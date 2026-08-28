@@ -7,12 +7,20 @@ import api from './api';
  * tracker board — where the server REQUIRES it, rather than silently returning
  * every task the board has ever had).
  */
-export const getTasks = async (boardId, { group, month } = {}) => {
+/**
+ * `meta: true` returns the whole payload rather than just the rows:
+ * `{ tasks, monthKey, groupsWithGoals }`. Tracker boards need
+ * `groupsWithGoals` to tell an ORPHAN done task (its group has goals, nobody
+ * attached this one) from a task in a group nobody set goals for — and it
+ * rides this response precisely so the grid needs no second round trip to
+ * draw its marker. Every other caller wants the rows and passes nothing.
+ */
+export const getTasks = async (boardId, { group, month, meta = false } = {}) => {
   const params = { board: boardId };
   if (group) params.group = group;
   if (month) params.month = month;
   const { data } = await api.get('/api/tasks', { params });
-  return data.tasks;
+  return meta ? data : data.tasks;
 };
 
 /**
@@ -214,4 +222,32 @@ export const reorderChecklist = async (taskId, orderedIds) => {
 export const getSubitems = async (taskId) => {
   const { data } = await api.get(`/api/tasks/${taskId}/subitems`);
   return data.tasks;
+};
+
+/**
+ * GET /api/tasks/:id/goal-options — the goals this task may attach to (its own
+ * group, its own month) plus which it already has. Feeds both the on-done
+ * prompt and the panel picker so the two cannot offer different choices.
+ */
+export const getTaskGoalOptions = async (taskId) => {
+  const { data } = await api.get(`/api/tasks/${taskId}/goal-options`, {
+    suppressErrorToast: true,
+  });
+  return data.options;
+};
+
+/**
+ * PUT /api/tasks/:id/goal-links — attach this task to the goals it counted
+ * towards. EVIDENCE ONLY: moves no goal's number.
+ *
+ * A full replace of the set rather than add/remove, so the prompt and the panel
+ * submit identically and two open surfaces cannot race into a half state.
+ * Returns the updated task.
+ */
+export const setTaskGoalLinks = async (taskId, { goalIds, dismissed } = {}) => {
+  const payload = {};
+  if (goalIds !== undefined) payload.goalIds = goalIds;
+  if (dismissed !== undefined) payload.dismissed = dismissed;
+  const { data } = await api.put(`/api/tasks/${taskId}/goal-links`, payload);
+  return data.task;
 };

@@ -11,6 +11,7 @@ import {
   Pin,
   Eye,
 } from 'lucide-react';
+import GoalEvidenceMarker from './GoalEvidenceMarker';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
 import { isOverdue } from '../../utils/dateUtils';
@@ -348,6 +349,9 @@ const TaskRow = ({
               Client sees
             </span>
           )}
+          {/* Tracker boards: is this finished work counted towards a goal?
+              Silent unless it has something to say — see GoalEvidenceMarker. */}
+          <GoalEvidenceMarker task={task} board={board} />
           {/* The client-chosen request type + category, so the team can triage
               client tickets at a glance without opening each one. */}
           {task.source === 'client' && task.portalType && PORTAL_TYPE_BADGE[task.portalType] && (

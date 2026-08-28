@@ -61,6 +61,8 @@ const FIELD_LABELS = {
   note: 'notes',
   group: 'group',
   pinned: 'pin',
+  // Tracker boards: goals a task was offered as evidence for.
+  goalLinks: 'goals',
   // Goal-only fields. `name` and `note` above are shared.
   goalType: 'kind of goal',
   weight: 'importance',
@@ -178,6 +180,22 @@ const resolveFieldValue = (field, value, board, userMap, entry = null) => {
       return found
         ? { id: idStr, name: found.name, color: found.color }
         : { id: idStr, name: 'Unknown', color: null };
+    });
+  }
+
+  // Tracker-board evidence: an array of goal ids, or the sentinel string for
+  // the deliberate "not goal work" dismissal.
+  //
+  // Names come from `metadata.goalNames`, denormalised by the writer, NOT from
+  // a live lookup — the row has to still read after the goal is deleted, which
+  // is the same reason `logGoalDeleted` keeps its own copy of the name.
+  if (field === 'goalLinks') {
+    if (value === 'not_goal_work') return { dismissed: true };
+    if (!Array.isArray(value)) return value;
+    const goalNames = entry?.metadata?.goalNames || {};
+    return value.map((id) => {
+      const idStr = id.toString();
+      return { id: idStr, name: goalNames[idStr] || 'Deleted goal' };
     });
   }
 
@@ -386,6 +404,23 @@ const describeActivity = (entry, { oldGroupName, newGroupName } = {}) => {
       }
 
       const label = FIELD_LABELS[entry.field] || entry.field;
+
+      // Tracker-board evidence. The dismissal and the attachments share a
+      // field, so the sentinel is checked first — `{ dismissed: true }` is what
+      // resolveFieldValue turns the 'not_goal_work' marker into.
+      if (entry.field === 'goalLinks') {
+        if (entry.newValue?.dismissed) {
+          return `${actor} marked this as not goal work.`;
+        }
+        if (entry.oldValue?.dismissed) {
+          return `${actor} cleared "not goal work".`;
+        }
+        const { added, removed } = diffMembers(entry.oldValue, entry.newValue);
+        const parts = [];
+        if (added.length) parts.push(`attached this to ${names(added)}`);
+        if (removed.length) parts.push(`detached it from ${names(removed)}`);
+        return `${actor} ${parts.length ? parts.join(' and ') : 'updated goals'}.`;
+      }
 
       if (entry.field === 'assignees') {
         const { added, removed } = diffMembers(entry.oldValue, entry.newValue);

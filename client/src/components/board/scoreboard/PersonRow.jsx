@@ -43,7 +43,7 @@ const Chip = ({ state, count }) => {
  *   always travels with `of N` and the kept rate.
  */
 const PersonRow = ({ person, rank, hasDelivery, expanded, onToggle, onOpenGroup, isUnassigned }) => {
-  const { user, goals, delivery, flags } = person;
+  const { user, goals, delivery, evidence, flags } = person;
   const Chevron = expanded ? ChevronDown : ChevronRight;
 
   return (
@@ -162,6 +162,30 @@ const PersonRow = ({ person, rank, hasDelivery, expanded, onToggle, onOpenGroup,
           </span>
         )}
 
+        {/*
+          Coverage, not effort: how much of the finished work in the groups
+          this person OWNED was connected to a goal. Orphans are the ones
+          nobody said anything about — not a score, a to-do list for month end.
+        */}
+        {evidence && evidence.done > 0 && (
+          <span className="shrink-0 text-right hidden xl:block" style={{ minWidth: 88 }}>
+            <span
+              className="font-display font-bold tabular-nums block"
+              style={{
+                fontSize: 15,
+                color: evidence.orphaned > 0
+                  ? 'var(--color-status-working)'
+                  : 'var(--color-text-primary)',
+              }}
+            >
+              {evidence.attributed}
+            </span>
+            <span className="font-body block" style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>
+              {`of ${evidence.done} attached`}
+            </span>
+          </span>
+        )}
+
         <ScoreRing
           pct={goals.pct}
           size={44}
@@ -177,6 +201,7 @@ const PersonRow = ({ person, rank, hasDelivery, expanded, onToggle, onOpenGroup,
         <PersonGroups
           groups={person.groups}
           hasDelivery={hasDelivery}
+          hasEvidence={!!evidence}
           onOpenGroup={onOpenGroup}
         />
       )}

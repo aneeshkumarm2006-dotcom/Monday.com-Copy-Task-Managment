@@ -45,6 +45,8 @@ const { loadBoardContext, requireCapability } = require('../utils/boardContext')
 const { deliveryHolidaysOf } = require('../utils/orgHolidays');
 const { scoreGroup, scoreGoal } = require('../utils/goalTypes');
 const { ownerForMonth } = require('../utils/groupOwner');
+const Task = require('../models/Task');
+const { foldEvidenceByGroup } = require('../utils/goalEvidence');
 const { foldDeliveryByGroup, buildScoreboard } = require('../utils/scoreboard');
 const {
   planDelivery,
@@ -128,7 +130,7 @@ const getScoreboard = async (req, res) => {
 
     // BATCH 1. Groups carry `ownerTimeline` here — the ONE place outside
     // groupController that reads it, and it never leaves this function.
-    const [groups, goals, trackers, org] = await Promise.all([
+    const [groups, goals, trackers, org, monthTasks] = await Promise.all([
       TaskGroup.find({ board: board._id })
         .select('name order createdAt ownerTimeline')
         .sort({ order: 1, createdAt: 1 })
@@ -145,6 +147,17 @@ const getScoreboard = async (req, res) => {
       canSeeDelivery
         ? Organisation.findById(board.organisation).select('holidays').lean()
         : null,
+      // The month's top-level tasks, for the evidence coverage column. Rides
+      // the { board, monthKey, group, order } index — the tracker board's
+      // whole read — and is cheap beside the delivery scan already here.
+      Task.find({
+        board: board._id,
+        monthKey: month,
+        parent: null,
+        isPersonal: { $ne: true },
+      })
+        .select('group status monthKey goalLinks goalLinkDismissedAt')
+        .lean(),
     ]);
 
     // Resolve ownership for the requested month. Carry-forward is structural —
@@ -167,6 +180,12 @@ const getScoreboard = async (req, res) => {
     const goalSummaryByGroupId = new Map(
       [...goalsByGroup].map(([gid, rows]) => [gid, scoreGroup(rows)])
     );
+
+    // Evidence coverage per group. `goalGroupIds` is the "does this group
+    // have a goal this month" rule applied in bulk — without it, a group
+    // that never set a goal would report every done task as unattributed.
+    const goalGroupIds = new Set(goals.map((g) => String(g.group)));
+    const evidenceByGroupId = foldEvidenceByGroup(monthTasks, board, goalGroupIds);
 
     // Delivery over EXACTLY the requested month. The Delivery tab's window
     // tokens are its own business; a monthly report's window is the month.
@@ -240,6 +259,7 @@ const getScoreboard = async (req, res) => {
       usersById,
       goalSummaryByGroupId,
       deliveryByGroupId,
+      evidenceByGroupId,
     });
 
     // Narrow AFTER building, so the caller's own rank stays their rank among
@@ -261,7 +281,7 @@ const getScoreboard = async (req, res) => {
         range,
         // The month is still running, so these numbers are a progress report.
         partialMonth: month === currentKey,
-        sections: { goals: true, delivery: canSeeDelivery },
+        sections: { goals: true, delivery: canSeeDelivery, evidence: true },
         scope: canSeeOthers ? 'org' : 'self',
         trackers: trackerList,
         people,

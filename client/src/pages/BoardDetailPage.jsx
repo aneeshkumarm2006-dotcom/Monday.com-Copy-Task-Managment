@@ -90,6 +90,7 @@ import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
 import useTaskStore from '../store/taskStore';
+import GoalAttachPrompt from '../components/board/goals/GoalAttachPrompt';
 import useNotificationStore from '../store/notificationStore';
 import useToastStore from '../store/toastStore';
 import usePermissions, { useBoardPermissions } from '../hooks/usePermissions';
@@ -212,6 +213,10 @@ const BoardDetailPage = () => {
   const addTaskLocal = useTaskStore((s) => s.addTask);
   const setGroupTasksLocal = useTaskStore((s) => s.setGroupTasks);
   const updateTaskLocal = useTaskStore((s) => s.updateTask);
+  const lastStatusChange = useTaskStore((s) => s.lastStatusChange);
+  const clearLastStatusChange = useTaskStore((s) => s.clearLastStatusChange);
+  // The task the on-done prompt is currently asking about, or null.
+  const [goalPromptTask, setGoalPromptTask] = useState(null);
   const setUpdatesCount = useTaskStore((s) => s.setUpdatesCount);
   const deleteTaskLocal = useTaskStore((s) => s.deleteTask);
   const addGroupLocal = useTaskStore((s) => s.addGroup);
@@ -1236,6 +1241,43 @@ const BoardDetailPage = () => {
 
   // --- Inline status change --------------------------------------------
 
+  /**
+   * Turn "a status just changed" into "should we ask what it was for?".
+   *
+   * The store records the transition because it is the one place holding both
+   * the old row and the new one — every done path (the row chip, the detail
+   * panel, the flexible-columns cell) funnels through it. It cannot decide
+   * whether the new status MEANS done, because that lives in board.statuses;
+   * this is where that gets resolved.
+   *
+   * Consumed immediately, so one change asks once. The optimistic paths call
+   * the store twice for a single click (once optimistically, then with the
+   * server reply); the second call sees from === done and records nothing.
+   */
+  useEffect(() => {
+    if (!lastStatusChange) return;
+    clearLastStatusChange();
+    if (!isTrackerBoard || !board) return;
+    const { taskId, from, to } = lastStatusChange;
+    if (isStatusDone(board, from) || !isStatusDone(board, to)) return;
+
+    const store = useTaskStore.getState();
+    let found = null;
+    for (const list of Object.values(store.tasksByGroup)) {
+      if (!Array.isArray(list)) continue;
+      const m = list.find((t) => t._id === taskId);
+      if (m) { found = m; break; }
+    }
+    // Subitems carry no evidence, and a task with no month has no goals to
+    // point at.
+    if (!found || found.parent || !found.monthKey) return;
+    // The rule that stops this being a nag: if nobody set a goal for this
+    // group this month there was nothing to attach to, so do not ask.
+    if (!(store.groupsWithGoals || []).includes(String(found.group))) return;
+
+    setGoalPromptTask(found);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastStatusChange]);
   const canChangeStatus = () => {
     // All org members can change task status
     return !!currentUser;
@@ -2199,6 +2241,22 @@ const BoardDetailPage = () => {
             // project feeds which group — and writes nothing to a goal, which is
             // why it is `connector.manage` and not one of the three above.
             canLinkConnector={canManageConnectors}
+            // A goal chip lists the work behind it; clicking a row has to LAND
+            // on that work. Same params the deep links use (utils/taskLink.js),
+            // so there is one way to reach a task. Carrying the task's own
+            // month matters here: a task refiled into September must open on
+            // September's board, not on one that does not contain it.
+            onOpenTask={(task) => {
+              setSearchParams((prev) => {
+                const next = new URLSearchParams(prev);
+                next.set('view', 'board');
+                next.set('highlightTask', String(task._id));
+                if (task.parent) next.set('highlightParent', String(task.parent));
+                if (task.monthKey) next.set('month', task.monthKey);
+                next.set('openTab', 'updates');
+                return next;
+              });
+            }}
             onGoalsChanged={refreshMonths}
           />
         </ErrorBoundary>
@@ -3002,6 +3060,15 @@ const BoardDetailPage = () => {
       </Modal>
 
       {/* Task detail panel */}
+      {/* Tracker boards: "you just finished this — what was it for?". Skippable,
+          and silent unless the group actually has goals this month. */}
+      {goalPromptTask && (
+        <GoalAttachPrompt
+          task={goalPromptTask}
+          onClose={() => setGoalPromptTask(null)}
+          onTaskPatched={(updated) => updated && updateTaskLocal(updated)}
+        />
+      )}
       <CommentPanel
         task={selectedTask}
         board={board}
@@ -3010,6 +3077,10 @@ const BoardDetailPage = () => {
         onClose={handleCloseTask}
         isAdmin={canEdit}
         onSharePortal={canSharePortal ? handleSharePortal : undefined}
+        // Tracker boards: the panel writes evidence through its own endpoint,
+        // not the generic task PUT, so the store has to be told separately or
+        // the row keeps the marker it had before.
+        onTaskPatched={(updated) => updated && updateTaskLocal(updated)}
         onUpdateTask={async (taskId, payload) => {
           // Locate the task in the store so we can roll back on failure.
           // Search both the board buckets and the subitem cache — the panel

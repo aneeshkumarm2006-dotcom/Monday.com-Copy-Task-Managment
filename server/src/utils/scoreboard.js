@@ -44,6 +44,17 @@ const emptyDelivery = () => ({
   byTracker: [],
 });
 
+/**
+ * A group nobody attached anything in. Zeroes rather than nulls: unlike
+ * delivery, absent evidence is a real answer, not a withheld one.
+ */
+const emptyEvidence = () => ({
+  done: 0,
+  attributed: 0,
+  orphaned: 0,
+  dismissed: 0,
+});
+
 const pct = (num, den) => (den > 0 ? Math.round((num / den) * 100) : null);
 
 /**
@@ -181,8 +192,13 @@ const buildScoreboard = ({
   usersById = new Map(),
   goalSummaryByGroupId = new Map(),
   deliveryByGroupId = null,
+  // Done tasks vs. done tasks attached to a goal, per group. Unlike delivery
+  // this is never withheld — there is no second capability to gate it on, and
+  // no "unknown vs zero" ambiguity: zero attributed genuinely means zero.
+  evidenceByGroupId = null,
 } = {}) => {
   const hasDelivery = deliveryByGroupId instanceof Map;
+  const hasEvidence = evidenceByGroupId instanceof Map;
   const buckets = new Map(); // ownerId | '' -> group rows
 
   for (const group of groups) {
@@ -201,6 +217,9 @@ const buildScoreboard = ({
       goalState: goalSummary?.state || 'empty',
       goalSummary,
       delivery,
+      evidence: hasEvidence
+        ? (evidenceByGroupId.get(gid) || emptyEvidence())
+        : null,
       ownerInherited: !!owner?.inherited,
     });
   }
@@ -208,6 +227,25 @@ const buildScoreboard = ({
   const rowFor = (userId, groupRows) => {
     const summaries = groupRows.map((r) => r.goalSummary).filter(Boolean);
     const goals = scoreBoard(summaries);
+
+    // Plain summation across the groups this person OWNED that month. It
+    // answers "did the work in your groups get connected to your goals?" —
+    // a coverage question, the same genre as the delivery miss count beside
+    // it. It is deliberately NOT "work this person did": a task's doer is
+    // its assignee, who often is not the group owner, and bucketing by
+    // assignee would put people in `people[]` who own no group and break
+    // what that array means.
+    let evidence = null;
+    if (hasEvidence) {
+      evidence = emptyEvidence();
+      for (const r of groupRows) {
+        if (!r.evidence) continue;
+        evidence.done += r.evidence.done;
+        evidence.attributed += r.evidence.attributed;
+        evidence.orphaned += r.evidence.orphaned;
+        evidence.dismissed += r.evidence.dismissed;
+      }
+    }
 
     let delivery = null;
     let atRiskGroups = 0;
@@ -243,6 +281,8 @@ const buildScoreboard = ({
         goalState: r.goalState,
         missed: r.delivery?.missed ?? null,
         required: r.delivery?.required ?? null,
+        attributed: r.evidence?.attributed ?? null,
+        doneTasks: r.evidence?.done ?? null,
       })),
       goals: {
         pct: goals.pct,
@@ -256,6 +296,7 @@ const buildScoreboard = ({
         counts: goals.counts,
       },
       delivery,
+      evidence,
       flags: {
         // Newly took over at least one of these groups THIS month, rather than
         // carrying it forward. Not "ownership changed mid-month" — it cannot:

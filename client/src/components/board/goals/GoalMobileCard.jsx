@@ -4,6 +4,7 @@ import GoalProgressBar from './GoalProgressBar';
 import GoalOutcomeBadge from './GoalOutcomeBadge';
 import GoalMoveMenu from './GoalMoveMenu';
 import GoalConnectorChip from './GoalConnectorChip';
+import GoalEvidenceChip from './GoalEvidenceChip';
 import { cellComponentFor } from '../columns';
 import { formatGoalValue, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
 
@@ -37,6 +38,12 @@ const GoalMobileCard = ({
   goal, columns = [], typeSpec, canTrack, canManage, monthClosable = false,
   index = 0, rowCount = 0, sortActive = false,
   // Connector, all optional — a board without one renders exactly as before.
+  // ---- Evidence, optional --------------------------------------------------
+  // How much done work was attached to this goal this month. Null on a board
+  // nobody has attached anything on, and the chip renders nothing at zero, so
+  // a row that has nothing to say looks exactly as it did before.
+  evidence = null,
+  onOpenTask = null,
   link = null, canLink = false, canAccept = false, accepting = false,
   onPatch, onEdit, onDelete, onMove, onLink, onHistory, onAcceptSuggestions,
 }) => {
@@ -96,6 +103,7 @@ const GoalMobileCard = ({
             accepting={accepting}
             onAccept={() => onAcceptSuggestions?.(goal)}
           />
+          <GoalEvidenceChip goal={goal} evidence={evidence} onOpenTask={onOpenTask} />
         </div>
         <div className="flex gap-1 shrink-0">
           {/* Read-only and ungated, exactly as on the desktop row. */}

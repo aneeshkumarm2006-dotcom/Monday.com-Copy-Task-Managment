@@ -43,6 +43,11 @@ const FIELD_KEYS = [
   'pinned',
   // Tracker boards: which calendar month the task is filed under.
   'monthKey',
+  // Tracker boards: which of the month's goals this task counted towards, and
+  // the "not goal work" dismissal. Logged on the TASK, never on the goal — the
+  // goal's own history is "who set the target, who moved it, who typed in the
+  // number", and evidence moves none of those.
+  'goalLinks',
   // ---- Goal rows -----------------------------------------------------------
   // `name` and `note` above are shared with tasks and mean the same thing on a
   // goal, so they are not repeated. These are the fields only a goal has.

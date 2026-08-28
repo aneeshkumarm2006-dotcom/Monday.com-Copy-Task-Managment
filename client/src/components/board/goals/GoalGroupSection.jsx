@@ -122,6 +122,9 @@ const GoalGroupSection = ({
   // and not a scan per render. A board with no connector passes an empty one and
   // every row renders exactly as it did before.
   linksByGoal = null,
+  // How much done work is attached to each goal, keyed the same way.
+  evidenceByGoal = null,
+  onOpenTask = null,
   canLink = false,
   canAccept = false,
   acceptingGoalId = null,
@@ -468,6 +471,8 @@ const GoalGroupSection = ({
                     rowCount={sortedGoals.length}
                     sortActive={sortActive}
                     link={linksByGoal?.get(String(goal._id)) || null}
+                    evidence={evidenceByGoal?.[String(goal._id)] || null}
+                    onOpenTask={onOpenTask}
                     canLink={canLink}
                     canAccept={canAccept}
                     accepting={String(acceptingGoalId) === String(goal._id)}
@@ -513,6 +518,8 @@ const GoalGroupSection = ({
                   rowCount={sortedGoals.length}
                   sortActive={sortActive}
                   link={linksByGoal?.get(String(goal._id)) || null}
+                  evidence={evidenceByGoal?.[String(goal._id)] || null}
+                  onOpenTask={onOpenTask}
                   canLink={canLink}
                   canAccept={canAccept}
                   accepting={String(acceptingGoalId) === String(goal._id)}

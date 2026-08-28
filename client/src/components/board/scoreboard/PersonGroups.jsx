@@ -6,7 +6,7 @@
  * clients is a number people argue with; one that can be expanded is a number
  * people act on.
  */
-const PersonGroups = ({ groups = [], hasDelivery, onOpenGroup }) => {
+const PersonGroups = ({ groups = [], hasDelivery, hasEvidence, onOpenGroup }) => {
   if (groups.length === 0) return null;
 
   return (
@@ -20,7 +20,12 @@ const PersonGroups = ({ groups = [], hasDelivery, onOpenGroup }) => {
       <table className="w-full" style={{ minWidth: 420, borderCollapse: 'collapse' }}>
         <thead>
           <tr>
-            {['Group', 'Goal score', ...(hasDelivery ? ['Missed'] : [])].map((h, i) => (
+            {[
+              'Group',
+              'Goal score',
+              ...(hasDelivery ? ['Missed'] : []),
+              ...(hasEvidence ? ['Attached'] : []),
+            ].map((h, i) => (
               <th
                 key={h}
                 scope="col"
@@ -82,6 +87,21 @@ const PersonGroups = ({ groups = [], hasDelivery, onOpenGroup }) => {
                       comparison between someone with 4 of 12 and someone with
                       4 of 200. */}
                   {g.required ? `${g.missed} of ${g.required}` : '—'}
+                </td>
+              )}
+              {hasEvidence && (
+                <td
+                  className="font-body tabular-nums"
+                  style={{
+                    fontSize: 13, padding: '6px 16px', textAlign: 'right',
+                    color: g.doneTasks && g.attributed < g.doneTasks
+                      ? 'var(--color-status-working)'
+                      : 'var(--color-text-muted)',
+                  }}
+                >
+                  {/* Same rule as Missed: never a bare numerator. "3" means
+                      nothing without knowing whether 3 or 30 tasks got done. */}
+                  {g.doneTasks ? `${g.attributed} of ${g.doneTasks}` : '—'}
                 </td>
               )}
             </tr>

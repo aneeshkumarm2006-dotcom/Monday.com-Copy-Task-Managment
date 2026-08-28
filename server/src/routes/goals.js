@@ -9,6 +9,8 @@ const {
   getGoalActivity,
   reorderGoals,
   getGoalTrend,
+  getGoalEvidence,
+  getGoalTasks,
 } = require('../controllers/goalController');
 const {
   listGoalColumns,
@@ -50,6 +52,13 @@ router.delete('/goals/:id', deleteGoal);
 // Its history — `goal.view`, the same rung that shows the row in the first
 // place. Rows live in the shared ActivityLog collection, keyed on `goal`.
 router.get('/goals/:id/activity', getGoalActivity);
+
+// --- Evidence: which done tasks counted towards which goal ------------------
+// All three are `goal.view` — what work backs a goal is a fact about the board,
+// the same as its score. The WRITE lives on routes/tasks.js, because it mutates
+// a Task and nothing else.
+router.get('/boards/:boardId/goals/evidence', getGoalEvidence);
+router.get('/goals/:id/tasks', getGoalTasks);
 
 // --- The shared column schema (needs goal.manage) ---------------------------
 // `reorder` before `/:cid` so it is not parsed as a column id.

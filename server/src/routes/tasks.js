@@ -12,6 +12,7 @@ const {
   reorderTasks,
   moveTasksToMonth,
   setTaskPinned,
+  setTaskGoalLinks,
   setTaskPortalShared,
   addChecklistItem,
   updateChecklistItem,
@@ -22,6 +23,7 @@ const {
   deleteTaskAttachment,
   getClientRequest,
 } = require('../controllers/taskController');
+const { getTaskGoalOptions } = require('../controllers/goalController');
 const {
   linkTask,
   unlinkTask,
@@ -75,6 +77,20 @@ router.get('/:id/subitems', getSubitems);
 // the row to its real position. Requires `task.move` (same authority as
 // reordering, since it changes where the row sits for other people).
 router.put('/:id/pin', setTaskPinned);
+
+// PUT /api/tasks/:id/goal-links — attach a done task to the goals it counted
+// towards, on a tracker board. Evidence only: writes nothing to any Goal and
+// moves no score. Its own route rather than the generic PUT because the person
+// who finished the work should be able to say what it was for without holding
+// edit rights over every other row. See setTaskGoalLinks for the full argument.
+router.put('/:id/goal-links', setTaskGoalLinks);
+
+// GET /api/tasks/:id/goal-options — the goals this task MAY attach to (its own
+// group, its own month) plus the ones it already has. Feeds both the on-done
+// prompt and the panel picker, so the two can never offer different choices.
+// Handler lives in goalController because it reads Goals and needs their gate;
+// the ROUTE lives here so that every /api/tasks path is in one file.
+router.get('/:id/goal-options', getTaskGoalOptions);
 
 // PUT /api/tasks/:id/portal-share — publish an internal task to the client's
 // portal, or pull it back. Client Portal boards only, top-level tasks only, and

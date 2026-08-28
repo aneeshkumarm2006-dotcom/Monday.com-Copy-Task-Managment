@@ -25,6 +25,13 @@ const { resolveAccess } = require('../utils/permissions');
 const { isMonthKey, monthKeyOf } = require('../utils/monthKey');
 const ClientContact = require('../models/ClientContact');
 const { isResolvedStatus } = require('../utils/doneStatus');
+const Goal = require('../models/Goal');
+const {
+  MAX_GOAL_LINKS,
+  linkedGoalIds,
+  isDismissed,
+  isAttachable,
+} = require('../utils/goalEvidence');
 const {
   sendPortalResolvedEmail,
   sendPortalSharedTaskEmail,
@@ -807,7 +814,29 @@ const getTasks = async (req, res) => {
     // mirror columns).
     await embedMirrorValues(tasks, ctx.board);
 
-    return res.json({ tasks, monthKey: isTracker ? month : null });
+    // Which groups actually have a goal this month. The board grid needs it to
+    // decide whether a done, unattached task is an ORPHAN or simply a task in a
+    // group nobody set goals for — the rule that stops the orphan marker being
+    // wallpaper (see utils/goalEvidence.js).
+    //
+    // Carried on this read rather than fetched separately because it is one
+    // distinct() on a query that already ran, and the whole reason the links are
+    // embedded on the Task is that the grid should need no extra round trip to
+    // render its marker.
+    let groupsWithGoals = null;
+    if (isTracker && filter.monthKey) {
+      const ids = await Goal.distinct('group', {
+        board: boardId,
+        monthKey: filter.monthKey,
+      });
+      groupsWithGoals = ids.map(String);
+    }
+
+    return res.json({
+      tasks,
+      monthKey: isTracker ? month : null,
+      groupsWithGoals,
+    });
   } catch (err) {
     console.error('getTasks error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -2242,6 +2271,212 @@ const setTaskPinned = async (req, res) => {
   }
 };
 
+
+/**
+ * PUT /api/tasks/:id/goal-links
+ * Body: { goalIds?: string[], dismissed?: boolean }
+ *
+ * Attach a task to the goals it counted towards, on a tracker board. EVIDENCE
+ * ONLY — this writes nothing to any Goal, and `utils/goalTypes.js` never reads
+ * what it writes. See utils/goalEvidence.js.
+ *
+ * A FULL REPLACE, not add/remove deltas, so the on-done prompt and the task
+ * panel submit identically and two open surfaces cannot race into a half state.
+ *
+ * WHY THIS IS NOT `PUT /api/tasks/:id`. Three reasons, in order of weight:
+ *   1. The generic route's full-edit branch gates on `canEditTask`, which is the
+ *      wrong standing. The person who just finished a task should be able to say
+ *      what it was for without being able to rewrite everyone else's rows.
+ *   2. It would need a fourth carve-out beside the status-only branch, which is
+ *      already the one exception that route carries.
+ *   3. It avoids `task.save()`, whose pre-save hook does a `Board.findById` on
+ *      every write to sync legacy columns — pointless on a write that touches
+ *      neither `columnValues` nor a legacy field.
+ *
+ * CAPABILITY: `task.change_status` AND `goal.view`. Not `goal.track`, which is
+ * "fill in the final numbers on existing goals" — this write changes no number,
+ * and borrowing that rung would blur the one line the three-rung goal split
+ * exists to draw. The AND is what makes it exact: a `viewer` holds `goal.view`
+ * but not `task.change_status`, and a `guest` holds `task.change_status` but not
+ * `goal.view`, so both are refused without a single new role.
+ */
+const setTaskGoalLinks = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { id } = req.params;
+    const { goalIds, dismissed } = req.body || {};
+
+    const hasGoalIds = goalIds !== undefined;
+    const hasDismissed = dismissed !== undefined;
+    if (!hasGoalIds && !hasDismissed) {
+      return res
+        .status(400)
+        .json({ error: 'Provide goalIds, dismissed, or both' });
+    }
+    if (hasGoalIds && !Array.isArray(goalIds)) {
+      return res.status(400).json({ error: 'goalIds must be an array' });
+    }
+    if (hasDismissed && typeof dismissed !== 'boolean') {
+      return res.status(400).json({ error: 'dismissed must be a boolean' });
+    }
+
+    const task = await Task.findById(id);
+    if (!task) return res.status(404).json({ error: 'Task not found' });
+
+    // 400 rather than 404: the task exists, it just cannot carry evidence.
+    if (!isAttachable(task)) {
+      return res.status(400).json({
+        error: 'Only top-level tasks on a tracker board can be linked to goals',
+      });
+    }
+
+    const ctx = await loadTaskBoardContext(task.board, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    if (ctx.board.boardType !== 'tracker') {
+      return res.status(400).json({
+        error: 'This board does not have goals',
+        code: 'NOT_TRACKER_BOARD',
+      });
+    }
+
+    const denied = requireCapability(
+      ctx,
+      'task.change_status',
+      'You do not have permission to link tasks to goals'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+    if (!ctx.can('goal.view')) {
+      return res
+        .status(403)
+        .json({ error: 'You do not have permission to see the goals on this board' });
+    }
+
+    // De-duped, order preserved: the prompt attaches one chip at a time and can
+    // be double-clicked.
+    const requested = hasGoalIds
+      ? [...new Set(goalIds.map((g) => String(g)))]
+      : linkedGoalIds(task);
+
+    if (requested.length > MAX_GOAL_LINKS) {
+      return res
+        .status(422)
+        .json({ error: `A task can be linked to at most ${MAX_GOAL_LINKS} goals` });
+    }
+    if (requested.some((g) => !mongoose.Types.ObjectId.isValid(g))) {
+      return res.status(400).json({ error: 'goalIds contains an invalid id' });
+    }
+
+    // THE SCOPE RULE, enforced at the only place it can be: same board, same
+    // group, same month. `task.monthKey` is what "the month it was completed
+    // in" means on a tracker board — there is no completedAt, deliberately
+    // (see utils/trackerEvaluate.js), and a task created on 31 July for
+    // August's work is an August task.
+    let goals = [];
+    if (requested.length > 0) {
+      goals = await Goal.find({
+        _id: { $in: requested },
+        board: task.board,
+        group: task.group,
+        monthKey: task.monthKey,
+      }).select('_id name');
+      if (goals.length !== requested.length) {
+        return res.status(422).json({
+          error: 'A task can only be linked to goals in its own group and month',
+          code: 'GOAL_OUT_OF_SCOPE',
+        });
+      }
+    }
+
+    // Existing links keep their original author and timestamp — re-saving the
+    // set from the panel must not rewrite who attached what, or the record of
+    // who claimed the work is destroyed by anyone who opens the picker.
+    const existingByGoal = new Map(
+      (task.goalLinks || []).map((link) => [String(link.goal), link])
+    );
+    const nextLinks = requested.map((goalId) => {
+      const prior = existingByGoal.get(goalId);
+      if (prior) return prior;
+      return {
+        goal: goalId,
+        monthKey: task.monthKey,
+        group: task.group,
+        linkedBy: userId,
+      };
+    });
+
+    const prevIds = linkedGoalIds(task);
+    const prevDismissed = isDismissed(task);
+    // Attaching anything clears the dismissal: a task cannot be both attached
+    // and deliberately unattached.
+    const nextDismissed =
+      nextLinks.length > 0 ? false : hasDismissed ? dismissed : prevDismissed;
+
+    const linksChanged =
+      prevIds.length !== requested.length
+      || prevIds.some((gid, i) => gid !== requested[i]);
+    const dismissChanged = prevDismissed !== nextDismissed;
+
+    if (linksChanged || dismissChanged) {
+      await Task.updateOne(
+        { _id: task._id },
+        {
+          $set: {
+            goalLinks: nextLinks,
+            goalLinkDismissedAt: nextDismissed ? new Date() : null,
+            goalLinkDismissedBy: nextDismissed ? userId : null,
+          },
+        }
+      );
+
+      // Goal NAMES are denormalised into metadata rather than looked up at read
+      // time, so the row still reads after the goal is deleted — the same trick
+      // logGoalDeleted uses. Names for goals being REMOVED come from a second
+      // lookup, which is why both sides are collected here.
+      const goalNames = {};
+      for (const g of goals) goalNames[String(g._id)] = g.name;
+      const missing = prevIds.filter((gid) => !goalNames[gid]);
+      if (missing.length > 0) {
+        const priorGoals = await Goal.find({ _id: { $in: missing } }).select('_id name');
+        for (const g of priorGoals) goalNames[String(g._id)] = g.name;
+      }
+
+      if (linksChanged) {
+        logActivity({
+          task,
+          actor: userId,
+          type: 'task.field_changed',
+          field: 'goalLinks',
+          oldValue: prevIds,
+          newValue: requested,
+          metadata: { taskName: task.name, monthKey: task.monthKey, goalNames },
+        });
+      }
+      if (dismissChanged) {
+        logActivity({
+          task,
+          actor: userId,
+          type: 'task.field_changed',
+          field: 'goalLinks',
+          oldValue: prevDismissed ? 'not_goal_work' : null,
+          newValue: nextDismissed ? 'not_goal_work' : null,
+          metadata: { taskName: task.name, monthKey: task.monthKey },
+        });
+      }
+
+      eventBus.emit('task.updated', { taskId: task._id, boardId: task.board });
+      // The Goals tab refetches its evidence off the debounced `board.changed`
+      // signal, and this write touches a Task, not a Goal — without this bump
+      // another user's chip count lags behind until they reload.
+      await Board.updateOne({ _id: task.board }, { $set: { updatedAt: new Date() } });
+    }
+
+    const populated = await populateTask(Task.findById(task._id));
+    return res.json({ task: populated });
+  } catch (err) {
+    console.error('setTaskGoalLinks error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
 /**
  * PUT /api/tasks/:id/portal-share   Body: { value: boolean }
  *
@@ -2634,6 +2869,7 @@ module.exports = {
   reorderTasks,
   moveTasksToMonth,
   setTaskPinned,
+  setTaskGoalLinks,
   setTaskPortalShared,
   addChecklistItem,
   updateChecklistItem,

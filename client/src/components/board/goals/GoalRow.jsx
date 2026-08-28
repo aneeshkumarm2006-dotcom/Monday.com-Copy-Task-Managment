@@ -5,6 +5,7 @@ import GoalOutcomeBadge from './GoalOutcomeBadge';
 import GoalSparkline from './GoalSparkline';
 import GoalMoveMenu from './GoalMoveMenu';
 import GoalConnectorChip from './GoalConnectorChip';
+import GoalEvidenceChip from './GoalEvidenceChip';
 import { cellComponentFor } from '../columns';
 import { weightLabel, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
 import {
@@ -44,6 +45,12 @@ const GoalRow = ({
   // A board with no connector passes none of these and renders exactly as it
   // did before: `link` is undefined, the chip returns null, and the link button
   // is gated off. Nothing about the goals machinery depends on connectors.
+  // ---- Evidence, optional --------------------------------------------------
+  // How much done work was attached to this goal this month. Null on a board
+  // nobody has attached anything on, and the chip renders nothing at zero, so
+  // a row that has nothing to say looks exactly as it did before.
+  evidence = null,
+  onOpenTask = null,
   link = null,
   canLink = false,
   canAccept = false,
@@ -178,6 +185,10 @@ const GoalRow = ({
           accepting={accepting}
           onAccept={() => onAcceptSuggestions?.(goal)}
         />
+        {/* And the other half of the story: what work actually went into it.
+            Silent at zero, and in the name cell for the same reason the
+            connector chip is — see GoalEvidenceChip. */}
+        <GoalEvidenceChip goal={goal} evidence={evidence} onOpenTask={onOpenTask} />
       </div>
 
       {/* Admin-defined extra columns, through the existing cell registry. These

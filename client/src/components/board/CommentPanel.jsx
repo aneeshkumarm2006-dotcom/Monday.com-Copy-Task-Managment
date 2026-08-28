@@ -14,6 +14,7 @@ import {
   Loader2,
   Link2,
 } from 'lucide-react';
+import GoalLinksField from './goals/GoalLinksField';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
 import { formatDate, dateInputToISO } from '../../utils/dateUtils';
@@ -87,6 +88,10 @@ const CommentPanel = ({
   // Client Portal: async (task, nextValue) => void. Omitted where the viewer may
   // not publish to the client, which is what hides the control entirely.
   onSharePortal = null,
+  // Tracker boards: called with the server’s updated task after evidence is
+  // attached or detached, so the board grid’s marker refreshes. Omitting it
+  // does not hide the row — the row is gated on the board being a tracker.
+  onTaskPatched = null,
 }) => {
   // Tabs (Updates / Client / Files / Activity Log)
   const [activeTab, setActiveTab] = useState('updates');
@@ -667,6 +672,21 @@ const CommentPanel = ({
                   onUpdateTask={onUpdateTask}
                   onEditLabels={onEditLabels}
                 />
+              </MetaRow>
+            )}
+            {/*
+              Tracker boards: which of this month’s goals this task counted
+              towards. Evidence only — it moves no number, and the server
+              refuses any goal outside this task’s own group and month.
+
+              Subitems are excluded because they inherit their parent’s month
+              and move with it, so the evidence belongs to the parent. My Work
+              and Calendar mount this panel without a `board`, which is what
+              keeps the row out of them entirely.
+            */}
+            {board?.boardType === 'tracker' && !task.parent && (
+              <MetaRow label="Goal">
+                <GoalLinksField task={task} onTaskPatched={onTaskPatched} />
               </MetaRow>
             )}
           </dl>

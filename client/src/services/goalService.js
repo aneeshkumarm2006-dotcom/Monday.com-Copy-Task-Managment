@@ -134,3 +134,26 @@ export const deleteGoalColumn = async (boardId, columnId, { purge = false } = {}
   });
   return data;
 };
+
+/**
+ * How much work was attached to each goal this month, and each group's coverage.
+ *
+ * Its own request rather than part of `getGoals`, for the same reason the
+ * connector links are: this is a secondary fact, and a failure fetching it must
+ * never be able to blank the goals table.
+ */
+export const getGoalEvidence = async (boardId, monthKey) => {
+  const { data } = await api.get(`/api/boards/${boardId}/goals/evidence`, {
+    params: { month: monthKey },
+    suppressErrorToast: true,
+  });
+  return data.evidence;
+};
+
+/** The tasks behind one goal — what the count chip opens. Stale rows first. */
+export const getGoalTasks = async (goalId) => {
+  const { data } = await api.get(`/api/goals/${goalId}/tasks`, {
+    suppressErrorToast: true,
+  });
+  return data.tasks;
+};
