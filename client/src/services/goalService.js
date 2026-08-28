@@ -51,6 +51,32 @@ export const deleteGoal = async (goalId) => {
 };
 
 /**
+ * GET /api/goals/:id/activity — one goal's history.
+ *
+ * Rows come from the SAME `ActivityLog` collection as a task's activity feed
+ * and in the same shape, which is why the panel renders them with the same
+ * `ActivityEntry` component. `goal.createdBy` / `goal.updatedBy` ride along on
+ * the response because a goal created before this log existed has no
+ * `goal.created` row to find, and the stamp on the document is the only honest
+ * answer for it.
+ *
+ * @param {string} goalId
+ * @param {object} [opts]
+ * @param {string} [opts.cursor] - `nextCursor` from a previous page
+ * @param {number} [opts.limit]
+ */
+export const getGoalActivity = async (goalId, opts = {}) => {
+  const params = {};
+  if (opts.cursor) params.cursor = opts.cursor;
+  if (opts.limit) params.limit = opts.limit;
+  const { data } = await api.get(`/api/goals/${goalId}/activity`, {
+    params,
+    suppressErrorToast: true,
+  });
+  return data;
+};
+
+/**
  * The order one group's goals sit in, saved for EVERYONE — the whole point of
  * it being a request at all rather than a localStorage key. `orderedIds` is one
  * group's whole table, in one month; the server refuses a list that spans two.

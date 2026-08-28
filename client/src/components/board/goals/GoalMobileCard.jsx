@@ -1,4 +1,4 @@
-import { AlertTriangle, Trash2, Pencil, Link2 } from 'lucide-react';
+import { AlertTriangle, Trash2, Pencil, Link2, History } from 'lucide-react';
 import GoalValueCell from './GoalValueCell';
 import GoalProgressBar from './GoalProgressBar';
 import GoalOutcomeBadge from './GoalOutcomeBadge';
@@ -38,7 +38,7 @@ const GoalMobileCard = ({
   index = 0, rowCount = 0, sortActive = false,
   // Connector, all optional — a board without one renders exactly as before.
   link = null, canLink = false, canAccept = false, accepting = false,
-  onPatch, onEdit, onDelete, onMove, onLink, onAcceptSuggestions,
+  onPatch, onEdit, onDelete, onMove, onLink, onHistory, onAcceptSuggestions,
 }) => {
   const c = goal.computed || {};
   const usesDate = (typeSpec?.actualField?.key || (goal.type === 'deadline' ? 'actualDayKey' : 'actual')) === 'actualDayKey';
@@ -81,6 +81,13 @@ const GoalMobileCard = ({
           <p className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
             {typeSpec?.label || goal.type}
           </p>
+          {/* Who put this goal on the board. On the desktop row this is a
+              tooltip on the name; a phone has no hover, so it gets a line. */}
+          {goal.createdBy?.name && (
+            <p className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+              Added by {goal.createdBy.name}
+            </p>
+          )}
           {/* Same chip as the desktop row, and the same rule: silent until this
               goal is actually about something. */}
           <GoalConnectorChip
@@ -90,46 +97,53 @@ const GoalMobileCard = ({
             onAccept={() => onAcceptSuggestions?.(goal)}
           />
         </div>
-        {(canManage || canLink) && (
-          <div className="flex gap-1 shrink-0">
-            {canLink && (
-              <button
-                type="button"
-                onClick={() => onLink?.(goal)}
-                aria-label={link ? 'Change what this goal is linked to' : 'Link this goal to a tracked keyword'}
-                className="p-1.5"
-              >
-                <Link2
-                  size={15}
-                  color={link ? 'var(--color-accent)' : 'var(--color-text-muted)'}
-                />
-              </button>
-            )}
-            {/* Same control, same shared write as the desktop row — a phone is
-                not a reason to be handed a different set of verbs. */}
-            {canManage && onMove && (
-              <GoalMoveMenu
-                index={index}
-                count={rowCount}
-                goalName={goal.name}
-                sortActive={sortActive}
-                onMove={(dir) => onMove(goal, dir)}
-                iconSize={15}
-                className="p-1.5"
+        <div className="flex gap-1 shrink-0">
+          {/* Read-only and ungated, exactly as on the desktop row. */}
+          <button
+            type="button"
+            onClick={() => onHistory?.(goal)}
+            aria-label={`History for ${goal.name}`}
+            className="p-1.5"
+          >
+            <History size={15} color="var(--color-text-muted)" />
+          </button>
+          {canLink && (
+            <button
+              type="button"
+              onClick={() => onLink?.(goal)}
+              aria-label={link ? 'Change what this goal is linked to' : 'Link this goal to a tracked keyword'}
+              className="p-1.5"
+            >
+              <Link2
+                size={15}
+                color={link ? 'var(--color-accent)' : 'var(--color-text-muted)'}
               />
-            )}
-            {canManage && (
-              <>
-                <button type="button" onClick={() => onEdit(goal)} aria-label="Edit goal" className="p-1.5">
-                  <Pencil size={15} color="var(--color-text-secondary)" />
-                </button>
-                <button type="button" onClick={() => onDelete(goal)} aria-label="Delete goal" className="p-1.5">
-                  <Trash2 size={15} color="var(--color-status-stuck)" />
-                </button>
-              </>
-            )}
-          </div>
-        )}
+            </button>
+          )}
+          {/* Same control, same shared write as the desktop row — a phone is
+              not a reason to be handed a different set of verbs. */}
+          {canManage && onMove && (
+            <GoalMoveMenu
+              index={index}
+              count={rowCount}
+              goalName={goal.name}
+              sortActive={sortActive}
+              onMove={(dir) => onMove(goal, dir)}
+              iconSize={15}
+              className="p-1.5"
+            />
+          )}
+          {canManage && (
+            <>
+              <button type="button" onClick={() => onEdit(goal)} aria-label="Edit goal" className="p-1.5">
+                <Pencil size={15} color="var(--color-text-secondary)" />
+              </button>
+              <button type="button" onClick={() => onDelete(goal)} aria-label="Delete goal" className="p-1.5">
+                <Trash2 size={15} color="var(--color-status-stuck)" />
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="mt-2 flex flex-col gap-1">

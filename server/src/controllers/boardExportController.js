@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const ActivityLog = require('../models/ActivityLog');
+const Goal = require('../models/Goal');
 const Task = require('../models/Task');
 const TaskGroup = require('../models/TaskGroup');
 const User = require('../models/User');
@@ -34,6 +35,13 @@ const { buildTaskThreads } = require('../services/updateThread');
  * A user holding the capability but not the flag gets a 403, deliberately: the
  * flag is the switch they were asked to throw, and honouring it only in the UI
  * would make it decorative.
+ *
+ * TWO KINDS OF ROW come back from one query. A tracker board's monthly goals
+ * write to the same `ActivityLog` collection under `goal` instead of `task`, so
+ * "everything recorded against this board" now genuinely means everything —
+ * including who moved a target. `itemType` is what tells the two apart in the
+ * sheet; the task-field columns are simply blank on a goal row, exactly as they
+ * are for a task that has been deleted.
  */
 
 /** Hard ceiling on rows in one export. Beyond this the response is truncated. */
@@ -182,6 +190,16 @@ const getActivityExport = async (req, res) => {
     const liveGroupIds = new Set(groupMap.keys());
 
     const taskIds = [...new Set(entries.map((e) => e.task?.toString()).filter(Boolean))];
+    // Goal rows name their goal and its group in metadata, so a goal deleted
+    // since the event still exports with a name rather than as a bare id — the
+    // same reason a deleted task's rows keep `metadata.taskName`. The live
+    // documents are read anyway, because a goal RENAMED since the event should
+    // export under the name it has now, matching what the board shows.
+    const goalIds = [...new Set(entries.map((e) => e.goal?.toString()).filter(Boolean))];
+    const goals = goalIds.length
+      ? await Goal.find({ _id: { $in: goalIds } }).select('name group monthKey type').lean()
+      : [];
+    const goalMap = new Map(goals.map((g) => [g._id.toString(), g]));
     const tasks = taskIds.length
       ? await Task.find({ _id: { $in: taskIds } })
           .select(
@@ -259,24 +277,36 @@ const getActivityExport = async (req, res) => {
 
     const rows = [];
     for (const e of entries) {
+      const isGoalRow = !!e.goal;
       const task = e.task ? taskMap.get(e.task.toString()) : null;
+      const goal = e.goal ? goalMap.get(e.goal.toString()) : null;
 
       // A task deleted since the event was logged has no document left. Keep the
       // row — "Ann deleted the task" is exactly the kind of thing an audit export
       // exists for — and fall back to the name captured in the metadata.
       if (task && task.group && !liveGroupIds.has(task.group.toString())) continue;
 
+      // The same orphan rule for goals, read from whichever of the two knows:
+      // the live goal, or the group id the row recorded at the time.
+      const goalGroupId = goal?.group
+        ? goal.group.toString()
+        : (e.metadata?.group ? String(e.metadata.group) : null);
+      if (isGoalRow && goalGroupId && !liveGroupIds.has(goalGroupId)) continue;
+
       const actorDoc = e.actor ? userMap.get(e.actor.toString()) : null;
       let actorName;
       if (actorDoc) actorName = actorDoc.name;
       else if (e.actorType === 'client') actorName = e.actorLabel || 'Client';
+      // Nobody was behind it — a scheduled connector run filling in a goal's
+      // numbers. Named, because "Unknown" in an audit column reads as data loss.
+      else if (e.actorType === 'system') actorName = e.actorLabel || 'Automatic';
       else actorName = 'Unknown';
 
       const hydrated = {
         ...e,
         actor: { name: actorName },
-        oldValue: resolveFieldValue(e.field, e.oldValue, ctx.board, userMap),
-        newValue: resolveFieldValue(e.field, e.newValue, ctx.board, userMap),
+        oldValue: resolveFieldValue(e.field, e.oldValue, ctx.board, userMap, e),
+        newValue: resolveFieldValue(e.field, e.newValue, ctx.board, userMap, e),
       };
 
       // Group moves store raw ObjectIds on both sides; name them.
@@ -287,14 +317,28 @@ const getActivityExport = async (req, res) => {
         }
         : {};
 
+      // A goal row borrows the item columns: its name goes where a task's name
+      // goes, so the sheet stays one table rather than two half-empty ones, and
+      // `itemType` is the column that says which it is.
+      const itemName = isGoalRow
+        ? (goal?.name || e.metadata?.goalName || '(deleted goal)')
+        : (task?.name || e.metadata?.taskName || '(deleted task)');
+      const groupName = isGoalRow
+        ? ((goalGroupId && groupMap.get(goalGroupId)) || e.metadata?.groupName || '')
+        : ((task?.group && groupMap.get(task.group.toString())) || '');
+
       rows.push({
         at: e.createdAt,
-        // The join key for `threads`; blank only for a row with no task at all.
+        // The join key for `threads`; blank on a goal row, which has no thread.
         taskId: e.task ? e.task.toString() : '',
         actorName,
         actorType: e.actorType || 'user',
-        groupName: (task?.group && groupMap.get(task.group.toString())) || '',
-        taskName: task?.name || e.metadata?.taskName || '(deleted task)',
+        itemType: isGoalRow ? 'goal' : 'task',
+        // Which month a goal belongs to — the one thing about it that has no
+        // task equivalent, and the thing that makes a row of them sortable.
+        monthKey: isGoalRow ? (goal?.monthKey || e.metadata?.monthKey || '') : '',
+        groupName,
+        taskName: itemName,
         isSubitem: !!task?.parent,
         type: e.type,
         eventLabel: eventLabel(e.type),

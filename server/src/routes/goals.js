@@ -6,6 +6,7 @@ const {
   createGoal,
   updateGoal,
   deleteGoal,
+  getGoalActivity,
   reorderGoals,
   getGoalTrend,
 } = require('../controllers/goalController');
@@ -46,6 +47,9 @@ router.put('/boards/:boardId/goals/reorder', reorderGoals);
 // --- A single goal ----------------------------------------------------------
 router.put('/goals/:id', updateGoal);
 router.delete('/goals/:id', deleteGoal);
+// Its history — `goal.view`, the same rung that shows the row in the first
+// place. Rows live in the shared ActivityLog collection, keyed on `goal`.
+router.get('/goals/:id/activity', getGoalActivity);
 
 // --- The shared column schema (needs goal.manage) ---------------------------
 // `reorder` before `/:cid` so it is not parsed as a column id.

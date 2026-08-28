@@ -26,8 +26,12 @@ const NAME_W = 180;
  * cell's own padding. Someone who can only report numbers gets none of them, so
  * they keep the narrower column rather than paying 28px of frozen dead space
  * out of the horizontal budget the scoring block is already fighting for.
+ *
+ * The width is ADDITIVE per button rather than two magic totals, because there
+ * are now three separate permissions deciding what lands in this cell and a
+ * single number per case would have to be re-derived every time one is added.
  */
-const ACTIONS_W = { manage: 84, view: 56 };
+const ACTIONS_W = { manage: 84, view: 30 };
 /**
  * The link button is its own 26px because it is a DIFFERENT permission from the
  * other three: pointing a goal at a keyword is `connector.manage`, while
@@ -36,8 +40,16 @@ const ACTIONS_W = { manage: 84, view: 56 };
  * point of paying for it per-board rather than always.
  */
 const LINK_BTN_W = 26;
+/**
+ * History is the one button in this cell EVERYONE gets — it opens a read-only
+ * panel over rows they can already see, so there is no capability to gate it on.
+ * Always paid for, which is why it is not conditional here.
+ */
+const HISTORY_BTN_W = 26;
 const actionsWidth = (canManage, canLink = false) =>
-  (canManage ? ACTIONS_W.manage : ACTIONS_W.view) + (canLink ? LINK_BTN_W : 0);
+  (canManage ? ACTIONS_W.manage : ACTIONS_W.view)
+  + (canLink ? LINK_BTN_W : 0)
+  + HISTORY_BTN_W;
 
 /**
  * The full `grid-template-columns` for a table with these extra columns.

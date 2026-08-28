@@ -10,6 +10,7 @@ import GoalFormModal from './GoalFormModal';
 import GoalColumnsModal from './GoalColumnsModal';
 import GoalLinkModal from './GoalLinkModal';
 import GoalBulkLinkModal from './GoalBulkLinkModal';
+import GoalHistoryModal from './GoalHistoryModal';
 import UnclosedMonthBanner from './UnclosedMonthBanner';
 import * as goalService from '../../../services/goalService';
 import {
@@ -70,6 +71,10 @@ const GoalsTab = ({
   const [saving, setSaving] = useState(false);
   const [columnsOpen, setColumnsOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
+  // The goal whose history panel is open. Its own state rather than a flag on
+  // the row, because the panel outlives a quiet SSE refetch that replaces the
+  // rows underneath it.
+  const [historyFor, setHistoryFor] = useState(null);
 
   /**
    * The connector half. Deliberately its OWN piece of state and its own request
@@ -164,6 +169,18 @@ const GoalsTab = ({
 
   const typesByKey = useMemo(
     () => Object.fromEntries(types.map((t) => [t.key, t])),
+    [types]
+  );
+
+  /**
+   * Type key → plain-language label, for the history panel.
+   *
+   * The timeline has to name a KIND of goal that a row was changed FROM, which
+   * may no longer be the kind the goal is now — so it needs the whole catalog,
+   * not the current row's spec.
+   */
+  const typeLabels = useMemo(
+    () => Object.fromEntries(types.map((t) => [t.key, t.label])),
     [types]
   );
 
@@ -443,6 +460,7 @@ const GoalsTab = ({
               canAccept={linkData ? !!linkData.canTrack : canTrack}
               acceptingGoalId={acceptingGoalId}
               onLink={(goal) => { setLinkError(null); setLinkFor(goal); }}
+              onHistory={setHistoryFor}
               onAcceptSuggestions={acceptSuggestions}
             />
           </div>
@@ -517,6 +535,16 @@ const GoalsTab = ({
             fetchLinks();
             onGoalsChanged?.();
           }}
+        />
+      )}
+
+      {historyFor && (
+        <GoalHistoryModal
+          goal={historyFor}
+          groupName={groups.find((g) => String(g._id) === String(historyFor.group))?.name}
+          monthLabel={monthLabel}
+          typeLabels={typeLabels}
+          onClose={() => setHistoryFor(null)}
         />
       )}
 

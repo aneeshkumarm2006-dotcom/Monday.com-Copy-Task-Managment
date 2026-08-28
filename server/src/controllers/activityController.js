@@ -55,6 +55,8 @@ const getActivity = async (req, res) => {
     const access = await checkTaskAccess(task, userId);
     if (!access.ok) return res.status(access.status).json({ error: access.error });
 
+    // `task: taskId` and nothing else. Goal rows live in the same collection
+    // under `goal`, carry no task at all, and so can never appear here.
     const filter = { task: taskId };
     if (cursor) {
       const cursorDate = new Date(cursor);
@@ -102,8 +104,8 @@ const getActivity = async (req, res) => {
         _id: e._id,
         type: e.type,
         field: e.field,
-        oldValue: resolveFieldValue(e.field, e.oldValue, board, userMap),
-        newValue: resolveFieldValue(e.field, e.newValue, board, userMap),
+        oldValue: resolveFieldValue(e.field, e.oldValue, board, userMap, e),
+        newValue: resolveFieldValue(e.field, e.newValue, board, userMap, e),
         metadata: e.metadata,
         actor,
         createdAt: e.createdAt,

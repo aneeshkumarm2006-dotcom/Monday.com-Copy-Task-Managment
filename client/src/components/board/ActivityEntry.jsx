@@ -17,9 +17,14 @@ import {
   Pin,
   Eye,
   EyeOff,
+  Target,
+  Gauge,
+  Crosshair,
+  Bot,
   Activity as ActivityIcon,
 } from 'lucide-react';
 import { timeAgo, formatDate } from '../../utils/dateUtils';
+import { weightLabel } from '../../utils/goalDisplay';
 
 const LEGACY_STATUS_LABELS = {
   not_started: 'Not started',
@@ -39,7 +44,17 @@ const FIELD_LABELS = {
   group: 'group',
   pinned: 'pin',
   portalShared: 'client visibility',
+  // Monthly goals. `name` and `note` above mean the same thing on a goal.
+  goalType: 'kind of goal',
+  weight: 'importance',
+  owner: 'owner',
+  unit: 'unit',
+  actual: 'result',
+  actualDayKey: 'the day it was done',
 };
+
+/** 'atMost' is a storage key; "stay below" is the choice somebody made. */
+const DIRECTION_LABELS = { atMost: 'stay below', atLeast: 'stay above' };
 
 const formatDateValue = (value) => {
   if (!value) return 'no date';
@@ -146,6 +161,131 @@ const diffMembers = (oldArr, newArr) => {
   return { added, removed };
 };
 
+
+/**
+ * A goal's stored value, in words.
+ *
+ * The text mirror of `describeGoalValue` in server/src/services/activityFormat.js
+ * — same rules, same wording, because the same change must not read one way in
+ * this panel and another in the exported report.
+ *
+ * `typeKey` is the goal's KIND and comes from the row's own metadata rather
+ * than from the goal as it stands today: the same stored `1` is "Yes" on a
+ * did-we-do-it goal and the number one on every other kind, and a goal whose
+ * kind was changed later must still describe its old rows correctly.
+ */
+const renderGoalValue = (field, value, typeKey, meta = {}, typeLabels = {}) => {
+  if (field === 'actual') {
+    if (value === null || value === undefined || value === '') {
+      return <Quoted muted>not reported</Quoted>;
+    }
+    if (typeKey === 'boolean') {
+      return <Quoted>{value === 1 || value === true ? 'Yes' : 'No'}</Quoted>;
+    }
+    if (typeKey === 'rating') {
+      let word = 'Missed';
+      if (value >= 100) word = 'On track';
+      else if (value >= 50) word = 'Partly there';
+      return <Quoted>{word}</Quoted>;
+    }
+    return <Quoted>{String(value)}</Quoted>;
+  }
+
+  if (value === null || value === undefined || value === '') {
+    return <Quoted muted>none</Quoted>;
+  }
+
+  if (field === 'actualDayKey' || field === 'config:dueDayKey') {
+    return <Quoted>{formatDate(value) || String(value)}</Quoted>;
+  }
+  if (field === 'config:direction') {
+    return <Quoted>{DIRECTION_LABELS[value] || String(value)}</Quoted>;
+  }
+  if (field === 'goalType') return <Pill>{typeLabels[value] || String(value)}</Pill>;
+  if (field === 'weight') return <Quoted>{weightLabel(value)}</Quoted>;
+  if (field === 'owner') return <Quoted>{value.name || 'Unknown'}</Quoted>;
+  if (field === 'name' || field === 'note') {
+    const text = String(value);
+    const truncated = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+    return <Quoted>“{truncated}”</Quoted>;
+  }
+  if (Array.isArray(value)) {
+    // Resolved people carry names; a dropdown or a link column is already text.
+    const parts = value.map((v) => (
+      v && typeof v === 'object' ? (v.name ?? JSON.stringify(v)) : String(v)
+    ));
+    return <Quoted>{parts.join(', ')}</Quoted>;
+  }
+  if (typeof value === 'object') return <Quoted>{JSON.stringify(value)}</Quoted>;
+  return <Quoted>{meta.unitLabel ? `${meta.unitLabel}${value}` : String(value)}</Quoted>;
+};
+
+/** The words for a goal's field key: 'config:target' → 'target'. */
+const goalFieldLabel = (field, meta = {}) => {
+  if (typeof field === 'string' && field.startsWith('config:')) {
+    return meta.configLabel || field.slice('config:'.length);
+  }
+  if (typeof field === 'string' && field.startsWith('column:')) {
+    return meta.columnLabel || field.slice('column:'.length);
+  }
+  return FIELD_LABELS[field] || field;
+};
+
+/**
+ * One goal event as a sentence.
+ *
+ * The goal's NAME is deliberately absent from most of these: this panel is
+ * opened from one row and shows only that row's history, so repeating the name
+ * on every line is thirty copies of something already in the title. The two
+ * exceptions are creation and deletion, where naming it is the event.
+ */
+const renderGoalBody = (entry, typeLabels) => {
+  const actorName = entry.actor?.name || 'Someone';
+  const Actor = <strong style={{ color: 'var(--color-text-primary)' }}>{actorName}</strong>;
+  const meta = entry.metadata || {};
+  const typeKey = meta.goalTypeKey || null;
+  const goalName = meta.goalName || 'this goal';
+
+  if (entry.type === 'goal.created') {
+    const kind = typeKey && typeLabels[typeKey] ? ` (${typeLabels[typeKey]})` : '';
+    return (
+      <span>
+        {Actor} added the goal <Quoted>“{goalName}”</Quoted>{kind}.
+      </span>
+    );
+  }
+  if (entry.type === 'goal.deleted') {
+    return (
+      <span>
+        {Actor} deleted the goal <Quoted>“{goalName}”</Quoted>.
+      </span>
+    );
+  }
+
+  const { field } = entry;
+  const from = renderGoalValue(field, entry.oldValue, typeKey, meta, typeLabels);
+  const to = renderGoalValue(field, entry.newValue, typeKey, meta, typeLabels);
+
+  if (field === 'name') {
+    return <span>{Actor} renamed this from {from}<Arrow />{to}.</span>;
+  }
+  if (field === 'owner') {
+    return entry.newValue
+      ? <span>{Actor} made {to} the owner.</span>
+      : <span>{Actor} removed the owner.</span>;
+  }
+  // Filling in a blank result is the event people open this panel to find;
+  // "from not reported to 5,640" buries it behind two words that mean nothing.
+  if ((field === 'actual' || field === 'actualDayKey') && entry.oldValue === null) {
+    return <span>{Actor} reported {to}.</span>;
+  }
+  return (
+    <span>
+      {Actor} changed {goalFieldLabel(field, meta)} from {from}<Arrow />{to}.
+    </span>
+  );
+};
+
 /**
  * Pick an icon for an event type. Field changes drill into the field.
  */
@@ -177,6 +317,19 @@ const iconFor = (entry) => {
   if (entry.type === 'update.added') return FileText;
   if (entry.type === 'client.request_created') return Plus;
   if (entry.type === 'client.update_added') return MessageSquare;
+
+  if (entry.type === 'goal.created') return Target;
+  if (entry.type === 'goal.deleted') return Trash2;
+  if (entry.type === 'goal.field_changed') {
+    if (entry.field === 'owner') return UserPlus;
+    if (entry.field === 'weight') return Gauge;
+    if (entry.field === 'name') return Pencil;
+    if (entry.field === 'note') return StickyNote;
+    if (entry.field === 'actualDayKey' || entry.field === 'config:dueDayKey') return Calendar;
+    if (entry.field === 'actual') return ActivityIcon;
+    if (typeof entry.field === 'string' && entry.field.startsWith('config:')) return Crosshair;
+    return Pencil;
+  }
   return ActivityIcon;
 };
 
@@ -184,9 +337,13 @@ const iconFor = (entry) => {
  * Build the inline JSX describing what changed. Keeps templates per type
  * grouped here so a future event type just needs a new branch.
  */
-const renderBody = (entry) => {
+const renderBody = (entry, typeLabels = {}) => {
   const actorName = entry.actor?.name || 'Someone';
   const Actor = <strong style={{ color: 'var(--color-text-primary)' }}>{actorName}</strong>;
+
+  if (typeof entry.type === 'string' && entry.type.startsWith('goal.')) {
+    return renderGoalBody(entry, typeLabels);
+  }
 
   if (entry.type === 'task.created') {
     return (
@@ -420,8 +577,13 @@ const renderBody = (entry) => {
 
 /**
  * ActivityEntry — a single row in the activity timeline.
+ *
+ * `typeLabels` maps a goal type key to its plain-language label ('numeric' →
+ * 'Move a number'). Only goal rows read it, and only the Goals tab has it — the
+ * catalog is served by `/api/goal-types` rather than hardcoded here, so a new
+ * kind of goal reaches this timeline without a second table to keep in sync.
  */
-const ActivityEntry = ({ entry }) => {
+const ActivityEntry = ({ entry, typeLabels = {} }) => {
   const Icon = iconFor(entry);
   const initials = (entry.actor?.name || '?')
     .split(' ')
@@ -454,7 +616,11 @@ const ActivityEntry = ({ entry }) => {
           border: '1px solid var(--color-border)',
         }}
       >
-        {entry.actor?.profilePic ? (
+        {entry.actor?.isSystem ? (
+          // Nobody was behind it — a scheduled connector run. Its own mark
+          // rather than the initials of a name that is not a person's.
+          <Bot size={15} aria-hidden="true" />
+        ) : entry.actor?.profilePic ? (
           <img
             src={entry.actor.profilePic}
             alt=""
@@ -477,7 +643,7 @@ const ActivityEntry = ({ entry }) => {
             wordBreak: 'break-word',
           }}
         >
-          {renderBody(entry)}
+          {renderBody(entry, typeLabels)}
         </p>
         <div
           className="flex items-center gap-2"

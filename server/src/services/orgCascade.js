@@ -77,6 +77,11 @@ const cascadeDeleteOrg = async (orgId) => {
     // Same omission as the board cascade had: notes are only otherwise removed
     // when their GROUP is deleted, so tearing down an org left them behind.
     await Note.deleteMany({ board: { $in: boardIds } });
+    // Goal activity rows carry `goal`, not `task`, so the task-scoped delete
+    // above cannot reach them. Scoped by BOARD rather than by goal id: it is
+    // the same set (a goal belongs to exactly one board) and it also collects
+    // rows for goals already deleted, which the id list no longer contains.
+    await ActivityLog.deleteMany({ board: { $in: boardIds }, goal: { $ne: null } });
     await TaskGroup.deleteMany({ board: { $in: boardIds } });
     await Automation.deleteMany({ board: { $in: boardIds } });
     await BoardConnection.deleteMany({

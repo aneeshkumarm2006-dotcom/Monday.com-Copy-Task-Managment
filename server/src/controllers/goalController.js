@@ -21,11 +21,19 @@
  */
 
 const mongoose = require('mongoose');
+const ActivityLog = require('../models/ActivityLog');
 const Board = require('../models/Board');
 const Goal = require('../models/Goal');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
 const TaskGroup = require('../models/TaskGroup');
+const User = require('../models/User');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const {
+  snapshotGoal, logGoalCreated, logGoalDeleted, logGoalChanges,
+} = require('../services/goalActivity');
+// Value resolution is shared with the task feed and the board activity export,
+// so one goal edit cannot be described three different ways.
+const { resolveFieldValue, collectUserIds } = require('../services/activityFormat');
 const {
   getGoalType, isGoalType, scoreGoal, scoreGroup, scoreBoard,
   missingFinalValues, monthIsUnclosed, describeGoalTypes, UNITS,
@@ -39,6 +47,25 @@ const MAX_GOALS_PER_GROUP = 100;
 const MAX_TREND_MONTHS = 24;
 const MAX_TREND_ROWS = 4000;
 const HISTORY_MONTHS = 6;
+/** Page size for the per-goal history panel, mirroring the task activity feed. */
+const MAX_ACTIVITY_PAGE = 100;
+const DEFAULT_ACTIVITY_PAGE = 50;
+
+/**
+ * The three people a goal row names, populated the same way in every response.
+ *
+ * `createdBy` was already being STORED and never returned, which made "who set
+ * this target?" a question only the database could answer. The Goals tab shows
+ * it, and the history panel leads with it.
+ */
+const PEOPLE_FIELDS = 'name profilePic email';
+const POPULATE_PEOPLE = [
+  { path: 'owner', select: PEOPLE_FIELDS },
+  { path: 'createdBy', select: PEOPLE_FIELDS },
+  { path: 'updatedBy', select: PEOPLE_FIELDS },
+];
+/** Queries take the array as-is; a saved document takes the same array. */
+const populatePeople = (query) => query.populate(POPULATE_PEOPLE);
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -134,10 +161,9 @@ const getGoals = async (req, res) => {
     const columns = liveColumns(board);
     const [groups, goals] = await Promise.all([
       TaskGroup.find({ board: board._id }).sort({ order: 1 }).lean(),
-      Goal.find({ board: board._id, monthKey: month })
-        .sort({ order: 1, createdAt: 1 })
-        .populate('owner', 'name profilePic email')
-        .lean(),
+      populatePeople(
+        Goal.find({ board: board._id, monthKey: month }).sort({ order: 1, createdAt: 1 })
+      ).lean(),
     ]);
 
     // Each goal's last few months, for the sparkline. One query for the whole
@@ -427,6 +453,17 @@ const createGoal = async (req, res) => {
       createdBy: req.user.userId,
     });
 
+    // Who promised this, and what they promised. Awaited rather than left to
+    // settle on its own, so opening the history panel on a goal added seconds
+    // ago cannot show an empty timeline. `logActivity` swallows its own
+    // failures, so waiting for it can never fail the create.
+    await logGoalCreated({
+      goal,
+      actor: req.user.userId,
+      groupName: group.name,
+    });
+
+    await goal.populate(POPULATE_PEOPLE);
     const lean = goal.toObject();
     return res.status(201).json({ goal: decorate(lean, liveColumns(board)) });
   } catch (err) {
@@ -479,6 +516,11 @@ const updateGoal = async (req, res) => {
 
     if (errors.length > 0) return res.status(422).json({ error: errors[0].message, errors });
 
+    // The before-image, taken while the document still holds the old values.
+    // Everything after this line mutates `goal` in place, so there is no second
+    // chance to read what it used to say.
+    const before = snapshotGoal(goal);
+
     Object.assign(goal, patch);
     // A result belongs to the goal it was recorded against. Change the KIND of
     // goal and the old number stops meaning anything: 4,200 recorded against
@@ -495,11 +537,23 @@ const updateGoal = async (req, res) => {
     await goal.save();
 
     const columns = liveColumns(board);
+    // One row per field that actually MOVED — the edit form re-sends every
+    // field on every save, so "was it sent" is not the question.
+    await logGoalChanges({
+      goal,
+      before,
+      columns,
+      actor: req.user.userId,
+    });
     // Return the whole group's recomputed summary too, so the score ring and the
     // roll-up strip update from this response rather than a second fetch.
     const siblings = await Goal.find({
       board: board._id, group: goal.group, monthKey: goal.monthKey,
     }).lean();
+
+    // Hydrated the same way the tab's own read is, so patching a cell cannot
+    // replace a named creator on the row with a bare id.
+    await goal.populate(POPULATE_PEOPLE);
 
     return res.json({
       goal: decorate(goal.toObject(), columns),
@@ -516,6 +570,13 @@ const deleteGoal = async (req, res) => {
   try {
     const loaded = await gateByGoal(req, res, 'goal.manage');
     if (!loaded) return undefined;
+
+    // Logged BEFORE the delete, while there is still a goal to describe. The
+    // row outlives the goal deliberately — "who removed the target we were
+    // being measured against" is the single most useful thing in this log, and
+    // it is the one event with no document left to ask afterwards.
+    await logGoalDeleted({ goal: loaded.goal, actor: req.user.userId });
+
     await Goal.deleteOne({ _id: loaded.goal._id });
     // The connector link goes with it. Unlike a mirrored project — which is
     // unbound and kept, because it parents a rank history worth more than the
@@ -526,6 +587,103 @@ const deleteGoal = async (req, res) => {
     return res.json({ deleted: true });
   } catch (err) {
     console.error('deleteGoal error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/goals/:id/activity?cursor=<isoDate>&limit=50
+ *
+ * One goal's history: who set the target, who moved it, and who typed in the
+ * number at the end of the month. `goal.view` — the same rung that lets you see
+ * the row at all, because there is nothing here that is not already on it.
+ *
+ * The response leads with `createdBy` / `updatedBy` rather than making the
+ * panel infer them from the oldest row. Goals created before this log existed
+ * have no `goal.created` row to find, and the stamp on the document is the only
+ * honest answer for them.
+ */
+const getGoalActivity = async (req, res) => {
+  try {
+    const loaded = await gateByGoal(req, res, 'goal.view');
+    if (!loaded) return undefined;
+    const { ctx, goal } = loaded;
+
+    const requested = parseInt(req.query.limit, 10);
+    const limit = Math.min(
+      Number.isFinite(requested) && requested > 0 ? requested : DEFAULT_ACTIVITY_PAGE,
+      MAX_ACTIVITY_PAGE
+    );
+
+    const filter = { goal: goal._id };
+    if (req.query.cursor) {
+      const cursorDate = new Date(req.query.cursor);
+      if (!isNaN(cursorDate.getTime())) filter.createdAt = { $lt: cursorDate };
+    }
+
+    // +1 to detect another page without a second count query.
+    const raw = await ActivityLog.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = raw.length > limit;
+    const slice = hasMore ? raw.slice(0, limit) : raw;
+
+    await goal.populate(POPULATE_PEOPLE);
+
+    // The log's own actors, plus the two people stamped on the document — who
+    // are frequently nobody who appears in this page of events.
+    const userIds = new Set(collectUserIds(slice));
+    const users = userIds.size
+      ? await User.find({ _id: { $in: [...userIds] } })
+        .select(PEOPLE_FIELDS)
+        .lean()
+      : [];
+    const userMap = new Map(users.map((u) => [u._id.toString(), u]));
+
+    const items = slice.map((e) => {
+      const actorDoc = e.actor ? userMap.get(e.actor.toString()) : null;
+      let actor;
+      if (actorDoc) {
+        actor = { _id: actorDoc._id, name: actorDoc.name, profilePic: actorDoc.profilePic };
+      } else if (e.actorType === 'system') {
+        // Nobody was behind it. Named rather than blanked: "Ubersuggest filled
+        // this in" is the whole answer to why a number moved overnight.
+        actor = { _id: null, name: e.actorLabel || 'Automatic', profilePic: null, isSystem: true };
+      } else if (e.actorType === 'client') {
+        actor = { _id: null, name: e.actorLabel || 'Client', profilePic: null, isClient: true };
+      } else {
+        actor = { _id: e.actor, name: 'Unknown', profilePic: null };
+      }
+      return {
+        _id: e._id,
+        type: e.type,
+        field: e.field,
+        oldValue: resolveFieldValue(e.field, e.oldValue, ctx.board, userMap, e),
+        newValue: resolveFieldValue(e.field, e.newValue, ctx.board, userMap, e),
+        metadata: e.metadata,
+        actor,
+        createdAt: e.createdAt,
+      };
+    });
+
+    return res.json({
+      goal: {
+        _id: String(goal._id),
+        name: goal.name,
+        monthKey: goal.monthKey,
+        type: goal.type,
+        createdBy: goal.createdBy || null,
+        updatedBy: goal.updatedBy || null,
+        createdAt: goal.createdAt,
+        updatedAt: goal.updatedAt,
+      },
+      items,
+      nextCursor: hasMore ? slice[slice.length - 1].createdAt.toISOString() : null,
+    });
+  } catch (err) {
+    console.error('getGoalActivity error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -671,6 +829,7 @@ module.exports = {
   createGoal,
   updateGoal,
   deleteGoal,
+  getGoalActivity,
   reorderGoals,
   getGoalTrend,
   liveColumns,

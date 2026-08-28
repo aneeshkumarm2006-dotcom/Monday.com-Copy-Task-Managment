@@ -16,7 +16,15 @@
  * activityController; `describeActivity` is the text mirror of the JSX in
  * client/src/components/board/ActivityEntry.jsx — keep the two in step when
  * either changes.
+ *
+ * A THIRD consumer joined them: the per-goal history panel
+ * (goalController.getGoalActivity). Goal rows are the same rows in the same
+ * collection, so they resolve and describe through the same two functions —
+ * which is the only reason "who changed the target" reads the same in the panel
+ * and in the exported report.
  */
+
+const { getGoalType, isGoalType } = require('../utils/goalTypes');
 
 const MONTHS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
@@ -53,6 +61,46 @@ const FIELD_LABELS = {
   note: 'notes',
   group: 'group',
   pinned: 'pin',
+  // Goal-only fields. `name` and `note` above are shared.
+  goalType: 'kind of goal',
+  weight: 'importance',
+  owner: 'owner',
+  unit: 'unit',
+  actual: 'result',
+  actualDayKey: 'the day it was done',
+};
+
+/**
+ * Importance, as the WORD the UI shows rather than the number stored.
+ *
+ * Mirrors `WEIGHT_PRESETS` in client/src/utils/goalDisplay.js. Duplicated
+ * deliberately and knowingly: a weight is presentation on both sides of the
+ * wire, and an export that says "changed importance from 1 to 3" describes a
+ * control nobody has ever seen.
+ */
+const WEIGHT_LABELS = {
+  0: 'Not counted',
+  0.5: 'Nice to have',
+  1: 'Normal',
+  2: 'High',
+  3: 'Critical',
+};
+
+const weightLabel = (w) => WEIGHT_LABELS[w] || (w === null || w === undefined ? 'none' : `x${w}`);
+
+/** 'atMost' is a storage key; "stay below" is the choice the user made. */
+const DIRECTION_LABELS = { atMost: 'stay below', atLeast: 'stay above' };
+
+/** A goal's `actual`, which means different things per type. */
+const describeGoalActual = (typeKey, value) => {
+  if (value === null || value === undefined || value === '') return 'not reported';
+  if (typeKey === 'boolean') return (value === 1 || value === true) ? 'Yes' : 'No';
+  if (typeKey === 'rating') {
+    if (value >= 100) return 'On track';
+    if (value >= 50) return 'Partly there';
+    return 'Missed';
+  }
+  return String(value);
 };
 
 /**
@@ -63,10 +111,40 @@ const FIELD_LABELS = {
  *   - status  → { id, name, color } from board.statuses
  *   - labels  → [{ id, name, color }] from board.labels
  *   - assignees → [{ id, name, profilePic }] from userMap
+ *   - owner (a goal's) → { id, name, profilePic } from userMap
+ *   - a person-typed extra column → [{ id, name, profilePic }]
  *   - others (name, note, priority, dueDate, group) → raw value
+ *
+ * `entry` is the raw log row and is optional. It is only consulted for the one
+ * thing the field key cannot carry: an extra column's TYPE, which is what says
+ * whether `["65f…"]` is a list of user ids or a list of dropdown choices.
  */
-const resolveFieldValue = (field, value, board, userMap) => {
+const resolveFieldValue = (field, value, board, userMap, entry = null) => {
   if (value === null || value === undefined) return null;
+
+  // A goal's owner — one person, not the task's array of them.
+  if (field === 'owner') {
+    const idStr = value.toString();
+    const u = userMap.get(idStr);
+    return u
+      ? { id: idStr, name: u.name, profilePic: u.profilePic }
+      : { id: idStr, name: 'Unknown', profilePic: null };
+  }
+
+  if (
+    typeof field === 'string'
+    && field.startsWith('column:')
+    && entry?.metadata?.columnType === 'person'
+    && Array.isArray(value)
+  ) {
+    return value.map((id) => {
+      const idStr = id.toString();
+      const u = userMap.get(idStr);
+      return u
+        ? { id: idStr, name: u.name, profilePic: u.profilePic }
+        : { id: idStr, name: 'Unknown', profilePic: null };
+    });
+  }
 
   if (field === 'status') {
     if (!board) return value;
@@ -123,11 +201,25 @@ const resolveFieldValue = (field, value, board, userMap) => {
  */
 const collectUserIds = (entries) => {
   const ids = new Set();
+  const addAll = (v) => {
+    if (Array.isArray(v)) v.forEach((id) => id && ids.add(id.toString()));
+  };
   for (const e of entries) {
     if (e.actor) ids.add(e.actor.toString());
     if (e.field === 'assignees') {
-      if (Array.isArray(e.oldValue)) e.oldValue.forEach((id) => id && ids.add(id.toString()));
-      if (Array.isArray(e.newValue)) e.newValue.forEach((id) => id && ids.add(id.toString()));
+      addAll(e.oldValue);
+      addAll(e.newValue);
+    }
+    // A goal's owner is a single id on both sides, not an array.
+    if (e.field === 'owner') {
+      if (e.oldValue) ids.add(e.oldValue.toString());
+      if (e.newValue) ids.add(e.newValue.toString());
+    }
+    // A person-typed extra column holds user ids; nothing else about a
+    // `column:` field says so, which is why the writer stamps the type.
+    if (e.metadata?.columnType === 'person') {
+      addAll(e.oldValue);
+      addAll(e.newValue);
     }
   }
   return Array.from(ids);
@@ -174,6 +266,86 @@ const describeScalar = (field, value) => {
 };
 
 /**
+ * A goal field's value, in words.
+ *
+ * `typeKey` is the goal's KIND, carried in metadata because the same stored `1`
+ * is "Yes" on a did-we-do-it goal and the number one on every other kind.
+ */
+const describeGoalValue = (field, value, typeKey, meta = {}) => {
+  if (field === 'actual') return describeGoalActual(typeKey, value);
+  if (field === 'actualDayKey' || field === 'config:dueDayKey') {
+    return value ? (formatDate(value) || String(value)) : 'no date';
+  }
+  if (field === 'config:direction') {
+    return DIRECTION_LABELS[value] || (value ? String(value) : 'none');
+  }
+  if (field === 'goalType') {
+    if (!value) return 'none';
+    return isGoalType(value) ? getGoalType(value).label : String(value);
+  }
+  if (field === 'weight') return weightLabel(value);
+  if (field === 'owner') return value ? (value.name || 'Unknown') : 'nobody';
+  if (field === 'name' || field === 'note') {
+    return value ? quote(truncate(value, 80)) : 'none';
+  }
+  if (value === null || value === undefined || value === '') return 'none';
+  if (Array.isArray(value)) {
+    // Resolved people carry names; everything else is already printable.
+    const parts = value.map((v) => (v && typeof v === 'object' ? (v.name ?? JSON.stringify(v)) : String(v)));
+    return parts.length ? parts.join(', ') : 'none';
+  }
+  if (typeof value === 'object') return JSON.stringify(value);
+  if (meta.unitLabel) return `${meta.unitLabel}${value}`;
+  return String(value);
+};
+
+/** The words for a goal's field key: 'config:target' → 'target'. */
+const goalFieldLabel = (field, meta = {}) => {
+  if (typeof field === 'string' && field.startsWith('config:')) {
+    return meta.configLabel || field.slice('config:'.length);
+  }
+  if (typeof field === 'string' && field.startsWith('column:')) {
+    return meta.columnLabel || field.slice('column:'.length);
+  }
+  return FIELD_LABELS[field] || field;
+};
+
+/**
+ * One goal event as a sentence. Split out of `describeActivity` because it is
+ * the longest branch by far and shares none of the task vocabulary.
+ */
+const describeGoalActivity = (entry) => {
+  const actor = entry.actor?.name || 'Someone';
+  const meta = entry.metadata || {};
+  const goalName = meta.goalName ? quote(truncate(meta.goalName, 60)) : 'a goal';
+  const typeKey = meta.goalTypeKey || null;
+
+  if (entry.type === 'goal.created') {
+    const kind = typeKey && isGoalType(typeKey) ? ` (${getGoalType(typeKey).label})` : '';
+    return `${actor} added the goal ${goalName}${kind}.`;
+  }
+  if (entry.type === 'goal.deleted') return `${actor} deleted the goal ${goalName}.`;
+
+  const field = entry.field;
+  const label = goalFieldLabel(field, meta);
+  const from = describeGoalValue(field, entry.oldValue, typeKey, meta);
+  const to = describeGoalValue(field, entry.newValue, typeKey, meta);
+
+  if (field === 'name') return `${actor} renamed ${from} to ${to}.`;
+  if (field === 'owner') {
+    return entry.newValue
+      ? `${actor} made ${to} the owner of ${goalName}.`
+      : `${actor} removed the owner of ${goalName}.`;
+  }
+  // Reporting a blank result is the event people scroll this log to find; "from
+  // not reported to 5,640" buries it behind two words that mean nothing.
+  if ((field === 'actual' || field === 'actualDayKey') && entry.oldValue === null) {
+    return `${actor} reported ${to} for ${goalName}.`;
+  }
+  return `${actor} changed ${label} on ${goalName} from ${from} to ${to}.`;
+};
+
+/**
  * Describe one hydrated activity entry as a single sentence.
  *
  * Expects the entry AFTER `resolveFieldValue` has run over oldValue/newValue —
@@ -187,6 +359,10 @@ const describeScalar = (field, value) => {
 const describeActivity = (entry, { oldGroupName, newGroupName } = {}) => {
   const actor = entry.actor?.name || 'Someone';
   const meta = entry.metadata || {};
+
+  if (typeof entry.type === 'string' && entry.type.startsWith('goal.')) {
+    return describeGoalActivity(entry);
+  }
 
   switch (entry.type) {
     case 'task.created':
@@ -299,6 +475,9 @@ const EVENT_LABELS = {
   'update.added': 'Update posted',
   'client.request_created': 'Client request raised',
   'client.update_added': 'Client message',
+  'goal.created': 'Goal added',
+  'goal.deleted': 'Goal deleted',
+  'goal.field_changed': 'Goal changed',
 };
 
 const eventLabel = (type) => EVENT_LABELS[type] || type;
@@ -307,8 +486,13 @@ module.exports = {
   resolveFieldValue,
   collectUserIds,
   describeActivity,
+  describeGoalActivity,
+  describeGoalValue,
+  goalFieldLabel,
   eventLabel,
   formatDate,
+  weightLabel,
   FIELD_LABELS,
   LEGACY_STATUS_LABELS,
+  DIRECTION_LABELS,
 };

@@ -131,6 +131,7 @@ const GoalGroupSection = ({
   onAdd,
   onReorder,
   onLink,
+  onHistory,
   onAcceptSuggestions,
 }) => {
   const { summary = {}, goals = [], owner = null } = group;
@@ -475,6 +476,7 @@ const GoalGroupSection = ({
                     onDelete={onDelete}
                     onMove={canReorder ? handleMove : undefined}
                     onLink={onLink}
+                    onHistory={onHistory}
                     onAcceptSuggestions={onAcceptSuggestions}
                   />
                 ))}
@@ -519,6 +521,7 @@ const GoalGroupSection = ({
                   onDelete={onDelete}
                   onMove={canReorder ? handleMove : undefined}
                   onLink={onLink}
+                  onHistory={onHistory}
                   onAcceptSuggestions={onAcceptSuggestions}
                 />
               ))}

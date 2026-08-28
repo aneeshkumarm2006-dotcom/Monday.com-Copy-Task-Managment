@@ -9,7 +9,7 @@ import { SegmentedControl } from '../../ui/FormControls';
 import { WEIGHT_PRESETS, describeGoal } from '../../../utils/goalDisplay';
 import useBoardMembers from '../../../hooks/useBoardMembers';
 import { formatDateInput } from '../columns/cellShared';
-import { dateInputToISO } from '../../../utils/dateUtils';
+import { dateInputToISO, formatDate } from '../../../utils/dateUtils';
 
 /**
  * Add or edit a goal.
@@ -723,6 +723,21 @@ const GoalFormModal = ({
         {serverErrors.length > 0 && (
           <p className="font-body" style={{ fontSize: 13, color: 'var(--color-status-stuck)' }}>
             {serverErrors[0].message}
+          </p>
+        )}
+
+        {/* Who set this up. Shown only when EDITING, and only as a line of
+            small print: it is context for the person about to change somebody
+            else's target, not a field, and there is nothing to say about it
+            while the goal is still being written. */}
+        {editing && initial?.createdBy?.name && (
+          <p className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+            Added by {initial.createdBy.name}
+            {initial.createdAt ? ` on ${formatDate(initial.createdAt)}` : ''}
+            {initial.updatedBy?.name
+            && String(initial.updatedBy._id) !== String(initial.createdBy._id)
+              ? ` · last edited by ${initial.updatedBy.name}`
+              : ''}
           </p>
         )}
 

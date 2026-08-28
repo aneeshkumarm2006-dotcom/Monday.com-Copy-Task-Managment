@@ -6,6 +6,7 @@ const ConnectorProject = require('../models/ConnectorProject');
 const ConnectorSnapshot = require('../models/ConnectorSnapshot');
 
 const { getConnector } = require('./connectors');
+const { snapshotGoal, logGoalChanges } = require('./goalActivity');
 const {
   parseTargetId,
   targetId,
@@ -621,6 +622,12 @@ const runWriteback = async ({
       now,
     });
 
+    // The before-image, read while the goal still holds what it held. A number
+    // that changed itself overnight is the single most alarming thing a client
+    // report can contain, so the writeback logs like any other editor — the
+    // difference is only in WHO it says did it.
+    const before = snapshotGoal(goal);
+
     let changed = false;
     for (const write of plan.writes) {
       if (write.noop) continue;
@@ -633,6 +640,18 @@ const runWriteback = async ({
       // eslint-disable-next-line no-await-in-loop
       await goal.save();
       report.goalsWritten += 1;
+      // eslint-disable-next-line no-await-in-loop
+      await logGoalChanges({
+        goal,
+        before,
+        columns: (board.goalColumns || []).filter((c) => !c.archived),
+        // A run somebody pressed a button for is that person's edit; the hourly
+        // pass belongs to nobody, so it is stamped `system` and named after the
+        // connector rather than left as an anonymous change.
+        actor: actor?.userId || null,
+        actorType: actor ? 'user' : 'system',
+        actorLabel: actor ? '' : (connector.label || link.provider),
+      });
     }
 
     link.project = project._id;

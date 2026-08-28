@@ -1,4 +1,4 @@
-import { AlertTriangle, Trash2, Pencil, Link2 } from 'lucide-react';
+import { AlertTriangle, Trash2, Pencil, Link2, History } from 'lucide-react';
 import GoalValueCell from './GoalValueCell';
 import GoalProgressBar from './GoalProgressBar';
 import GoalOutcomeBadge from './GoalOutcomeBadge';
@@ -53,6 +53,7 @@ const GoalRow = ({
   onDelete,
   onMove,
   onLink,
+  onHistory,
   onAcceptSuggestions,
 }) => {
   const c = goal.computed || {};
@@ -81,6 +82,11 @@ const GoalRow = ({
   // (This used to compare `m.field` — 'actual' — against `goal.type` —
   // 'numeric' — so it never actually excluded anything.)
   const flaggedColumns = missing.filter((m) => m.field !== actualFieldKey);
+
+  // `createdBy` is populated by the server on every goals read. Older rows,
+  // written before goals recorded one, simply have none — and say nothing
+  // rather than claiming an unknown author.
+  const createdByLabel = goal.createdBy?.name ? `Added by ${goal.createdBy.name}` : '';
 
   const cellStyle = {
     padding: '8px 10px',
@@ -148,7 +154,11 @@ const GoalRow = ({
         <span
           className="font-body font-medium truncate w-full"
           style={{ fontSize: 13, color: 'var(--color-text-primary)' }}
-          title={goal.name}
+          // Who put this row on the board, without spending a column on it. The
+          // full story is one click away in the history panel; this is the
+          // answer to the question people actually ask about a target they did
+          // not set themselves.
+          title={createdByLabel ? `${goal.name}\n${createdByLabel}` : goal.name}
         >
           {goal.name}
         </span>
@@ -285,6 +295,19 @@ const GoalRow = ({
           justifyContent: 'flex-end',
         }}
       >
+        {/* Everyone who can see the row can see how it got this way. No
+            capability gate: the panel is read-only and shows nothing that is
+            not already in this table. */}
+        <button
+          type="button"
+          onClick={() => onHistory?.(goal)}
+          aria-label={`History for ${goal.name}`}
+          title={createdByLabel ? `${createdByLabel} — see the full history` : 'See who changed this and when'}
+          className="p-1 rounded hover:bg-[color:var(--color-bg-subtle)]"
+        >
+          <History size={14} color="var(--color-text-muted)" />
+        </button>
+
         {/* `connector.manage`, NOT `goal.manage` — pointing a goal at a keyword
             writes nothing to it, and is the same act as saying which project
             feeds which group. Someone who wires up connectors and someone who

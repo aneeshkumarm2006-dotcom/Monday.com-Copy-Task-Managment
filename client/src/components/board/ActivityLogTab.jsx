@@ -6,6 +6,12 @@ import ActivityEntry from './ActivityEntry';
 
 // Mirrored from server/src/models/ActivityLog.js ACTIVITY_TYPES — keep in sync
 // when adding new event types. Used for the type filter dropdown.
+//
+// The `goal.*` types are deliberately absent. They live in the same collection
+// but hang off a `goal` rather than a `task`, so this feed — which filters on
+// `task` — can never return one, and offering the filter would mean three
+// options that always come back empty. They are read by the per-goal history
+// panel on the Goals tab instead (components/board/goals/GoalHistoryModal.jsx).
 const TYPE_OPTIONS = [
   { value: '', label: 'All events' },
   { value: 'task.created', label: 'Task created' },

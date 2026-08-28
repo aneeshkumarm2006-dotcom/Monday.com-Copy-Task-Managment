@@ -18,6 +18,12 @@ const ACTIVITY_TYPES = [
   // Client Portal actions (actor is a ClientContact, not a User → actorType 'client').
   'client.request_created',
   'client.update_added',
+  // Monthly goals on a tracker board. These rows carry `goal` instead of
+  // `task` — a goal is not a task and never has one — which is why `task`
+  // below is only conditionally required.
+  'goal.created',
+  'goal.deleted',
+  'goal.field_changed',
 ];
 
 // NOTE: this list is a VALIDATOR, and `activityService.logActivity` swallows its
@@ -37,6 +43,19 @@ const FIELD_KEYS = [
   'pinned',
   // Tracker boards: which calendar month the task is filed under.
   'monthKey',
+  // ---- Goal rows -----------------------------------------------------------
+  // `name` and `note` above are shared with tasks and mean the same thing on a
+  // goal, so they are not repeated. These are the fields only a goal has.
+  //
+  // `goalType` rather than `type`, because `type` is already the column holding
+  // the EVENT type — a field literally called `type` sitting next to it would
+  // read as the same thing and be wrong about half the time.
+  'goalType',
+  'weight',
+  'owner',
+  'unit',
+  'actual',
+  'actualDayKey',
 ];
 
 /**
@@ -48,11 +67,33 @@ const FIELD_KEYS = [
  */
 const COLUMN_FIELD_RE = /^column:[\w.-]+$/;
 
+/**
+ * A goal's `config` — the promise it was set with — is a per-TYPE blob
+ * (`{ baseline, target }`, `{ dueDayKey, penaltyPerDay }`, …), so its keys can
+ * no more be enumerated here than a user's column slugs can. Same treatment,
+ * same reason: `config:<key>`, matched rather than listed.
+ */
+const CONFIG_FIELD_RE = /^config:[\w.-]+$/;
+
 const activityLogSchema = new mongoose.Schema({
+  // Required for every event EXCEPT a goal's, which has no task to hang off.
+  // Exactly one of `task` / `goal` is set on any row.
   task: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Task',
-    required: true,
+    required: function requireTaskUnlessGoal() {
+      return !this.goal;
+    },
+    default: null,
+    index: true,
+  },
+  // Set only on `goal.*` rows. Monthly goals live in their own collection and
+  // are not tasks, so they get their own pointer rather than being crammed into
+  // `task` — which would make every per-task query capable of returning one.
+  goal: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Goal',
+    default: null,
     index: true,
   },
   // Null for personal tasks (no board).
@@ -64,18 +105,20 @@ const activityLogSchema = new mongoose.Schema({
   },
   // Who acted. For team actions this is the User (actorType 'user'). For Client
   // Portal actions there is no User — actorType is 'client' and `actorLabel`
-  // carries the client's display name instead.
+  // carries the client's display name instead. `system` is the third case: an
+  // unattended run with nobody behind it (the connector writeback filling in a
+  // goal's numbers on a schedule), where `actorLabel` names the connector.
   actor: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: function requireActorForUserEvents() {
-      return this.actorType !== 'client';
+      return this.actorType === 'user';
     },
     default: null,
   },
   actorType: {
     type: String,
-    enum: ['user', 'client'],
+    enum: ['user', 'client', 'system'],
     default: 'user',
   },
   actorLabel: {
@@ -102,7 +145,9 @@ const activityLogSchema = new mongoose.Schema({
     validate: {
       validator: function validateField(v) {
         if (v === null || v === undefined) return true;
-        return FIELD_KEYS.includes(v) || COLUMN_FIELD_RE.test(v);
+        return FIELD_KEYS.includes(v)
+          || COLUMN_FIELD_RE.test(v)
+          || CONFIG_FIELD_RE.test(v);
       },
       message: (props) => `${props.value} is not a valid activity field`,
     },
@@ -122,6 +167,9 @@ const activityLogSchema = new mongoose.Schema({
 // Compound index: paginated reads filter by task and sort by createdAt desc.
 activityLogSchema.index({ task: 1, createdAt: -1 });
 
+// The goal history panel is the same read against the other pointer.
+activityLogSchema.index({ goal: 1, createdAt: -1 });
+
 // The board activity export reads one board over one date range, ordered by
 // time. The single-field `board` index alone would leave that sort in memory.
 activityLogSchema.index({ board: 1, createdAt: -1 });
@@ -130,5 +178,6 @@ const Model = mongoose.model('ActivityLog', activityLogSchema);
 Model.ACTIVITY_TYPES = ACTIVITY_TYPES;
 Model.FIELD_KEYS = FIELD_KEYS;
 Model.COLUMN_FIELD_RE = COLUMN_FIELD_RE;
+Model.CONFIG_FIELD_RE = CONFIG_FIELD_RE;
 
 module.exports = Model;

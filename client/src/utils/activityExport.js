@@ -37,7 +37,16 @@ import { saveBlob } from './fileUrl';
 const COLUMNS = [
   { key: 'when', header: 'Date & time', width: 24 },
   { key: 'groupName', header: 'Group', width: 20 },
-  { key: 'taskName', header: 'Task', width: 32 },
+  // Two kinds of thing land in this column now. A tracker board's monthly goals
+  // record their own activity against the same board, so the report covers both
+  // — and the `Item type` column beside it is what tells a reader which of the
+  // two a row is about. That column is CSV-only: the sheet is a dataset and
+  // wants something to filter on, while on the printed page the Activity
+  // sentence already says "added the goal" or "created the task" — and the PDF
+  // has no millimetres to spare for a word it is already carrying.
+  { key: 'taskName', header: 'Item', width: 32 },
+  { key: 'itemType', header: 'Item type', csvOnly: true },
+  { key: 'monthKey', header: 'Goal month', csvOnly: true },
   { key: 'isSubitem', header: 'Subitem', csvOnly: true },
   { key: 'status', header: 'Status', width: 18 },
   { key: 'priority', header: 'Priority', width: 14 },
@@ -102,6 +111,9 @@ const humanize = (value) => {
 /** Subitems are tasks too; mark them so the report doesn't read as duplicates. */
 const displayTask = (row) => (row.isSubitem ? `↳ ${row.taskName}` : row.taskName);
 
+/** 'goal' → 'Goal'. A row written before goals were logged has no type. */
+const itemTypeLabel = (row) => (row.itemType === 'goal' ? 'Goal' : 'Task');
+
 const list = (values) => (Array.isArray(values) ? values.join(', ') : '');
 
 /**
@@ -161,6 +173,10 @@ const toCells = (row, threads = {}) => ({
   when: formatWhen(row.at),
   groupName: row.groupName,
   taskName: displayTask(row),
+  itemType: itemTypeLabel(row),
+  // Only a goal has one; a task row leaves the column blank rather than
+  // inventing a month for something that is not filed under one.
+  monthKey: row.monthKey || '',
   isSubitem: row.isSubitem ? 'Yes' : '',
   status: row.status || '',
   priority: humanize(row.priority),
