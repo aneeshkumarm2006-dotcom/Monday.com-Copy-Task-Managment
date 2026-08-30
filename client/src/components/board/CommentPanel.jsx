@@ -92,6 +92,11 @@ const CommentPanel = ({
   // attached or detached, so the board grid’s marker refreshes. Omitting it
   // does not hide the row — the row is gated on the board being a tracker.
   onTaskPatched = null,
+  // Tracker boards: a token (the task id) meaning “this panel was opened
+  // BECAUSE the task was just marked done” — scroll the sidebar to the Goal
+  // section and ring it. A token rather than a boolean so re-finishing the same
+  // task, or finishing a second one, fires the effect again.
+  focusGoalToken = null,
 }) => {
   // Tabs (Updates / Client / Files / Activity Log)
   const [activeTab, setActiveTab] = useState('updates');
@@ -102,6 +107,30 @@ const CommentPanel = ({
   const [updatesCount, setUpdatesCount] = useState(null);
   const [clientCount, setClientCount] = useState(null);
   const [filesCount, setFilesCount] = useState(null);
+
+  // "Marked done → answer what it was for". The Goal section is at the bottom
+  // of the sidebar, so being taken there is the whole of the ask; the ring is
+  // temporary because it is an arrival cue, not a state.
+  const goalSectionRef = useRef(null);
+  const [goalPulse, setGoalPulse] = useState(false);
+
+  useEffect(() => {
+    if (!focusGoalToken || !isOpen) return undefined;
+    setGoalPulse(true);
+    // The panel slides in over 300ms. Scrolling to an element that is still
+    // moving lands somewhere else, so let it settle first.
+    const scroll = setTimeout(() => {
+      goalSectionRef.current?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+      });
+    }, 350);
+    const fade = setTimeout(() => setGoalPulse(false), 3000);
+    return () => {
+      clearTimeout(scroll);
+      clearTimeout(fade);
+    };
+  }, [focusGoalToken, isOpen]);
 
   // A separate Client thread only exists where there IS a client: a Client Portal
   // board. Everywhere else Updates is the only thread, and splitting it would be
@@ -674,21 +703,6 @@ const CommentPanel = ({
                 />
               </MetaRow>
             )}
-            {/*
-              Tracker boards: which of this month’s goals this task counted
-              towards. Evidence only — it moves no number, and the server
-              refuses any goal outside this task’s own group and month.
-
-              Subitems are excluded because they inherit their parent’s month
-              and move with it, so the evidence belongs to the parent. My Work
-              and Calendar mount this panel without a `board`, which is what
-              keeps the row out of them entirely.
-            */}
-            {board?.boardType === 'tracker' && !task.parent && (
-              <MetaRow label="Goal">
-                <GoalLinksField task={task} onTaskPatched={onTaskPatched} />
-              </MetaRow>
-            )}
           </dl>
 
           {task.note ? (
@@ -823,6 +837,30 @@ const CommentPanel = ({
               isAdmin={isAdmin}
               onOpenSubitem={onOpenSubitem}
             />
+            {/*
+              Tracker boards: which of this month’s goals this task counted
+              towards. Evidence only — it moves no number, and the server
+              refuses any goal outside this task’s own group and month.
+
+              It sits UNDER Subitems, at the end of the sidebar, because it is
+              also the landing spot for “task marked done” — the panel opens
+              here with the section highlighted, which is what replaced the old
+              bottom-right prompt.
+
+              Subitems are excluded because they inherit their parent’s month
+              and move with it, so the evidence belongs to the parent. My Work
+              and Calendar mount this panel without a `board`, which is what
+              keeps the section out of them entirely.
+            */}
+            {board?.boardType === 'tracker' && !task.parent && (
+              <div ref={goalSectionRef}>
+                <GoalLinksField
+                  task={task}
+                  onTaskPatched={onTaskPatched}
+                  highlight={goalPulse}
+                />
+              </div>
+            )}
           </div>
         </div>
       </aside>

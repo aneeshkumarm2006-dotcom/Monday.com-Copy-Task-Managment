@@ -97,7 +97,6 @@ import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
 import useTaskStore from '../store/taskStore';
-import GoalAttachPrompt from '../components/board/goals/GoalAttachPrompt';
 import useNotificationStore from '../store/notificationStore';
 import useToastStore from '../store/toastStore';
 import usePermissions, { useBoardPermissions } from '../hooks/usePermissions';
@@ -241,8 +240,9 @@ const BoardDetailPage = () => {
   const updateTaskLocal = useTaskStore((s) => s.updateTask);
   const lastStatusChange = useTaskStore((s) => s.lastStatusChange);
   const clearLastStatusChange = useTaskStore((s) => s.clearLastStatusChange);
-  // The task the on-done prompt is currently asking about, or null.
-  const [goalPromptTask, setGoalPromptTask] = useState(null);
+  // Set to a task id when finishing that task is what opened the detail panel,
+  // so the panel can take the user to its Goal section. Cleared on close.
+  const [goalFocusTaskId, setGoalFocusTaskId] = useState(null);
   const setUpdatesCount = useTaskStore((s) => s.setUpdatesCount);
   const deleteTaskLocal = useTaskStore((s) => s.deleteTask);
   const addGroupLocal = useTaskStore((s) => s.addGroup);
@@ -1179,11 +1179,14 @@ const BoardDetailPage = () => {
   const handleOpenTask = (task) => {
     if (!task?._id) return;
     setSelectedTaskStack([task._id]);
+    // Opening a row by hand is not the on-done ask, even if it is the same row.
+    setGoalFocusTaskId(null);
   };
 
   const handleCloseTask = () => {
     setSelectedTaskStack([]);
     setInitialPanelTab(null);
+    setGoalFocusTaskId(null);
   };
 
   const handleOpenSubitem = useCallback((subitem) => {
@@ -1334,6 +1337,11 @@ const BoardDetailPage = () => {
    * Consumed immediately, so one change asks once. The optimistic paths call
    * the store twice for a single click (once optimistically, then with the
    * server reply); the second call sees from === done and records nothing.
+   *
+   * The ask is now the DETAIL PANEL, opened on the finished task and pointed at
+   * its Goal section — not the bottom-right card this used to raise. One place
+   * answers the question, whether you are finishing the task or repairing the
+   * answer a week later.
    */
   useEffect(() => {
     if (!lastStatusChange) return;
@@ -1355,8 +1363,12 @@ const BoardDetailPage = () => {
     // The rule that stops this being a nag: if nobody set a goal for this
     // group this month there was nothing to attach to, so do not ask.
     if (!(store.groupsWithGoals || []).includes(String(found.group))) return;
+    // Already attributed — the question has an answer, and opening the panel
+    // over the board to show it would be an interruption, not a prompt.
+    if (Array.isArray(found.goalLinks) && found.goalLinks.length > 0) return;
 
-    setGoalPromptTask(found);
+    setSelectedTaskStack([found._id]);
+    setGoalFocusTaskId(found._id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastStatusChange]);
   const canChangeStatus = () => {
@@ -3156,15 +3168,6 @@ const BoardDetailPage = () => {
       </Modal>
 
       {/* Task detail panel */}
-      {/* Tracker boards: "you just finished this — what was it for?". Skippable,
-          and silent unless the group actually has goals this month. */}
-      {goalPromptTask && (
-        <GoalAttachPrompt
-          task={goalPromptTask}
-          onClose={() => setGoalPromptTask(null)}
-          onTaskPatched={(updated) => updated && updateTaskLocal(updated)}
-        />
-      )}
       <CommentPanel
         task={selectedTask}
         board={board}
@@ -3177,6 +3180,15 @@ const BoardDetailPage = () => {
         // not the generic task PUT, so the store has to be told separately or
         // the row keeps the marker it had before.
         onTaskPatched={(updated) => updated && updateTaskLocal(updated)}
+        // Tracker boards: "you just finished this — what was it for?". Only set
+        // when finishing the task is what opened the panel, and only while that
+        // same task is the one on screen, so stepping into a subitem or opening
+        // another row does not re-ring the section.
+        focusGoalToken={
+          goalFocusTaskId && selectedTask?._id === goalFocusTaskId
+            ? goalFocusTaskId
+            : null
+        }
         onUpdateTask={async (taskId, payload) => {
           // Locate the task in the store so we can roll back on failure.
           // Search both the board buckets and the subitem cache — the panel

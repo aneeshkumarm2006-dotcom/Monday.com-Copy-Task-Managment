@@ -1,21 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Plus, Target, X } from 'lucide-react';
+import { Target, X } from 'lucide-react';
 import {
   getTaskGoalOptions,
   setTaskGoalLinks,
 } from '../../../services/taskService';
 
 /**
- * GoalLinksField — the "Goal" row in the task detail panel.
+ * GoalLinksField — the "Goal" section in the task detail panel's sidebar,
+ * directly under Subitems.
  *
  * Which of this month's goals this task counted towards, editable at any time.
  * EVIDENCE ONLY: nothing here moves a goal's number, and the server refuses any
  * goal outside this task's own group and month.
  *
- * This is the REPAIR PATH. The on-done prompt is the fast way to attach and it
- * is skippable by design, so everything it gets wrong — dismissed too early,
- * attached to the wrong goal, answered before the goal existed — has to be
- * fixable here, on a task in any state.
+ * THIS IS THE ONLY PLACE THE ANSWER IS GIVEN. It replaced the bottom-right
+ * on-done prompt, which asked the same question in a second, smaller,
+ * easier-to-lose piece of UI. Marking a task done now opens this panel with
+ * this section highlighted (see `highlight`), so the fast path and the repair
+ * path are the same control — a task in any state, done or not, is attached
+ * from here.
+ *
+ * That is why the goals are CHIPS rather than a "+" dropdown: the on-done flow
+ * has to stay one click, and hiding the options behind a menu would cost the
+ * one thing the prompt was good at.
  *
  * Writes go through the dedicated `PUT /api/tasks/:id/goal-links`, NOT through
  * the panel's generic `onUpdateTask`: that one is the catch-all task PUT, whose
@@ -26,13 +33,18 @@ import {
  * because "the goals in this task's group for this task's month" is the scope
  * rule itself, and the picker must not be able to offer something the write
  * would then refuse.
+ *
+ * Props:
+ *   task          — the task the panel is focused on
+ *   onTaskPatched — (updatedTask) => void, so the board grid's marker refreshes
+ *   highlight     — draw attention to the section (the panel sets this when it
+ *                   was opened BY the task being marked done)
  */
-const GoalLinksField = ({ task, onTaskPatched }) => {
+const GoalLinksField = ({ task, onTaskPatched, highlight = false }) => {
   const [options, setOptions] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [pickerOpen, setPickerOpen] = useState(false);
 
   const taskId = task?._id;
 
@@ -45,7 +57,7 @@ const GoalLinksField = ({ task, onTaskPatched }) => {
       setError('');
     } catch {
       // Swallowed on purpose: a task panel that cannot reach this endpoint
-      // should still show the task. The row simply renders nothing.
+      // should still show the task. The section simply renders nothing.
       setOptions(null);
     } finally {
       setLoading(false);
@@ -78,9 +90,7 @@ const GoalLinksField = ({ task, onTaskPatched }) => {
       onTaskPatched?.(updated);
       await load();
     } catch (err) {
-      setError(
-        err?.response?.data?.error || 'Could not save. Try again.'
-      );
+      setError(err?.response?.data?.error || 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }
@@ -88,150 +98,167 @@ const GoalLinksField = ({ task, onTaskPatched }) => {
 
   const currentIds = linked.map((g) => g._id);
 
-  const attach = (goalId) => {
-    setPickerOpen(false);
-    commit({ goalIds: [...currentIds, goalId] });
-  };
+  const attach = (goalId) => commit({ goalIds: [...currentIds, goalId] });
 
-  const detach = (goalId) => {
+  const detach = (goalId) =>
     commit({ goalIds: currentIds.filter((id) => id !== goalId) });
-  };
 
-  const toggleDismissed = () => {
-    commit({ dismissed: !options?.dismissed });
-  };
+  const toggleDismissed = () => commit({ dismissed: !options?.dismissed });
 
-  if (loading) {
-    return (
-      <span className="font-body" style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>
-        Loading…
-      </span>
-    );
-  }
+  // Nothing is drawn until we know there is something to draw. A header that
+  // appears and then removes itself is worse than one that arrives a beat late,
+  // and this sits under Subitems, so nothing below it moves.
+  if (loading) return null;
 
   // Not a tracker board, a subitem, or no month — there is nothing to attach to
-  // and the row should not exist. The parent also gates on this, so reaching
+  // and the section should not exist. The panel also gates on this, so reaching
   // here means the server disagreed with the client, and the server wins.
   if (!options || !options.attachable) return null;
 
   const showDismiss = linked.length === 0 && options.done;
 
   return (
-    <div className="flex flex-col gap-1.5" style={{ minHeight: 24 }}>
-      <div className="flex items-center gap-2 flex-wrap">
-        {linked.length === 0 && (
+    <section
+      aria-label="Goal"
+      style={{
+        // The padding is always there so switching the highlight on moves
+        // nothing; only the ring and the tint change.
+        margin: '0 -8px 4px',
+        padding: 8,
+        borderRadius: 'var(--radius-md)',
+        background: highlight ? 'var(--color-bg-subtle)' : 'transparent',
+        boxShadow: highlight ? '0 0 0 2px var(--color-accent)' : 'none',
+        transition: 'background-color 300ms ease, box-shadow 300ms ease',
+      }}
+    >
+      <div
+        className="flex items-center justify-between"
+        style={{ marginBottom: 8 }}
+      >
+        <p
+          className="font-body"
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+            letterSpacing: '0.07em',
+            color: 'var(--color-text-muted)',
+          }}
+        >
+          Goal
+        </p>
+        {linked.length > 0 && (
           <span
             className="font-body"
-            style={{ fontSize: 13, color: 'var(--color-text-muted)' }}
+            style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
           >
-            {options.dismissed ? 'Not goal work' : 'No goal'}
+            {linked.length}
           </span>
-        )}
-
-        {linked.map((goal) => (
-          <span
-            key={goal._id}
-            className="inline-flex items-center gap-1 font-body font-medium"
-            style={{
-              fontSize: 12,
-              padding: '3px 4px 3px 8px',
-              borderRadius: 'var(--radius-full)',
-              backgroundColor: 'var(--color-bg-subtle)',
-              color: 'var(--color-text-primary)',
-            }}
-          >
-            <Target size={11} aria-hidden="true" style={{ opacity: 0.7 }} />
-            {goal.name}
-            {canAttach && (
-              <button
-                type="button"
-                onClick={() => detach(goal._id)}
-                disabled={saving}
-                aria-label={`Detach from ${goal.name}`}
-                style={{
-                  width: 14,
-                  height: 14,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'inherit',
-                  cursor: saving ? 'default' : 'pointer',
-                  borderRadius: '50%',
-                  opacity: 0.7,
-                }}
-              >
-                <X size={10} />
-              </button>
-            )}
-          </span>
-        ))}
-
-        {canAttach && available.length > 0 && (
-          <div style={{ position: 'relative' }}>
-            <button
-              type="button"
-              onClick={() => setPickerOpen((v) => !v)}
-              disabled={saving}
-              aria-label="Attach to a goal"
-              aria-expanded={pickerOpen}
-              className="inline-flex items-center justify-center rounded transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
-              style={{
-                width: 22,
-                height: 22,
-                background: 'transparent',
-                border: '1px dashed var(--color-border-strong)',
-                color: 'var(--color-text-muted)',
-                cursor: saving ? 'default' : 'pointer',
-              }}
-            >
-              <Plus size={12} aria-hidden="true" />
-            </button>
-            {pickerOpen && (
-              <div
-                role="listbox"
-                onMouseLeave={() => setPickerOpen(false)}
-                style={{
-                  position: 'absolute',
-                  top: 28,
-                  left: 0,
-                  zIndex: 60,
-                  minWidth: 220,
-                  maxHeight: 240,
-                  overflowY: 'auto',
-                  background: 'var(--color-bg-surface)',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 'var(--radius-md)',
-                  boxShadow: 'var(--shadow-md)',
-                  padding: 6,
-                }}
-              >
-                {available.map((goal) => (
-                  <button
-                    key={goal._id}
-                    type="button"
-                    role="option"
-                    aria-selected="false"
-                    onClick={() => attach(goal._id)}
-                    className="w-full text-left font-body rounded transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
-                    style={{
-                      fontSize: 13,
-                      padding: '6px 8px',
-                      background: 'transparent',
-                      border: 'none',
-                      color: 'var(--color-text-primary)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {goal.name}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
         )}
       </div>
+
+      {/* What this task already counts towards. */}
+      {linked.length > 0 && (
+        <div className="flex flex-wrap gap-1.5" style={{ marginBottom: 8 }}>
+          {linked.map((goal) => (
+            <span
+              key={goal._id}
+              className="inline-flex items-center gap-1 font-body font-medium"
+              style={{
+                fontSize: 12,
+                padding: '3px 4px 3px 8px',
+                borderRadius: 'var(--radius-full)',
+                backgroundColor: 'var(--color-bg-subtle)',
+                color: 'var(--color-text-primary)',
+              }}
+            >
+              <Target size={11} aria-hidden="true" style={{ opacity: 0.7 }} />
+              {goal.name}
+              {canAttach && (
+                <button
+                  type="button"
+                  onClick={() => detach(goal._id)}
+                  disabled={saving}
+                  aria-label={`Detach from ${goal.name}`}
+                  className="rounded transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[color:var(--color-accent)]"
+                  style={{
+                    width: 14,
+                    height: 14,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'inherit',
+                    cursor: saving ? 'default' : 'pointer',
+                    borderRadius: '50%',
+                    opacity: 0.7,
+                  }}
+                >
+                  <X size={10} />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* The question, and its one-click answers. */}
+      {canAttach && available.length > 0 && (
+        <>
+          {linked.length === 0 && (
+            <p
+              className="font-body"
+              style={{
+                fontSize: 12,
+                color: 'var(--color-text-muted)',
+                marginBottom: 6,
+              }}
+            >
+              {options.dismissed
+                ? 'Marked as not goal work.'
+                : 'Which goal did this move?'}
+            </p>
+          )}
+          <div className="flex flex-wrap gap-1.5">
+            {available.map((goal) => (
+              <button
+                key={goal._id}
+                type="button"
+                onClick={() => attach(goal._id)}
+                disabled={saving}
+                className="inline-flex items-center gap-1 font-body font-medium transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+                style={{
+                  fontSize: 12,
+                  padding: '3px 10px',
+                  borderRadius: 'var(--radius-full)',
+                  background: 'transparent',
+                  border: '1px dashed var(--color-border-strong)',
+                  color: 'var(--color-text-primary)',
+                  cursor: saving ? 'default' : 'pointer',
+                  textAlign: 'left',
+                }}
+              >
+                <Target size={11} aria-hidden="true" style={{ opacity: 0.6 }} />
+                {goal.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Nothing linked and nothing on offer: say why, rather than show an
+          empty section that reads as broken. */}
+      {linked.length === 0 && available.length === 0 && (
+        <p
+          className="font-body"
+          style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+        >
+          {options.dismissed
+            ? 'Not goal work.'
+            : 'No goals set for this group this month.'}
+        </p>
+      )}
 
       {/*
         Only offered once the task is done and nothing is attached. Before that
@@ -243,9 +270,10 @@ const GoalLinksField = ({ task, onTaskPatched }) => {
           type="button"
           onClick={toggleDismissed}
           disabled={saving}
-          className="font-body self-start rounded transition-colors duration-150 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          className="font-body block rounded transition-colors duration-150 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
           style={{
             fontSize: 12,
+            marginTop: 8,
             background: 'transparent',
             border: 'none',
             padding: 0,
@@ -258,11 +286,19 @@ const GoalLinksField = ({ task, onTaskPatched }) => {
       )}
 
       {error && (
-        <span className="font-body" style={{ fontSize: 12, color: 'var(--color-danger)' }}>
+        <p
+          className="font-body"
+          role="alert"
+          style={{
+            fontSize: 12,
+            marginTop: 6,
+            color: 'var(--color-danger)',
+          }}
+        >
           {error}
-        </span>
+        </p>
       )}
-    </div>
+    </section>
   );
 };
 
