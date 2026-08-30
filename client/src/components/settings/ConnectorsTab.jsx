@@ -12,6 +12,7 @@ import useToastStore from '../../store/toastStore';
 import {
   getOrgConnectors,
   startConnectorAuthorization,
+  saveConnectorCredentials,
   disconnectConnectorAccount,
 } from '../../services/connectorService';
 
@@ -27,12 +28,27 @@ import {
  * projects, and the agency's clients do not fit in one, so "the connection" was
  * never going to be a single row.
  *
- * ---- Why there is no API-key box ------------------------------------------
+ * ---- Two ways in, and the server decides which ----------------------------
  *
- * Ubersuggest issues no client_credentials grant. The only way to authorise an
+ * Ubersuggest issues no client_credentials grant: the only way to authorise an
  * account is an interactive consent in a real browser, once, after which the
- * refresh token carries the weekly sync unattended. A key field would look
+ * refresh token carries the weekly sync unattended. A key field there would look
  * friendlier and could never work, so the flow leaves rather than pretending.
+ *
+ * Plenty of other APIs are the reverse — a login and a password, no
+ * authorization server at all, nowhere to send a browser. For those the consent
+ * dialog is the thing that could never work.
+ *
+ * So the dialog renders from the catalog entry rather than from anything decided
+ * here: `requiresBrowserConsent` picks the branch, and `credentialForm` — a
+ * label and a list of `{key, label, secret}` fields, sent by the server — is the
+ * form itself. Nothing in this file names a provider or knows what any
+ * particular field means, which is what makes the next key-authenticated
+ * connector a descriptor on the server and no change at all here.
+ *
+ * What both branches share: a credential goes IN and never comes back out. There
+ * is no endpoint that returns one, so there is nothing to prefill on a
+ * re-authorise and the fields start empty every time.
  */
 
 /** Fixed copy for the callback's outcome. The provider's own error text is */
@@ -72,6 +88,10 @@ const ConnectorsTab = () => {
   const [label, setLabel] = useState('');
   const [labelError, setLabelError] = useState('');
   const [starting, setStarting] = useState(false);
+  // Whatever the connector's own `credentialForm` asked for, keyed by field key.
+  // Never prefilled, including on a re-authorise: no endpoint returns a stored
+  // credential, so an apparently populated field would be a lie.
+  const [credentials, setCredentials] = useState({});
 
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -122,11 +142,17 @@ const ConnectorsTab = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  const openConnect = (provider, account = null) => {
-    setConnectFor({ provider, account });
+  const openConnect = (connector, account = null) => {
+    setConnectFor({ connector, account });
     setLabel(account?.label || '');
     setLabelError('');
+    setCredentials({});
   };
+
+  /** The catalog entry decides the dialog; this file decides nothing. */
+  const usesCredentials =
+    !!connectFor && connectFor.connector.requiresBrowserConsent === false;
+  const credentialFields = connectFor?.connector?.credentialForm?.fields || [];
 
   const beginConsent = async () => {
     const trimmed = label.trim();
@@ -139,7 +165,7 @@ const ConnectorsTab = () => {
     try {
       const url = await startConnectorAuthorization(
         orgId,
-        connectFor.provider,
+        connectFor.connector.name,
         {
           label: trimmed,
           returnTo: '/settings?tab=connectors',
@@ -154,6 +180,49 @@ const ConnectorsTab = () => {
       setLabelError(
         err?.response?.data?.error || 'Could not start that connection.'
       );
+    }
+  };
+
+  /**
+   * The credential branch. Unlike a consent it finishes here — there is no
+   * redirect to come back from, so the list is reloaded in place and the server's
+   * own sentence renders on the form rather than as a toast the dialog outlives.
+   */
+  const submitCredentials = async () => {
+    const trimmed = label.trim();
+    if (!trimmed) {
+      setLabelError('Give this account a name so you can tell them apart.');
+      return;
+    }
+    const missing = credentialFields.find((f) => !(credentials[f.key] || '').trim());
+    if (missing) {
+      setLabelError(`${missing.label} is required.`);
+      return;
+    }
+
+    setStarting(true);
+    try {
+      await saveConnectorCredentials(orgId, connectFor.connector.name, {
+        label: trimmed,
+        credentials: credentialFields.reduce(
+          (acc, f) => ({ ...acc, [f.key]: (credentials[f.key] || '').trim() }),
+          {}
+        ),
+        reconnectAccount: connectFor.account?._id || undefined,
+      });
+      setConnectFor(null);
+      // Dropped from state the moment it has been sent. The values are already
+      // sealed server-side and there is nothing to gain from keeping them in a
+      // component that stays mounted.
+      setCredentials({});
+      await load({ quiet: true });
+      toastSuccess('Account connected.');
+    } catch (err) {
+      setLabelError(
+        err?.response?.data?.error || 'Could not save those credentials.'
+      );
+    } finally {
+      setStarting(false);
     }
   };
 
@@ -262,7 +331,7 @@ const ConnectorsTab = () => {
                     <Button
                       variant="secondary"
                       icon={Plus}
-                      onClick={() => openConnect(connector.name)}
+                      onClick={() => openConnect(connector)}
                     >
                       Add account
                     </Button>
@@ -279,8 +348,9 @@ const ConnectorsTab = () => {
                   }}
                 >
                   No accounts connected yet.
-                  {connector.requiresBrowserConsent &&
-                    ' Connecting opens the provider&rsquo;s sign-in page once; after that it refreshes on its own.'}
+                  {connector.requiresBrowserConsent
+                    ? ' Connecting opens the provider’s sign-in page once; after that it refreshes on its own.'
+                    : ' This provider issues a key instead of a sign-in page, so connecting is a form.'}
                 </p>
               ) : (
                 mine.map((account) => {
@@ -332,7 +402,7 @@ const ConnectorsTab = () => {
                           <Button
                             variant="ghost"
                             icon={RotateCw}
-                            onClick={() => openConnect(connector.name, account)}
+                            onClick={() => openConnect(connector, account)}
                           >
                             {stale ? 'Reconnect' : 'Re-authorise'}
                           </Button>
@@ -368,34 +438,77 @@ const ConnectorsTab = () => {
             <Button variant="ghost" onClick={() => setConnectFor(null)}>
               Cancel
             </Button>
-            <Button onClick={beginConsent} disabled={starting}>
-              {starting ? 'Opening…' : 'Continue to sign in'}
+            <Button
+              onClick={usesCredentials ? submitCredentials : beginConsent}
+              disabled={starting}
+            >
+              {usesCredentials
+                ? (starting ? 'Saving…' : 'Save connection')
+                : (starting ? 'Opening…' : 'Continue to sign in')}
             </Button>
           </div>
         }
       >
         <p className="font-body text-[13px] text-[color:var(--color-text-secondary)] mb-4">
-          You&rsquo;ll be taken to the provider to sign in and approve access.
-          That happens once — afterwards the weekly sync runs on its own.
+          {usesCredentials
+            ? connectFor?.connector?.credentialForm?.help ||
+              'Enter the credentials this provider issued. They are stored encrypted and are never shown again.'
+            : 'You’ll be taken to the provider to sign in and approve access. That happens once — afterwards the weekly sync runs on its own.'}
         </p>
         <Input
           label="Name this account"
           placeholder="Main, Agency 2, Client logins…"
           value={label}
           onChange={(e) => setLabel(e.target.value)}
-          error={labelError}
+          error={usesCredentials ? '' : labelError}
           helperText="Shown wherever a board picks which projects to pull from."
           maxLength={60}
           autoFocus
           required
         />
+
+        {/*
+          The credential form, rendered from the server's own description.
+
+          `masked` rather than `type="password"` is deliberate and is Input's own
+          documented rule: a password-typed field is what makes Chrome offer to
+          save the value, which would put a second, unencrypted copy of a
+          workspace credential in a personal password manager. See Input.jsx.
+        */}
+        {usesCredentials &&
+          credentialFields.map((field) => (
+            <div key={field.key} className="mt-3">
+              <Input
+                label={field.label}
+                masked={!!field.secret}
+                placeholder={field.placeholder || ''}
+                helperText={field.help || ''}
+                value={credentials[field.key] || ''}
+                onChange={(e) =>
+                  setCredentials((prev) => ({ ...prev, [field.key]: e.target.value }))
+                }
+                required
+              />
+            </div>
+          ))}
+
+        {usesCredentials && labelError && (
+          <p
+            className="font-body mt-3"
+            style={{ fontSize: 12.5, color: 'var(--color-status-stuck)' }}
+          >
+            {labelError}
+          </p>
+        )}
+
         {connectFor?.account && (
           <p
             className="font-body mt-3"
             style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
           >
-            Reconnecting keeps this account&rsquo;s project mappings and
-            everything already collected.
+            {usesCredentials
+              ? 'Entering the credentials again keeps this account’s project mappings and everything already collected.'
+              : 'Reconnecting keeps this account’s project mappings and everything already collected.'}
           </p>
         )}
       </Modal>

@@ -25,6 +25,10 @@ const { startInboundMailPoller } = require('./src/services/inboundMailPoller');
 const {
   startConnectorSyncRunner,
 } = require('./src/services/connectorSyncRunner');
+const {
+  startConnectorCollectRunner,
+} = require('./src/services/connectorCollectRunner');
+const { startSeoAlertRunner } = require('./src/services/seoAlertRunner');
 const connectorCrypto = require('./src/utils/connectorCrypto');
 const { checkRegistry } = require('./src/services/connectors');
 
@@ -69,6 +73,16 @@ const start = async () => {
   // lives in the snapshot service, so a missed window is caught within the hour
   // instead of within the week. See the runner's header.
   startConnectorSyncRunner();
+  // The other half, every ten minutes: collect results already paid for and
+  // nothing else. It runs behind a client whose transport refuses every endpoint
+  // that is not free, which is what lets it be six times as frequent as the pass
+  // that can buy. See connectorCollectRunner's header.
+  startConnectorCollectRunner();
+  // The third connector clock, and the only one that cannot spend anything at
+  // all: it reads snapshots the other two bought and turns the ones worth
+  // interrupting somebody about into notifications. Thirteen minutes after the
+  // buying pass, so an alert lands within an hour of the reading that caused it.
+  startSeoAlertRunner();
   // Non-critical: never let the optional email poller block the server booting.
   try {
     startInboundMailPoller();

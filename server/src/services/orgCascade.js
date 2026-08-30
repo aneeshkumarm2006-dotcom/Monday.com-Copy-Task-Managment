@@ -18,6 +18,11 @@ const ConnectorAccount = require('../models/ConnectorAccount');
 const ConnectorAuthAttempt = require('../models/ConnectorAuthAttempt');
 const ConnectorProject = require('../models/ConnectorProject');
 const ConnectorSnapshot = require('../models/ConnectorSnapshot');
+const DfsTask = require('../models/DfsTask');
+const DfsSerpResult = require('../models/DfsSerpResult');
+const DfsCacheProbe = require('../models/DfsCacheProbe');
+const DfsSerpCache = require('../models/DfsSerpCache');
+const ConnectorBudget = require('../models/ConnectorBudget');
 const BoardConnector = require('../models/BoardConnector');
 const ConnectorFieldMapping = require('../models/ConnectorFieldMapping');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
@@ -106,6 +111,49 @@ const cascadeDeleteOrg = async (orgId) => {
   // they are deleted BEFORE the projects that parent them, so a failure halfway
   // through leaves orphaned projects rather than orphaned history.
   await ConnectorSnapshot.deleteMany({ organisation: orgId });
+  // The DataForSEO task ledger. It is the exact reason `DfsTask.organisation` is
+  // REQUIRED rather than derivable: a row that could carry a null would outlive
+  // the workspace it was bought for, still holding that workspace's keyword list
+  // — which is competitive intelligence, not incidental metadata. Deleted after
+  // the snapshots and before the projects, so a failure halfway through leaves
+  // orphaned parents rather than orphaned children.
+  // The stored SERP bodies. Deleted BEFORE the tasks that bought them and the
+  // projects that parent them, children first like everything else here. The
+  // pages themselves are public search results, but the KEYWORDS they answer are
+  // the workspace's competitive intelligence, and a TTL that expires them in
+  // ninety days is not a substitute for a teardown that ends the relationship
+  // today. It is also the field phase 11 would have to give up: a cross-tenant
+  // SERP cache cannot carry an organisation, which is the first of the four
+  // reasons that phase may never happen.
+  await DfsSerpResult.deleteMany({ organisation: orgId });
+  await DfsTask.deleteMany({ organisation: orgId });
+  // Phase 11's measurement. It carries no keywords, but it does carry this
+  // workspace's keyword VOLUME and market mix per day, which is competitive
+  // intelligence one level up. Same rule as everything else here.
+  await DfsCacheProbe.deleteMany({ organisation: orgId });
+  // THE SHARED SERP CACHE, and the one collection in this cascade that cannot be
+  // deleted by `organisation` — because it has none. That is the first of the
+  // four reasons phase 11 nearly did not happen, and the answer is a REFCOUNT:
+  // `DfsSerpCache.orgs` names every participating workspace that has paid for or
+  // read the body, this workspace is pulled out of it, and a row nobody refers to
+  // any more is deleted. A set of ids rather than a counter, because `$pull` is
+  // idempotent and `$inc: -1` is not — a cascade retried after a partial failure
+  // must not be able to delete a body two other workspaces are still using.
+  //
+  // The compliance position, stated rather than assumed: a shared row outlives
+  // this teardown only while ANOTHER participating workspace is still asking the
+  // same question, at which point the keyword is theirs as much as it was ours
+  // and the body itself is a public search result. It expires within 48 hours
+  // regardless. Nothing here is reachable unless somebody set
+  // `DATAFORSEO_SERP_CACHE_ORGS`, which is empty by default.
+  await DfsSerpCache.updateMany({ orgs: orgId }, { $pull: { orgs: orgId } });
+  await DfsSerpCache.deleteMany({ orgs: { $size: 0 } });
+  // The spend ledger. Kept until last of the connector rows, because it is the
+  // only record of what this workspace cost — and deleted anyway, for the same
+  // reason the snapshots are: an org teardown ends the relationship the data was
+  // collected under. An operator who needs the number after the fact takes it
+  // from the invoice, which is the authoritative copy regardless.
+  await ConnectorBudget.deleteMany({ organisation: orgId });
   await ConnectorProject.deleteMany({ organisation: orgId });
   await ConnectorAccount.deleteMany({ organisation: orgId });
   await ConnectorAuthAttempt.deleteMany({ organisation: orgId });

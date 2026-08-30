@@ -94,6 +94,27 @@ const openSession = async (accountOrId) => {
     getAccessToken: () => tokens.accessToken,
 
     /**
+     * The WHOLE sealed credential, for a transport that needs more than a bearer
+     * token — an HTTP Basic pair, a key plus a customer id, a signing secret.
+     *
+     * Additive rather than a replacement, and deliberately so: `getAccessToken`
+     * has exactly two callers, both of which want precisely one string, and
+     * widening them to "here is the credential bag, find what you need" would
+     * put credential-shape knowledge back into the transports this file exists
+     * to keep it out of.
+     *
+     * The rule from this file's header is unchanged and applies to both: what
+     * comes back goes to a transport and nowhere else. It must never enter a
+     * controller, a response body, a log line or an error message, and the
+     * session object itself is still never serialised. See connectorLeak.test.js.
+     *
+     * Returns a shallow COPY, so a transport that mutates what it is handed
+     * cannot corrupt the token set this session will re-seal on the next
+     * refresh — a bug that would look like a provider revoking a credential.
+     */
+    getCredentials: () => ({ ...tokens }),
+
+    /**
      * Refresh, persist, and keep going.
      *
      * Called REACTIVELY, from a transport that just took a 401 — the provider
@@ -102,10 +123,30 @@ const openSession = async (accountOrId) => {
      * whether refresh tokens rotate, so a rotated one that is not written back
      * strands the account at the NEXT refresh, days later, with nothing in the
      * logs to connect the two.
+     *
+     * A provider that authenticates with a stored key has no authorization
+     * server and therefore no `oauth` object at all — it declares `refreshTokens`
+     * directly and that function's job is to THROW `{needsReauth: true}`, because
+     * a 401 on a stored key means the key is wrong rather than stale. The catch
+     * below is then the whole mechanism: no second branch, no per-provider
+     * special case, and the same Reconnect button in front of the same admin.
      */
     refresh: async () => {
+      const refreshTokens = connector.oauth?.refreshTokens || connector.refreshTokens;
+      if (typeof refreshTokens !== 'function') {
+        // A descriptor with no way to recover a credential. Driven to the same
+        // place a dead grant goes rather than thrown as a TypeError out of a
+        // cron job — the account genuinely does need a human, and that is what
+        // `needs_reauth` says.
+        const err = new Error(
+          `"${account.label}" cannot renew its credential on its own. It needs to be reconnected.`
+        );
+        err.needsReauth = true;
+        await setStatus('needs_reauth');
+        throw err;
+      }
       try {
-        const next = await connector.oauth.refreshTokens(tokens);
+        const next = await refreshTokens(tokens);
         tokens = next;
         await ConnectorAccount.updateOne(
           { _id: account._id },
@@ -145,6 +186,65 @@ const openSession = async (accountOrId) => {
       if (!Object.keys($set).length) return;
       await ConnectorAccount.updateOne({ _id: account._id }, { $set });
     },
+
+    /**
+     * Record the provider's own account-level numbers — credits left, plan
+     * ceilings, a live balance, a price book.
+     *
+     * A sibling of `recordIdentity` rather than part of it, because the two have
+     * different lifetimes and different meanings: identity is stable and worth
+     * writing once, and this is a reading that is stale the moment it is taken.
+     * Keeping them apart is also what lets a transport record a balance on a
+     * pass where identity did not change.
+     *
+     * `ConnectorAccount.lastSeenQuota` is `Mixed` and documented DISPLAY ONLY,
+     * NEVER A GATE, and this writer does not change that. A number misread out
+     * of an undocumented shape must not be able to stop a sync, and a balance
+     * last read six days ago must not be able to authorise one — which is why
+     * this returns nothing a caller can branch on and why a failure here is the
+     * caller's to shrug at.
+     *
+     * It lives here rather than in a provider directory for the same reason
+     * every other write in this file does: credential and account persistence
+     * has exactly one copy.
+     *
+     * @param {Object} quota - whatever the provider reports, already normalised
+     */
+    recordQuota: async (quota) => {
+      if (!quota || typeof quota !== 'object' || Array.isArray(quota)) return;
+      // Kept on the in-memory document too, so `getQuota` below answers with
+      // what THIS pass observed rather than with what the last one left behind.
+      account.lastSeenQuota = quota;
+      await ConnectorAccount.updateOne(
+        { _id: account._id },
+        { $set: { lastSeenQuota: quota } }
+      );
+    },
+
+    /**
+     * The last quota reading, for a transport that needs to ESTIMATE.
+     *
+     * ---- Why this is a reader and not a query -------------------------------
+     *
+     * `syncAccount` loads the `ConnectorAccount` document and hands it to
+     * `openSession`, so the reading is already in memory by the time a fetcher
+     * runs. A provider that bills per call needs the account's own price book to
+     * size a budget reservation, and the two alternatives both cost something for
+     * nothing: re-reading the row is a database round trip per post, and asking
+     * the provider again burns one of six permitted `user_data` calls a minute
+     * for a value the same pass already fetched and stored.
+     *
+     * A SHALLOW COPY, for the same reason `getCredentials` returns one — a
+     * transport that mutates what it is handed must not be able to corrupt what
+     * the next caller reads.
+     *
+     * The documented status of `lastSeenQuota` is unchanged and is the point:
+     * ESTIMATION AND DISPLAY, NEVER A GATE. A price book six days old sizes a
+     * reservation perfectly well; the thing that says no is `ConnectorBudget`,
+     * computed from our own ledger. Nothing that reads this may refuse work on
+     * the strength of it.
+     */
+    getQuota: () => ({ ...(account.lastSeenQuota || {}) }),
   };
 
   return session;

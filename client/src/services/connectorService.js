@@ -12,8 +12,9 @@ import api from './api';
  * organisation admin can connect an account" — not an error to bark about.
  *
  * Note what this file cannot do: there is no "read the token" call, because no
- * endpoint returns one. Credentials go in through the OAuth redirect and never
- * come back out.
+ * endpoint returns one. Credentials go in — through the OAuth redirect for a
+ * provider with a consent screen, or through `saveConnectorCredentials` for one
+ * that issues a key — and never come back out.
  */
 
 // ---- Catalog ---------------------------------------------------------------
@@ -58,6 +59,28 @@ export const startConnectorAuthorization = async (orgId, provider, payload) => {
 };
 
 /**
+ * Store a key-and-password credential for a provider that has no consent screen.
+ *
+ * The other half of `startConnectorAuthorization`, and which one applies is the
+ * server's answer, not this file's: a catalog entry carries `credentialForm`
+ * (and `requiresBrowserConsent: false`) when this is the path. The values are
+ * sealed server-side on arrival and there is no endpoint that reads them back.
+ *
+ * @param {string} orgId
+ * @param {string} provider
+ * @param {{label: string, credentials: Object, reconnectAccount?: string}} payload
+ * @returns {Promise<Object>} the created or updated account, with no secret on it
+ */
+export const saveConnectorCredentials = async (orgId, provider, payload) => {
+  const { data } = await api.post(
+    `/api/orgs/${orgId}/connectors/${provider}/credentials`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data.account;
+};
+
+/**
  * Disconnect an account. The server revokes and drops the tokens rather than
  * deleting the row, so mappings and stored history survive.
  * @param {string} accountId
@@ -84,10 +107,24 @@ export const getBoardConnectors = async (boardId) => {
 };
 
 /**
- * Turn a connector on or off for a board.
+ * Turn a connector on or off for a board, and set how it behaves there.
+ *
+ * `kinds` and `enabledScreens` are NOT the same switch and the caller must not
+ * treat them as one. `kinds` decides what is PAID TO COLLECT and is unioned
+ * across every board mapping the same project, so narrowing it can take a
+ * section away from a co-tenant board; `enabledScreens` decides what THIS board
+ * RENDERS out of data already collected, is free, and cannot reach anywhere
+ * else. See the `BoardConnector` model header for the whole argument.
+ *
+ * `intervalHours` is a cadence override, null for the provider's default, and it
+ * is resolved as a MIN across boards — so it is the one field here that makes a
+ * frugal board pay for an eager one's choice.
+ *
  * @param {string} boardId
  * @param {string} provider
- * @param {{enabled: boolean, kinds?: string[]}} payload
+ * @param {{enabled: boolean, kinds?: string[], enabledScreens?: string[],
+ *   intervalHours?: number|null,
+ *   budget?: {monthlyUsd?: number|null, alertAtPct?: number}}} payload
  */
 export const setBoardConnector = async (boardId, provider, payload) => {
   const { data } = await api.put(
@@ -200,16 +237,111 @@ export const getConnectorData = async (boardId, provider, params = {}) => {
 };
 
 /**
+ * What this board has spent at the provider this month, and what is in flight.
+ *
+ * READS OUR OWN DATABASE, exactly like `getConnectorData`. On a provider that
+ * bills per call the obvious source is its own free balance endpoint, and it is
+ * the wrong number twice over: it is one shared account's balance across every
+ * organisation on it, and a read that reaches a third party is one open browser
+ * tab away from being rate-limited. Everything here comes from `ConnectorBudget`
+ * and the provider's own task ledger.
+ *
+ * `orgBudget` is null for anyone without `connector.manage` — the workspace's
+ * ceiling is not a fact about one board. `boardBudget` is null when this board
+ * has no allocation, which is the normal state.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {{months?: number}} [params]
+ * @returns {Promise<Object>}
+ */
+export const getConnectorUsage = async (boardId, provider, params = {}) => {
+  const query = new URLSearchParams(
+    Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')
+  ).toString();
+  const { data } = await api.get(
+    `/api/boards/${boardId}/connectors/${provider}/usage${query ? `?${query}` : ''}`,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
+ * Create a locally-authored project — a "site" — for a provider that has nothing
+ * to mirror.
+ *
+ * A SEPARATE call from the project mirror above, and the split is a safety
+ * property rather than a naming preference. Everything under `/projects` is
+ * about rows a PROVIDER owns; this one invents the row, for a stateless billing
+ * API that has no concept of a project. A descriptor with no `projectAuthoring`
+ * on its catalog entry gets a 400 here, which is what stops somebody creating an
+ * Ubersuggest project Ubersuggest has never heard of.
+ *
+ * SPENDS NOTHING — but it is what a collection is later bought FROM, and its
+ * keyword list times its target list is the size of the bill. The server
+ * validates every cap and refuses search operators, because a cost multiplier
+ * only a browser checks is a cost multiplier.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {{account?: string, name?: string, domain: string,
+ *   trackedKeywords: string[], targets: Array<Object>, competitors?: string[]}} payload
+ * @returns {Promise<Object>} the created project
+ */
+export const createConnectorSite = async (boardId, provider, payload) => {
+  const { data } = await api.post(
+    `/api/boards/${boardId}/connectors/${provider}/sites`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data.project;
+};
+
+/**
+ * Replace a site's authored fields.
+ *
+ * A FULL REPLACEMENT, not a patch: an edit that drops four keywords has to be
+ * able to say so, and a partial update of a list is ambiguous in a way that
+ * costs money in one direction and loses history in the other. The group
+ * binding, the account and every snapshot already taken are untouched — changing
+ * a keyword list is an ordinary thing to do to a live site and must not read as
+ * a different site.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {string} projectId
+ * @param {Object} payload - the same shape as the create
+ * @returns {Promise<Object>} the updated project
+ */
+export const updateConnectorSite = async (boardId, provider, projectId, payload) => {
+  const { data } = await api.put(
+    `/api/boards/${boardId}/connectors/${provider}/sites/${projectId}`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data.project;
+};
+
+/**
  * Collect now instead of waiting for the weekly pass. SPENDS QUOTA.
  *
  * Resolves even when some accounts failed — the pool is plural and each account
  * has its own quota and its own grant, so `report.accounts` carries a row per
  * account and the caller decides what to say about it.
  *
+ * ---- `force` is now a separate, explicit act ------------------------------
+ *
+ * A plain Refresh no longer forces a re-fetch on every provider. One bills per
+ * report subject per day, where a second pull costs nothing; the other bills AT
+ * POST, where the same button press is a purchase — 200 keywords in two markets
+ * is $0.24 every time somebody leans on it. The descriptor answers which is
+ * which (`forceRefetchIsFree`), and the caller sends `{force: true}` only when a
+ * person has confirmed they mean "buy it again".
+ *
  * @param {string} boardId
  * @param {string} provider
- * @param {{project?: string, kinds?: string[]}} [payload] - omit `project` to
- *   refresh every project mapped on this board
+ * @param {{project?: string, kinds?: string[], force?: boolean}} [payload] -
+ *   omit `project` to refresh every project mapped on this board
  * @returns {Promise<{report: Object}>}
  */
 export const refreshConnectorData = async (boardId, provider, payload = {}) => {

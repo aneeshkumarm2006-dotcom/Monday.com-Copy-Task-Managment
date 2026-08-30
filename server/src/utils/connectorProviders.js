@@ -13,7 +13,7 @@
  * Keys are PERSISTED on ConnectorAccount documents, so renaming one is a
  * migration, not a refactor — the same rule the capability keys carry.
  */
-const CONNECTOR_PROVIDERS = ['ubersuggest'];
+const CONNECTOR_PROVIDERS = ['ubersuggest', 'dataforseo'];
 
 const CONNECTOR_PROVIDER_SET = new Set(CONNECTOR_PROVIDERS);
 
@@ -27,6 +27,7 @@ const isConnectorProvider = (key) => CONNECTOR_PROVIDER_SET.has(key);
  */
 const CONNECTOR_PROVIDER_LABELS = {
   ubersuggest: 'Ubersuggest',
+  dataforseo: 'DataForSEO',
 };
 
 /** @param {string} key @returns {string} */

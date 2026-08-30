@@ -134,3 +134,59 @@ export const staleness = (value, now = Date.now()) => {
   if (days < 60) return `${Math.round(days / 7)} weeks ago`;
   return `${Math.round(days / 30)} months ago`;
 };
+
+/**
+ * A variant key as prose, or the raw key when it is not a shape we know.
+ *
+ * ---- TWO providers mint variant keys, and they are not the same shape -------
+ *
+ * The first spells it `device|lang|locationId` (`desktop|en|2840`), with
+ * `default` for every kind that takes only a subject. The second spells it
+ * `locationCode|languageCode|device` (`2840|en|desktop`) — its API takes the
+ * location first and its key follows its API, and from phase 2 that key is half
+ * the identity of an open billable task, so neither is going to be renamed to
+ * match the other.
+ *
+ * They are told apart by the only thing that distinguishes them without
+ * guessing: A LOCATION CODE IS NUMERIC AND A DEVICE IS NOT. Read the wrong way
+ * round, `2840|en|desktop` renders as "2840 · EN · loc desktop", which is not a
+ * market anybody can recognise — and this label ends up in a table caption, in a
+ * PDF subtitle and in a column of every exported spreadsheet.
+ *
+ * `any` is the DataForSEO Labs device: those endpoints take a location and a
+ * language and no device at all, so the segment is collapsed rather than
+ * invented, and it is rendered as "all devices" rather than dropped — a market
+ * with no device dimension is a fact about the data, not a missing field.
+ *
+ * ---- And the key with no market in it at all -------------------------------
+ *
+ * Phase 7's Backlinks kinds collapse every dimension: the API takes no location,
+ * no language and no device, because a backlink profile is a property of a
+ * domain. Their variant is therefore `0|any|any`, and read through the rules
+ * above that renders as "all devices · loc 0" — a location code of nought,
+ * printed in a PDF subtitle and in a column of every exported sheet. It is named
+ * here instead, because a key that means "there is no market dimension" deserves
+ * a phrase rather than a fallback.
+ */
+export const DOMAIN_VARIANT_KEY = '0|any|any';
+
+export const marketLabel = (variant) => {
+  if (!variant || variant === 'default') return 'Default';
+  if (variant === DOMAIN_VARIANT_KEY) return 'Whole domain';
+
+  const parts = String(variant).split('|');
+  const numericFirst = /^\d+$/.test(parts[0] || '');
+  const [device, lang, loc] = numericFirst
+    ? [parts[2], parts[1], parts[0]]
+    : [parts[0], parts[1], parts[2]];
+
+  return (
+    [
+      device && device !== 'any' ? device : device === 'any' ? 'all devices' : null,
+      lang && lang !== 'any' ? lang.toUpperCase() : null,
+      loc && loc !== 'any' ? `loc ${loc}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ') || String(variant)
+  );
+};

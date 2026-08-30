@@ -1,4 +1,11 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+/**
+ * `import.meta.env?` rather than `import.meta.env.` — one character, and it is
+ * what lets the export modules that import `saveBlob` be loaded by the plain
+ * `node --test` runner the client suite uses. Vite always defines `env`, so this
+ * changes nothing in the app; outside Vite it is undefined and the bare access
+ * throws at module load, taking every importer down with it.
+ */
+const API_BASE = import.meta.env?.VITE_API_BASE_URL || 'http://localhost:5000';
 
 /** "1.4 MB" — empty string for a missing or zero size, so callers can render it raw. */
 export const formatBytes = (bytes) => {

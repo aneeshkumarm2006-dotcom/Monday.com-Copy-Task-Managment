@@ -43,6 +43,16 @@ const syncReportSchema = new mongoose.Schema(
     ok: { type: Number, default: 0 },
     failed: { type: Number, default: 0 },
     skipped: { type: Number, default: 0 }, // already had a snapshot for the period
+    /**
+     * Asked for, not yet available — a provider that posts a request and
+     * collects the answer later, or one that has hit a spend ceiling.
+     *
+     * Kept apart from all three above so a pass that did nothing but poll does
+     * not read as a dead connector: `ok` would claim a reading landed, `failed`
+     * would show an operator a fault that is not one, and `skipped` already
+     * means the opposite ("we did not need to ask").
+     */
+    queued: { type: Number, default: 0 },
     // The first failure's message, for the UI. Full per-item errors live on the
     // snapshot rows, which is where you go to find out which keyword broke.
     error: { type: String, default: '' },

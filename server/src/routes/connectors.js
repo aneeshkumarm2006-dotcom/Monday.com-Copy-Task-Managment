@@ -1,9 +1,11 @@
 const express = require('express');
 const authMiddleware = require('../middleware/auth');
+const rateLimit = require('../middleware/rateLimit');
 const {
   getCatalog,
   listOrgConnectors,
   startAuthorization,
+  saveCredentials,
   handleCallback,
   disconnectAccount,
   getBoardConnectors,
@@ -11,9 +13,12 @@ const {
   getBoardConnectorProjects,
   refreshBoardConnectorProjects,
   setConnectorProjectGroup,
+  createConnectorSite,
+  updateConnectorSite,
 } = require('../controllers/connectorController');
 const {
   getConnectorData,
+  getConnectorUsage,
   refreshConnectorData,
   runConnectorAction,
 } = require('../controllers/connectorDataController');
@@ -31,6 +36,7 @@ const {
   acceptGoalSuggestions,
   runBoardWriteback,
 } = require('../controllers/connectorLinkController');
+const { pingback } = require('../services/connectors/dataforseo/pingback');
 
 /**
  * Mounted BARE at /api (see app.js), like routes/goals.js and routes/trackers.js,
@@ -68,6 +74,32 @@ const router = express.Router();
  */
 router.get('/connectors/callback', handleCallback);
 
+/**
+ * The DataForSEO pingback path. RESERVED, PUBLIC, AND INERT — it answers 501.
+ *
+ * "Webhooks: no" is a decision, and this is that decision shipped as code rather
+ * than left in a plan where the next person has to re-derive it. `task_get` is
+ * free, so a webhook saves nothing; DataForSEO neither signs nor retries its
+ * callbacks, so a trustworthy receiver would have to call `task_get` anyway and
+ * the poller stays load-bearing regardless. See
+ * `services/connectors/dataforseo/pingback.js` for the full argument.
+ *
+ * Two things are being reserved, and both are expensive to change later:
+ *
+ *   THE MOUNT POSITION — above `router.use(authMiddleware)`, beside the OAuth
+ *     callback, because a third party has no session and no Authorization
+ *     header. Any of the bare `/api` routers would 401 it first.
+ *   THE PATH SHAPE — a token in the PATH, never an HMAC over the BODY. That is
+ *     what keeps `app.js`'s body parsing untouched: a signature scheme needs the
+ *     raw bytes and `stashRawBody` would have to grow a third special case. It
+ *     is also the honest scheme, since the provider offers no signature to
+ *     verify.
+ *
+ * Adding a real receiver later is therefore additive — this line stays where it
+ * is and the handler changes.
+ */
+router.post('/connectors/dataforseo/pingback/:token', pingback);
+
 // Everything below needs a Bearer token.
 router.use(authMiddleware);
 
@@ -77,8 +109,22 @@ router.use(authMiddleware);
 router.get('/connectors', getCatalog);
 
 // --- The org account pool ---------------------------------------------------
+//
+// TWO ways to connect an account, one per authentication mode, and both on
+// `org.manage_settings` because both are workspace-wide credential handling.
+//
+// `/authorize` begins a browser consent and answers with a URL. `/credentials`
+// takes a key and a password in the request itself and answers with the account
+// it created. They are separate paths rather than one polymorphic handler
+// because they have genuinely different security stories: the consent flow needs
+// a server-minted single-use `state` precisely because it comes back through a
+// public, unauthenticated callback, and this one has no round trip to protect —
+// it arrives once, from a session already authenticated as an admin.
+//
+// Neither has a GET. A credential goes in and never comes back out.
 router.get('/orgs/:orgId/connectors', listOrgConnectors);
 router.post('/orgs/:orgId/connectors/:provider/authorize', startAuthorization);
+router.post('/orgs/:orgId/connectors/:provider/credentials', saveCredentials);
 
 // --- A single account -------------------------------------------------------
 router.delete('/connectors/:accountId', disconnectAccount);
@@ -107,6 +153,32 @@ router.put(
   setConnectorProjectGroup
 );
 
+// --- Locally-authored projects ("sites") ------------------------------------
+//
+// A SEPARATE path from `/projects` above, and the split is the safety property
+// rather than a naming preference. Everything under `/projects` is about rows a
+// PROVIDER owns: list them, re-read them, decide which group they feed. These
+// two CREATE the row, for a provider that has nothing to mirror — DataForSEO is
+// a stateless billing API with no concept of a project, so the domain, the
+// markets and the keyword list are ours and `externalId` is our own id.
+//
+// Sharing one path would mean one handler that either edits a mirror or invents
+// a project depending on a descriptor flag, which is exactly the kind of
+// polymorphism that ends with somebody creating an Ubersuggest project
+// Ubersuggest has never heard of. A descriptor with no `projectAuthoring` gets a
+// 400 here and keeps its projects mirror-only.
+//
+// `connector.manage`, the same rung as mapping a project to a group and for a
+// stronger version of the same reason: this document is what a collection is
+// bought from, and its keyword list times its target list is the size of the
+// bill. Search operators are refused server-side in the same read, because a
+// cost multiplier only a browser checks is a cost multiplier.
+router.post('/boards/:boardId/connectors/:provider/sites', createConnectorSite);
+router.put(
+  '/boards/:boardId/connectors/:provider/sites/:projectId',
+  updateConnectorSite
+);
+
 // --- The data plane ---------------------------------------------------------
 //
 // `/data` READS OUR OWN DATABASE and never contacts the provider, which is what
@@ -123,7 +195,37 @@ router.put(
 // `/projects/refresh` above, which re-reads the project LIST. Two verbs, two
 // costs, two paths.
 router.get('/boards/:boardId/connectors/:provider/data', getConnectorData);
-router.post('/boards/:boardId/connectors/:provider/refresh', refreshConnectorData);
+
+// The money screen. READS TWO OF OUR OWN COLLECTIONS — `ConnectorBudget` and,
+// through the descriptor's `describeUsage` hook, whatever ledger the provider
+// keeps — and contacts nobody. The obvious source for "what have we spent" is
+// the provider's own free balance endpoint, and it is the wrong number twice
+// over: it is one shared account's balance across every organisation on it, and
+// a read endpoint that reaches a third party is one open tab away from being
+// rate-limited. `connector.view`, with the ORG cap withheld from anyone without
+// `connector.manage` — see the handler.
+router.get('/boards/:boardId/connectors/:provider/usage', getConnectorUsage);
+
+/**
+ * Collect now. THE ONE ROUTE ON THIS ROUTER THAT CAN SPEND REAL MONEY.
+ *
+ * Five an hour per person, and the limit is deliberately advisory rather than
+ * load-bearing. It is in-memory and per-process, so on a multi-instance deploy
+ * two instances each allow five — which is exactly why it is not the thing that
+ * bounds the spend. The things that bound the spend are the org's
+ * `ConnectorBudget` cap (atomic, one document, survives any number of
+ * instances), the provider's `minRebuyHours` floor, and `forceRefetchIsFree:
+ * false`, which stops a plain Refresh buying anything at all.
+ *
+ * What it is genuinely good for is the accident this button invites: somebody
+ * leaning on it, or a component re-rendering into a loop. Free, one line, and it
+ * turns a hundred clicks into five.
+ */
+router.post(
+  '/boards/:boardId/connectors/:provider/refresh',
+  rateLimit({ bucket: 'connector:refresh', windowMs: 3_600_000, max: 5 }),
+  refreshConnectorData
+);
 // Declared AFTER `/projects/:projectId` above so the literal `refresh` segment
 // there is never shadowed, and specific enough that `actions` cannot be read as
 // a project id.

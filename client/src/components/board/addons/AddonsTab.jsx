@@ -4,7 +4,9 @@ import {
   Blocks,
   Globe,
   Link2Off,
+  Pencil,
   Plug,
+  Plus,
   RefreshCw,
   TriangleAlert,
 } from 'lucide-react';
@@ -16,6 +18,8 @@ import Spinner from '../../ui/Spinner';
 import EmptyState from '../../ui/EmptyState';
 import useToastStore from '../../../store/toastStore';
 import FieldMappingPanel from './FieldMappingPanel';
+import SiteFormModal from './SiteFormModal';
+import ConnectorSettingsPanel from './ConnectorSettingsPanel';
 import {
   getBoardConnectors,
   setBoardConnector,
@@ -94,6 +98,16 @@ const AddonsTab = ({
   const [refreshing, setRefreshing] = useState(null);
   const [togglingProvider, setTogglingProvider] = useState(null);
   const [savingProject, setSavingProject] = useState(null);
+
+  /**
+   * The site being authored, for a provider whose projects are created HERE
+   * rather than mirrored from anywhere.
+   *
+   * `{provider, project}` with a null project meaning "create". One piece of
+   * state rather than an open flag plus a target, so the two cannot disagree
+   * about which dialog is on screen.
+   */
+  const [siteModal, setSiteModal] = useState(null);
 
   const load = useCallback(
     async ({ quiet = false } = {}) => {
@@ -196,6 +210,28 @@ const AddonsTab = ({
     } finally {
       setRefreshing(null);
     }
+  };
+
+  /**
+   * A site was created or edited. Merged into the list in place rather than
+   * refetched, so the row does not jump while the dialog is closing — and a
+   * creation is prepended, because the thing somebody has just made should not
+   * appear somewhere down an alphabetical list.
+   */
+  const siteSaved = (provider, saved) => {
+    setProjectsByProvider((prev) => {
+      const list = prev[provider] || [];
+      const exists = list.some((p) => String(p._id) === String(saved._id));
+      return {
+        ...prev,
+        [provider]: exists
+          ? list.map((p) => (String(p._id) === String(saved._id) ? saved : p))
+          : [saved, ...list],
+      };
+    });
+    toastSuccess(
+      `${saved.name || saved.domain} saved. Map it to a group to start collecting.`
+    );
   };
 
   const mapProject = async (provider, project, groupId) => {
@@ -303,7 +339,25 @@ const AddonsTab = ({
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
-                  {connector.enabled && canManage && (
+                  {/* Two different verbs for two different providers, and the
+                      DESCRIPTOR decides which. A provider whose projects are
+                      mirrored gets "Refresh projects", which reads a list from
+                      the far end; one that authors its own gets "Add site",
+                      because there is no far end to read. Neither branch names
+                      a provider. */}
+                  {connector.enabled && canManage && connector.projectAuthoring && (
+                    <Button
+                      variant="secondary"
+                      icon={Plus}
+                      onClick={() =>
+                        setSiteModal({ provider: connector.name, project: null })
+                      }
+                      disabled={!connector.accountCount}
+                    >
+                      Add {connector.projectAuthoring.label.toLowerCase()}
+                    </Button>
+                  )}
+                  {connector.enabled && canManage && !connector.projectAuthoring && (
                     <Button
                       variant="secondary"
                       icon={RefreshCw}
@@ -378,14 +432,34 @@ const AddonsTab = ({
                     >
                       <EmptyState
                         icon={Globe}
-                        title="No projects mirrored yet"
-                        description={
-                          canManage
-                            ? 'Refresh to read the project list from the provider. Nothing is fetched automatically — the quota is shared across the whole workspace.'
-                            : 'Nobody has refreshed this board’s project list yet.'
+                        title={
+                          connector.projectAuthoring
+                            ? `No ${connector.projectAuthoring.label.toLowerCase()}s yet`
+                            : 'No projects mirrored yet'
                         }
-                        actionLabel={canManage ? 'Refresh projects' : undefined}
-                        onAction={canManage ? () => refresh(connector.name) : undefined}
+                        description={
+                          connector.projectAuthoring
+                            ? connector.projectAuthoring.help ||
+                              'Add a site — a domain, the markets you track it in, and the keywords you track there.'
+                            : canManage
+                              ? 'Refresh to read the project list from the provider. Nothing is fetched automatically — the quota is shared across the whole workspace.'
+                              : 'Nobody has refreshed this board’s project list yet.'
+                        }
+                        actionLabel={
+                          !canManage
+                            ? undefined
+                            : connector.projectAuthoring
+                              ? `Add a ${connector.projectAuthoring.label.toLowerCase()}`
+                              : 'Refresh projects'
+                        }
+                        onAction={
+                          !canManage
+                            ? undefined
+                            : connector.projectAuthoring
+                              ? () =>
+                                  setSiteModal({ provider: connector.name, project: null })
+                              : () => refresh(connector.name)
+                        }
                       />
                     </div>
                   ) : (
@@ -403,9 +477,31 @@ const AddonsTab = ({
                           onMap={(groupId) =>
                             mapProject(connector.name, project, groupId)
                           }
+                          // Only a LOCALLY-AUTHORED row is editable here. A
+                          // mirrored one is somebody else's record, and our edit
+                          // would fight the next refresh, which always wins.
+                          onEdit={
+                            canManage && project.locallyAuthored
+                              ? () =>
+                                  setSiteModal({ provider: connector.name, project })
+                              : null
+                          }
                         />
                       ))}
                     </ul>
+                  )}
+
+                  {/* What this board renders, how often it collects, and how
+                      much of the workspace's money it may account for. Shown
+                      only for a provider that declares screens — for one that
+                      does not, every switch in it would be a no-op. */}
+                  {connector.availableScreens?.length > 0 && (
+                    <ConnectorSettingsPanel
+                      boardId={boardId}
+                      connector={connector}
+                      canManage={canManage}
+                      onSaved={() => load({ quiet: true })}
+                    />
                   )}
 
                   {/* Where each of the provider's values lands on a goal.
@@ -427,6 +523,21 @@ const AddonsTab = ({
           );
         })}
       </div>
+
+      {siteModal && (
+        <SiteFormModal
+          isOpen
+          onClose={() => setSiteModal(null)}
+          boardId={boardId}
+          provider={siteModal.provider}
+          authoring={
+            connectors.find((c) => c.name === siteModal.provider)?.projectAuthoring
+          }
+          accounts={accounts.filter((a) => a.provider === siteModal.provider)}
+          project={siteModal.project}
+          onSaved={(saved) => siteSaved(siteModal.provider, saved)}
+        />
+      )}
     </div>
   );
 };
@@ -454,6 +565,7 @@ const ProjectRow = ({
   canManage,
   saving,
   onMap,
+  onEdit = null,
 }) => {
   const boundHere = project.board && String(project.board) === String(boardId);
   const boundElsewhere = !!project.group && !boundHere;
@@ -531,6 +643,27 @@ const ProjectRow = ({
             : ''}
         </p>
       </div>
+
+      {onEdit && (
+        <button
+          type="button"
+          onClick={onEdit}
+          className="inline-flex items-center gap-1.5 font-body shrink-0"
+          style={{
+            fontSize: 12.5,
+            color: 'var(--color-text-secondary)',
+            background: 'transparent',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            height: 30,
+            padding: '0 10px',
+            cursor: 'pointer',
+          }}
+        >
+          <Pencil size={12} aria-hidden="true" />
+          Edit
+        </button>
+      )}
 
       <div className="shrink-0" style={{ width: 220 }}>
         {boundElsewhere ? (

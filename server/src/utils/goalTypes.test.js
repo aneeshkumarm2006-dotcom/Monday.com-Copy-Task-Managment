@@ -133,6 +133,89 @@ test('threshold is binary without a baseline and graded with one', () => {
   assert.strictEqual(atLeast.pct, 100);
 });
 
+test('band is met anywhere inside the range, and cannot be beaten', () => {
+  const cfg = { low: 1, high: 3 };
+  // Position 3 and position 1 are the same answer: the promise was "top 3".
+  assert.strictEqual(scoreGoal(goal({ type: 'band', config: cfg, actual: 3 })).pct, 100);
+  const best = scoreGoal(goal({ type: 'band', config: cfg, actual: 1 }));
+  assert.strictEqual(best.state, 'achieved');
+  assert.strictEqual(best.exceeded, false, 'a band has no such thing as beating it');
+
+  // Outside, with nothing to measure progress from: honestly binary.
+  const out = scoreGoal(goal({ type: 'band', config: cfg, actual: 5 }));
+  assert.strictEqual(out.pct, 0);
+  assert.strictEqual(out.mode, 'binary');
+});
+
+test('band gives partial credit only from OUTSIDE, on the same side', () => {
+  const cfg = { low: 1, high: 3, baseline: 8 };
+  // 8 -> 5 against an edge of 3 is three fifths of the way there.
+  const closing = scoreGoal(goal({ type: 'band', config: cfg, actual: 5 }));
+  assert.strictEqual(closing.pct, 60);
+  assert.strictEqual(closing.mode, 'graded');
+
+  // Moved the wrong way. Clamped at zero, and flagged.
+  const worse = scoreGoal(goal({ type: 'band', config: cfg, actual: 9 }));
+  assert.strictEqual(worse.pct, 0);
+  assert.strictEqual(worse.regressed, true);
+
+  // Below the range, closing on the OTHER edge. The formula needs no branch for
+  // direction; it needs the right edge, which is the one it is approaching.
+  const under = scoreGoal(goal({
+    type: 'band', config: { low: 70, high: 85, baseline: 40 }, actual: 60,
+  }));
+  assert.strictEqual(under.pct, 66.7);
+});
+
+test('a band goal that FELL OUT of its range scores zero, not 500%', () => {
+  /**
+   * The trap. `gapClosed(2, 3, 7)` is `(7-2)/(3-2)` = 5, and the obvious graded
+   * branch would report 500% and the state `exceeded` for a goal that started
+   * inside its own range and ended outside it. The same thing happens through a
+   * second door when the baseline was outside on the OPPOSITE side.
+   */
+  const fell = scoreGoal(goal({
+    type: 'band', config: { low: 1, high: 3, baseline: 2 }, actual: 7,
+  }));
+  assert.strictEqual(fell.pct, 0);
+  assert.strictEqual(fell.state, 'missed');
+  assert.strictEqual(fell.exceeded, false);
+  assert.strictEqual(fell.reason, 'startedInsideOrBeyond');
+
+  const crossedOver = scoreGoal(goal({
+    type: 'band', config: { low: 1, high: 3, baseline: 0 }, actual: 7,
+  }));
+  assert.strictEqual(crossedOver.pct, 0);
+  assert.strictEqual(crossedOver.reason, 'startedInsideOrBeyond');
+});
+
+test('band refuses a range it cannot read, and survives one edited backwards', () => {
+  assert.strictEqual(
+    getGoalType('band').validateConfig({ low: 1 }),
+    'Set both ends of the range.'
+  );
+  assert.strictEqual(
+    getGoalType('band').validateConfig({ low: 3, high: 1 }),
+    'The lowest end has to be below the highest.'
+  );
+  assert.strictEqual(getGoalType('band').validateConfig({ low: 1, high: 3 }), null);
+
+  // Unsavable through the app, still readable from the database. Reading 3-1 as
+  // an empty band would score a perfectly good result as a miss.
+  assert.strictEqual(
+    scoreGoal(goal({ type: 'band', config: { low: 3, high: 1 }, actual: 2 })).pct,
+    100
+  );
+  // And a row with no range at all is an unanswered question, not a failure.
+  const noRange = scoreGoal(goal({ type: 'band', config: {}, actual: 4 }));
+  assert.strictEqual(noRange.state, 'untracked');
+  assert.strictEqual(noRange.reason, 'noRange');
+  assert.strictEqual(
+    scoreGoal(goal({ type: 'band', config: { low: 1, high: 3 }, actual: null })).state,
+    'untracked'
+  );
+});
+
 test('deadline scores on time, late, and never', () => {
   const cfg = { dueDayKey: '2026-08-15' };
   assert.strictEqual(scoreGoal(goal({ type: 'deadline', config: cfg, actualDayKey: '2026-08-15' })).pct, 100);
@@ -360,6 +443,37 @@ test('every type is describable to the client, with no functions leaking', () =>
       assert.ok(f.label, `${t.key}.${f.key} needs a label`);
     }
   }
+});
+
+test('every type says which config field the goals table edits as its Target', () => {
+  /**
+   * `goalDisplay.targetFieldOf` used to carry its own map of this, which is a
+   * second declaration of something this file already knows — and the way it
+   * failed was silent: a type the map had never heard of rendered an
+   * uneditable dash where its target belonged, on every row, with nothing to
+   * say why. `band` was the type that found it.
+   *
+   * NULL is a real answer and the important one. `boolean` and `rating` promise
+   * no number at all, so their Target cell must stay a dash you cannot type in.
+   */
+  for (const t of describeGoalTypes()) {
+    assert.ok('targetConfigKey' in t, `${t.key} must declare one, even as null`);
+    if (t.targetConfigKey === null) continue;
+    assert.ok(
+      t.configFields.some((f) => f.key === t.targetConfigKey),
+      `${t.key} names "${t.targetConfigKey}", which is not one of its config fields`
+    );
+  }
+  const byKey = Object.fromEntries(describeGoalTypes().map((t) => [t.key, t.targetConfigKey]));
+  assert.deepEqual(byKey, {
+    numeric: 'target',
+    boolean: null,
+    checklist: 'total',
+    threshold: 'limit',
+    band: 'high',
+    deadline: 'dueDayKey',
+    rating: null,
+  });
 });
 
 test('every type validates its own config', () => {

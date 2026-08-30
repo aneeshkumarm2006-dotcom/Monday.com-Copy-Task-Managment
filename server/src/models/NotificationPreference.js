@@ -50,6 +50,12 @@ const notificationPreferenceSchema = new mongoose.Schema(
       // monthly nag with no off switch is how a workspace learns to ignore the
       // bell entirely.
       goals: { type: channelSchema, default: () => ({}) },
+      // SEO connector alerts — rank drops and lost backlinks. Its own category
+      // for the same reason `goals` has one, only more so: these are generated
+      // by a machine that looks at every tracked keyword every day, so an
+      // unmapped type here would be the loudest thing in the bell with no way
+      // to turn it down. See TYPE_CATEGORY in notificationService.
+      seo: { type: channelSchema, default: () => ({}) },
     },
     // ---- Email mute switches (email channel only; in-app is unaffected) ----
     // Master kill-switch: when true, NO email notifications are sent to this

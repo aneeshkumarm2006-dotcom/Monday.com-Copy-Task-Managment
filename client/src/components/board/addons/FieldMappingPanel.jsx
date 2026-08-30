@@ -72,6 +72,25 @@ const COLUMN_TYPE_FOR = {
   link: 'link',
 };
 
+/**
+ * When a kind's field list stops being a list and starts being a wall.
+ *
+ * The grouping below already answers "a flat list of two dozen fields is a
+ * wall" — but one KIND can now be a wall on its own. DataForSEO's site audit
+ * carries a field per technical check DataForSEO's own scoring formula gives a
+ * weight to, which is forty-four rows under one heading, and that list is
+ * deliberately not curated: whichever checks somebody happened to think of is
+ * exactly the thing a curated list would freeze.
+ *
+ * So a long section is folded rather than trimmed. What stays visible when it
+ * is folded is the first few plus EVERY MAPPED ROW, in catalog order — a
+ * mapping you have already made must never be hidden behind a button, because
+ * "where did my binding go" is a worse question than "where is the rest of the
+ * list".
+ */
+const LONG_SECTION = 14;
+const FOLDED_PREVIEW = 8;
+
 const FieldMappingPanel = ({
   boardId,
   provider,
@@ -101,6 +120,8 @@ const FieldMappingPanel = ({
    */
   const [columnFor, setColumnFor] = useState(null);
   const [goalColumns, setGoalColumns] = useState([]);
+  /** Which long sections a person has opened. Per visit, not persisted. */
+  const [openKinds, setOpenKinds] = useState(() => new Set());
   /** The last "Fill goals now" report, rendered under the blurb. */
   const [writeback, setWriteback] = useState(null);
   const [filling, setFilling] = useState(false);
@@ -301,43 +322,77 @@ const FieldMappingPanel = ({
         )}
       </div>
 
-      {groups.map(({ kind, fields }) => (
-        <section key={kind.key} style={{ borderTop: '1px solid var(--color-border)' }}>
-          <div
-            className="px-4 py-2"
-            style={{ background: 'var(--color-bg-subtle)' }}
-          >
-            <h4
-              className="font-body font-medium"
-              style={{
-                fontSize: 11,
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em',
-                color: 'var(--color-text-secondary)',
-              }}
-            >
-              {kind.label}
-            </h4>
-          </div>
+      {groups.map(({ kind, fields }) => {
+        const folds = fields.length > LONG_SECTION;
+        const open = !folds || openKinds.has(kind.key);
+        // Every mapped row stays visible when folded, whatever its position.
+        const visible = open
+          ? fields
+          : fields.filter((f, i) => i < FOLDED_PREVIEW || mappingByField.has(f.key));
+        const hidden = fields.length - visible.length;
 
-          <ul>
-            {fields.map((field) => (
-              <FieldRow
-                key={field.key}
-                field={field}
-                targets={data.targets}
-                targetById={targetById}
-                mapping={mappingByField.get(field.key) || null}
-                canManage={canManage}
-                canManageColumns={canManageColumns}
-                saving={savingField === field.key}
-                onChange={(targetId) => save(field, targetId)}
-                onAddColumn={() => openColumnShortcut(field)}
-              />
-            ))}
-          </ul>
-        </section>
-      ))}
+        return (
+          <section key={kind.key} style={{ borderTop: '1px solid var(--color-border)' }}>
+            <div
+              className="px-4 py-2 flex items-center justify-between gap-3"
+              style={{ background: 'var(--color-bg-subtle)' }}
+            >
+              <h4
+                className="font-body font-medium"
+                style={{
+                  fontSize: 11,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  color: 'var(--color-text-secondary)',
+                }}
+              >
+                {kind.label}
+              </h4>
+              {folds && (
+                <span className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+                  {fields.length} values
+                </span>
+              )}
+            </div>
+
+            <ul>
+              {visible.map((field) => (
+                <FieldRow
+                  key={field.key}
+                  field={field}
+                  targets={data.targets}
+                  targetById={targetById}
+                  mapping={mappingByField.get(field.key) || null}
+                  canManage={canManage}
+                  canManageColumns={canManageColumns}
+                  saving={savingField === field.key}
+                  onChange={(targetId) => save(field, targetId)}
+                  onAddColumn={() => openColumnShortcut(field)}
+                />
+              ))}
+            </ul>
+
+            {folds && (
+              <button
+                type="button"
+                className="w-full px-4 py-2 text-left font-body"
+                style={{ fontSize: 12, color: 'var(--color-accent)' }}
+                aria-expanded={open}
+                onClick={() =>
+                  setOpenKinds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(kind.key)) next.delete(kind.key);
+                    else next.add(kind.key);
+                    return next;
+                  })
+                }
+              >
+                {open ? 'Show fewer' : `Show ${hidden} more`}
+              </button>
+            )}
+          </section>
+        );
+      })}
 
       {columnFor && (
         <GoalColumnsModal

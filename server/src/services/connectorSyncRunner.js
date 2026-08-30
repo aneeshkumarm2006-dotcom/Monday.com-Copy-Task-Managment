@@ -124,6 +124,14 @@ const syncProvider = async (provider, { now = new Date() } = {}) => {
   const kindsByProject = new Map(
     schedule.map((e) => [String(e.project._id), e.kinds])
   );
+  /**
+   * The cadence each project's boards asked for, already reduced to a min by
+   * `scheduleForProvider`. Null where nobody asked, which the snapshot service
+   * turns back into the descriptor's own default.
+   */
+  const intervalByProject = new Map(
+    schedule.map((e) => [String(e.project._id), e.intervalHours ?? null])
+  );
 
   const report = await collectSnapshots({
     provider,
@@ -134,6 +142,11 @@ const syncProvider = async (provider, { now = new Date() } = {}) => {
     // site-audit crawl is somebody pressing a button, never a schedule.
     kindsFor: (project) =>
       connector.resolveKinds(kindsByProject.get(String(project._id))),
+    // The sibling seam. Both answer a per-project question resolved from
+    // BoardConnector rows, which is knowledge the snapshot service deliberately
+    // does not have.
+    intervalHoursFor: (project) =>
+      intervalByProject.get(String(project._id)) ?? null,
     force: false,
     actorId: null, // nobody was watching
     now,
@@ -203,10 +216,15 @@ const tick = async ({ now = new Date() } = {}) => {
       }
     }
 
-    if (report.written || report.failed) {
+    // `queued` earns its place in the condition as well as in the line: a pass
+    // that did nothing but poll a provider's outstanding requests wrote nothing
+    // and failed nothing, and would otherwise log nothing at all — which is
+    // indistinguishable in the logs from a connector that has stopped working.
+    if (report.written || report.failed || report.queued) {
       console.log(
         `[connectorSync] ${provider}: ${report.written} written, ` +
           `${report.ok} collected, ${report.failed} failed, ${report.skipped} current` +
+          (report.queued ? `, ${report.queued} queued` : '') +
           (report.quotaExhausted ? ' (quota exhausted on at least one account)' : '')
       );
     }

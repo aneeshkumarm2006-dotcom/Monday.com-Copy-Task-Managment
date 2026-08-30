@@ -20,7 +20,7 @@ const { getConnector } = require('./index');
  * the Ads-board connector a new directory rather than a second runner. The
  * moment this file gains an `if (provider === …)` the seam is gone.
  *
- * ---- The three stop conditions, and why they are not the same --------------
+ * ---- The four outcomes, and why they are not the same -----------------------
  *
  *   QUOTA EXHAUSTED — stop this ACCOUNT for this run and record it. It is not a
  *     fault and not retryable: report limits reset daily, credits monthly, and
@@ -35,6 +35,31 @@ const { getConnector } = require('./index');
  *     GOING. A week where 3 of 200 subjects failed is a successful sync with 3
  *     gaps. Collapsing that into a thrown error would discard 197 readings to
  *     report 3, and next week's run would have nothing to compare against.
+ *
+ * ---- The fourth outcome: PENDING -------------------------------------------
+ *
+ * A provider that ASKS FOR WORK NOW and COLLECTS IT LATER — one that posts a
+ * task and polls for it, or one that has hit a spend ceiling this operator set —
+ * has a fourth answer to give: "nothing is wrong, and nothing is ready".
+ *
+ * It cannot be an error. `syncAccount` copies the first error into
+ * `ConnectorAccount.lastSyncReport.error`, so an operator would read "queued at
+ * the provider" as a permanent account failure and go looking for a broken
+ * credential.
+ *
+ * It cannot be a snapshot either, and that is the load-bearing half. A snapshot
+ * is IDENTIFIED by its `periodKey`, and `periodKey` comes from the reading's own
+ * `collectedAt` — which an unfinished request does not have. Storing an
+ * in-flight marker means storing it under today's date as a guess, in a
+ * collection whose entire premise is that the key is authoritative. The next day
+ * it writes a second guess; the read sorts `periodKey: -1` and takes the first
+ * row, so the newer empty one outranks the older real one; `trend` gains holes;
+ * and every dependant starves on a `null` body.
+ *
+ * So `result.status === 'pending'` writes NOTHING, feeds NOTHING, and is counted
+ * as `queued` rather than as `ok` or `failed`. Generic, and it names no
+ * provider — an in-flight REQUEST is the provider's own problem to record, in
+ * the provider's own collection, where its identity does not need a date.
  *
  * ---- What is never written -------------------------------------------------
  *
@@ -99,6 +124,21 @@ const isFresh = (existing, intervalHours, now = new Date()) => {
 };
 
 /**
+ * A cadence somebody ASKED for, or null meaning "no opinion".
+ *
+ * One place to say what a usable override is, because there are two of them —
+ * a board row read from the database, and whatever `intervalHoursFor` hands
+ * back — and a 0, a NaN or a negative from either one would make every kind
+ * permanently stale and turn the hourly tick into an hourly spend. Falling back
+ * is always safe; trusting the number is not.
+ *
+ * @param {any} value
+ * @returns {number|null}
+ */
+const askedInterval = (value) =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+
+/**
  * Work out what to fetch for one project, without fetching anything.
  *
  * Pure, and separated for exactly that reason — this is where quota is decided,
@@ -110,10 +150,12 @@ const isFresh = (existing, intervalHours, now = new Date()) => {
  * @param {Array<Object>} args.kinds - resolved kind descriptors, in dependency order
  * @param {Function} args.variantsFor - `(kindKey, project) => { variants, skipped }`
  * @param {Map<string, Object>} args.latest - `${kind}|${variant}` → newest snapshot
- * @param {number} args.intervalHours
+ * @param {number} args.intervalHours - the connector-wide default; a kind may
+ *   override it with its own `intervalHours`
  * @param {boolean} [args.force] - an explicit button press ignores freshness
  * @param {Date} [args.now]
- * @returns {{ todo: Array<Object>, skipped: Array<Object> }}
+ * @returns {{ todo: Array<{kind: Object, variant: Object, existing: Object|null}>,
+ *   skipped: Array<Object> }}
  */
 const planProjectWork = ({
   project,
@@ -155,12 +197,34 @@ const planProjectWork = ({
 
     for (const variant of variants) {
       const key = `${kind.key}|${variant.key}`;
-      const existing = latest.get(key);
-      if (!force && isFresh(existing, intervalHours, now)) {
+      const existing = latest.get(key) || null;
+
+      /**
+       * Per-kind cadence, resolved HERE rather than inside `isFresh`.
+       *
+       * One provider does not have one cadence. A rank census that is bought at
+       * depth 100 belongs on a weekly clock; the same provider's movement check
+       * belongs on a daily one; a backlink profile barely moves in a month. A
+       * single number per descriptor forces all of them onto the fastest, and
+       * for a provider that bills per call that is the difference between one
+       * charge a week and seven.
+       *
+       * `isFresh` stays PURE and stays two-argument. It answers "is this row
+       * younger than N hours", which is a fact about the row; WHICH N applies is
+       * a policy decision belonging to the planner, and the whole reason the
+       * planner is separated out is that quota decisions are asserted here.
+       */
+      const kindInterval = kind.intervalHours ?? intervalHours;
+
+      if (!force && isFresh(existing, kindInterval, now)) {
         skipped.push({ kind: kind.key, variant: variant.key, reason: 'already current' });
         continue;
       }
-      todo.push({ kind, variant });
+      // `existing` travels with the item so the fetcher can see it. A provider
+      // billed per call needs to answer "is it worth asking again", and rebuilding
+      // this map inside the provider would mean a second query per fetch for
+      // something already in hand — it was built and thrown away before this.
+      todo.push({ kind, variant, existing });
     }
   }
 
@@ -179,7 +243,7 @@ const planProjectWork = ({
  * insert, collides with the unique index, and is caught below as "the row we
  * already had was better", which is the correct outcome rather than an error.
  *
- * @returns {Promise<{written: boolean, periodKey: string}>}
+ * @returns {Promise<{written: boolean, periodKey: string|null, pending: boolean}>}
  */
 const writeSnapshot = async ({
   project,
@@ -190,6 +254,24 @@ const writeSnapshot = async ({
   actorId = null,
   now = new Date(),
 }) => {
+  /**
+   * The `pending` sentinel — see this file's header.
+   *
+   * Checked BEFORE a period is computed, deliberately. `periodKeyFrom` falls
+   * back to today for anything without a `collectedAt`, so reaching the line
+   * below would mint a plausible, wrong, authoritative-looking key for a reading
+   * that does not exist yet. There is no correct answer to return here, which is
+   * why the answer is `null` and not a date.
+   *
+   * NOT an entry in `ConnectorSnapshot.status`. That enum was reasoned about for
+   * exactly two states, `writeSnapshot`'s `{$ne: 'ok'}` narrowing depends on
+   * that, and a third value for one provider's transport is the shared-schema
+   * change this seam exists to avoid.
+   */
+  if (result.status === 'pending') {
+    return { written: false, periodKey: null, pending: true };
+  }
+
   const periodKey = periodKeyFrom(result.collectedAt, now);
   const status = result.status === 'partial' ? 'partial' : 'ok';
 
@@ -234,13 +316,13 @@ const writeSnapshot = async ({
       },
       { upsert: true }
     );
-    return { written: true, periodKey };
+    return { written: true, periodKey, pending: false };
   } catch (err) {
     if (err?.code === 11000) {
       // Either a concurrent run got there first, or the narrowed filter above
       // refused to downgrade a finished reading. Both mean the row that exists
       // is at least as good as the one we had.
-      return { written: false, periodKey };
+      return { written: false, periodKey, pending: false };
     }
     throw err;
   }
@@ -277,6 +359,18 @@ const syncProject = async ({
     failed: 0,
     skipped: 0,
     written: 0,
+    /**
+     * Asked for, not yet available — see the `pending` sentinel in this file's
+     * header. Counted SEPARATELY from all three of the others on purpose:
+     *
+     *   `ok`      would claim a reading exists;
+     *   `failed`  would put "queued" in front of an operator as a fault;
+     *   `skipped` already means "we did not need to ask", which is the opposite.
+     *
+     * Without it a pass that did nothing but poll reports 0/0/0 and reads as a
+     * dead connector.
+     */
+    queued: 0,
     errors: [],
     notes: [],
   };
@@ -361,7 +455,7 @@ const syncProject = async ({
     return any?.data ?? null;
   };
 
-  for (const { kind, variant } of todo) {
+  for (const { kind, variant, existing } of todo) {
     const previous = {};
     let missingDep = null;
     for (const dep of kind.dependsOn) {
@@ -391,6 +485,24 @@ const syncProject = async ({
         variant,
         range,
         previous,
+        /**
+         * The newest stored reading for this exact (kind, variant), and whether
+         * a human asked for this.
+         *
+         * The planner already decided this is worth fetching — it is not fresh.
+         * These two exist for the provider that has a SECOND, stricter opinion
+         * about the same question: one billed per call can be stale by the
+         * cadence and still not worth a charge, and it is the only party that
+         * knows what the call costs.
+         *
+         * `force` is passed rather than inferred, because "not fresh" and "a
+         * person pressed Refresh" are different facts and the provider needs
+         * both — refusing a human is a different answer from refusing a cron.
+         * A provider that has no opinion ignores both and behaves exactly as
+         * before.
+         */
+        existing: existing || null,
+        force,
       });
     } catch (err) {
       // The two account-level stops. Re-thrown so the caller can end this
@@ -404,7 +516,7 @@ const syncProject = async ({
     }
 
     // eslint-disable-next-line no-await-in-loop
-    const { written } = await writeSnapshot({
+    const { written, pending } = await writeSnapshot({
       project,
       provider: connector.name,
       kind,
@@ -413,6 +525,18 @@ const syncProject = async ({
       actorId,
       now,
     });
+
+    if (pending) {
+      // Nothing was stored, so nothing may be counted as collected and nothing
+      // may be offered to a dependant — a dependant handed a queued kind's empty
+      // body would write an empty snapshot that then looks current for a week,
+      // which is strictly worse than not running it.
+      report.queued += 1;
+      // The note is the only thing a person can see about an in-flight request,
+      // so it survives even though the row did not.
+      if (result.note) report.notes.push(`${kind.key}: ${result.note}`);
+      continue;
+    }
 
     report.ok += 1;
     if (written) report.written += 1;
@@ -443,6 +567,17 @@ const syncAccount = async ({
   account,
   projects,
   kindsFor,
+  /**
+   * How often THIS project should be polled, in hours, or null for the
+   * descriptor's own default.
+   *
+   * A sibling of `kindsFor` and deliberately the same shape: both answer a
+   * question about one project that only the caller can answer, because both are
+   * resolved from `BoardConnector` rows and this file must not know that boards
+   * exist. Optional — a caller with no per-project opinion omits it and every
+   * project runs on the descriptor's cadence, exactly as before.
+   */
+  intervalHoursFor = null,
   range,
   force = false,
   actorId = null,
@@ -455,6 +590,7 @@ const syncAccount = async ({
     failed: 0,
     skipped: 0,
     written: 0,
+    queued: 0,
     quotaExhausted: false,
     needsReauth: false,
     error: '',
@@ -484,9 +620,23 @@ const syncAccount = async ({
     ? connector.createClient(session)
     : undefined;
 
-  const intervalHours = connector.syncIntervalHours || 168;
+  const defaultIntervalHours = connector.syncIntervalHours ?? 168;
 
   for (const project of projects) {
+    /**
+     * Resolved INSIDE the loop, because it is a property of the project rather
+     * than of the account: two projects on one account can be mapped to boards
+     * that asked for different cadences, and hoisting this would give the whole
+     * account whichever one happened to be first.
+     *
+     * Falsy or nonsensical values fall back rather than being trusted — a 0 or a
+     * negative here would make every kind permanently stale and turn the hourly
+     * tick into an hourly spend.
+     */
+    const intervalHours =
+      askedInterval(intervalHoursFor ? intervalHoursFor(project) : null) ??
+      defaultIntervalHours;
+
     let projectReport;
     try {
       // eslint-disable-next-line no-await-in-loop
@@ -527,6 +677,7 @@ const syncAccount = async ({
     report.failed += projectReport.failed;
     report.skipped += projectReport.skipped;
     report.written += projectReport.written;
+    report.queued += projectReport.queued;
     if (!report.error && projectReport.errors.length) {
       [report.error] = projectReport.errors;
     }
@@ -542,6 +693,7 @@ const syncAccount = async ({
           ok: report.ok,
           failed: report.failed,
           skipped: report.skipped,
+          queued: report.queued,
           error: report.error || '',
           quotaExhausted: report.quotaExhausted,
         },
@@ -564,16 +716,18 @@ const syncAccount = async ({
  * @param {string} args.provider
  * @param {Array<Object>} args.projects - ConnectorProject rows
  * @param {(project: Object) => Array<Object>} args.kindsFor
+ * @param {((project: Object) => number|null)} [args.intervalHoursFor]
  * @param {Object} [args.range]
  * @param {boolean} [args.force]
  * @param {string|null} [args.actorId]
  * @returns {Promise<{accounts: Array<Object>, ok: number, failed: number,
- *   written: number, quotaExhausted: boolean}>}
+ *   written: number, queued: number, quotaExhausted: boolean}>}
  */
 const collectSnapshots = async ({
   provider,
   projects,
   kindsFor,
+  intervalHoursFor = null,
   range,
   force = false,
   actorId = null,
@@ -605,6 +759,7 @@ const collectSnapshots = async ({
         account,
         projects: byAccount.get(String(account._id)) || [],
         kindsFor,
+        intervalHoursFor,
         range,
         force,
         actorId,
@@ -619,6 +774,7 @@ const collectSnapshots = async ({
     failed: reports.reduce((s, r) => s + r.failed, 0),
     skipped: reports.reduce((s, r) => s + r.skipped, 0),
     written: reports.reduce((s, r) => s + r.written, 0),
+    queued: reports.reduce((s, r) => s + r.queued, 0),
     quotaExhausted: reports.some((r) => r.quotaExhausted),
     needsReauth: reports.some((r) => r.needsReauth),
   };
@@ -659,17 +815,33 @@ const projectsForBoard = (boardId, provider) =>
  * unique on (provider, group) rather than on the project — is collected ONCE.
  * The kinds are unioned so neither board loses a section.
  *
+ * The cadence is resolved the matching way, as a MIN across the same boards, and
+ * the consequence is worth naming rather than discovering: the eager board's
+ * cadence is subsidised by the frugal one, because there is one collection and
+ * it has to satisfy the board that asked for the most. That is fine while
+ * budgets are per organisation. It stops being fine the day anyone bills per
+ * board. A board with no opinion contributes nothing to the min and falls back
+ * to the descriptor's own default.
+ *
  * @param {string} provider
- * @returns {Promise<Array<{project: Object, kinds: string[]}>>}
+ * @returns {Promise<Array<{project: Object, kinds: string[],
+ *   intervalHours: number|null}>>}
  */
 const scheduleForProvider = async (provider) => {
   const enabled = await BoardConnector.find({ provider, enabled: true })
-    .select('board kinds')
+    // `intervalHours` is a board's optional override. A deployment whose
+    // BoardConnector rows do not carry one yet reads `undefined` everywhere,
+    // which is exactly "no opinion" and leaves every project on the descriptor's
+    // cadence.
+    .select('board kinds intervalHours')
     .lean();
   if (!enabled.length) return [];
 
   const kindsByBoard = new Map(
     enabled.map((row) => [String(row.board), row.kinds || []])
+  );
+  const intervalByBoard = new Map(
+    enabled.map((row) => [String(row.board), askedInterval(row.intervalHours)])
   );
 
   const projects = await ConnectorProject.find({
@@ -687,8 +859,13 @@ const scheduleForProvider = async (provider) => {
   for (const project of projects) {
     const key = String(project._id);
     const boardKinds = kindsByBoard.get(String(project.board)) || [];
+    const boardInterval = intervalByBoard.get(String(project.board)) ?? null;
     if (!byProject.has(key)) {
-      byProject.set(key, { project, kinds: new Set(boardKinds) });
+      byProject.set(key, {
+        project,
+        kinds: new Set(boardKinds),
+        intervalHours: boardInterval,
+      });
       // An empty selection means "everything the provider offers", so a board
       // that narrowed cannot take a section away from a board that did not.
       if (!boardKinds.length) byProject.get(key).all = true;
@@ -697,11 +874,18 @@ const scheduleForProvider = async (provider) => {
     const entry = byProject.get(key);
     if (!boardKinds.length) entry.all = true;
     boardKinds.forEach((k) => entry.kinds.add(k));
+    if (boardInterval !== null) {
+      entry.intervalHours =
+        entry.intervalHours === null
+          ? boardInterval
+          : Math.min(entry.intervalHours, boardInterval);
+    }
   }
 
   return [...byProject.values()].map((e) => ({
     project: e.project,
     kinds: e.all ? [] : [...e.kinds],
+    intervalHours: e.intervalHours,
   }));
 };
 
@@ -716,5 +900,6 @@ module.exports = {
   planProjectWork,
   periodKeyFrom,
   isFresh,
+  askedInterval,
   dayKey,
 };

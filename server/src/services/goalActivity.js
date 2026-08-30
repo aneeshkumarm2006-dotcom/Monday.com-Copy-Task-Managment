@@ -89,6 +89,8 @@ const CONFIG_LABELS = {
   target: 'target',
   total: 'how many',
   limit: 'the line',
+  low: 'the bottom of the range',
+  high: 'the top of the range',
   direction: 'which side of the line',
   dueDayKey: 'due date',
   penaltyPerDay: 'points lost per day late',

@@ -11,6 +11,7 @@ const {
   writeSnapshot,
 } = require('../services/connectors/snapshotService');
 const { openSession } = require('../services/connectors/session');
+const { describeBudget, monthKeyFor } = require('../services/connectors/budget');
 const { runWriteback } = require('../services/connectorGoalWriteback');
 const { isConnectorProvider } = require('../utils/connectorProviders');
 const { gateBoard, publicProject } = require('./connectorController');
@@ -171,7 +172,7 @@ const getConnectorData = async (req, res) => {
         provider,
       }),
       BoardConnector.findOne({ board: ctx.board._id, provider })
-        .select('enabled kinds lastRefreshAt')
+        .select('enabled kinds enabledScreens intervalHours lastRefreshAt')
         .lean(),
     ]);
 
@@ -211,15 +212,81 @@ const getConnectorData = async (req, res) => {
         blurb: connector.blurb,
         syncIntervalHours: connector.syncIntervalHours,
         kinds: connector.kinds,
+        /**
+         * The dashboard screens this provider declares, or `[]` for one that
+         * renders through the generic one-section-per-kind tab.
+         *
+         * Sent from the SAME request the tab already makes, rather than from a
+         * second one against the catalog. The shell has to know which screens
+         * exist before it can render a nav, and a screen list arriving one round
+         * trip after the data is a nav that appears late and moves the page.
+         */
+        screens: Array.isArray(connector.screens) ? connector.screens : [],
+        /**
+         * The alert rules and their thresholds, as data, so the Alerts screen
+         * prints the server's numbers rather than restating them. Empty for a
+         * provider with no `alerts` hook.
+         */
+        alertRules: Array.isArray(connector.alerts?.RULES) ? connector.alerts.RULES : [],
       },
       enabled: !!boardConnector?.enabled,
       selectedKinds: boardConnector?.kinds || [],
+      /**
+       * What this board RENDERS, beside what it PAYS TO COLLECT above.
+       *
+       * Resolved through the descriptor rather than passed raw, so an empty
+       * selection means "everything" and an always-on screen comes back even if
+       * a stored array predates it. The client must not re-derive either rule;
+       * see `dataforseo/screens.js`.
+       */
+      selectedScreens: (typeof connector.resolveScreens === 'function'
+        ? connector.resolveScreens(boardConnector?.enabledScreens || [])
+        : []
+      ).map((s) => s.key),
+      /** Null means the descriptor's cadence. See `BoardConnector.intervalHours`. */
+      intervalHours: boardConnector?.intervalHours ?? null,
       projects,
       range,
     };
 
     if (!selected) {
-      return res.json({ ...base, project: null, variants: [], variant: null, snapshots: {}, trend: [], keywordHistory: null });
+      return res.json({
+        ...base,
+        project: null,
+        variants: [],
+        variant: null,
+        snapshots: {},
+        previousSnapshots: {},
+        trend: [],
+        queued: 0,
+        keywordHistory: null,
+      });
+    }
+
+    /**
+     * How much of this project is bought and not yet delivered.
+     *
+     * A provider that posts work and collects it later has a state the snapshot
+     * collection deliberately cannot represent: paid for, in flight, no
+     * `periodKey` yet. Without this the tab shows an empty section for hours
+     * after a board is switched on, with nothing to explain the wait — and the
+     * obvious fix, writing a placeholder snapshot, mints a row under a guessed
+     * day that then outranks the real reading underneath it.
+     *
+     * Read through the DESCRIPTOR, not by importing a provider's model. This
+     * file must not learn that one of its providers has a task queue; a provider
+     * without one declares no hook and the count is zero. And it stays a
+     * database read, which is what keeps the rule this file exists to hold: THE
+     * READ ENDPOINT NEVER CONTACTS A PROVIDER.
+     */
+    let queued = 0;
+    if (typeof connector.queuedCount === 'function') {
+      try {
+        queued = (await connector.queuedCount(selected)) || 0;
+      } catch (err) {
+        // A badge is not worth failing a page load for.
+        console.warn(`connector queuedCount(${provider}) failed:`, err.message);
+      }
     }
 
     // Every reading this project has, newest first. Selecting the fields keeps
@@ -245,10 +312,58 @@ const getConnectorData = async (req, res) => {
     // variant — a US rank and a UK rank are two facts, and showing whichever was
     // written most recently would flip the table between markets.
     const snapshots = {};
+    /**
+     * THE READING BEFORE THE LATEST ONE, per kind.
+     *
+     * Movement is the whole point of a rank tracker, and it is a comparison
+     * between two readings — but only one of the two providers stores a
+     * previous position on the row it returns. The other bills at post and
+     * returns a plain SERP, so "how did this keyword move" can only ever be
+     * answered from the week we kept.
+     *
+     * It costs NO EXTRA QUERY: `rows` above already carries `data` for every
+     * snapshot in the window, so this is a second assignment inside a loop that
+     * was already running. What it costs is wire bytes — roughly one more
+     * aggregate per kind, ~16 KB at 200 keywords — which is why it is the
+     * SECOND row and not the whole series. A client wanting more than one step
+     * back asks for one keyword's history, which is served separately below.
+     */
+    const previousSnapshots = {};
     for (const row of rows) {
-      if (row.kind === 'positions' && row.variant !== variant) continue;
-      if (snapshots[row.kind]) continue;
-      snapshots[row.kind] = publicSnapshot(row, { includeRaw });
+      /**
+       * WHICH STORED VARIANT ANSWERS FOR THE SELECTED ONE — asked of the
+       * provider, not decided here.
+       *
+       * A US rank and a UK rank are two facts, so `positions` has always been
+       * filtered to the chosen market: showing whichever was written most
+       * recently would flip the table between countries week to week. The rule
+       * itself, though, is the PROVIDER's, and one of them now has kinds whose
+       * variants are not spelled the same way its rank kind's are — DataForSEO
+       * Labs takes a location and a language and NO DEVICE, so its variant key
+       * collapses the device and can never equal a `positions` key. Compared
+       * literally, every Labs snapshot is filtered out and its screen is
+       * permanently empty; not compared at all, a two-market board silently
+       * shows one market's competitors under the other's heading.
+       *
+       * `sameVariant` is optional and the fallback below is the behaviour that
+       * was here before it existed, so a provider with one variant shape
+       * declares nothing and nothing changes for it.
+       */
+      const sameVariant =
+        typeof connector.sameVariant === 'function'
+          ? connector.sameVariant(row.kind, row.variant, variant)
+          : row.kind !== 'positions' || row.variant === variant;
+      if (!sameVariant) continue;
+      if (!snapshots[row.kind]) {
+        snapshots[row.kind] = publicSnapshot(row, { includeRaw });
+        continue;
+      }
+      if (previousSnapshots[row.kind]) continue;
+      // Only a FINISHED reading may be the baseline. A partial one is a short
+      // collection, and half a keyword list would report every missing keyword
+      // as having entered the rankings this week.
+      if (row.status !== 'ok') continue;
+      previousSnapshots[row.kind] = publicSnapshot(row);
     }
 
     /**
@@ -298,9 +413,31 @@ const getConnectorData = async (req, res) => {
           return {
             periodKey: r.periodKey,
             collectedAt: r.collectedAt || null,
-            // null here is "not in the top 100" and is a real answer. The client
-            // must render it as that, never as a gap in the line.
-            position: hit.position,
+            /**
+             * null here is "not in the top 100" and is a real answer. The client
+             * must render it as that, never as a gap in the line.
+             *
+             * TWO SPELLINGS, and this is the whole of the accommodation. The
+             * first provider normalises to `position` (its API's own word) and
+             * the second to `rank` (`rank_group`, its API's own word), and
+             * neither is going to be renamed: `position` is read by
+             * `connectorGoalWriteback` and by a year of stored Ubersuggest
+             * snapshots, and `rank` sits beside `rankAbsolute`, whose gap is a
+             * free measure of SERP-feature pressure and would read as nonsense
+             * spelled `positionAbsolute`.
+             *
+             * Checked with `typeof` rather than `??` deliberately: `position` is
+             * legitimately `null` for "does not rank", and `a ?? b` would fall
+             * through that null to an undefined `rank` and turn a real answer
+             * into a missing one — collapsing three outcomes into two, which is
+             * the exact failure `connectorFormat.formatRank` exists to prevent.
+             */
+            position:
+              typeof hit.position === 'number'
+                ? hit.position
+                : typeof hit.rank === 'number'
+                  ? hit.rank
+                  : null,
             ranked: hit.ranked,
             status: hit.status,
           };
@@ -310,17 +447,185 @@ const getConnectorData = async (req, res) => {
       keywordHistory = { keyword: wanted, points };
     }
 
+    /**
+     * WHAT THE LATEST READING WOULD SET OFF, and why — phase 10.
+     *
+     * Asked of the DESCRIPTOR, and computed from `snapshots` and
+     * `previousSnapshots` which are already in memory two dozen lines above. No
+     * extra query, no provider contact, and — the point — no second
+     * implementation: `services/seoAlertRunner.js` calls the identical function
+     * with the identical shape when it decides whether to send a notification,
+     * so what the screen shows and what the bell says can never disagree about a
+     * threshold.
+     *
+     * That is deliberately unlike `comparability`, which exists twice (here and
+     * in two client utilities) because a screen needed the answer without a
+     * round trip. This screen has one anyway.
+     *
+     * A provider declaring no hook gets an empty list, which is exactly what the
+     * generic tab renders today.
+     */
+    let alerts = [];
+    if (typeof connector.alerts?.evaluate === 'function') {
+      try {
+        alerts = connector.alerts.evaluate({
+          snapshots,
+          previousSnapshots,
+          label: selected.name || selected.domain || 'This site',
+        });
+      } catch (err) {
+        // A panel is not worth failing a page load for. Same rule as
+        // `queuedCount` above it.
+        console.warn(`connector alerts(${provider}) failed:`, err.message);
+      }
+    }
+
     return res.json({
       ...base,
       project: selected,
       variants,
       variant,
       snapshots,
+      previousSnapshots,
       trend,
+      queued,
       keywordHistory,
+      alerts,
     });
   } catch (err) {
     console.error('getConnectorData error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/boards/:boardId/connectors/:provider/usage
+ *
+ * Query: months
+ *
+ * What this board's collections have cost, what is still in flight, and how much
+ * of the month's cap is left.
+ *
+ * ---- It obeys the same rule as the read above it ---------------------------
+ *
+ * IT NEVER CONTACTS A PROVIDER, and on a provider that bills at post that is a
+ * stronger statement than it was for the first one. The obvious source for
+ * "what have we spent" is the account's own balance endpoint, which is free —
+ * and it is the wrong number twice over: it is the balance of ONE SHARED
+ * ACCOUNT across every organisation on it, and a read endpoint that reaches a
+ * third party is one open browser tab away from being rate-limited. Everything
+ * here comes from `ConnectorBudget` (our ledger of what was reserved and
+ * settled) and from the descriptor's own `describeUsage` hook.
+ *
+ * ---- Who sees which half ---------------------------------------------------
+ *
+ * The gate is `connector.view`, the same rung as the data read, because the
+ * screen's subject is THIS BOARD'S collections. But the ORG cap is a fact about
+ * the whole workspace's money and is returned only to somebody holding
+ * `connector.manage` — a board reader gets what this board has spent and what
+ * its own allocation is, and nothing about the workspace's ceiling. Two
+ * questions, two audiences, one endpoint.
+ */
+const getConnectorUsage = async (req, res) => {
+  try {
+    const gated = await gateProvider(req, res, 'connector.view');
+    if (!gated) return undefined;
+    const { ctx, connector, provider } = gated;
+
+    const canManage = !!ctx.can('connector.manage');
+    const now = new Date();
+    const periodKey = monthKeyFor(now);
+
+    const [projects, boardConnector] = await Promise.all([
+      projectsForBoard(ctx.board._id, provider),
+      BoardConnector.findOne({ board: ctx.board._id, provider })
+        .select('enabled kinds enabledScreens intervalHours budget lastRefreshAt')
+        .lean(),
+    ]);
+
+    /**
+     * The two budget documents, read and never written.
+     *
+     * `describeBudget` returns null for a period nobody has spent in yet, and
+     * null is the honest answer — the row is created at the moment of the first
+     * reservation (`ensureBudget`), and minting one from a read endpoint would
+     * stamp `capUsd` from today's environment into a month that has not started
+     * spending. That is precisely the "a cap silently rose because somebody
+     * redeployed" failure `DEFAULT_MONTHLY_CAP_USD` is only read at
+     * `$setOnInsert` to avoid.
+     */
+    const [orgBudget, boardBudget] = await Promise.all([
+      canManage
+        ? describeBudget({
+            organisation: ctx.board.organisation,
+            provider,
+            scope: 'org',
+            scopeId: ctx.board.organisation,
+            periodKey,
+          })
+        : Promise.resolve(null),
+      describeBudget({
+        organisation: ctx.board.organisation,
+        provider,
+        scope: 'board',
+        scopeId: ctx.board._id,
+        periodKey,
+      }),
+    ]);
+
+    /**
+     * The provider's own ledger, through the DESCRIPTOR.
+     *
+     * Same seam as `queuedCount` on the read above: this controller must not
+     * learn that one of its providers buys work asynchronously and keeps a task
+     * table. A provider that declares no hook answers with the budget alone,
+     * which is a complete and correct screen for one that bills per month.
+     */
+    let ledger = null;
+    if (typeof connector.describeUsage === 'function') {
+      try {
+        ledger = await connector.describeUsage({
+          organisation: ctx.board.organisation,
+          board: ctx.board._id,
+          projects,
+          months: Number(req.query?.months) || undefined,
+          now,
+        });
+      } catch (err) {
+        // A spend panel is not worth failing a page load for; the budget half
+        // above is the part that answers "may we still collect".
+        console.warn(`connector describeUsage(${provider}) failed:`, err.message);
+      }
+    }
+
+    return res.json({
+      canManage,
+      periodKey,
+      provider: {
+        name: connector.name,
+        label: connector.label,
+        syncIntervalHours: connector.syncIntervalHours,
+        kinds: connector.kinds || [],
+        screens: connector.screens || [],
+      },
+      board: {
+        enabled: !!boardConnector?.enabled,
+        kinds: boardConnector?.kinds || [],
+        enabledScreens: boardConnector?.enabledScreens || [],
+        intervalHours: boardConnector?.intervalHours ?? null,
+        allocationUsd: boardConnector?.budget?.monthlyUsd ?? null,
+        alertAtPct: boardConnector?.budget?.alertAtPct ?? 80,
+        lastRefreshAt: boardConnector?.lastRefreshAt || null,
+        projectCount: projects.length,
+      },
+      /** Null for a workspace member without `connector.manage`. See the header. */
+      orgBudget,
+      /** Null when this board has no allocation, which is the normal state. */
+      boardBudget,
+      ledger,
+    });
+  } catch (err) {
+    console.error('getConnectorUsage error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -336,11 +641,29 @@ const getConnectorData = async (req, res) => {
  * Collect now, rather than waiting for the weekly pass. `connector.manage`,
  * because it spends a quota shared by the whole workspace.
  *
- * `force` is implicit and total: a person pressing Refresh has said they want
- * this now, and the freshness check exists to stop a SCHEDULE from re-reading
- * data that has not moved, not to argue with a human. It is also close to free —
- * the provider bills per report SUBJECT per day, so a second pull of the same
- * project on the same day costs nothing.
+ * ---- `force` USED TO BE IMPLICIT AND TOTAL. It is not any more --------------
+ *
+ * The old justification, verbatim, was: "a person pressing Refresh has said they
+ * want this now, and the freshness check exists to stop a SCHEDULE from
+ * re-reading data that has not moved, not to argue with a human. It is also
+ * close to free — the provider bills per report SUBJECT per day, so a second
+ * pull of the same project on the same day costs nothing."
+ *
+ * The first half still holds. THE SECOND HALF IS FALSE FOR ONE OF TWO PROVIDERS
+ * and is rewritten rather than deleted, because a justification that is no
+ * longer true is how the next person re-introduces the bug it was written to
+ * prevent. Ubersuggest bills per report subject per day; DataForSEO bills AT
+ * POST, per task, so the same button press there is a purchase — 200 keywords in
+ * two markets is $0.24 every time somebody leans on it, and for that provider
+ * `force` also resets the attempt chain on a job that has already been given up
+ * on.
+ *
+ * So the descriptor is asked instead of assumed. `forceRefetchIsFree: true` on
+ * Ubersuggest keeps its behaviour byte-identical; `false` on DataForSEO makes a
+ * plain Refresh respect the cadence and collect for free whatever is already
+ * bought. A person who genuinely means "buy it again" sends `{force: true}` in
+ * the body — an explicit act, which is the only kind that should be able to
+ * spend money by accident-proof design.
  *
  * Answers 200 with a per-account report even when some accounts failed. A pool
  * where one account is out of quota and three are fine is a successful refresh
@@ -411,7 +734,16 @@ const refreshConnectorData = async (req, res) => {
       provider,
       projects,
       kindsFor: () => connector.resolveKinds(asked),
-      force: true,
+      /**
+       * Free to re-fetch → force, exactly as before. Billed per call → only when
+       * the caller said so in as many words. See the header.
+       *
+       * `!== false` rather than `=== true` so a descriptor that has no opinion
+       * keeps the old behaviour; opting OUT is the deliberate act, because a
+       * provider whose author forgot to think about this is far more likely to be
+       * free than to be metered.
+       */
+      force: connector.forceRefetchIsFree !== false || req.body?.force === true,
       actorId: req.user.userId,
     });
 
@@ -579,6 +911,7 @@ const runConnectorAction = async (req, res) => {
 
 module.exports = {
   getConnectorData,
+  getConnectorUsage,
   refreshConnectorData,
   runConnectorAction,
   // Exported for the tests and for phases 4-5, which read the same shapes.

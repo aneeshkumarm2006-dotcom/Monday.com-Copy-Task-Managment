@@ -93,6 +93,7 @@ const TARGET_KEY_BY_TYPE = {
   checklist: 'total',
   threshold: 'limit',
   deadline: 'dueDayKey',
+  band: 'high',
 };
 
 const BASELINE_TYPES = ['numeric', 'threshold'];
@@ -103,7 +104,21 @@ const BASELINE_TYPES = ['numeric', 'threshold'];
  * comes back — or at all, if it fails.
  */
 export const targetFieldOf = (typeSpec, type) => {
-  const key = TARGET_KEY_BY_TYPE[typeSpec?.key || type];
+  /**
+   * THE SERVER'S ANSWER WINS, and the map above is only the pre-load fallback.
+   *
+   * `describeGoalTypes()` now declares `targetConfigKey` per type, which is what
+   * stops this file being a second, quietly divergent declaration of something
+   * `goalTypes.js` already knows. A type the map has never heard of used to
+   * render an uneditable dash where its target belongs — silently, on every row.
+   *
+   * `'targetConfigKey' in typeSpec` rather than a truthiness check, because
+   * `null` is a REAL answer ("this type promises no number") and must not fall
+   * through to the map.
+   */
+  const key = typeSpec && 'targetConfigKey' in typeSpec
+    ? typeSpec.targetConfigKey
+    : TARGET_KEY_BY_TYPE[typeSpec?.key || type];
   if (!key) return null;
   const field = (typeSpec?.configFields || []).find((f) => f.key === key);
   return {
@@ -157,6 +172,23 @@ export const describeGoal = (draft, typeSpec) => {
         ? ` You’re at ${val(Number(c.baseline))} now, so getting closer counts for something.`
         : ' No starting point given, so this one is pass or fail.';
       return `${name} — stay ${side} ${val(Number(c.limit))}.${base}`;
+    }
+    case 'band': {
+      const blank = (v) => v === undefined || v === null || v === '';
+      if (blank(c.low) || blank(c.high)) return name;
+      const lo = Number(c.low);
+      const hi = Number(c.high);
+      // Partial credit needs a starting point OUTSIDE the range — see the
+      // `band` header in the server's `goalTypes.js`. Starting inside it and
+      // falling out is a miss, so the sentence must not promise otherwise.
+      const started = blank(c.baseline) ? null : Number(c.baseline);
+      const outside = started !== null && (started < lo || started > hi);
+      const base = started === null
+        ? ' No starting point given, so this one is in or out.'
+        : outside
+          ? ` You’re at ${val(started)} now, so getting closer counts for something.`
+          : ` You’re already inside it at ${val(started)}, so this one is in or out.`;
+      return `${name} — land between ${val(lo)} and ${val(hi)}.${base}`;
     }
     case 'deadline':
       return c.dueDayKey ? `${name} — has to be done by ${c.dueDayKey}.` : name;

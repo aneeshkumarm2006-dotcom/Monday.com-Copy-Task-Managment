@@ -18,6 +18,11 @@ const CATEGORIES = [
   { key: 'taskMoves', label: 'Task moves', hint: 'When a task is moved to a new group' },
   { key: 'invites', label: 'Invites & members', hint: 'Board access and workspace joins' },
   { key: 'goals', label: 'Monthly goals', hint: 'Reminders to fill in a month’s final numbers' },
+  // The SEO connector's alerts. Given a category of its own rather than
+  // folded into another because an UNMAPPED notification type is ALWAYS
+  // DELIVERED, and a rank tracker is a machine that looks at every tracked
+  // keyword every day — the loudest possible thing in the bell.
+  { key: 'seo', label: 'SEO alerts', hint: 'Rank drops and lost backlinks on connected sites' },
 ];
 
 const minutesToTime = (mins) => {

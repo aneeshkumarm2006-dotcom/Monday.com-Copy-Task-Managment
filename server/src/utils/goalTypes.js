@@ -133,6 +133,7 @@ const GOAL_TYPES = {
       'Newsletter subscribers: 900 → 1,200',
     ],
     namePlaceholder: 'Grow website visits',
+    targetConfigKey: 'target',
     // Works in both directions with no extra setting: a target below the
     // baseline simply flips both signs of the ratio.
     supportsUnit: true,
@@ -160,6 +161,7 @@ const GOAL_TYPES = {
       'Send the client their new logins',
     ],
     namePlaceholder: 'Publish the case study',
+    targetConfigKey: null,
     supportsUnit: false,
     configFields: [],
     actualField: { key: 'actual', label: 'Did it happen?', help: '', type: 'boolean' },
@@ -188,6 +190,7 @@ const GOAL_TYPES = {
       'Send 4 client check-in emails',
     ],
     namePlaceholder: 'Publish 8 blog posts',
+    targetConfigKey: 'total',
     supportsUnit: false,
     configFields: [
       numberField('total', 'How many are you promising?', 'The number you committed to for this month.'),
@@ -219,6 +222,7 @@ const GOAL_TYPES = {
       'Answer every client within 24 hours',
     ],
     namePlaceholder: 'Keep ad spend under budget',
+    targetConfigKey: 'limit',
     supportsUnit: true,
     configFields: [
       {
@@ -259,6 +263,117 @@ const GOAL_TYPES = {
     },
   },
 
+  /**
+   * "Land inside 1-3."
+   *
+   * ---- Why this is not `threshold` with a second number ---------------------
+   *
+   * `threshold` is ONE-SIDED and its scoring says so: `passed` is
+   * `actual <= limit`, and everything on the good side of the line is equally
+   * good. That is right for "keep ad spend under $5,000" and wrong for a window
+   * you have to end up INSIDE, where overshooting is a miss in its own right.
+   * A team asked to keep utilisation between 70% and 85% is not doing well at
+   * 20%.
+   *
+   * It is also the shape a rank goal actually has. "Get into the top 3" is not
+   * "rank at 3" (`numeric`, which would score 4 as 0% and 1 as 150%) and it is
+   * not "stay under 3" either, because a rank cannot go below 1 and pretending
+   * it can invites a target of 0.
+   *
+   * ---- Landing inside cannot be BEATEN, and that is deliberate --------------
+   *
+   * Every other graded type can exceed: 6,200 against a target of 6,000 is
+   * 103%. A band has no such thing. Position 1 inside a band of 1-3 is the goal
+   * met, not the goal beaten, so `score` returns a flat ratio of 1 and never
+   * more. Awarding extra credit for landing at the far end would quietly make
+   * "top 3" mean "aim for 1", which is a different promise from the one that
+   * was made.
+   *
+   * ---- The trap, and why the same-side rule exists -------------------------
+   *
+   * The obvious graded branch is `gapClosed(baseline, nearEstEdge, actual)`,
+   * and on its own it is spectacularly wrong in two cases that are not rare:
+   *
+   *   baseline INSIDE the band, actual outside. Band 1-3, started at 2, ended
+   *   at 7: `gapClosed(2, 3, 7)` is `(7-2)/(3-2)` = 5, which reports 500% and
+   *   the state `exceeded` for a goal that FELL OUT of its own range.
+   *
+   *   baseline outside on the OTHER side. Band 1-3, started at 0, ended at 7:
+   *   `gapClosed(0, 1, 7)` is 7. Same failure through a different door.
+   *
+   * So partial credit is only ever given when the starting point was outside
+   * the band ON THE SAME SIDE the result is on — the only arrangement in which
+   * "how much of the distance did you close" is a question with an answer.
+   * Anything else is a miss, and a miss scores zero rather than a number.
+   */
+  band: {
+    key: 'band',
+    label: 'Land inside a range',
+    hint: 'A window you have to end up inside. Too high and too low are both misses.',
+    useWhen: 'Being inside a range is the win, and overshooting is not better.',
+    notWhen: 'Only one side matters? Use “Keep it above or below”.',
+    setupShape: 'The two ends of the range',
+    answerShape: 'the number you ended on',
+    partialCredit: 'Only if you say where you started, and only from outside the range.',
+    examples: [
+      'Land in the top 3 for the main keyword',
+      'Keep ad frequency between 1.5 and 3',
+      'Keep the team between 80% and 95% booked',
+    ],
+    namePlaceholder: 'Land in the top 3',
+    targetConfigKey: 'high',
+    supportsUnit: true,
+    configFields: [
+      numberField('low', 'What is the lowest it can be?', 'The bottom end of the range. For a search position this is 1.'),
+      numberField('high', 'What is the highest it can be?', 'The top end. Anywhere between the two counts as done.'),
+      numberField('baseline', 'Where were you before? (optional)', 'Fill this in and getting closer to the range still earns part of the score.'),
+    ],
+    actualField: numberField('actual', 'Where did you land?', ''),
+    validateConfig: (c) => {
+      if (!isNum(c?.low) || !isNum(c?.high)) return 'Set both ends of the range.';
+      if (c.low > c.high) return 'The lowest end has to be below the highest.';
+      return null;
+    },
+    score: (c, actual) => {
+      if (!isNum(actual)) return { ...UNTRACKED };
+      // A row whose range never got filled in cannot be scored, and saying so
+      // beats scoring it against a number that is not there. `validateConfig`
+      // stops this being savable; a legacy or hand-edited row can still be it.
+      if (!isNum(c?.low) || !isNum(c?.high)) return { ...UNTRACKED, reason: 'noRange' };
+
+      // Sorted rather than trusted. The validator refuses a reversed range, so
+      // this only ever fires for a row edited outside the app - and reading
+      // 3-1 as an empty band would score a perfectly good result as a miss.
+      const low = Math.min(c.low, c.high);
+      const high = Math.max(c.low, c.high);
+      const graded = isNum(c?.baseline);
+
+      if (actual >= low && actual <= high) {
+        return { ...fromRatio(1), mode: graded ? 'graded' : 'binary' };
+      }
+
+      const above = actual > high;
+      const edge = above ? high : low;
+      // See the header: partial credit needs a starting point OUTSIDE the band
+      // on the same side as the result. Anything else divides by a gap that
+      // does not exist and reports a fall out of the range as 500%.
+      const sameSide = graded && (above ? c.baseline > high : c.baseline < low);
+      if (!sameSide) {
+        return {
+          ...fromRatio(0),
+          mode: graded ? 'graded' : 'binary',
+          reason: graded ? 'startedInsideOrBeyond' : null,
+        };
+      }
+
+      // Bounded above by construction: `actual` is strictly outside the band
+      // and `edge` is its boundary, so the ratio cannot reach 1 and a band can
+      // never be exceeded. It can still go NEGATIVE, which is a real answer -
+      // the number moved further away - and `regressed` carries it.
+      return { ...gapClosed(c.baseline, edge, actual), mode: 'graded', exceeded: false };
+    },
+  },
+
   deadline: {
     key: 'deadline',
     label: 'Hit a date',
@@ -274,6 +389,7 @@ const GOAL_TYPES = {
       'Site migration live by the 25th',
     ],
     namePlaceholder: 'Send the monthly report',
+    targetConfigKey: 'dueDayKey',
     supportsUnit: false,
     configFields: [
       { key: 'dueDayKey', label: 'What day is it due by?', help: '', type: 'date' },
@@ -312,6 +428,7 @@ const GOAL_TYPES = {
       'Team stuck to the process',
     ],
     namePlaceholder: 'Client happy with this month',
+    targetConfigKey: null,
     supportsUnit: false,
     configFields: [],
     actualField: {
@@ -560,6 +677,22 @@ const describeGoalTypes = () =>
       examples: t.examples,
       example: t.examples[0],
       namePlaceholder: t.namePlaceholder,
+      /**
+       * WHICH config field the goals table's "Target" cell edits, declared
+       * here rather than in a table on the client.
+       *
+       * `goalDisplay.targetFieldOf` used to carry its own `{numeric: 'target',
+       * checklist: 'total', threshold: 'limit', deadline: 'dueDayKey'}` map,
+       * which is a second declaration of something this file already knows -
+       * and the failure it produces is silent: a type the map has never heard
+       * of renders an uneditable dash where its target should be, on every row,
+       * with nothing to say why. `band` was the type that found it.
+       *
+       * NULL is a real answer and the important one: `boolean` and `rating`
+       * promise no number at all, so their Target cell must stay a dash you
+       * cannot type into.
+       */
+      targetConfigKey: t.targetConfigKey ?? null,
       supportsUnit: t.supportsUnit,
       configFields: t.configFields,
       actualField: t.actualField,

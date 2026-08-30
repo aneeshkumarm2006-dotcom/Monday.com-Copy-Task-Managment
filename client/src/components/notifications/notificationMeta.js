@@ -13,6 +13,8 @@ import {
   Bell,
   Target,
   Crown,
+  TrendingDown,
+  Unlink,
 } from 'lucide-react';
 
 /**
@@ -33,6 +35,10 @@ export const NOTIF_TYPE_COLOR = {
   memberJoined: 'var(--color-status-done)',
   goalsDue: 'var(--color-status-working)',
   ownershipTransferred: 'var(--color-accent)',
+  // SEO connector alerts. Both are losses, so both take the stuck colour —
+  // a rank drop and a lost link are the same kind of news.
+  seoRankDrop: 'var(--color-status-stuck)',
+  seoLostBacklinks: 'var(--color-status-stuck)',
 };
 
 /**
@@ -53,6 +59,8 @@ export const NOTIF_TYPE_ICON = {
   memberJoined: Users,
   goalsDue: Target,
   ownershipTransferred: Crown,
+  seoRankDrop: TrendingDown,
+  seoLostBacklinks: Unlink,
 };
 
 export const getNotifColor = (type) => NOTIF_TYPE_COLOR[type] || 'var(--color-accent)';
@@ -106,6 +114,12 @@ export const resolveNotifLink = (notif) => {
   if (boardId && notif.tab === 'goals') {
     const monthParam = notif.month ? `&month=${notif.month}` : '';
     return `/boards/${boardId}?view=goals${monthParam}`;
+  }
+
+  // An SEO alert carries no task either — it is about a SITE, not a row — so it
+  // opens the board's SEO tab rather than highlighting anything.
+  if (boardId && notif.tab === 'seo') {
+    return `/boards/${boardId}?view=seo`;
   }
 
   if (boardId && taskId) {

@@ -14,6 +14,14 @@ const PREFERENCE_CATEGORIES = [
   'dueDates',
   'taskMoves',
   'invites',
+  /**
+   * `goals` and `seo` are both on `NotificationPreference.categories` and both
+   * belong here, because this list is the WRITE allowlist: a category missing
+   * from it is a switch the settings page renders and the server silently
+   * discards.
+   */
+  'goals',
+  'seo',
 ];
 
 const clampMinute = (v) => Math.min(Math.max(parseInt(v, 10) || 0, 0), 1439);

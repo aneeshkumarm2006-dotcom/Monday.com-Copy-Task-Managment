@@ -48,6 +48,19 @@ const notificationSchema = new mongoose.Schema(
         // mapped to a preference category in notificationService, so it is
         // always delivered: who owns your workspace is not a subscription.
         'ownershipTransferred',
+        // SEO connector alerts — a tracked keyword fell, or a chunk of the
+        // backlink profile disappeared.
+        //
+        // BOTH ARE MAPPED, in notificationService's TYPE_CATEGORY, to the `seo`
+        // category. That is not optional and it is the whole reason these two
+        // arrived together with a category rather than on their own: an
+        // UNMAPPED TYPE IS ALWAYS DELIVERED, and a rank tracker's entire job is
+        // noticing movement — so an unmapped rank alert is the most recurring
+        // nag this product could generate, with no off switch. The `goals`
+        // category above already carries the sentence about what that does to a
+        // workspace's relationship with the bell.
+        'seoRankDrop',
+        'seoLostBacklinks',
       ],
     },
     message: {
@@ -83,6 +96,10 @@ const notificationSchema = new mongoose.Schema(
         // no task, so clicking it opens the board's Goals tab for the month in
         // question rather than a row.
         'goals',
+        // Also a board VIEW rather than a task-panel tab. An SEO alert carries
+        // no task either — it is about a site, not a row — so it opens the
+        // board's SEO tab.
+        'seo',
         null,
       ],
       default: null,

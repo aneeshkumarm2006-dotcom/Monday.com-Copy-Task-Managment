@@ -21,6 +21,18 @@ const TYPE_CATEGORY = {
   invited: 'invites',
   memberJoined: 'invites',
   goalsDue: 'goals',
+  /**
+   * The SEO connector's two alerts, and the mapping is the point of them.
+   *
+   * A type with no row in this table is delivered to everybody, always, whatever
+   * their preferences say — which is right for `ownershipTransferred` (who owns
+   * your workspace is not a subscription) and catastrophic for a rank tracker,
+   * whose entire purpose is noticing that something moved. Left unmapped these
+   * two would be exactly the recurring nag with no off switch the `goals`
+   * category exists as a warning about.
+   */
+  seoRankDrop: 'seo',
+  seoLostBacklinks: 'seo',
 };
 
 const categoryForType = (type) => TYPE_CATEGORY[type] || null;

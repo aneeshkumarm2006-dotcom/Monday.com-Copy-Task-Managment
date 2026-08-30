@@ -108,31 +108,84 @@ const shiftDayKey = (dayKey, days) => {
  * honest answer to "where did we start" and is still a fixed point, unlike
  * `latest`, so the goal does not score itself against itself.
  *
+ * ---- WHICH SERIES, and why this stopped naming a kind ----------------------
+ *
+ * A rank report for another market is a different fact about the same keyword,
+ * so one series has to be chosen and the rest dropped — mixing them makes a
+ * goal's history flip between countries week to week, with entirely plausible
+ * numbers and nothing on the row to say so.
+ *
+ * This used to do that by matching `kind === 'positions'` and comparing variant
+ * keys literally, which was correct while every variant on every provider meant
+ * `(location, language, device)`. It is not correct any more, and the way it
+ * fails is silent in BOTH directions:
+ *
+ *   ONE PROVIDER NOW HAS THREE VARIANT SHAPES. DataForSEO's rank kinds are
+ *   `2840|en|desktop`, its Labs kinds collapse the device to `2840|en|any`
+ *   because those endpoints take no device, and its Backlinks and crawl kinds
+ *   collapse everything to `0|any|any` because a link profile and a website's
+ *   HTML have no market at all. Compared literally, a Labs row can never equal
+ *   a link's stored variant; not compared at all — which is what "only
+ *   `positions` is filtered" means — a Site tracking two countries feeds one
+ *   country's search volumes into the other country's goals.
+ *
+ *   AND `movement` WAS NEVER FILTERED EITHER, on either provider, because it is
+ *   not spelled `positions`. It is `(location, language, device)`-scoped like
+ *   the census beside it, so that is the same mixing bug on the daily kind.
+ *
+ * So the comparison is asked of the PROVIDER, through the `sameVariant` hook
+ * that already exists for exactly this and that `connectorDataController` has
+ * used since phase 6. The fallback when a descriptor declares none is the
+ * behaviour that was here before, verbatim, so nothing changes for a provider
+ * with one variant shape.
+ *
+ * The ANCHOR is resolved per kind rather than once: an explicit choice on the
+ * link wins wherever the provider says a stored row answers for it, and
+ * otherwise each kind reads its own newest series. Resolving it once from the
+ * rank rows would be the same hardcode wearing a different hat.
+ *
  * Pure. Rows must arrive newest-first.
  *
  * @param {Array<Object>} rows - snapshot rows, sorted by periodKey descending
- * @param {{monthStart: string, monthEnd: string, variant: string|null}} window
+ * @param {Object} window
+ * @param {string} window.monthStart
+ * @param {string} window.monthEnd
+ * @param {string|null} [window.variant] - the market chosen on the link
+ * @param {((kind: string, rowVariant: string, selected: string) => boolean)|null}
+ *   [window.sameVariant] - the provider's own rule
  * @returns {Map<string, {latest: Object|null, monthStart: Object|null}>}
  */
-const selectSnapshots = (rows, { monthStart, monthEnd, variant = null }) => {
+const selectSnapshots = (rows, { monthStart, monthEnd, variant = null, sameVariant = null }) => {
   const out = new Map();
 
-  // Which rank-tracking series to read. An explicit choice on the link wins;
-  // otherwise the newest one, which is the right answer for the ordinary
-  // project that only tracks one market.
-  const positionsRows = rows.filter((r) => r.kind === 'positions');
-  const resolvedVariant =
-    (variant && positionsRows.some((r) => r.variant === variant) ? variant : null) ||
-    positionsRows[0]?.variant ||
-    null;
+  /**
+   * The pre-`sameVariant` rule, kept as the fallback rather than deleted.
+   *
+   * It is what a provider with a single variant shape has always got, and
+   * writing it out here is what makes "declaring nothing changes nothing" a
+   * property of this file rather than a claim about a descriptor.
+   */
+  const matches =
+    typeof sameVariant === 'function'
+      ? sameVariant
+      : (kind, rowVariant, selected) => kind !== 'positions' || rowVariant === selected;
+
+  // Per kind, which series this month is read from.
+  const anchor = new Map();
+  if (variant) {
+    for (const row of rows) {
+      if (anchor.has(row.kind)) continue;
+      if (matches(row.kind, row.variant, variant)) anchor.set(row.kind, variant);
+    }
+  }
+  for (const row of rows) {
+    // A variant the project has never produced falls back to the newest series
+    // of that kind rather than emptying the row.
+    if (!anchor.has(row.kind)) anchor.set(row.kind, row.variant);
+  }
 
   for (const row of rows) {
-    // A rank report for another market is a different fact about the same
-    // keyword, and mixing the two would make one goal's history flip between
-    // countries week to week.
-    if (row.kind === 'positions' && resolvedVariant && row.variant !== resolvedVariant) {
-      continue;
-    }
+    if (!matches(row.kind, row.variant, anchor.get(row.kind))) continue;
     if (!out.has(row.kind)) {
       out.set(row.kind, { latest: null, monthStart: null, earliestInMonth: null });
     }
@@ -170,6 +223,9 @@ const selectSnapshots = (rows, { monthStart, monthEnd, variant = null }) => {
  * @param {(key, data, ctx) => any} args.readField      - the provider's extractor
  * @param {Map} args.snapshots    - from `selectSnapshots`
  * @param {(capability: string) => boolean} args.canWrite
+ * @param {((kind: string, current: any, previous: any) => {ok: boolean, reason: string})|null}
+ *   [args.comparability] - the provider's own rule about which pairs of readings
+ *   may be subtracted from each other. Optional; absent means always comparable.
  * @param {Date} args.now
  * @returns {{writes: Array, suggestions: Array, notes: string[], skipped: number}}
  */
@@ -181,6 +237,7 @@ const planGoalWrites = ({
   readField,
   snapshots,
   canWrite,
+  comparability = null,
   now = new Date(),
 }) => {
   const writes = [];
@@ -255,6 +312,35 @@ const planGoalWrites = ({
       );
       skipped += 1;
       continue;
+    }
+
+    /**
+     * A STARTING POINT IS ONLY WORTH FILLING IF IT CAN BE SUBTRACTED FROM.
+     *
+     * This is the one place a goal quietly becomes a chart of our own settings.
+     * `config.baseline` and `actual` are the two ends of every graded score, and
+     * for some kinds two readings taken under different settings are two
+     * measurements of two different things: `onpage_score` is a share of the
+     * pages crawled, `backlinks_status_type` recomputes every aggregate rather
+     * than filtering rows, and a rank bought to depth 10 reports every keyword
+     * outside the top ten as unranked.
+     *
+     * The SCREENS already refuse those comparisons and print the reason. A goal
+     * cell has no caption, so the refusal has to happen here — and it refuses
+     * the STARTING POINT rather than the result, because the newest reading is
+     * still a true reading of this month and only the pair is unsound.
+     */
+    if (period === 'monthStart' && typeof comparability === 'function' && slot?.latest) {
+      const verdict = comparability(field.kind, slot.latest.data, snapshot.data);
+      if (verdict && verdict.ok === false) {
+        noteOnce(
+          `incomparable:${field.kind}`,
+          verdict.reason ||
+            `Two ${field.kind.replace(/_/g, ' ')} readings this month cannot be compared, so the starting point was left alone.`
+        );
+        skipped += 1;
+        continue;
+      }
     }
 
     const value = readField(field.key, snapshot.data, { keyword });
@@ -608,6 +694,13 @@ const runWriteback = async ({
       monthStart,
       monthEnd,
       variant: link.variant || null,
+      /**
+       * WHICH STORED VARIANT ANSWERS FOR THE ONE ON THE LINK — asked of the
+       * provider, exactly as `connectorDataController` has asked it since phase
+       * 6. Optional, and its absence is the behaviour that was here before.
+       */
+      sameVariant:
+        typeof connector.sameVariant === 'function' ? connector.sameVariant : null,
     });
 
     const wasUnclaimed = !link.claimedAt;
@@ -619,6 +712,10 @@ const runWriteback = async ({
       readField: connector.readField,
       snapshots,
       canWrite,
+      // Optional on the descriptor, and absent means always comparable — which
+      // is what the first provider has always had.
+      comparability:
+        typeof connector.comparability === 'function' ? connector.comparability : null,
       now,
     });
 

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
-  TrendingUp, CheckCircle2, ListChecks, Shield, CalendarClock, Star, ChevronLeft, ChevronDown,
+  TrendingUp, CheckCircle2, ListChecks, Shield, Target, CalendarClock, Star, ChevronLeft, ChevronDown,
 } from 'lucide-react';
 import Modal from '../../ui/Modal';
 import Button from '../../ui/Button';
@@ -51,6 +51,7 @@ const TYPE_ICONS = {
   boolean: CheckCircle2,
   checklist: ListChecks,
   threshold: Shield,
+  band: Target,
   deadline: CalendarClock,
   rating: Star,
 };

@@ -27,6 +27,7 @@ import {
   ShieldCheck,
   Blocks,
   Activity,
+  TrendingUp,
 } from 'lucide-react';
 import {
   DndContext,
@@ -77,6 +78,12 @@ import ScoreboardTab from '../components/board/scoreboard/ScoreboardTab';
 import VaultTab from '../components/vault/VaultTab';
 import AddonsTab from '../components/board/addons/AddonsTab';
 import ConnectorDataTab from '../components/board/addons/connector/ConnectorDataTab';
+import SeoDashboardTab from '../components/board/addons/seo/SeoDashboardTab';
+import {
+  gateSignature,
+  resolveView,
+  resolveViewTabs,
+} from '../utils/boardViewTabs';
 import useBoardConnectors from '../hooks/useBoardConnectors';
 import MonthSelector from '../components/board/MonthSelector';
 import MoveToMonthModal from '../components/board/MoveToMonthModal';
@@ -181,6 +188,25 @@ const VIEW_TABS = [
     label: (g) => g.connectorLabel || 'Data',
     icon: Activity,
     visible: (g) => g.canViewAddons && !!g.connectorProvider,
+  },
+  /**
+   * The second connector tab, and the reason there is a second one.
+   *
+   * A provider that declares dashboard SCREENS gets this; one that does not
+   * gets the generic per-kind tab above. That is the whole of the
+   * `enabledConnectors[0]` fix: a board with both providers switched on used to
+   * show whichever came back from the server first and drop the other
+   * completely, with no way to reach it.
+   *
+   * Nothing here names a provider. `seoProvider` is whichever enabled connector
+   * declares screens, and the tab titles itself from `seoLabel`, so a third
+   * dashboard-shaped provider needs no change to this table.
+   */
+  {
+    value: 'seo',
+    label: (g) => g.seoLabel || 'SEO',
+    icon: TrendingUp,
+    visible: (g) => g.canViewSeo,
   },
 ];
 
@@ -515,9 +541,46 @@ const BoardDetailPage = () => {
   // why this is safe on every board load. Gated on `canViewAddons` so a standard
   // board, or a reader without the capability, makes no request at all.
   const { enabledConnectors } = useBoardConnectors(boardId, { enabled: canViewAddons });
-  const activeConnector = enabledConnectors[0] || null;
-  const connectorProvider = activeConnector?.name || null;
-  const connectorLabel = activeConnector?.label || null;
+
+  /**
+   * WHICH connector goes in WHICH tab — and the end of `enabledConnectors[0]`.
+   *
+   * That expression was written when there was one provider, and it silently
+   * became a bug the moment there were two: a board with both switched on
+   * rendered whichever the server happened to return first and made the other
+   * completely unreachable, with no error and nothing on screen to suggest
+   * anything was missing.
+   *
+   * The split is by CAPABILITY rather than by name. A provider that declares
+   * dashboard screens (`availableScreens`) gets the SEO tab; one that declares
+   * none gets the generic tab, which renders a section per snapshot kind. So the
+   * two coexist, a third provider lands in one of the two by what it declares,
+   * and neither this file nor either tab learns a provider's name.
+   *
+   * `[0]` survives WITHIN each group, and that residue is deliberate: two
+   * dashboard-shaped providers on one board is not a thing that exists, and the
+   * honest fix on the day it does is a picker inside the tab rather than an
+   * unbounded row of tabs.
+   */
+  const dataConnector =
+    enabledConnectors.find((c) => !c.availableScreens?.length) || null;
+  const seoConnector =
+    enabledConnectors.find((c) => c.availableScreens?.length > 0) || null;
+
+  const connectorProvider = dataConnector?.name || null;
+  const connectorLabel = dataConnector?.label || null;
+  const seoProvider = seoConnector?.name || null;
+  const seoLabel = seoConnector?.label || null;
+
+  /**
+   * The gate key the SEO tab's `visible` predicate reads.
+   *
+   * Same capability as the other connector tab — nothing either renders costs
+   * anything, because every row comes out of our own database — and the same
+   * board-type requirement, since a connector pulls a time series into a
+   * month-partitioned board and has nowhere to land otherwise.
+   */
+  const canViewSeo = canViewAddons && !!seoProvider;
 
   // Converting a board changes what it IS, so it answers to the same capability
   // as flipping public/private rather than to an ordinary edit right. Client
@@ -533,31 +596,50 @@ const BoardDetailPage = () => {
 
   // Which tabs exist on this board, resolved once so the bar and the view
   // validation below cannot disagree about it.
-  const visibleTabs = useMemo(() => {
-    const gate = {
-      canViewDelivery,
-      canViewGoals,
-      canViewScoreboard,
-      canViewVault,
-      canViewAddons,
-      connectorProvider,
-      connectorLabel,
-    };
-    return (
-      VIEW_TABS.filter((t) => t.visible(gate))
-        // A tab may name itself from the gate — the connector tab is titled
-        // after whichever provider is switched on, so the bar reads "Ubersuggest"
-        // rather than a generic word nobody would look under. Resolved HERE
-        // rather than at the render site, because the bar renders `tab.label`
-        // straight into JSX and a function there is a runtime error.
-        .map((t) =>
-          typeof t.label === 'function' ? { ...t, label: t.label(gate) } : t
-        )
-    );
-  }, [
-      canViewDelivery, canViewGoals, canViewScoreboard, canViewVault,
-      canViewAddons, connectorProvider, connectorLabel,
-  ]);
+  /**
+   * Everything a tab's `visible` predicate is allowed to ask about.
+   *
+   * Rebuilt every render — it is eight primitives — and deliberately NOT
+   * memoised: `gateSignature` below is what stops the resolution being redone,
+   * and a memo on the gate itself would need the same dependency array this
+   * change exists to delete.
+   *
+   * ADDING A TAB THAT READS A KEY THAT IS NOT HERE NOW THROWS BY NAME.
+   * `resolveViewTabs` reads this object through a Proxy, so the old failure —
+   * predicate returns `undefined`, `undefined` is falsy, tab silently vanishes,
+   * `?view=x` falls back to the board, and the feature looks unshipped — is
+   * impossible. See `utils/boardViewTabs.js`, and `boardViewTabs.test.mjs` for
+   * the property asserted against synthetic tables rather than against this one.
+   */
+  const gate = {
+    canViewDelivery,
+    canViewGoals,
+    canViewScoreboard,
+    canViewVault,
+    canViewAddons,
+    connectorProvider,
+    connectorLabel,
+    canViewSeo,
+    seoProvider,
+    seoLabel,
+  };
+
+  /**
+   * The memo's dependency, DERIVED rather than hand-maintained.
+   *
+   * The third edit this registration used to need was extending a literal
+   * dependency array, and forgetting it failed differently and worse: the tab
+   * appeared only once some unrelated state changed, so it worked in
+   * development — where something always changes — and not on a cold production
+   * load. There is nothing left to forget.
+   */
+  const gateKey = gateSignature(gate);
+
+  const visibleTabs = useMemo(
+    () => resolveViewTabs(VIEW_TABS, gate),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [gateKey]
+  );
 
   // Derived from the URL rather than mirrored into state — two sources of truth
   // for "which view am I on" is the classic bug here, and `?view=delivery` is
@@ -567,8 +649,7 @@ const BoardDetailPage = () => {
   // an unknown value, or `?view=goals` on a standard board, or a board that has
   // not loaded yet, all fall back to the board view instead of rendering a tab
   // that is not there.
-  const rawView = searchParams.get('view');
-  const view = visibleTabs.some((t) => t.value === rawView) ? rawView : 'board';
+  const view = resolveView(searchParams.get('view'), visibleTabs);
   const setView = useCallback(
     (next) => {
       const params = new URLSearchParams(searchParams);
@@ -2298,6 +2379,21 @@ const BoardDetailPage = () => {
             boardId={boardId}
             provider={connectorProvider}
             providerLabel={connectorLabel}
+          />
+        </ErrorBoundary>
+      )}
+
+      {view === 'seo' && seoProvider && (
+        <ErrorBoundary label={seoLabel || 'SEO'} resetKey={view}>
+          {/* Reads snapshots, budget documents and our own task ledger out of
+              this database and NEVER contacts the provider. On this one that is
+              a stronger rule than it was on the first: it bills at the moment a
+              collection is ordered, so a tab that fetched on mount would buy
+              SERPs on a page load, per viewer, per render. */}
+          <SeoDashboardTab
+            boardId={boardId}
+            provider={seoProvider}
+            providerLabel={seoLabel}
           />
         </ErrorBoundary>
       )}

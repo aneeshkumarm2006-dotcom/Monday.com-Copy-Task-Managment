@@ -53,6 +53,24 @@ const descriptor = {
    */
   syncIntervalHours: 168,
 
+  /**
+   * A second pull of the same project on the same day costs NOTHING here.
+   *
+   * Ubersuggest bills per report SUBJECT per day, so pressing Refresh on a
+   * project already collected this morning re-reads a report that has already
+   * been paid for. That is why `refreshConnectorData` has always passed
+   * `force: true` — a human asking for data now should get it, and the freshness
+   * check exists to stop a SCHEDULE re-reading data that has not moved, not to
+   * argue with a person.
+   *
+   * Declared explicitly rather than left to a default, because the sentence
+   * above stopped being true for every provider the day the second one arrived:
+   * DataForSEO bills AT POST, per task, so the same button press there is a
+   * purchase. The controller now asks the descriptor instead of assuming, and
+   * this flag is what keeps THIS provider's behaviour byte-identical.
+   */
+  forceRefetchIsFree: true,
+
   oauth: {
     buildAuthorizeUrl: oauth.buildAuthorizeUrl,
     exchangeCode: oauth.exchangeCode,
