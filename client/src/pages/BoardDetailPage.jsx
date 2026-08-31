@@ -8,26 +8,27 @@ import {
 } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ChevronRight,
-  Lock,
-  Globe,
-  Plus,
-  Settings as SettingsIcon,
-  Zap,
-  GripVertical,
-  SearchX,
-  UserPlus,
-  ArrowDownUp,
-  Download,
-  CalendarCheck,
-  LayoutList,
-  Target,
-  CalendarRange,
-  Users,
-  ShieldCheck,
-  Blocks,
   Activity,
+  ArrowDownUp,
+  Blocks,
+  CalendarCheck,
+  CalendarRange,
+  ChevronRight,
+  Download,
+  Globe,
+  GripVertical,
+  LayoutList,
+  Lock,
+  Plus,
+  SearchX,
+  Settings as SettingsIcon,
+  ShieldCheck,
+  Target,
   TrendingUp,
+  UserPlus,
+  Users,
+  Wallet,
+  Zap,
 } from 'lucide-react';
 import {
   DndContext,
@@ -79,6 +80,7 @@ import VaultTab from '../components/vault/VaultTab';
 import AddonsTab from '../components/board/addons/AddonsTab';
 import ConnectorDataTab from '../components/board/addons/connector/ConnectorDataTab';
 import SeoDashboardTab from '../components/board/addons/seo/SeoDashboardTab';
+import AdsBudgetTab from '../components/board/adsbudget/AdsBudgetTab';
 import {
   gateSignature,
   resolveView,
@@ -172,6 +174,12 @@ const VIEW_TABS = [
   // Tracker-only, like Delivery and Goals: a connector pulls a time series into
   // a month-partitioned board, and there is nowhere for it to land otherwise.
   { value: 'addons', label: 'Add-ons', icon: Blocks, visible: (g) => g.canViewAddons },
+  // Ads Budget is the first add-on that is NOT a connector: nothing is fetched,
+  // nothing is billed, every figure is typed in. It is therefore the first tab
+  // whose visibility depends on a per-board SWITCH as well as a board type and
+  // a capability — a board with the add-on off has no budgets to show, so the
+  // tab is absent rather than empty.
+  { value: 'adsbudget', label: 'Ads Budget', icon: Wallet, visible: (g) => g.canViewAdsBudget },
   // The DATA half of connectors — the readings themselves, as opposed to
   // Add-ons, which is the wiring. It appears only once a connector is actually
   // switched on for this board, because until then there is nothing in it.
@@ -228,6 +236,7 @@ const BoardDetailPage = () => {
   const boards = useBoardStore((s) => s.boards);
   const fetchBoards = useBoardStore((s) => s.fetchBoards);
   const getBoardById = useBoardStore((s) => s.getBoardById);
+  const updateBoardLocal = useBoardStore((s) => s.updateBoardLocal);
 
   const groups = useTaskStore((s) => s.groups);
   const tasksByGroup = useTaskStore((s) => s.tasksByGroup);
@@ -548,13 +557,44 @@ const BoardDetailPage = () => {
   // that answer rather than trusting this flag: mapping a project decides whose
   // numbers land on whose row, and Refresh spends a quota shared by the whole
   // workspace.
-  const canViewAddons = isTrackerBoard && canOnBoard('connector.view');
+  //
+  // The OR is not decoration. The tab now also holds the Ads Budget switch,
+  // which answers to its own capability — and roles are DATA in this app, so a
+  // custom role really can grant one of the two and not the other. Keying the
+  // whole tab on `connector.view` alone would strand that switch, and with it
+  // the only way to turn the add-on on.
+  const canViewAddons =
+    isTrackerBoard && (canOnBoard('connector.view') || canOnBoard('adsBudget.view'));
   const canManageConnectors = canViewAddons && canOnBoard('connector.manage');
 
   // Which connectors this board has switched on. Reads our own database only —
   // that is why `connector.view` is on the bottom rung of the board ladder and
   // why this is safe on every board load. Gated on `canViewAddons` so a standard
   // board, or a reader without the capability, makes no request at all.
+  /**
+   * Ads Budget: board type AND capability AND the board's own switch.
+   *
+   * The third condition is what makes this an ADD-ON rather than a surface of
+   * the board type. Delivery and Goals appear on every tracker board because a
+   * month-partitioned board always has commitments and targets; a board that
+   * runs no advertising has no budgets, and a permanently empty tab is worse
+   * than an absent one. The switch lives in Add-ons.
+   *
+   * `board.adsBudget` is two fields on the board document rather than a second
+   * request, so the tab is decided on first paint and does not flicker in.
+   */
+  const adsBudgetOn = !!board?.adsBudget?.enabled;
+  const canViewAdsBudget = isTrackerBoard && adsBudgetOn && canOnBoard('adsBudget.view');
+  // Recording spend sits a rung below deciding the allocation, exactly as
+  // `goal.track` sits below `goal.manage`. The tab shows the inline spend field
+  // to the first and the Add / Edit / Delete controls to the second; the server
+  // re-checks both from the body of every write.
+  const canTrackAdsBudget = canViewAdsBudget && canOnBoard('adsBudget.track');
+  const canManageAdsBudget = canViewAdsBudget && canOnBoard('adsBudget.manage');
+  // The SWITCH itself answers to `adsBudget.manage` but NOT to `adsBudgetOn` —
+  // turning the add-on on necessarily happens while it is off.
+  const canManageAdsBudgetSettings = isTrackerBoard && canOnBoard('adsBudget.manage');
+
   const { enabledConnectors } = useBoardConnectors(boardId, { enabled: canViewAddons });
 
   /**
@@ -637,6 +677,7 @@ const BoardDetailPage = () => {
     canViewSeo,
     seoProvider,
     seoLabel,
+    canViewAdsBudget,
   };
 
   /**
@@ -2379,6 +2420,22 @@ const BoardDetailPage = () => {
         </ErrorBoundary>
       )}
 
+      {view === 'adsbudget' && (
+        <ErrorBoundary label="Ads Budget" resetKey={view}>
+          <AdsBudgetTab
+            boardId={boardId}
+            boardName={board?.name}
+            // The board's own groups — a tracker board holds one client per
+            // group, so these ARE the clients the roster lists.
+            groups={groups}
+            monthKey={monthKey}
+            monthLabel={selectedMonth?.label}
+            canTrack={canTrackAdsBudget}
+            canManage={canManageAdsBudget}
+          />
+        </ErrorBoundary>
+      )}
+
       {view === 'addons' && (
         <ErrorBoundary label="Add-ons" resetKey={view}>
           <AddonsTab
@@ -2392,6 +2449,18 @@ const BoardDetailPage = () => {
             // field-mapping panel — the mapping itself is `connector.manage`,
             // because nothing about it writes to a goal. Creating a column does.
             canManageGoalColumns={canManageGoalColumns}
+            // The non-connector half of this tab: the Ads Budget switch. Its
+            // own capability, and deliberately NOT gated on the add-on already
+            // being on — turning it on happens while it is off.
+            adsBudget={board?.adsBudget}
+            canManageAdsBudget={canManageAdsBudgetSettings}
+            // Patch the store's copy rather than refetching the whole board
+            // list: the tab bar is derived from `board.adsBudget.enabled`, so
+            // the new tab has to appear the moment the switch settles, and a
+            // round trip would leave it missing for a beat after the toggle.
+            onAdsBudgetChanged={(next) =>
+              board && updateBoardLocal({ ...board, adsBudget: next })
+            }
           />
         </ErrorBoundary>
       )}

@@ -15,6 +15,10 @@ require('./Tracker');
 require('./TrackerEntry');
 require('./Goal');
 require('./GoalReminder');
+// Ads budgets on a tracker board. Platform and campaign rows share this one
+// collection, told apart by `parent`; see the model's header for why totals
+// must only ever sum the platform level.
+require('./AdsBudget');
 require('./Vault');
 require('./VaultItem');
 require('./VaultAudit');

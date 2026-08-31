@@ -10,6 +10,7 @@ const Automation = require('../models/Automation');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
 const Goal = require('../models/Goal');
+const AdsBudget = require('../models/AdsBudget');
 const GoalReminder = require('../models/GoalReminder');
 const BoardConnector = require('../models/BoardConnector');
 const ConnectorProject = require('../models/ConnectorProject');
@@ -637,6 +638,9 @@ const deleteBoard = async (req, res) => {
     // that is about to go.
     await Goal.deleteMany({ board: id });
     await GoalReminder.deleteMany({ board: id });
+    // Ads budgets. Their `enabled` switch and currency are embedded on the
+    // board document that is about to go, so only the rows need collecting.
+    await AdsBudget.deleteMany({ board: id });
     // The connector links go with the goals they name, for the same reason the
     // field mappings below go with the columns they name: a link with no goal is
     // a dangling reference, not history worth keeping.

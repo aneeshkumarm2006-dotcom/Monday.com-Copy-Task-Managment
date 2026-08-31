@@ -328,6 +328,27 @@ const boardSchema = new mongoose.Schema(
     // The extra columns this board's Goals tables carry, shared by every group.
     // Empty on every board until an org admin adds one; tracker boards only.
     goalColumns: { type: [goalColumnSchema], default: [] },
+
+    /**
+     * The Ads Budget add-on — off until somebody switches it on in Add-ons.
+     *
+     * TWO FIELDS, and it is going to stay two. The budget rows themselves live
+     * in their own collection (`models/AdsBudget.js`) precisely so this schema
+     * does not grow again — it is already carrying labels, statuses, columns,
+     * goalColumns, groupTags, portal categories and portal FAQs. What is here
+     * is only what the BOARD READ must answer on first paint, without a second
+     * request: whether the tab exists at all, and in what currency to render
+     * every figure on it.
+     *
+     * `currency` is board-wide rather than per row because every number on both
+     * of the tab's screens is a sum across rows, and rows in mixed currencies
+     * cannot be added. One board, one currency is a real limitation; adding
+     * numbers that do not share a unit is a bug.
+     */
+    adsBudget: {
+      enabled: { type: Boolean, default: false },
+      currency: { type: String, default: 'USD', trim: true, uppercase: true, maxlength: 3 },
+    },
   },
   { timestamps: true }
 );

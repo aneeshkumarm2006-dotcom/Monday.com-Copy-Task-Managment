@@ -736,7 +736,18 @@ const main = async () => {
   process.exit(failures === 0 ? 0 : 1);
 };
 
-main().catch((err) => {
-  console.error('\nHARNESS ERROR:', err);
-  process.exit(2);
-});
+/**
+ * Only when RUN, never when required.
+ *
+ * `capabilityUsage.test.js` loads every .js file under src/ to catch dangling
+ * imports, and without this guard that scan boots an in-memory mongod and
+ * connects mongoose as a side effect of importing this file. With two e2e
+ * harnesses present the second connect throws outright; with one it merely
+ * started a database nobody asked for on every `npm test`.
+ */
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('\nHARNESS ERROR:', err);
+    process.exit(2);
+  });
+}

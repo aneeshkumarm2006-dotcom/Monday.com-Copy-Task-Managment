@@ -123,6 +123,24 @@ const CAPABILITY_GROUPS = [
     ],
   },
   {
+    key: 'adsBudget',
+    name: 'Ads budgets',
+    // Three rungs rather than the usual view/manage pair, and for exactly the
+    // reason goals above has three: recording what was SPENT and deciding what
+    // may be spent are different acts by different people. The account manager
+    // who types in last week's Meta spend belongs on `contribute`; folding that
+    // into `adsBudget.manage` would hand them the power to raise the client's
+    // budget purely so they could report against it.
+    capabilities: [
+      ['adsBudget.view', "See a board's ads budgets"],
+      ['adsBudget.track', 'Record spend against existing ads budgets'],
+      [
+        'adsBudget.manage',
+        'Create, edit and delete ads budgets, set allocations, and switch the add-on on',
+      ],
+    ],
+  },
+  {
     key: 'vault',
     name: 'Vault',
     // A pair rather than the usual view/manage split doing double duty: here
@@ -240,6 +258,13 @@ const BOARD_SCOPED = new Set([
   // the board's creator.
   'connector.view',
   'connector.manage',
+  // And once more. All three are conferred by a LEVEL_ADDS rung below —
+  // `adsBudget.view` by `view`, `adsBudget.track` by `contribute`,
+  // `adsBudget.manage` by `edit` — which is what makes board-scoping them safe
+  // rather than a silent revoke for everyone but the board's creator.
+  'adsBudget.view',
+  'adsBudget.track',
+  'adsBudget.manage',
 ]);
 
 /**
@@ -274,13 +299,22 @@ const LEVEL_ADDS = {
   // their audit — is board content. Someone who can read the board can read it.
   // Nothing here spends quota or reaches the provider; every byte comes from our
   // own snapshots.
-  view: ['tracker.view', 'goal.view', 'vault.view', 'connector.view'],
+  view: ['tracker.view', 'goal.view', 'vault.view', 'connector.view', 'adsBudget.view'],
   // + weigh in without touching the data.
   comment: ['update.create'],
   // + do your own work, without being able to restructure the board.
   // Reporting a result you are responsible for is doing your own work; deciding
   // what the target should have been is not.
-  contribute: ['task.create', 'task.edit_assigned', 'task.change_status', 'goal.track'],
+  contribute: [
+    'task.create',
+    'task.edit_assigned',
+    'task.change_status',
+    'goal.track',
+    // Typing in what a channel actually spent is reporting a result you are
+    // responsible for, the same act as `goal.track` beside it. Deciding what
+    // the allocation should be is not, and stays on `edit`.
+    'adsBudget.track',
+  ],
   // + full control of board content. (The old `edit`.)
   edit: [
     'task.edit_any',
@@ -295,6 +329,7 @@ const LEVEL_ADDS = {
     'automation.manage',
     'tracker.manage',
     'goal.manage',
+    'adsBudget.manage',
     'board.rename',
     // CHANGING a vault stays here, at the top, even though opening its door
     // dropped to `view`. Reading is gated twice — by this ladder and then by a
@@ -459,6 +494,9 @@ const SYSTEM_ROLES = [
       'goal.view',
       'goal.track',
       'goal.manage',
+      'adsBudget.view',
+      'adsBudget.track',
+      'adsBudget.manage',
       'vault.view',
       'vault.manage',
       'connector.view',
@@ -521,6 +559,9 @@ const SYSTEM_ROLES = [
       'goal.view',
       'goal.track',
       'goal.manage',
+      'adsBudget.view',
+      'adsBudget.track',
+      'adsBudget.manage',
       // Board-scoped, so the AND still limits this to boards where they hold
       // `edit` — in practice their own. A member who creates a board and cannot
       // open its vault would be locked out of a room in their own house.
@@ -565,7 +606,7 @@ const SYSTEM_ROLES = [
     // project, edit a field mapping, or press Refresh — `connector.manage` is
     // absent here AND sits on the `edit` rung, so both layers refuse it.
     permissions: [
-      'org.view_members', 'board.view_public', 'tracker.view', 'goal.view',
+      'org.view_members', 'board.view_public', 'tracker.view', 'goal.view', 'adsBudget.view',
       'vault.view', 'connector.view',
     ],
   },

@@ -54,14 +54,45 @@ export const formatNumber = (value, { compact = false } = {}) => {
   );
 };
 
-/** A dollar amount, or an em dash. The provider quotes CPC and value in USD. */
-export const formatMoney = (value) => {
+/**
+ * A money amount, or an em dash.
+ *
+ * The currency defaults to USD because that is what the SEO provider quotes CPC
+ * and keyword value in, and every one of this function's original callers is
+ * reading one of those. It is a PARAMETER rather than a constant because the
+ * Ads Budget tab renders whatever currency its board is set to — and a second
+ * money formatter living next to this one would be two places to fix the day
+ * somebody wants cents shown below a different threshold.
+ *
+ * Cents are dropped above 100 units. A budget table full of "$8,000.00" is
+ * harder to scan than one full of "$8,000", and the pennies on a four-figure
+ * number are noise; below 100 they are the whole number.
+ *
+ * An unknown currency code makes `Intl.NumberFormat` throw, which would take
+ * out every cell on the page rather than one. The server validates the code on
+ * the way in; this is the belt to that pair of braces.
+ */
+export const formatMoney = (value, currency = 'USD') => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  return new Intl.NumberFormat(undefined, {
+  /**
+   * `minimumFractionDigits: 0` is load-bearing, not tidying.
+   *
+   * `style: 'currency'` defaults the MINIMUM to the currency's own digits — two
+   * for USD — so setting only the maximum leaves every whole amount under $100
+   * rendering as "$57.00" in a column of "$346" and "$1,020". Pinning the
+   * minimum to zero lets a round number look round while $1.25 keeps its cents.
+   */
+  const options = {
     style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: value < 100 ? 2 : 0,
-  }).format(value);
+    currency: currency || 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: Math.abs(value) < 100 ? 2 : 0,
+  };
+  try {
+    return new Intl.NumberFormat(undefined, options).format(value);
+  } catch {
+    return new Intl.NumberFormat(undefined, { ...options, currency: 'USD' }).format(value);
+  }
 };
 
 /**

@@ -9,6 +9,7 @@ const ClientContact = require('../models/ClientContact');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
 const Goal = require('../models/Goal');
+const AdsBudget = require('../models/AdsBudget');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
 const ConnectorProject = require('../models/ConnectorProject');
 const eventBus = require('../services/eventBus');
@@ -497,6 +498,11 @@ const deleteGroup = async (req, res) => {
     const goalIds = await Goal.distinct('_id', { group: id });
     await Goal.deleteMany({ group: id });
     await GoalConnectorLink.deleteMany({ group: id });
+    // Ads budgets belong to the client this group IS, so they go with it —
+    // every month of them, not just the one somebody happens to be looking at.
+    // Platform and campaign rows alike: both carry `group`, so the one delete
+    // reaches both levels and cannot leave a campaign orphaned.
+    await AdsBudget.deleteMany({ group: id });
     if (goalIds.length > 0) {
       await Task.updateMany(
         { board: group.board, 'goalLinks.goal': { $in: goalIds } },

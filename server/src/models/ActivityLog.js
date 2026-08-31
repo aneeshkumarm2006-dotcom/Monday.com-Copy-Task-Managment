@@ -24,6 +24,17 @@ const ACTIVITY_TYPES = [
   'goal.created',
   'goal.deleted',
   'goal.field_changed',
+  // Ads budgets on a tracker board — the THIRD subject this collection serves,
+  // after tasks and goals. Same reasoning as goals: a budget row is not a task,
+  // so it carries `adsBudget` and `task` stays empty.
+  //
+  // These rows are not merely an audit trail. The Ads Budget tab's "Budget
+  // Activity" ledger IS this history, read back and rendered as money in and
+  // money out — which is what lets the tab hold editable Budget and Spend
+  // fields without anybody also hand-entering a matching ledger line.
+  'ads_budget.created',
+  'ads_budget.deleted',
+  'ads_budget.field_changed',
 ];
 
 // NOTE: this list is a VALIDATOR, and `activityService.logActivity` swallows its
@@ -61,6 +72,25 @@ const FIELD_KEYS = [
   'unit',
   'actual',
   'actualDayKey',
+  // ---- Ads budget rows -----------------------------------------------------
+  // `name` (the campaign's) and `owner` above are shared and mean the same
+  // thing here, so they are not repeated. These are the fields only a budget
+  // row has.
+  //
+  // `allocated` and `spent` are the two the ledger is built from: a change to
+  // either becomes a line in Budget Activity, with the delta as its amount. If
+  // either is ever missing from this list the tab loses entries silently, since
+  // `logActivity` swallows its own validation errors — see the note above.
+  'allocated',
+  'spent',
+  'dailyBudget',
+  'platform',
+  'account',
+  'objective',
+  // Not `status`: that key is already above and means a TASK's board status,
+  // which is a different vocabulary with different values. A budget row's
+  // draft/active/paused is its lifecycle.
+  'lifecycle',
 ];
 
 /**
@@ -81,13 +111,18 @@ const COLUMN_FIELD_RE = /^column:[\w.-]+$/;
 const CONFIG_FIELD_RE = /^config:[\w.-]+$/;
 
 const activityLogSchema = new mongoose.Schema({
-  // Required for every event EXCEPT a goal's, which has no task to hang off.
-  // Exactly one of `task` / `goal` is set on any row.
+  // Required for every event EXCEPT a goal's or a budget row's, neither of
+  // which has a task to hang off. Exactly one of `task` / `goal` / `adsBudget`
+  // is set on any row.
+  //
+  // Every new subject widens this condition. Forgetting to is not a subtle
+  // failure: `logActivity` swallows its own errors, so the row would simply
+  // never be written and the feature's history would come back empty.
   task: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Task',
-    required: function requireTaskUnlessGoal() {
-      return !this.goal;
+    required: function requireTaskUnlessSubjectRow() {
+      return !this.goal && !this.adsBudget;
     },
     default: null,
     index: true,
@@ -98,6 +133,15 @@ const activityLogSchema = new mongoose.Schema({
   goal: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Goal',
+    default: null,
+    index: true,
+  },
+  // Set only on `ads_budget.*` rows — a platform or campaign budget line on a
+  // tracker board. Its own pointer for the same reason `goal` has one: a
+  // per-task query must never be able to return one of these.
+  adsBudget: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'AdsBudget',
     default: null,
     index: true,
   },
@@ -174,6 +218,12 @@ activityLogSchema.index({ task: 1, createdAt: -1 });
 
 // The goal history panel is the same read against the other pointer.
 activityLogSchema.index({ goal: 1, createdAt: -1 });
+
+// One budget row's own history. The Budget Activity LEDGER is a different read
+// — it wants a whole client-month, including rows since deleted, so it filters
+// `metadata.monthKey` / `metadata.group` under the `board` index below rather
+// than joining through this one.
+activityLogSchema.index({ adsBudget: 1, createdAt: -1 });
 
 // The board activity export reads one board over one date range, ordered by
 // time. The single-field `board` index alone would leave that sort in memory.

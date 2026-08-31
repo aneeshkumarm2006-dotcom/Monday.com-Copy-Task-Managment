@@ -10,6 +10,7 @@ const Automation = require('../models/Automation');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
 const Goal = require('../models/Goal');
+const AdsBudget = require('../models/AdsBudget');
 const GoalReminder = require('../models/GoalReminder');
 const User = require('../models/User');
 const ActivityLog = require('../models/ActivityLog');
@@ -87,6 +88,11 @@ const cascadeDeleteOrg = async (orgId) => {
     // the same set (a goal belongs to exactly one board) and it also collects
     // rows for goals already deleted, which the id list no longer contains.
     await ActivityLog.deleteMany({ board: { $in: boardIds }, goal: { $ne: null } });
+    // Ads budgets, and their activity, for exactly the same two reasons as the
+    // goal rows above: they hang off the board rather than off a task, and the
+    // board-scoped delete also collects rows for budgets already deleted.
+    await AdsBudget.deleteMany({ board: { $in: boardIds } });
+    await ActivityLog.deleteMany({ board: { $in: boardIds }, adsBudget: { $ne: null } });
     await TaskGroup.deleteMany({ board: { $in: boardIds } });
     await Automation.deleteMany({ board: { $in: boardIds } });
     await BoardConnection.deleteMany({

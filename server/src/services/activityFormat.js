@@ -70,6 +70,14 @@ const FIELD_LABELS = {
   unit: 'unit',
   actual: 'result',
   actualDayKey: 'the day it was done',
+  // Ads-budget-only fields. `name`, `note` and `owner` above are shared.
+  allocated: 'budget',
+  spent: 'spend',
+  dailyBudget: 'daily budget',
+  platform: 'platform',
+  account: 'account',
+  objective: 'objective',
+  lifecycle: 'status',
 };
 
 /**
@@ -363,6 +371,69 @@ const describeGoalActivity = (entry) => {
   return `${actor} changed ${label} on ${goalName} from ${from} to ${to}.`;
 };
 
+/** Money as a sentence reads it. Not a currency — the board owns that. */
+const describeAmount = (value) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'nothing';
+  return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+};
+
+/** What a budget row is called, when it has to be named in a sentence. */
+const budgetSubject = (meta) => {
+  if (meta.isCampaign && meta.campaignName) {
+    return quote(truncate(meta.campaignName, 60));
+  }
+  if (meta.platform) return quote(truncate(meta.platform, 60));
+  return 'an ads budget';
+};
+
+/**
+ * One ads-budget event as a sentence.
+ *
+ * Split out for the same reason `describeGoalActivity` is: it shares none of
+ * the task vocabulary, and the money fields want wording of their own —
+ * "raised the budget from 8,000 to 10,000" rather than the generic "changed
+ * budget from X to Y", because a budget moving up and a budget moving down are
+ * the two things anybody scrolling this log is looking for.
+ */
+const describeAdsBudgetActivity = (entry) => {
+  const actor = entry.actor?.name || 'Someone';
+  const meta = entry.metadata || {};
+  const subject = budgetSubject(meta);
+  const where = meta.isCampaign && meta.platform ? ` on ${meta.platform}` : '';
+
+  if (entry.type === 'ads_budget.created') {
+    const opening = entry.newValue?.allocated;
+    const amount =
+      typeof opening === 'number' && opening > 0 ? ` with a budget of ${describeAmount(opening)}` : '';
+    return `${actor} added ${subject}${where}${amount}.`;
+  }
+  if (entry.type === 'ads_budget.deleted') {
+    return `${actor} removed ${subject}${where}.`;
+  }
+
+  const field = entry.field;
+  const label = FIELD_LABELS[field] || field;
+
+  if (field === 'allocated' || field === 'spent') {
+    const from = typeof entry.oldValue === 'number' ? entry.oldValue : 0;
+    const to = typeof entry.newValue === 'number' ? entry.newValue : 0;
+    const verb = to > from ? 'raised' : 'lowered';
+    return `${actor} ${verb} the ${label} on ${subject}${where} from ${describeAmount(from)} to ${describeAmount(to)}.`;
+  }
+  if (field === 'name' && entry.oldValue) {
+    return `${actor} renamed ${quote(truncate(String(entry.oldValue), 60))} to ${quote(truncate(String(entry.newValue), 60))}.`;
+  }
+  if (field === 'owner') {
+    return entry.newValue
+      ? `${actor} made ${describeScalar(field, entry.newValue)} the owner of ${subject}.`
+      : `${actor} removed the owner of ${subject}.`;
+  }
+
+  const from = describeScalar(field, entry.oldValue);
+  const to = describeScalar(field, entry.newValue);
+  return `${actor} changed ${label} on ${subject}${where} from ${from} to ${to}.`;
+};
+
 /**
  * Describe one hydrated activity entry as a single sentence.
  *
@@ -380,6 +451,9 @@ const describeActivity = (entry, { oldGroupName, newGroupName } = {}) => {
 
   if (typeof entry.type === 'string' && entry.type.startsWith('goal.')) {
     return describeGoalActivity(entry);
+  }
+  if (typeof entry.type === 'string' && entry.type.startsWith('ads_budget.')) {
+    return describeAdsBudgetActivity(entry);
   }
 
   switch (entry.type) {
@@ -513,6 +587,9 @@ const EVENT_LABELS = {
   'goal.created': 'Goal added',
   'goal.deleted': 'Goal deleted',
   'goal.field_changed': 'Goal changed',
+  'ads_budget.created': 'Ads budget added',
+  'ads_budget.deleted': 'Ads budget removed',
+  'ads_budget.field_changed': 'Ads budget changed',
 };
 
 const eventLabel = (type) => EVENT_LABELS[type] || type;
@@ -522,6 +599,7 @@ module.exports = {
   collectUserIds,
   describeActivity,
   describeGoalActivity,
+  describeAdsBudgetActivity,
   describeGoalValue,
   goalFieldLabel,
   eventLabel,

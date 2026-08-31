@@ -20,6 +20,7 @@ import useToastStore from '../../../store/toastStore';
 import FieldMappingPanel from './FieldMappingPanel';
 import SiteFormModal from './SiteFormModal';
 import ConnectorSettingsPanel from './ConnectorSettingsPanel';
+import AdsBudgetAddonCard from './AdsBudgetAddonCard';
 import {
   getBoardConnectors,
   setBoardConnector,
@@ -29,7 +30,25 @@ import {
 } from '../../../services/connectorService';
 
 /**
- * Add-ons — the BOARD half of connectors.
+ * Add-ons — what this board has switched on.
+ *
+ * ---- Two kinds of add-on now live here -------------------------------------
+ *
+ * CONNECTORS, which are the bulk of this file: an external account, connected
+ * once for the whole workspace, wired to this board's groups.
+ *
+ * And ADD-ONS THAT REACH NOTHING — currently the Ads Budget tracker, whose
+ * numbers are all typed in. It has no account, no quota and no provider, so it
+ * is a single switch rather than a section. It lives here because this is the
+ * tab people already open to ask "what can this board do", and a second tab
+ * holding one switch would be a worse answer to that question than a heading.
+ *
+ * That is also why a connector failure below is NOT fatal to this tab any more:
+ * it renders as a notice in the connectors half, and the switches above it stay
+ * usable. The same rule GoalsTab states for its own secondary reads — a failing
+ * request must never blank a page that does not depend on it.
+ *
+ * ---- The connector half ----------------------------------------------------
  *
  * Accounts are connected once, for the whole workspace, in Settings →
  * Connectors. This tab is the other half: switch a connector on for this board,
@@ -74,6 +93,13 @@ const AddonsTab = ({
   // the field-mapping panel; the mapping itself is `connector.manage`, because
   // nothing about it writes to a goal.
   canManageGoalColumns = false,
+  // The Ads Budget add-on: the board's stored `{ enabled, currency }`, whether
+  // this person may change it, and a callback so the board page can patch its
+  // own copy — the tab bar is derived from `enabled`, so the new tab has to
+  // appear the moment the switch settles.
+  adsBudget = null,
+  canManageAdsBudget = false,
+  onAdsBudgetChanged = null,
 }) => {
   const toastError = useToastStore((s) => s.error);
   const toastSuccess = useToastStore((s) => s.success);
@@ -264,26 +290,62 @@ const AddonsTab = ({
     );
   }
 
-  if (error) {
-    return <EmptyState icon={Blocks} title="Add-ons" description={error} />;
-  }
-
   return (
-    <div className="mt-5">
-      <p className="font-body text-[13px] text-[color:var(--color-text-secondary)] mb-4">
-        External data sources for this board. Accounts are connected once for the
-        whole workspace under{' '}
-        <Link
-          to="/settings?tab=connectors"
-          className="underline"
-          style={{ color: 'var(--color-accent)' }}
+    <div className="mt-5 flex flex-col gap-6">
+      {/* Add-ons that reach nothing outside this app. One switch each. */}
+      <div className="flex flex-col gap-3">
+        <h3
+          className="font-body font-medium"
+          style={{
+            fontSize: 11,
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+            color: 'var(--color-text-secondary)',
+          }}
         >
-          Settings &rarr; Connectors
-        </Link>
-        ; here you choose which of their projects feeds which group.
-      </p>
+          Board add-ons
+        </h3>
+        <AdsBudgetAddonCard
+          boardId={boardId}
+          adsBudget={adsBudget}
+          canManage={canManageAdsBudget}
+          onChanged={onAdsBudgetChanged}
+        />
+      </div>
 
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3">
+        <h3
+          className="font-body font-medium"
+          style={{
+            fontSize: 11,
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+            color: 'var(--color-text-secondary)',
+          }}
+        >
+          Connectors
+        </h3>
+        <p className="font-body text-[13px] text-[color:var(--color-text-secondary)]">
+          External data sources for this board. Accounts are connected once for the
+          whole workspace under{' '}
+          <Link
+            to="/settings?tab=connectors"
+            className="underline"
+            style={{ color: 'var(--color-accent)' }}
+          >
+            Settings &rarr; Connectors
+          </Link>
+          ; here you choose which of their projects feeds which group.
+        </p>
+
+        {/* A connector read that failed is reported HERE and nothing else on
+            the tab is lost — including the switches above, which somebody
+            without `connector.view` must still be able to reach. */}
+        {error ? (
+          <EmptyState icon={Blocks} title="Connectors are not available" description={error} />
+        ) : null}
+
+        <div className="flex flex-col gap-4">
         {connectors.map((connector) => {
           const projects = projectsByProvider[connector.name] || [];
           const providerAccounts = accounts.filter(
@@ -522,6 +584,7 @@ const AddonsTab = ({
             </section>
           );
         })}
+        </div>
       </div>
 
       {siteModal && (

@@ -6,18 +6,24 @@ const ActivityLog = require('../models/ActivityLog');
  * Fire-and-forget by design: failures are logged but never re-thrown so a
  * broken log never blocks the triggering mutation (mirrors notificationService).
  *
- * EXACTLY ONE SUBJECT per row: a `task` or a `goal`. Goals are their own
- * collection on tracker boards and are not tasks, so a goal event carries the
- * goal pointer and no task — which is what keeps the per-task feed from ever
- * returning one.
+ * EXACTLY ONE SUBJECT per row: a `task`, a `goal`, or an `adsBudget`. Goals and
+ * ads budgets are their own collections on tracker boards and are not tasks, so
+ * their events carry their own pointer and no task — which is what keeps the
+ * per-task feed from ever returning one.
+ *
+ * ADDING A FOURTH SUBJECT means touching three places, and missing any of them
+ * fails silently because this function swallows its own errors: the guard
+ * below, the id and board resolution, and `task`'s conditional `required` in
+ * models/ActivityLog.js.
  *
  * @param {Object} args
  * @param {Object|string} [args.task]  - Task doc (preferred — supplies board) OR task id
  * @param {Object|string} [args.goal]  - Goal doc (preferred — supplies board) OR goal id
- * @param {string|ObjectId} [args.board] - board id, when neither doc was passed whole
+ * @param {Object|string} [args.adsBudget] - AdsBudget doc (preferred) OR its id
+ * @param {string|ObjectId} [args.board] - board id, when no doc was passed whole
  * @param {string|ObjectId} args.actor - userId performing the action
  * @param {string} args.type           - one of ActivityLog.ACTIVITY_TYPES
- * @param {string} [args.field]        - for type 'task.field_changed' / 'goal.field_changed'
+ * @param {string} [args.field]        - for the '*.field_changed' types
  * @param {*}      [args.oldValue]
  * @param {*}      [args.newValue]
  * @param {Object} [args.metadata]     - { itemText, attachmentName, commentSnippet, ... }
@@ -25,6 +31,7 @@ const ActivityLog = require('../models/ActivityLog');
 const logActivity = async ({
   task,
   goal,
+  adsBudget,
   board,
   actor,
   actorType = 'user',
@@ -38,18 +45,20 @@ const logActivity = async ({
   try {
     // Team events need a User actor; client-portal and unattended events carry
     // a label instead.
-    if ((!task && !goal) || !type) return null;
+    if ((!task && !goal && !adsBudget) || !type) return null;
     if (actorType === 'user' && !actor) return null;
 
     const taskId = task ? (task._id || task) : null;
     const goalId = goal ? (goal._id || goal) : null;
+    const adsBudgetId = adsBudget ? (adsBudget._id || adsBudget) : null;
     // A bare id string has no `.board`, which is why callers pass the doc where
     // they have one; `board` is the explicit way out when they do not.
-    const boardId = board || task?.board || goal?.board || null;
+    const boardId = board || task?.board || goal?.board || adsBudget?.board || null;
 
     const doc = await ActivityLog.create({
       task: taskId,
       goal: goalId,
+      adsBudget: adsBudgetId,
       board: boardId,
       actor: actorType === 'user' ? actor : null,
       actorType,
