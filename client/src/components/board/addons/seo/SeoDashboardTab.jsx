@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plug, RefreshCw } from 'lucide-react';
+import { Plug } from 'lucide-react';
 
 import Button from '../../../ui/Button';
-import Dropdown from '../../../ui/Dropdown';
 import Modal from '../../../ui/Modal';
 import Spinner from '../../../ui/Spinner';
 import EmptyState from '../../../ui/EmptyState';
-import { SegmentedControl } from '../../../ui/FormControls';
-import DateRangePicker from '../../../ui/DateRangePicker';
 import { resolveRangePreset } from '../../../../utils/dateRange';
 import useTaskStore from '../../../../store/taskStore';
 import useToastStore from '../../../../store/toastStore';
@@ -17,8 +14,14 @@ import {
   getConnectorUsage,
   refreshConnectorData,
 } from '../../../../services/connectorService';
-import { marketLabel, staleness } from '../../../../utils/connectorFormat';
+import { marketLabel } from '../../../../utils/connectorFormat';
 
+import {
+  ScreenHeading,
+  SeoNav,
+  SeoNavBar,
+  SeoProjectBar,
+} from './SeoChrome';
 import OverviewScreen from './OverviewScreen';
 import RankTrackingScreen from './RankTrackingScreen';
 import KeywordResearchScreen from './KeywordResearchScreen';
@@ -57,6 +60,15 @@ import UsageScreen from './UsageScreen';
  * screens at all. That is also what fixed `enabledConnectors[0]` on the board
  * page: a board with both connectors switched on used to show whichever came
  * back first and drop the other one entirely.
+ *
+ * ---- The shell lives in `SeoChrome` ----------------------------------------
+ *
+ * The nav, the project bar and the per-screen heading were lifted into
+ * `SeoChrome.jsx` when the flat row of fourteen buttons became a grouped rail.
+ * This file is the data and the state; that one is the layout. The grouping is
+ * the descriptor's too — `screen.group` against `provider.screenGroups` — for
+ * the same reason the screen list is, so a screen declared in a later phase
+ * lands under the right heading with nothing in the client to edit.
  *
  * ---- Why nothing here fetches from the provider ----------------------------
  *
@@ -296,12 +308,23 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
     return catalog.filter((s) => allowed.has(s.key));
   }, [data]);
 
+  /**
+   * The rail's headings, in nav order — from the descriptor, like the screens
+   * themselves. Empty for a provider that declares no grouping, which `SeoNav`
+   * renders as one flat list. See `SeoChrome`.
+   */
+  const screenGroups = data?.provider?.screenGroups || [];
+
   // A stored screen that is no longer rendered — switched off for this board, or
   // removed from the provider — falls back to the first one rather than showing
   // a blank panel.
   const activeScreen = screens.some((s) => s.key === screen)
     ? screen
     : screens[0]?.key || 'overview';
+
+  // A board that renders exactly one screen gets no nav at all: a rail with a
+  // single item is a label pretending to be a choice.
+  const multiScreen = screens.length > 1;
 
   const label = data?.provider?.label || providerLabel || 'SEO';
 
@@ -388,140 +411,143 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
   const screenMeta = screens.find((s) => s.key === activeScreen) || null;
 
   return (
-    <div className="mt-5 flex flex-col gap-4">
-      {/* ---- Screen nav ------------------------------------------------------ */}
-      <div className="flex flex-wrap items-center gap-3">
-        <SegmentedControl
-          options={screens.map((s) => ({ value: s.key, label: s.label }))}
-          value={activeScreen}
-          onChange={setScreen}
-        />
-        <div className="flex-1" />
-        {data.canManage && (
-          <Button
-            variant="secondary"
-            icon={RefreshCw}
-            onClick={() => runRefresh()}
-            disabled={refreshing}
-          >
-            {refreshing ? 'Working…' : 'Refresh'}
-          </Button>
-        )}
-      </div>
-
-      {/* ---- Site and market ------------------------------------------------- */}
-      <div className="flex flex-wrap items-end gap-3">
-        <div style={{ minWidth: 240 }}>
-          <Dropdown
-            label="Site"
-            size="sm"
-            options={projectOptions}
-            value={projectId}
-            onChange={(value) => {
-              setProjectId(value);
-              // A keyword and a market belong to the site whose table they came
-              // from. Carrying either across would ask for a variant this site
-              // has never produced.
-              setKeyword('');
-              setVariant('');
-            }}
-          />
-        </div>
-
-        <DateRangePicker
-          label="History"
-          preset={range.preset}
-          value={range}
-          onChange={setRange}
-        />
-
-        {variantOptions.length > 1 && (
-          <div style={{ minWidth: 200 }}>
-            <Dropdown
-              // Only shown when there is a choice. A US rank and a UK rank for
-              // one keyword are two facts, and mixing them would flip the table
-              // between markets week to week.
-              label="Market"
-              size="sm"
-              options={variantOptions}
-              value={variant}
-              onChange={(v) => {
-                setVariant(v);
-                setKeyword('');
-              }}
-            />
-          </div>
-        )}
-
-        <div className="flex-1" />
-
-        <p
-          className="font-body text-right"
-          style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
-        >
-          {data.project.lastFetchedAt
-            ? `Last collected ${staleness(data.project.lastFetchedAt)}`
-            : 'Never collected'}
-          {data.queued > 0 && (
-            <>
-              <br />
-              {data.queued} collection{data.queued === 1 ? '' : 's'} in flight
-            </>
-          )}
-        </p>
-      </div>
-
-      {!data.enabled && (
-        <p
-          className="font-body"
-          style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}
-        >
-          {label} is switched off for this board, so nothing is being collected.
-          Past readings are kept — switch it back on under{' '}
-          <Link to="?view=addons" className="underline" style={{ color: 'var(--color-accent)' }}>
-            Add-ons
-          </Link>
-          .
-        </p>
-      )}
-
-      {/* ---- The screen ------------------------------------------------------ */}
-      {!Screen ? (
-        // A screen the server declares that this client has no component for.
-        // Named rather than dropped, so a provider gaining a screen is visible
-        // here instead of silently missing.
-        <EmptyState
-          icon={Plug}
-          title={screenMeta?.label || 'Not available yet'}
-          description={`${label} offers this screen, but this version of the app does not render it yet.`}
-        />
-      ) : activeScreen === 'usage' ? (
-        <UsageScreen
-          usage={usage}
-          loading={usageLoading}
-          data={data}
-          label={label}
-          boardId={boardId}
-        />
-      ) : (
-        <Screen
-          data={data}
-          label={label}
-          keyword={keyword}
-          onSelectKeyword={setKeyword}
-          onOpenScreen={setScreen}
-          /**
-           * The re-buy path, and it is deliberately not the Refresh button.
-           * `forceRefetchIsFree: false` on this descriptor means a plain Refresh
-           * respects the cadence and collects only what is already paid for; a
-           * genuine "buy it again" is a second, confirmed act, because on this
-           * provider it is a purchase and it also resets the attempt chain on a
-           * job that has already been given up on.
-           */
-          onRebuy={data.canManage ? () => setConfirmBuy(true) : null}
+    <div className="mt-5">
+      {/* ---------------------------------------------------------------------
+          The shell: one card holding the project bar, the rail and the screen.
+          The nav is grouped and the pickers appear only where there is a choice
+          — see `SeoChrome` for what that replaced and why.
+      --------------------------------------------------------------------- */}
+      <div
+        style={{
+          background: 'var(--color-bg-surface)',
+          border: '1px solid var(--color-border)',
+          borderRadius: 'var(--radius-lg)',
+          overflow: 'hidden',
+        }}
+      >
+        <SeoProjectBar
+          project={data.project}
+          projectOptions={projectOptions}
+          projectId={projectId}
+          onProjectChange={(value) => {
+            setProjectId(value);
+            // A keyword and a market belong to the site whose table they came
+            // from. Carrying either across would ask for a variant this site
+            // has never produced.
+            setKeyword('');
+            setVariant('');
+          }}
+          variantOptions={variantOptions}
+          variant={variant}
+          // Only offered when there is a choice. A US rank and a UK rank for one
+          // keyword are two facts, and mixing them would flip the table between
+          // markets week to week.
+          onVariantChange={(v) => {
+            setVariant(v);
+            setKeyword('');
+          }}
+          range={range}
+          onRangeChange={setRange}
+          queued={data.queued}
+          canManage={data.canManage}
           refreshing={refreshing}
+          onRefresh={() => runRefresh()}
         />
-      )}
+
+        {!data.enabled && (
+          <p
+            className="font-body px-4 py-2.5"
+            style={{
+              fontSize: 12.5,
+              background: 'var(--color-bg-subtle)',
+              color: 'var(--color-text-secondary)',
+              borderBottom: '1px solid var(--color-border)',
+            }}
+          >
+            {label} is switched off for this board, so nothing is being
+            collected. Past readings are kept — switch it back on under{' '}
+            <Link
+              to="?view=addons"
+              className="underline"
+              style={{ color: 'var(--color-accent)' }}
+            >
+              Add-ons
+            </Link>
+            .
+          </p>
+        )}
+
+        <div className="flex items-stretch">
+          {multiScreen && (
+            <SeoNav
+              screens={screens}
+              groups={screenGroups}
+              active={activeScreen}
+              onChange={setScreen}
+            />
+          )}
+
+          <div className="flex-1 min-w-0">
+            {/* The same nav, as a scrolling row, below `lg`. */}
+            {multiScreen && (
+              <SeoNavBar
+                screens={screens}
+                active={activeScreen}
+                onChange={setScreen}
+              />
+            )}
+
+            {/* ---- The screen ------------------------------------------------
+                On the page's own background rather than the card's, so the
+                sections inside it read as cards instead of as one flat sheet.
+            ---------------------------------------------------------------- */}
+            <div
+              className="px-4 py-4 lg:px-5 lg:py-5"
+              style={{ background: 'var(--color-bg-base)', minHeight: 380 }}
+            >
+              <ScreenHeading screen={screenMeta} />
+
+              {!Screen ? (
+                // A screen the server declares that this client has no component
+                // for. Named rather than dropped, so a provider gaining a screen
+                // is visible here instead of silently missing.
+                <EmptyState
+                  icon={Plug}
+                  title={screenMeta?.label || 'Not available yet'}
+                  description={`${label} offers this screen, but this version of the app does not render it yet.`}
+                />
+              ) : activeScreen === 'usage' ? (
+                <UsageScreen
+                  usage={usage}
+                  loading={usageLoading}
+                  data={data}
+                  label={label}
+                  boardId={boardId}
+                />
+              ) : (
+                <Screen
+                  data={data}
+                  label={label}
+                  keyword={keyword}
+                  onSelectKeyword={setKeyword}
+                  onOpenScreen={setScreen}
+                  /**
+                   * The re-buy path, and it is deliberately not the Refresh
+                   * button. `forceRefetchIsFree: false` on this descriptor means
+                   * a plain Refresh respects the cadence and collects only what
+                   * is already paid for; a genuine "buy it again" is a second,
+                   * confirmed act, because on this provider it is a purchase and
+                   * it also resets the attempt chain on a job that has already
+                   * been given up on.
+                   */
+                  onRebuy={data.canManage ? () => setConfirmBuy(true) : null}
+                  refreshing={refreshing}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
 
       <Modal
         isOpen={confirmBuy}

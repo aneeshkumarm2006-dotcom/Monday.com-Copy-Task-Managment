@@ -223,6 +223,16 @@ const getConnectorData = async (req, res) => {
          */
         screens: Array.isArray(connector.screens) ? connector.screens : [],
         /**
+         * The headings those screens are grouped under, in nav order.
+         *
+         * Empty for a provider that declares no grouping, which the shell
+         * renders as one flat list — the behaviour every provider had before
+         * this field existed.
+         */
+        screenGroups: Array.isArray(connector.screenGroups)
+          ? connector.screenGroups
+          : [],
+        /**
          * The alert rules and their thresholds, as data, so the Alerts screen
          * prints the server's numbers rather than restating them. Empty for a
          * provider with no `alerts` hook.

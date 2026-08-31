@@ -197,9 +197,13 @@ const PermissionsMatrix = ({ orgId, onRolesChanged }) => {
 
   /**
    * Capabilities the owner does NOT hold implicitly. Their column is otherwise
-   * locked on, but these rows stay togglable for them — `board.view_all_private`
-   * has to be a deliberate choice, or "private" would not mean private from the
-   * owner either.
+   * locked on; these rows stay togglable for them.
+   *
+   * The server currently sends an EMPTY list, so the owner column is locked on
+   * everywhere. `board.view_all_private` used to be here, and withholding it
+   * from the owner turned out to strand any private board whose creator had
+   * left — see the note on NEVER_IMPLICIT in the server's capabilities.js. The
+   * handling stays because the set is meant to be re-populatable.
    */
   const neverImplicit = useMemo(
     () => new Set(catalog?.neverImplicit || []),
@@ -538,9 +542,12 @@ const PermissionsMatrix = ({ orgId, onRolesChanged }) => {
         className="font-body"
         style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
       >
-        <strong>Enter every private board</strong> is off for everyone by default.
-        Turning it on lets that role open private boards they were never given
-        access to.
+        <strong>Enter every private board</strong> and <strong>Fully manage every
+        private board they can enter</strong> are off for everyone by default,
+        admins included. The first lets a role open private boards it was never
+        given access to; the second lets it rename, delete, re-share and
+        un-private them once inside. Neither applies to the workspace owner, who
+        already holds every board in the workspace outright.
       </p>
 
       <RoleEditorModal

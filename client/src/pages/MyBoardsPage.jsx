@@ -172,11 +172,21 @@ const MyBoardsPage = () => {
     // The plain fields first. `PUT /api/boards/:id` deliberately ignores
     // `boardType` — changing the type re-files every task, so it is a different
     // operation with its own endpoint and its own capability.
-    await updateBoardAction(editTarget._id, {
+    //
+    // `visibility` goes ONLY when it actually changed. The endpoint gates per
+    // FIELD, and `board.change_visibility` is conferred by no rung of the access
+    // ladder — so someone holding an `edit` grant on a board they did not create
+    // has `board.rename` and not the other. Sending the unchanged current value
+    // still counts as "this request carries visibility", which 403'd every
+    // rename they attempted with an error about a field they had not touched.
+    const patch = {
       name: values.name,
-      visibility: values.visibility,
       description: values.description,
-    });
+    };
+    if (values.visibility !== editTarget.visibility) {
+      patch.visibility = values.visibility;
+    }
+    await updateBoardAction(editTarget._id, patch);
 
     if (values.typeChanged) {
       const result = await convertBoard(editTarget._id, {
@@ -490,6 +500,13 @@ const MyBoardsPage = () => {
         onSubmit={handleEditSubmit}
         initialValues={editTarget || undefined}
         mode="edit"
+        // Read the server's own answer rather than guessing at it here. The ⋯
+        // menu opens on `board.rename`, which is a LOWER bar than flipping the
+        // board public — so the two have to be asked separately or the form
+        // offers a control the save will refuse.
+        canChangeVisibility={(editTarget?.permissions?.capabilities || []).includes(
+          'board.change_visibility'
+        )}
       />
 
       {/* Delete confirmation */}

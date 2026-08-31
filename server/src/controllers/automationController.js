@@ -14,7 +14,12 @@ const {
   computeNextRunAt,
   validateSchedule,
 } = require('../services/automationSchedule');
-const { resolveBoardAccess } = require('../utils/boardAccess');
+// `resolveAccess`, not `resolveBoardAccess`: the pure board primitive is
+// org-agnostic, so it cannot see the org owner (who reaches every board in the
+// workspace) or a matrix override like `board.view_all_private`. Reading it
+// directly here meant this check under-reported who can open the board, and
+// refused an assignee the board would have let in.
+const { resolveAccess } = require('../utils/permissions');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 const { buildTaskDeepLink } = require('../utils/taskDeepLink');
@@ -66,7 +71,7 @@ const validateAssignees = async (assignedTo, org, board) => {
   if (!ids.length || !board) return { ids };
 
   const readable = new Set(
-    ids.filter((id) => resolveBoardAccess(board, org, id).canRead)
+    ids.filter((id) => resolveAccess(board, org, id).canRead)
   );
   const blocked = ids.filter((id) => !readable.has(id));
   if (blocked.length) {

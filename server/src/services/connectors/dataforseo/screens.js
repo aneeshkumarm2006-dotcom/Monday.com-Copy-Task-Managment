@@ -33,15 +33,45 @@ const C = require('./constants');
  * @typedef {Object} DashboardScreen
  * @property {string} key      - stored in `BoardConnector.enabledScreens`
  * @property {string} label    - the nav entry
+ * @property {string|null} group - which `SCREEN_GROUPS` heading it sits under
  * @property {string} blurb    - one line, under the heading
  * @property {string[]} kinds  - snapshot kinds this screen DRAWS. Display only.
  * @property {boolean} alwaysOn - cannot be switched off per board
  */
 
+/**
+ * The nav headings the screens above are filed under, in the order they appear.
+ *
+ * ---- Why the grouping is here and not in the client -------------------------
+ *
+ * The same argument the catalog itself already makes, one field along. Fourteen
+ * screens in one flat row is a nav nobody can scan, so the shell renders a
+ * grouped rail — and if the grouping were a lookup table in the client, a screen
+ * added HERE in a later phase would appear in the nav filed under nothing until
+ * somebody remembered to edit a second file. `group` travelling with the screen
+ * is what keeps "declare it and it appears, in the right place" true.
+ *
+ * A screen whose `group` is null is a TOP-LEVEL entry, rendered above the first
+ * heading — that is Overview, and it is deliberately not filed under a heading
+ * of one. A screen naming a group that does not exist here is filed under a
+ * trailing "More" heading by the client rather than dropped, which is the same
+ * treatment an unknown screen key already gets.
+ *
+ * @type {{key: string, label: string}[]}
+ */
+const SCREEN_GROUPS = [
+  { key: 'rankings', label: 'Rankings' },
+  { key: 'research', label: 'Research' },
+  { key: 'links', label: 'Link building' },
+  { key: 'site', label: 'Site & local' },
+  { key: 'reporting', label: 'Reporting & spend' },
+];
+
 /** @type {DashboardScreen[]} */
 const SCREENS = [
   {
     key: 'overview',
+    group: null,
     label: 'Overview',
     blurb:
       'Where this site stands right now — how many tracked keywords rank, how ' +
@@ -51,6 +81,7 @@ const SCREENS = [
   },
   {
     key: 'rank_tracking',
+    group: 'rankings',
     label: 'Rank tracking',
     blurb:
       'Every tracked keyword, sortable and exportable, with the stored history ' +
@@ -60,6 +91,7 @@ const SCREENS = [
   },
   {
     key: 'keyword_research',
+    group: 'research',
     label: 'Keyword research',
     blurb:
       'Volume, difficulty, intent and seasonality for every tracked keyword. ' +
@@ -83,6 +115,7 @@ const SCREENS = [
      * about the bottom half, rather than an empty page.
      */
     key: 'competitors',
+    group: 'research',
     label: 'Competitors & gap',
     blurb:
       'Who else owns these SERPs, and the keywords they rank for that this ' +
@@ -92,6 +125,7 @@ const SCREENS = [
   },
   {
     key: 'top_pages',
+    group: 'research',
     label: 'Top pages',
     blurb:
       "This site's own URLs ranked by estimated traffic value, with the " +
@@ -126,6 +160,7 @@ const SCREENS = [
      * this is a claim about the index and not a promise about one link in it.
      */
     key: 'backlinks',
+    group: 'links',
     label: 'Backlinks',
     blurb:
       'Who links to this site and how that is moving — the live link profile, ' +
@@ -154,6 +189,7 @@ const SCREENS = [
      * between two readings taken at different sizes.
      */
     key: 'site_audit',
+    group: 'site',
     label: 'Site audit',
     blurb:
       'The technical state of the site from a crawl of up to ' +
@@ -192,6 +228,7 @@ const SCREENS = [
      * all the way down.
      */
     key: 'ai_visibility',
+    group: 'rankings',
     label: 'AI visibility',
     blurb:
       'Which tracked keywords now show an AI Overview, whether Google cites ' +
@@ -212,6 +249,7 @@ const SCREENS = [
      * `positions` and deliberately not `movement`.
      */
     key: 'cannibalization',
+    group: 'rankings',
     label: 'Cannibalization',
     blurb:
       'Keywords where more than one page on this site is competing for the ' +
@@ -234,6 +272,7 @@ const SCREENS = [
      * dependency the Backlinks and Competitors screens already rely on.
      */
     key: 'toxic_backlinks',
+    group: 'links',
     label: 'Toxic backlinks',
     blurb:
       'Referring domains that look wrong and why, the IP blocks several of ' +
@@ -258,6 +297,7 @@ const SCREENS = [
      * that preference governs one PERSON's bell.
      */
     key: 'alerts',
+    group: 'reporting',
     label: 'Alerts',
     blurb:
       'The rank drops and lost backlinks worth telling somebody about — what ' +
@@ -279,6 +319,7 @@ const SCREENS = [
      * told that rather than shown an empty page.
      */
     key: 'client_report',
+    group: 'reporting',
     label: 'Client report',
     blurb:
       'One page a client can be sent — the headline numbers, what moved, and ' +
@@ -302,6 +343,7 @@ const SCREENS = [
      * lookup every week.
      */
     key: 'local',
+    group: 'site',
     label: 'Local / GBP',
     blurb:
       'The Google Business Profile behind this site — the star breakdown ' +
@@ -322,6 +364,7 @@ const SCREENS = [
      * the budget document exists to prevent.
      */
     key: 'usage',
+    group: 'reporting',
     label: 'Usage & spend',
     blurb:
       'What this board has spent at DataForSEO this month, what is still ' +
@@ -399,4 +442,12 @@ const RUNNERS = [
   },
 ];
 
-module.exports = { SCREENS, SCREEN_KEYS, getScreen, isScreen, resolveScreens, RUNNERS };
+module.exports = {
+  SCREENS,
+  SCREEN_GROUPS,
+  SCREEN_KEYS,
+  getScreen,
+  isScreen,
+  resolveScreens,
+  RUNNERS,
+};

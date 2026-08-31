@@ -139,8 +139,12 @@ test('org: owner cannot be locked out by a malicious matrix edit', () => {
   assert.ok(a.can('org.manage_roles'));
   assert.ok(a.can('board.delete'));
   assert.ok(a.can('org.remove_members'));
-  // The one exception: privacy overrides are never implicit, even for the owner.
-  assert.ok(!a.can('board.view_all_private'));
+  // Privacy overrides used to be the one exception. They are not any more: the
+  // owner holds the whole catalog, NEVER_IMPLICIT is empty, and the reason is in
+  // the note on that set — withholding `board.view_all_private` from the owner
+  // stranded any private board whose creator was gone.
+  assert.ok(a.can('board.view_all_private'));
+  assert.ok(a.can('board.manage_all_private'));
 });
 
 test('org: org.manage_roles is grantable — admin holds it by default', () => {
@@ -153,29 +157,22 @@ test('org: org.manage_roles is grantable — admin holds it by default', () => {
   assert.ok(!resolveOrgAccess(org, VIEWER).can('org.manage_roles'));
 });
 
-test('org: view_all_private is off for every seeded role — INCLUDING the owner', () => {
+test('org: the private overrides are off for every seeded role EXCEPT the owner', () => {
   const org = makeOrg();
   for (const u of [ADMIN, MEMBER, VIEWER, GUEST]) {
     assert.ok(
       !resolveOrgAccess(org, u).can('board.view_all_private'),
       'private boards must stay private by default'
     );
+    assert.ok(
+      !resolveOrgAccess(org, u).can('board.manage_all_private'),
+      'and un-administerable by default too — admins included'
+    );
   }
-  // The owner short-circuits to every capability, so without the NEVER_IMPLICIT
-  // carve-out "off by default for every role" would be a lie the moment the
-  // owner logged in — they would silently see every private board in the org.
-  assert.ok(
-    !resolveOrgAccess(org, OWNER).can('board.view_all_private'),
-    'the owner must not get the privacy override for free'
-  );
-  // …but they can still turn it on deliberately.
-  const opted = makeOrg({
-    roles: roles.map((r) =>
-      r.key === 'owner' ? { ...r, permissions: ['board.view_all_private'] } : r
-    ),
-  });
-  assert.ok(resolveOrgAccess(opted, OWNER).can('board.view_all_private'));
-  assert.ok(resolveOrgAccess(opted, OWNER).can('board.delete'), 'and keeps everything else');
+  // The owner is not a role you can under-grant. They short-circuit to the whole
+  // catalog, these two included.
+  assert.ok(resolveOrgAccess(org, OWNER).can('board.view_all_private'));
+  assert.ok(resolveOrgAccess(org, OWNER).can('board.manage_all_private'));
 });
 
 test('org: the owner cannot be locked out of a private board they own', () => {
@@ -184,22 +181,142 @@ test('org: the owner cannot be locked out of a private board they own', () => {
   assert.ok(resolveAccess(board, org, OWNER).canRead);
 });
 
-test('org: a private board is private FROM THE OWNER too, until they opt in', () => {
+test('org: the owner fully owns a private board SOMEONE ELSE created', () => {
+  // The regression this whole rule exists for. A member takes a shared board
+  // private and leaves; before, the org owner could not rename it, delete it, or
+  // flip it back to public, and no matrix edit could grant them that — the
+  // `view_all_private` override resolves to the `view` rung, which confers no
+  // lifecycle capability at all. The board was stranded.
   const org = makeOrg();
-  const board = makeBoard({ createdBy: MEMBER, visibility: 'private' });
-  assert.equal(resolveAccess(board, org, OWNER).canRead, false);
+  const board = makeBoard({ createdBy: MEMBER, visibility: 'private', memberAccess: [] });
+  const a = resolveAccess(board, org, OWNER);
 
-  const opted = makeOrg({
+  assert.ok(a.canRead, 'the owner reaches every board in their workspace');
+  assert.equal(a.level, 'edit');
+  assert.equal(a.readOnly, false);
+  assert.ok(a.can('board.change_visibility'), 'THE fix — they can make it public again');
+  assert.ok(a.can('board.rename'));
+  assert.ok(a.can('board.delete'));
+  assert.ok(a.can('column.manage'));
+  assert.ok(a.can('task.edit_any'));
+  assert.ok(a.canManageAccess, 'and can hand access to somebody else');
+});
+
+test('org: the owner owns a private board even with the owner role emptied', () => {
+  // Belt and braces: this must not depend on stored role data, or a bad matrix
+  // write becomes a lockout again.
+  const org = makeOrg({
+    roles: roles.map((r) => (r.key === 'owner' ? { ...r, permissions: [] } : r)),
+  });
+  const board = makeBoard({ createdBy: MEMBER, visibility: 'private' });
+  assert.ok(resolveAccess(board, org, OWNER).can('board.change_visibility'));
+});
+
+test('org: owning the workspace is NOT the same as being in admins[]', () => {
+  // `Organisation.admin` is one person. The legacy `admins[]` array is not, and
+  // widening the short-circuit to it would silently hand every org admin every
+  // private board in the workspace.
+  const org = makeOrg({ admins: [ADMIN] });
+  const board = makeBoard({ createdBy: MEMBER, visibility: 'private' });
+  assert.equal(resolveAccess(board, org, ADMIN).canRead, false);
+});
+
+// --- the private-board overrides -------------------------------------------
+
+test('private board: manage_all_private is the write half view_all_private is not', () => {
+  const withBoth = makeOrg({
     roles: roles.map((r) =>
-      r.key === 'owner' ? { ...r, permissions: ['board.view_all_private'] } : r
+      r.key === 'admin'
+        ? {
+            ...r,
+            permissions: [
+              ...r.permissions,
+              'board.view_all_private',
+              'board.manage_all_private',
+            ],
+          }
+        : r
     ),
   });
-  const a = resolveAccess(board, opted, OWNER);
-  assert.ok(a.canRead, 'the override opens it');
-  assert.equal(a.readOnly, true, 'but read-only — it lifts visibility, not the ceiling');
+  const board = makeBoard({ createdBy: MEMBER, visibility: 'private' });
+  const a = resolveAccess(board, withBoth, ADMIN);
+
+  assert.ok(a.canRead);
+  assert.equal(a.readOnly, false);
+  assert.ok(a.can('board.change_visibility'), 'this is what rescues a stranded board');
+  assert.ok(a.can('board.delete'));
+  assert.ok(a.can('column.manage'));
+  assert.ok(a.canManageAccess, 'fully manage means the share dialog too');
+});
+
+test('private board: manage_all_private alone opens NOTHING', () => {
+  // Reach first, power second — the same division the public pair uses. Without
+  // `view_all_private` or a grant, holding the manage half must not become a
+  // back door into every private board in the workspace.
+  const org = makeOrg({
+    roles: roles.map((r) =>
+      r.key === 'admin'
+        ? { ...r, permissions: [...r.permissions, 'board.manage_all_private'] }
+        : r
+    ),
+  });
+  const board = makeBoard({ createdBy: MEMBER, visibility: 'private' });
+  const a = resolveAccess(board, org, ADMIN);
+
+  assert.equal(a.canRead, false);
+  assert.ok(!a.can('board.change_visibility'));
   assert.ok(!a.can('task.edit_any'));
 });
 
+test('private board: manage_all_private upgrades an EXPLICIT grant too', () => {
+  // The other route to reach: a `view` grant. The manage half then lifts the
+  // ceiling on it, which is the point of splitting the two.
+  const org = makeOrg({
+    roles: roles.map((r) =>
+      r.key === 'admin'
+        ? { ...r, permissions: [...r.permissions, 'board.manage_all_private'] }
+        : r
+    ),
+  });
+  const board = makeBoard({
+    createdBy: MEMBER,
+    visibility: 'private',
+    memberAccess: [{ user: ADMIN, level: 'view', canManage: false }],
+  });
+  const a = resolveAccess(board, org, ADMIN);
+
+  assert.ok(a.canRead);
+  assert.ok(a.can('board.change_visibility'));
+});
+
+test('private board: manage_all_private does not touch a PUBLIC board', () => {
+  // It is scoped to private boards; the public half is `board.manage_public`,
+  // and a role holding only the private one must not inherit the public one.
+  const org = makeOrg({
+    roles: roles.map((r) =>
+      r.key === 'viewer'
+        ? {
+            ...r,
+            permissions: [
+              ...r.permissions,
+              'board.view_all_private',
+              'board.manage_all_private',
+            ],
+          }
+        : r
+    ),
+  });
+  const board = makeBoard({
+    createdBy: MEMBER,
+    visibility: 'public',
+    publicDefaultLevel: 'view',
+  });
+  const a = resolveAccess(board, org, VIEWER);
+
+  assert.ok(a.canRead);
+  assert.equal(a.readOnly, true, 'a Viewer stays a Viewer on a public board');
+  assert.ok(!a.can('board.change_visibility'));
+});
 test('populated refs: a populated org still resolves (the invisible fail-closed bug)', () => {
   // getOrg does .populate('admin') and .populate('members'). A populated
   // Document's toString() is its inspect string, never the hex id — so every

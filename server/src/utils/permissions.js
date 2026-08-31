@@ -91,13 +91,11 @@ const roleForUser = (org, userId) => {
  * the matrix says — delegating the power to rewrite the matrix that constrains
  * you is how a delegate escalates to owner.
  *
- * NEVER_IMPLICIT is the one exception to the owner's short-circuit, and it is
- * deliberate. `board.view_all_private` opens every private board in the
- * workspace, and "private" has to mean private — including from the owner —
- * unless somebody consciously decides otherwise. So the owner does not get it for
- * free either: it has to be ticked ON in the matrix, like any other capability.
- * Without this carve-out, "default it off for every role" would have been a lie
- * the moment the owner logged in.
+ * NEVER_IMPLICIT is the one exception to the owner's short-circuit. It is empty
+ * today — see the note on it in [capabilities.js](./capabilities.js) for why
+ * withholding `board.view_all_private` from the owner turned out to be a
+ * one-way door — so this loop is currently a no-op, kept because the set is
+ * meant to be re-populatable.
  */
 const orgCapabilities = (org, userId) => {
   const role = roleForUser(org, userId);
@@ -149,19 +147,35 @@ const resolveOrgAccess = (org, userId) => {
 /**
  * The rung a user stands on, AFTER the org role's board-wide overrides.
  *
- * Two org capabilities can raise a user's standing above what the board itself
- * grants them, and both are visible in the matrix rather than hidden in code:
+ * THE ORG OWNER STANDS ON `edit` EVERYWHERE, unconditionally. They own the
+ * workspace, so there is no board in it they can be locked out of — see
+ * `boardCapabilities` below for what that buys them and why the alternative was
+ * a one-way door.
  *
- *   board.manage_public    → 'edit' on any PUBLIC board. This is the old
- *                            `canEdit = isPublic && orgAdmin` rule, made
- *                            explicit. Without it, a public board that opens at
- *                            `contribute` would stop admins from managing its
- *                            columns — a regression.
- *   board.view_all_private → 'view' on any PRIVATE board they'd otherwise not
- *                            reach. Read, not write: it lifts the visibility
- *                            gate, never the content ceiling. Off by default.
+ * Three org capabilities can raise everyone ELSE's standing above what the board
+ * itself grants them, and all three are visible in the matrix rather than hidden
+ * in code:
+ *
+ *   board.manage_public       → 'edit' on any PUBLIC board. This is the old
+ *                               `canEdit = isPublic && orgAdmin` rule, made
+ *                               explicit. Without it, a public board that opens
+ *                               at `contribute` would stop admins from managing
+ *                               its columns — a regression.
+ *   board.view_all_private    → 'view' on any PRIVATE board they'd otherwise not
+ *                               reach. Read, not write: it lifts the visibility
+ *                               gate, never the content ceiling. Off by default.
+ *   board.manage_all_private  → 'edit' on a PRIVATE board they can already
+ *                               reach. The write half `view_all_private`
+ *                               deliberately withheld, split out so the two can
+ *                               be granted independently. Off by default.
+ *
+ * Note the ordering of the last two: `manage_all_private` never opens a board on
+ * its own. Reach first (a grant, or `view_all_private`), power second — exactly
+ * the division the public pair already uses.
  */
 const effectiveBoardLevel = (board, org, userId, orgAccess) => {
+  if (isOrgOwner(org, userId)) return 'edit';
+
   const standing = resolveBoardAccess(board, org, userId).level;
   const isPublic = board.visibility === 'public';
 
@@ -177,9 +191,12 @@ const effectiveBoardLevel = (board, org, userId, orgAccess) => {
     return standing;
   }
 
-  if (standing) return standing;
-  if (orgAccess.can('board.view_all_private')) return 'view';
-  return null;
+  // Private. Reach is `standing` (creator or explicit grant) or the
+  // `view_all_private` override; `manage_all_private` then decides how far.
+  const reaches = !!standing || orgAccess.can('board.view_all_private');
+  if (!reaches) return null;
+  if (orgAccess.can('board.manage_all_private')) return 'edit';
+  return standing || 'view';
 };
 
 /**
@@ -191,9 +208,26 @@ const effectiveBoardLevel = (board, org, userId, orgAccess) => {
  * confers. That is what makes "the creator owns their board" true in code, and it
  * fixes the old model, where a creator who was not an org admin could not rename
  * or delete the board they had made.
+ *
+ * THE ORG OWNER HOLDS THE SAME SET ON EVERY BOARD IN THEIR WORKSPACE, and that
+ * is the deliberate reversal of an earlier rule. Board lifecycle — rename,
+ * delete, flip public/private — is conferred by NO rung of the ladder, only by
+ * `createdBy`. So a board somebody else made private had exactly one account in
+ * the whole organisation that could ever un-private it, and the matrix had no
+ * capability that could stand in: `board.view_all_private` resolves to `view`,
+ * which is read. A member could take a shared board private, leave the company,
+ * and strand it permanently — with the workspace owner able to watch it and do
+ * nothing. Whatever privacy that bought was not worth a board nobody can
+ * administer.
+ *
+ * Note this is the ORG owner (`Organisation.admin`) — one person, not a role,
+ * and not the legacy `admins[]` array. Org admins still get nothing on a private
+ * board without a grant or `board.manage_all_private`.
  */
 const boardCapabilities = (board, org, userId, orgAccess) => {
   if (!board) return new Set();
+
+  if (isOrgOwner(org, userId)) return new Set(OWNER_BOARD_CAPABILITIES);
 
   const access = resolveBoardAccess(board, org, userId);
   if (access.creator) return new Set(OWNER_BOARD_CAPABILITIES);
@@ -213,6 +247,17 @@ const boardCapabilities = (board, org, userId, orgAccess) => {
   const level = effectiveBoardLevel(board, org, userId, resolved);
   if (!level) return new Set();
 
+  // The private mirror of the branch above, and owner-EQUIVALENT for the same
+  // reason: `edit` is power over CONTENT, and the whole point of this capability
+  // is power over the board's EXISTENCE — the rename, the delete, the flip back
+  // to public that no rung confers. Gated on `level` having resolved first, so
+  // it still cannot open a board the holder has no reach into.
+  if (
+    board.visibility === 'private' &&
+    resolved.can('board.manage_all_private')
+  ) {
+    return new Set(OWNER_BOARD_CAPABILITIES);
+  }
   return capabilitiesForLevel(level, { canManage: access.fullAccess });
 };
 
@@ -234,12 +279,17 @@ const resolveAccess = (board, org, userId) => {
     if (!BOARD_SCOPED.has(cap) || boardCaps.has(cap)) effective.add(cap);
   }
 
-  const canRead = boardAccess.creator || !!level;
+  // `owns` is "holds this board outright" — the board's creator, or the org
+  // owner, who owns every board in the workspace. The flags below used to read
+  // `boardAccess.creator` alone, which is org-agnostic by design and therefore
+  // cannot know about the second case.
+  const owns = boardAccess.creator || orgAccess.isOwner;
+  const canRead = owns || !!level;
 
   return {
     ...orgAccess,
     board: boardAccess,
-    level: boardAccess.creator ? 'edit' : level,
+    level: owns ? 'edit' : level,
     canRead,
     capabilities: effective,
     can: (cap) => effective.has(cap),
@@ -249,10 +299,19 @@ const resolveAccess = (board, org, userId) => {
     canEdit: effective.has('task.edit_any') && effective.has('group.manage'),
     // Can see it but cannot move a single thing on it.
     readOnly: canRead && !effective.has('task.change_status'),
-    canViewAccess: boardAccess.creator || effective.has('group.manage'),
+    canViewAccess: owns || effective.has('group.manage'),
+    // Sharing is a separate axis from content: an `edit` grant alone never
+    // confers it, only the owner-granted `canManage` flag does. `owns` covers
+    // the two identities that hold the board outright, and the capability test
+    // covers the third case the flag cannot see — a matrix override
+    // (`board.manage_public` / `board.manage_all_private`) that resolved to the
+    // owner-equivalent set, which INCLUDES `board.manage_access`. Without that
+    // last clause the share dialog was read-only for exactly the people the
+    // matrix had just declared able to fully manage the board.
     canManageAccess:
-      boardAccess.creator ||
-      (boardAccess.fullAccess && effective.has('board.manage_access')),
+      owns ||
+      ((boardAccess.fullAccess || boardCaps.has('board.manage_access')) &&
+        effective.has('board.manage_access')),
   };
 };
 

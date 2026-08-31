@@ -60,6 +60,23 @@ const CAPABILITY_GROUPS = [
       ['board.view_public', "See the organisation's public boards at all"],
       ['board.manage_public', 'Fully manage any public board'],
       ['board.view_all_private', 'Enter every private board — override'],
+      // The private twin of `board.manage_public`, and it exists because its
+      // absence was a one-way door. `view_all_private` lifts the VISIBILITY gate
+      // and stops there — it resolves to the `view` rung, which confers no
+      // lifecycle capability at all. So a private board whose creator left, or
+      // who never shared it, could be looked at by an admin and administered by
+      // nobody: not renamed, not deleted, not flipped back to public. The only
+      // escape was the creator's own account.
+      //
+      // Same division of labour as the public pair above: `view_*` decides
+      // WHETHER you reach the board, `manage_*` decides HOW FAR you go once you
+      // do. Holding this alone opens nothing; it upgrades a private board you can
+      // ALREADY reach — by grant, or by `view_all_private` — to owner-equivalent
+      // control. Off for every seeded role, including admin.
+      [
+        'board.manage_all_private',
+        'Fully manage every private board they can enter',
+      ],
     ],
   },
   {
@@ -205,10 +222,11 @@ const isCapability = (key) => CAPABILITY_SET.has(key);
  * the org-role grant and sufficient board access to exercise these.
  *
  * Note what is NOT here: `board.create` (you cannot have board access to a board
- * that does not exist yet), the org.* family, `analytics.view`, and the three
+ * that does not exist yet), the org.* family, `analytics.view`, and the four
  * board-visibility capabilities (`board.view_public`, `board.manage_public`,
- * `board.view_all_private) — those decide *whether* and *how far* you reach a
- * board in the first place, so gating them on board access would be circular.
+ * `board.view_all_private`, `board.manage_all_private`) — those decide *whether*
+ * and *how far* you reach a board in the first place, so gating them on board
+ * access would be circular.
  *
  * `board.export_activity` is deliberately org-scoped too, for the same reason
  * `analytics.view` is: no rung of LEVEL_ADDS confers it, so board-scoping it
@@ -416,13 +434,26 @@ const OWNER_ONLY_CAPABILITIES = new Set([]);
  * Capabilities the OWNER does not get implicitly, despite otherwise holding
  * everything. They must be ticked ON in the matrix like any other permission.
  *
- * `board.view_all_private` opens every private board in the workspace. "Private"
- * has to mean private — including from the owner — until somebody consciously
- * decides otherwise. Without this carve-out, "off by default for every role"
- * would have been a lie the moment the owner logged in, because the resolver
- * short-circuits them to the full capability set.
+ * CURRENTLY EMPTY, and that is a decision rather than an oversight. The set held
+ * `board.view_all_private` so that "private" would mean private from the owner
+ * too. It read well and it locked the workspace owner out of their own
+ * workspace: a private board they did not create resolved to the `view` rung at
+ * best, which confers no lifecycle capability, so a board somebody else made
+ * private could be renamed, deleted, or flipped back to public by exactly one
+ * account in the org — its creator's. If that person is on leave, or has left,
+ * the board is stranded, and nothing in the matrix could rescue it because
+ * ticking the override on only ever bought READ.
+ *
+ * So the owner now holds everything unconditionally, on every board in their
+ * workspace — see `isOrgOwner` in [permissions.js](./permissions.js). Privacy
+ * from EVERYONE ELSE is unchanged and still off by default: `board.view_all_private`
+ * and its new companion `board.manage_all_private` are ordinary capabilities
+ * that no seeded role carries, admins included.
+ *
+ * The plumbing stays. Listing a capability here withholds it from the owner
+ * again, and the matrix will render that row as a togglable opt-in for them.
  */
-const NEVER_IMPLICIT = new Set(['board.view_all_private']);
+const NEVER_IMPLICIT = new Set([]);
 
 // ---------------------------------------------------------------------------
 // System roles — the presets every new org is seeded with.
@@ -444,11 +475,12 @@ const SYSTEM_ROLES = [
     isSystem: true,
     color: '#7C3AED',
     description: 'Full control of the workspace. Cannot be edited or removed.',
-    // Everything EXCEPT the never-implicit capabilities. The resolver grants the
-    // owner the full set regardless of what is stored here — the only thing it
-    // actually reads off this list is which NEVER_IMPLICIT capabilities the owner
-    // has deliberately turned on. Seeding them here would silently switch
-    // `board.view_all_private` on for the owner of every workspace.
+    // Everything EXCEPT the never-implicit capabilities — which is currently
+    // everything, since that set is empty. The resolver grants the owner the
+    // full set regardless of what is stored here; the only thing it actually
+    // reads off this list is which NEVER_IMPLICIT capabilities the owner has
+    // deliberately turned on, so seeding them here would switch them on for the
+    // owner of every workspace.
     permissions: ALL_CAPABILITIES.filter((c) => !NEVER_IMPLICIT.has(c)),
   },
   {

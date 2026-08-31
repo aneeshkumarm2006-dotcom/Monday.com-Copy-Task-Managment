@@ -1,7 +1,7 @@
 const sites = require('./sites');
 const { createDfsClient, describeAccount, verifyCredentials } = require('./client');
 const { KINDS, resolveKinds } = require('./kinds');
-const { SCREENS, resolveScreens } = require('./screens');
+const { SCREENS, SCREEN_GROUPS, resolveScreens } = require('./screens');
 const { describeUsage } = require('./usage');
 const { FIELDS, readField } = require('./fields');
 const { comparability } = require('./comparability');
@@ -422,6 +422,15 @@ const descriptor = {
    * the project. See the model header; keeping those two apart is the point.
    */
   screens: SCREENS,
+
+  /**
+   * The nav headings those screens are filed under, in order.
+   *
+   * Travels beside `screens` rather than being a lookup in the client, so a
+   * screen declared in a later phase appears in the rail under the right
+   * heading with no second file to edit. See `screens.js`.
+   */
+  screenGroups: SCREEN_GROUPS,
 
   /** What a board actually renders. Empty selection means everything. */
   resolveScreens,

@@ -190,13 +190,18 @@ const updateRole = async (req, res) => {
 
     const { name, description, color, permissions } = req.body;
 
-    // The owner holds everything implicitly, so there is nothing to edit — with
-    // ONE exception. NEVER_IMPLICIT capabilities (today: `board.view_all_private`)
-    // are withheld even from the owner until deliberately turned on, so the owner
-    // row must stay togglable for exactly those. Everything else about the role is
-    // frozen.
+    // The owner holds everything implicitly, so there is nothing to edit — EXCEPT
+    // any NEVER_IMPLICIT capability, which is withheld even from them until
+    // deliberately turned on and so must stay togglable on the owner row.
+    //
+    // That set is empty today, which is why the guard is written against its
+    // size rather than assuming it. With nothing to opt into, an owner-role write
+    // has no legitimate shape and is refused outright — the old code would have
+    // accepted it and silently stored `[]`, which reads as "the owner was just
+    // stripped of everything" to anyone inspecting the document, however little
+    // the resolver cares.
     if (role.key === OWNER_ROLE_KEY) {
-      if (permissions === undefined) {
+      if (permissions === undefined || NEVER_IMPLICIT.size === 0) {
         return res.status(400).json({
           error:
             'The Owner role always has every permission and cannot be edited',

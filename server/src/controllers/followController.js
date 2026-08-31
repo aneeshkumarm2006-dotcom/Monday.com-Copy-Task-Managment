@@ -3,7 +3,11 @@ const Task = require('../models/Task');
 const Board = require('../models/Board');
 const Organisation = require('../models/Organisation');
 const ItemFollow = require('../models/ItemFollow');
-const { resolveBoardAccess } = require('../utils/boardAccess');
+// `resolveAccess`, not `resolveBoardAccess`: the pure board primitive knows
+// nothing about the org role, so it cannot see the org owner (who reaches every
+// board in the workspace) or a matrix override. Following a task on a board you
+// can open must not depend on which of the two answers we happened to ask.
+const { resolveAccess } = require('../utils/permissions');
 
 /**
  * Resolve a task plus the requesting user's read access and the org the task
@@ -22,7 +26,7 @@ const loadTaskAccess = async (taskId, userId) => {
   const board = await Board.findById(task.board);
   if (!board) return { status: 404, error: 'Board not found' };
   const org = await Organisation.findById(board.organisation);
-  const { canRead } = resolveBoardAccess(board, org, userId);
+  const { canRead } = resolveAccess(board, org, userId);
   return { task, orgId: board.organisation || null, canRead };
 };
 

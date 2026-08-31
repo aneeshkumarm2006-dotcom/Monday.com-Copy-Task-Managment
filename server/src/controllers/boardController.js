@@ -74,8 +74,18 @@ const loadBoard = async (boardId, userId) => {
  * `board.view_all_private` is the override that opens every private board to a
  * role. Without `board.view_public` — a Guest — public boards are not visible
  * either, so only authorship or an explicit grant lets them in.
+ *
+ * THIS FILTER AND `resolveAccess` MUST AGREE. Whatever the list shows has to be
+ * openable, and whatever is openable has to be listed — a board that resolves to
+ * full access but never appears in `GET /api/boards` is unreachable in the UI,
+ * which is precisely how a private board became un-administerable.
  */
 const boardVisibilityFilter = (access, userId) => {
+  // The org owner holds every board in their workspace outright (see
+  // `boardCapabilities`), so there is nothing to filter. `{}` is scoped by the
+  // caller's `organisation` clause, never a workspace-wide wildcard.
+  if (access.isOwner) return {};
+
   const clauses = [{ createdBy: userId }, { 'memberAccess.user': userId }];
   if (access.can('board.view_public')) {
     clauses.unshift({ visibility: 'public' });

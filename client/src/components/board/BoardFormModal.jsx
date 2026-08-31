@@ -16,6 +16,9 @@ import { previewBoardConversion } from '../../services/monthService';
  *   onSubmit      — async ({ name, visibility, description }) => void
  *   initialValues — pre-fill values when editing
  *   mode          — "create" | "edit" (affects title + submit label)
+ *   canChangeVisibility — edit mode only: may this user flip public/private?
+ *                   Ignored on create (choosing the visibility of a board that
+ *                   does not exist yet is `board.create`, not a change).
  */
 const DEFAULTS = {
   name: '',
@@ -31,6 +34,7 @@ const BoardFormModal = ({
   onSubmit,
   initialValues,
   mode = 'create',
+  canChangeVisibility = true,
 }) => {
   const [values, setValues] = useState(DEFAULTS);
   const [submitting, setSubmitting] = useState(false);
@@ -56,6 +60,13 @@ const BoardFormModal = ({
 
   const isClient = values.boardType === 'client';
   const isTracker = values.boardType === 'tracker';
+
+  // Whether the visibility radios are live. Only ever false in edit mode: the
+  // ⋯ menu that opens this form asks for `board.rename`, and flipping a board
+  // public is a lifecycle decision no rung of the access ladder confers — so
+  // someone with an edit grant on a board they did not create reaches this form
+  // legitimately and must not be shown a control the save would refuse.
+  const visibilityEditable = mode === 'create' || canChangeVisibility;
 
   // Edit mode only: is the user actually changing the board's type, and which
   // way? `initialValues.boardType` is what it is now; `values.boardType` is what
@@ -197,10 +208,41 @@ const BoardFormModal = ({
           autoFocus
         />
 
-        {/* Type / visibility selector. A Client Portal board's type is fixed:
-            the client plane assumes a group is one client's live queue, and the
-            server refuses to convert it in either direction. */}
-        {mode === 'edit' && isClient ? (
+        {/* Type / visibility selector, in three shapes:
+              1. edit, no `board.change_visibility` — the current visibility, flat
+                 and unclickable, because the save would refuse a change;
+              2. edit, Client Portal — the type is fixed, since the client plane
+                 assumes a group is one client's live queue and the server
+                 refuses to convert it in either direction;
+              3. everything else — the live radios. */}
+        {mode === 'edit' && !visibilityEditable && !isClient ? (
+          <div>
+            <label
+              className="block mb-2 font-body font-medium text-xs uppercase tracking-wide"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              Visibility
+            </label>
+            <span
+              className="font-body inline-flex items-center gap-2"
+              style={{ fontSize: 14, color: 'var(--color-text-primary)' }}
+            >
+              <span
+                style={{
+                  width: 8, height: 8, borderRadius: 'var(--radius-full)',
+                  background: 'var(--color-accent)',
+                }}
+              />
+              {values.visibility === 'public' ? 'Public' : 'Private'}
+            </span>
+            <p
+              className="font-body mt-2"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+            >
+              Only the board’s owner and the workspace owner can change this.
+            </p>
+          </div>
+        ) : mode === 'edit' && isClient ? (
           <div>
             <label
               className="block mb-2 font-body font-medium text-xs uppercase tracking-wide"
