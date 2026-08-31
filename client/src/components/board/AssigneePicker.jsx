@@ -20,6 +20,15 @@ import useDropdownPosition from '../../utils/useDropdownPosition';
  *   onChange — (ids: string[]) => void
  *   disabled — disables the trigger
  *   isAdmin  — shows the "Invite other member" button when true
+ *   canAssignOthers — holds `task.assign` (the `edit` rung). When false, only
+ *                the caller's OWN row is clickable: the server allows a
+ *                contributor to add or remove themselves and refuses every
+ *                other name, so offering the whole roster was a guaranteed
+ *                dead click that ended in a 403 toast. Defaults to true so a
+ *                call site that has not been taught the difference — the
+ *                automations editor, the calendar's filter bar — behaves
+ *                exactly as before.
+ *   selfId   — the current user's id, i.e. which row stays live above.
  */
 const AssigneePicker = ({
   members = [],
@@ -28,6 +37,8 @@ const AssigneePicker = ({
   disabled = false,
   isAdmin = false,
   showNames = false,
+  canAssignOthers = true,
+  selfId = null,
 }) => {
   const [open, setOpen] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
@@ -60,7 +71,14 @@ const AssigneePicker = ({
     };
   }, [open]);
 
+  // Mirrors the server's carve-out exactly: the delta may only ever be your own
+  // name. Hiding the other rows entirely would be worse — you could no longer
+  // SEE who a task belongs to — so they render, greyed and inert.
+  const canToggle = (memberId) =>
+    canAssignOthers || (!!selfId && String(memberId) === String(selfId));
+
   const toggle = (memberId) => {
+    if (!canToggle(memberId)) return;
     const next = new Set(selectedIds);
     if (next.has(memberId)) next.delete(memberId);
     else next.add(memberId);
@@ -154,21 +172,27 @@ const AssigneePicker = ({
           )}
           {members.map((m) => {
             const isSelected = selectedIds.has(m._id);
+            const locked = !canToggle(m._id);
             return (
               <li key={m._id} role="option" aria-selected={isSelected}>
                 <button
                   type="button"
+                  disabled={locked}
+                  title={locked ? 'Only a board editor can assign other people' : undefined}
                   onClick={() => toggle(m._id)}
                   className={[
                     'w-full flex items-center gap-2 px-2 text-left font-body text-[13px]',
                     'transition-colors duration-100',
-                    'hover:bg-[color:var(--color-bg-subtle)]',
-                    'focus:outline-none focus:bg-[color:var(--color-bg-subtle)]',
+                    locked
+                      ? 'cursor-not-allowed'
+                      : 'hover:bg-[color:var(--color-bg-subtle)] focus:bg-[color:var(--color-bg-subtle)]',
+                    'focus:outline-none',
                   ].join(' ')}
                   style={{
                     height: 36,
                     borderRadius: 'var(--radius-sm)',
                     color: 'var(--color-text-primary)',
+                    opacity: locked ? 0.45 : 1,
                   }}
                 >
                   <span
@@ -387,8 +411,21 @@ export default AssigneePicker;
  *   value     — string[] of selected member ids
  *   onChange  — (ids: string[]) => void
  *   onClose   — () => void
+ *   canAssignOthers — see AssigneePicker above; when false only `selfId`'s row
+ *               is live, matching the server's carve-out. Defaults to true so
+ *               the group-owner picker (gated on its own capability at the call
+ *               site) is unaffected.
+ *   selfId    — the current user's id.
  */
-export const InlineAssigneeMenu = ({ anchorEl, members = [], value = [], onChange, onClose }) => {
+export const InlineAssigneeMenu = ({
+  anchorEl,
+  members = [],
+  value = [],
+  onChange,
+  onClose,
+  canAssignOthers = true,
+  selfId = null,
+}) => {
   const menuRef = useRef(null);
   const triggerRef = useRef(anchorEl);
   triggerRef.current = anchorEl;
@@ -411,7 +448,11 @@ export const InlineAssigneeMenu = ({ anchorEl, members = [], value = [], onChang
     };
   }, [anchorEl, onClose]);
 
+  const canToggle = (memberId) =>
+    canAssignOthers || (!!selfId && String(memberId) === String(selfId));
+
   const toggle = (memberId) => {
+    if (!canToggle(memberId)) return;
     const next = new Set(selectedIds);
     if (next.has(memberId)) next.delete(memberId);
     else next.add(memberId);
@@ -450,13 +491,25 @@ export const InlineAssigneeMenu = ({ anchorEl, members = [], value = [], onChang
         </li>
       ) : members.map((m) => {
         const isSelected = selectedIds.has(m._id);
+        const locked = !canToggle(m._id);
         return (
           <li key={m._id} role="option" aria-selected={isSelected}>
             <button
               type="button"
+              disabled={locked}
+              title={locked ? 'Only a board editor can assign other people' : undefined}
               onClick={() => toggle(m._id)}
-              className="w-full flex items-center gap-2 px-2 text-left font-body text-[13px] transition-colors duration-100 hover:bg-[color:var(--color-bg-subtle)] focus:outline-none"
-              style={{ height: 36, borderRadius: 'var(--radius-sm)', color: 'var(--color-text-primary)' }}
+              className={[
+                'w-full flex items-center gap-2 px-2 text-left font-body text-[13px]',
+                'transition-colors duration-100 focus:outline-none',
+                locked ? 'cursor-not-allowed' : 'hover:bg-[color:var(--color-bg-subtle)]',
+              ].join(' ')}
+              style={{
+                height: 36,
+                borderRadius: 'var(--radius-sm)',
+                color: 'var(--color-text-primary)',
+                opacity: locked ? 0.45 : 1,
+              }}
             >
               <span
                 aria-hidden="true"

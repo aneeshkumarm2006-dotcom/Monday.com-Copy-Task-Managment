@@ -456,6 +456,21 @@ const BoardDetailPage = () => {
   // Anyone who was the org OWNER (and therefore `edit` everywhere) never saw it.
   const canCreateTasks = canOnBoard('task.create');
 
+  // Putting a task on SOMEONE ELSE is the `edit` rung's `task.assign`. Putting
+  // your own name on it is not — the server lets any contributor move their own
+  // name in or out (see requireAssignCapability / isSelfClaim in
+  // taskController). The picker has to draw that same line or a contributor
+  // ticks a box and gets a 403 toast, which is exactly what it used to do.
+  const canAssignOthers = canOnBoard('task.assign');
+  const selfId = currentUser?._id ? String(currentUser._id) : null;
+
+  // Opening the picker at all needs one of the two: the power to assign anyone
+  // (`edit`), or the power to work on your own tasks (`contribute`), which is
+  // what the self-assign carve-out hangs off. A view- or comment-rung member
+  // has neither, so the Owner cell stays inert for them rather than opening a
+  // menu in which every single row is greyed out.
+  const canOpenAssignees = canAssignOthers || canOnBoard('task.edit_assigned');
+
   // Client Portal: may this person put a task in front of the client? Board type
   // and capability, matching the server's `denyPortalShare` exactly — a standard
   // board has no portal to share into, and publishing to an outside party is the
@@ -1475,7 +1490,7 @@ const BoardDetailPage = () => {
   // --- Inline owner change -----------------------------------------------
 
   const handleOwnerClick = (task, event) => {
-    if (!currentUser) return;
+    if (!currentUser || !canOpenAssignees) return;
     const anchor = event?.currentTarget || null;
     setOwnerMenu({ task, anchor });
   };
@@ -2719,6 +2734,8 @@ const BoardDetailPage = () => {
                               createKey={newTaskKeysByGroup[group._id] || 0}
                               isAdmin={canEdit}
                               canCreate={canCreateTasks}
+                              canAssign={canAssignOthers}
+                              selfId={selfId}
                               highlightedTaskId={highlightedTaskId}
                               highlightedParentId={highlightedParentId}
                               onOpenTask={handleOpenTask}
@@ -2841,6 +2858,8 @@ const BoardDetailPage = () => {
           value={(ownerMenu.task.assignedTo || []).map((u) =>
             typeof u === 'string' ? u : u._id
           )}
+          canAssignOthers={canAssignOthers}
+          selfId={selfId}
           onChange={handleOwnerChange}
           onClose={() => setOwnerMenu(null)}
         />

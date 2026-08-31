@@ -109,6 +109,14 @@ const TaskTable = ({
   // the board. Defaults to `isAdmin` so a caller that hasn't been taught the
   // difference behaves exactly as before.
   canCreate = isAdmin,
+  // "May this person put a name OTHER than their own on a task" — `task.assign`,
+  // which sits on the `edit` rung. Same shape and same reason as `canCreate`
+  // above: a contributor holds neither, but may still assign THEMSELVES, so the
+  // picker greys out everyone else rather than 403ing on click. `selfId` is
+  // which row stays live. Defaults to `isAdmin` so untaught callers are
+  // unchanged.
+  canAssign = isAdmin,
+  selfId = null,
   highlightedTaskId = null,
   highlightedParentId = null,
   onOpenTask,
@@ -390,6 +398,8 @@ const TaskTable = ({
                       initialTask={task}
                       isLast={isLastRow}
                       isAdmin={isAdmin}
+                      canAssignOthers={canAssign}
+                      selfId={selfId}
                       onSave={(payload) => onSaveEdit?.(task._id, payload)}
                       onCancel={onCancelEdit}
                     />
@@ -445,6 +455,8 @@ const TaskTable = ({
                             isLast={isLastRow}
                             isAdmin={isAdmin}
                             canCreate={canCreate}
+                            canAssign={canAssign}
+                            selfId={selfId}
                             editingTaskId={editingTaskId}
                             highlightedTaskId={highlightedTaskId}
                             onOpenTask={onOpenTask}
@@ -474,6 +486,8 @@ const TaskTable = ({
               initialTask={null}
               isLast
               isAdmin={isAdmin}
+              canAssignOthers={canAssign}
+              selfId={selfId}
               autoFocus={false}
               askPortalShare={askPortalShare}
               onSave={onSaveNew}
@@ -510,6 +524,8 @@ const SubtaskSection = ({
   isLast,
   isAdmin,
   canCreate = isAdmin,
+  canAssign = isAdmin,
+  selfId = null,
   editingTaskId,
   highlightedTaskId = null,
   onOpenTask,
@@ -587,6 +603,8 @@ const SubtaskSection = ({
               initialTask={sub}
               isLast={subIsLast}
               isAdmin={isAdmin}
+              canAssignOthers={canAssign}
+              selfId={selfId}
               onSave={(payload) => onSaveEdit?.(sub._id, payload)}
               onCancel={onCancelEdit}
             />
@@ -620,6 +638,8 @@ const SubtaskSection = ({
             initialTask={null}
             isLast={isLast}
             isAdmin={isAdmin}
+            canAssignOthers={canAssign}
+            selfId={selfId}
             isSubtask
             onSave={handleSaveNew}
             onCancel={() => setAdding(false)}

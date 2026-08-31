@@ -34,6 +34,8 @@ import ActivityLogTab from './ActivityLogTab';
 import SubitemsList from './SubitemsList';
 import AssigneePicker from './AssigneePicker';
 import FollowButton from './FollowButton';
+import useAuthStore from '../../store/authStore';
+import { useBoardPermissions } from '../../hooks/usePermissions';
 
 // Mirror of TaskEditRow's toDateInputValue so the date input round-trips
 // the same ISO/YYYY-MM-DD shape used elsewhere in the app.
@@ -98,6 +100,12 @@ const CommentPanel = ({
   // task, or finishing a second one, fires the effect again.
   focusGoalToken = null,
 }) => {
+  // The board's resolved capability set — empty when no board is passed (My
+  // Work, the calendar), which is what keeps those views read-only exactly as
+  // they were.
+  const { can: canOnBoard } = useBoardPermissions(board?.permissions);
+  const currentUser = useAuthStore((s) => s.user);
+
   // Tabs (Updates / Client / Files / Activity Log)
   const [activeTab, setActiveTab] = useState('updates');
   // null = not counted yet. The badge is hidden until its tab has actually
@@ -400,6 +408,16 @@ const CommentPanel = ({
   const assignedIds = assignees.map((u) => (typeof u === 'string' ? u : u._id));
   const canEditFields = isAdmin && !!onUpdateTask;
 
+  // The Assigned-to row has its own gate rather than riding on `canEditFields`
+  // (the `edit` rung), because moving YOUR OWN name is not an `edit`-rung act —
+  // the server lets any contributor do it, and the board's own Owner cell
+  // already does. Without this the two surfaces disagree: you could claim a
+  // task from the row and not from the panel that opens on top of it.
+  const canAssignOthers = canOnBoard('task.assign');
+  const canOpenAssignees =
+    !!onUpdateTask && (canAssignOthers || canOnBoard('task.edit_assigned'));
+  const selfId = currentUser?._id ? String(currentUser._id) : null;
+
   const panel = (
     <>
       {/* Subtle backdrop — clicking it closes the panel */}
@@ -622,13 +640,15 @@ const CommentPanel = ({
 
           <dl className="mt-4 flex flex-col gap-2">
             <MetaRow label="Assigned to">
-              {canEditFields ? (
+              {canOpenAssignees ? (
                 <div style={{ maxWidth: 280 }}>
                   <AssigneePicker
                     members={pickerMembers}
                     value={assignedIds}
                     onChange={handleAssigneesChange}
                     isAdmin={isAdmin}
+                    canAssignOthers={canAssignOthers}
+                    selfId={selfId}
                     showNames
                   />
                 </div>

@@ -32,6 +32,9 @@ const sameStringSet = (a, b) => {
  *   isLast       — removes bottom border when this is the last row
  *   askPortalShare — Client Portal boards only: on save, ask whether the new
  *                  task should also appear in the client's portal
+ *   canAssignOthers — holds `task.assign`. False for a `contribute` member, who
+ *                  may put only their OWN name on a task (see AssigneePicker).
+ *   selfId       — the current user's id, i.e. the one row that stays live.
  */
 
 const toDateInputValue = (d) => {
@@ -57,6 +60,8 @@ const TaskEditRow = ({
   // beneath an expanded parent (see TaskTable's SubtaskSection).
   isSubtask = false,
   askPortalShare = false,
+  canAssignOthers = true,
+  selfId = null,
 }) => {
   // Resolve initial status. If the task has one, use it; otherwise pick the
   // first board status (or the legacy `not_started` enum for boardless rows).
@@ -288,6 +293,8 @@ const TaskEditRow = ({
           value={assignedTo}
           onChange={setAssignedTo}
           isAdmin={isAdmin}
+          canAssignOthers={canAssignOthers}
+          selfId={selfId}
         />
       </td>
 

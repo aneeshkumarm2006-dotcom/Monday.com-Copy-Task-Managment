@@ -304,6 +304,48 @@ const canEditTask = (ctx, task, userId) => {
 };
 
 /**
+ * Is this update nothing but the caller CLAIMING the task — writing their own
+ * name, and only their own name, into an otherwise untouched assignee list?
+ *
+ * `task.edit_assigned` says you may work on what is yours, and on its own that
+ * is unreachable: a row you did not create and are not on is one you can never
+ * make yours, so an unassigned task could only ever be handed to you by an
+ * editor. That is the same gap `requireAssignCapability` closes one layer up,
+ * and it has to be closed here too or the carve-out only ever helps people who
+ * already had the task.
+ *
+ * Deliberately narrow on three axes:
+ *   - assignedTo is the ONLY field in the patch. Claiming a task is not a
+ *     licence to rewrite it; the next edit answers to `canEditTask` as usual,
+ *     which by then passes because they are on it.
+ *   - STRICTLY ADDITIVE. Every existing name survives, so this can never take
+ *     work off somebody else — the one thing an "assign" gate exists to stop.
+ *   - the single added name is the caller's own.
+ *
+ * A true claim falls THROUGH to the ordinary edit path rather than writing
+ * anything itself, so validation, the activity log and the assignment
+ * notification all behave exactly as they always have.
+ */
+const isSelfClaim = (ctx, task, body, userId) => {
+  if (!ctx.can('task.edit_assigned')) return false;
+
+  const touched = Object.keys(body).filter((k) => body[k] !== undefined);
+  if (touched.length !== 1 || touched[0] !== 'assignedTo') return false;
+  if (!Array.isArray(body.assignedTo)) return false;
+
+  const prev = (task.assignedTo || []).map((u) => u.toString());
+  const next = body.assignedTo
+    .map((u) => (u == null ? '' : u.toString()))
+    .filter(Boolean);
+  const nextSet = new Set(next);
+  const prevSet = new Set(prev);
+
+  if (prev.some((id) => !nextSet.has(id))) return false;
+  const added = [...new Set(next.filter((id) => !prevSet.has(id)))];
+  return added.length === 1 && added[0] === String(userId);
+};
+
+/**
  * Resolve the default-status ObjectId for a board. Falls back to the first
  * status, then to the legacy enum string 'not_started' if the board has
  * no statuses configured (shouldn't happen post-migration, but guards the
@@ -403,6 +445,55 @@ const validateAssignees = async (assignedTo, org, board) => {
     return { error: 'Assignee does not have access to this board' };
   }
   return { ids };
+};
+
+/**
+ * The user ids in a `person` cell, as strings. Accepts the stored array, a raw
+ * patch value, or null/undefined for an empty cell — see the `person` entry in
+ * utils/columnTypes.js, whose serializer produces exactly this shape.
+ */
+const personIdsOf = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value.map((v) => (v == null ? '' : v.toString())).filter(Boolean);
+};
+
+/**
+ * THE self-assignment carve-out. Every `task.assign` gate in this file goes
+ * through here so the three of them cannot drift apart.
+ *
+ * `task.assign` stays on the `edit` rung, and deliberately so: putting work on
+ * SOMEONE ELSE is a board-shaping act. Picking work up yourself is not — it is
+ * the same "do your own work" that `contribute` already covers with
+ * `task.create` and `task.edit_assigned`. Before this, a contributor could add a
+ * row and edit it but could not put their own name on it, so on every board
+ * whose public default is `contribute` an admin had to hand rows out one at a
+ * time. That is not a permission boundary anyone chose; it fell out of assigning
+ * yourself and assigning others being one capability.
+ *
+ * The rule is about the CHANGE, never the resulting list. A contributor may add
+ * or remove themselves while a dozen other names sit in the cell untouched; the
+ * moment the delta names anybody else the full capability is required. Removal
+ * counts as much as addition — taking someone else's work away is the same
+ * power as giving it — which is what keeps this a carve-out rather than a hole:
+ * it can only ever move the caller's own name.
+ *
+ * An empty delta is not a power at all. A client that echoes the current
+ * assignees back while editing an unrelated field must not trip a gate it never
+ * meant to touch.
+ *
+ * Returns `{ status, error }` to refuse, or null to allow.
+ */
+const requireAssignCapability = (ctx, userId, changedIds) => {
+  const changed = new Set(
+    (changedIds || []).map((id) => (id == null ? '' : id.toString())).filter(Boolean)
+  );
+  if (changed.size === 0) return null;
+  if (changed.size === 1 && changed.has(String(userId))) return null;
+  return requireCapability(
+    ctx,
+    'task.assign',
+    'You do not have permission to assign people to tasks'
+  );
 };
 
 /**
@@ -595,24 +686,40 @@ const applyColumnValuePatch = (task, board, patch) => {
  *                    mirror on a board you can, which routes around board privacy.
  *
  * Runs BEFORE the patch is applied, so a denied write never touches the task.
- * Returns `{ status, error }` when denied, or null when allowed.
+ * `task` is the row the patch is about to land on, and it is what makes the
+ * person diff possible — see `personChanged` below. Returns `{ status, error }`
+ * when denied, or null when allowed.
  */
-const requireColumnPatchCapabilities = async (ctx, patch, userId) => {
+const requireColumnPatchCapabilities = async (ctx, patch, userId, task = null) => {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
 
   const columns = Array.isArray(ctx.board.columns) ? ctx.board.columns : [];
   const columnsById = new Map(columns.map((c) => [c._id.toString(), c]));
 
-  let touchesPerson = false;
+  // Who this patch MOVES in or out of a person cell — not who ends up in it.
+  // The gate below is `requireAssignCapability`, which asks about the delta, so
+  // it needs one: without the diff, a contributor adding themselves to a cell
+  // that already names three other people would be refused for the three names
+  // they never touched. Diffing here mirrors what the `assignedTo` path does
+  // against `task.assignedTo`, which is the point — a person column IS
+  // assignment, so the two must answer the same question the same way.
+  const personChanged = new Set();
   let touchesConnect = false;
   const targetTaskIds = new Set();
 
   for (const [cidRaw, rawValue] of Object.entries(patch)) {
-    const col = columnsById.get(cidRaw.toString());
+    const cid = cidRaw.toString();
+    const col = columnsById.get(cid);
     // An unknown column id is `applyColumnValuePatch`'s 400 to raise, not ours —
     // it writes nothing, so there is no power here to gate.
     if (!col) continue;
-    if (col.type === 'person') touchesPerson = true;
+    if (col.type === 'person') {
+      const prevRaw = task && task.columnValues ? task.columnValues.get(cid) : null;
+      const prev = new Set(personIdsOf(prevRaw));
+      const next = new Set(personIdsOf(rawValue));
+      for (const id of next) if (!prev.has(id)) personChanged.add(id);
+      for (const id of prev) if (!next.has(id)) personChanged.add(id);
+    }
     if (col.type === 'connect_boards') {
       touchesConnect = true;
       const links =
@@ -625,14 +732,8 @@ const requireColumnPatchCapabilities = async (ctx, patch, userId) => {
     }
   }
 
-  if (touchesPerson) {
-    const denied = requireCapability(
-      ctx,
-      'task.assign',
-      'You do not have permission to assign people to tasks'
-    );
-    if (denied) return denied;
-  }
+  const personDenied = requireAssignCapability(ctx, userId, [...personChanged]);
+  if (personDenied) return personDenied;
 
   if (touchesConnect) {
     const denied = requireCapability(
@@ -1152,19 +1253,15 @@ const createTask = async (req, res) => {
     );
     if (assigneeErr) return res.status(400).json({ error: assigneeErr });
 
-    // Adding work to the board and putting it on another person are two
+    // Adding work to the board and putting it on ANOTHER PERSON are two
     // different powers: `contribute` holds the first, only `edit` the second.
-    // Gated on the payload actually naming someone, so creating an unassigned
-    // task stays open to every contributor.
-    if (assigneeIds.length > 0) {
-      const assignDenied = requireCapability(
-        ctx,
-        'task.assign',
-        'You do not have permission to assign people to tasks'
-      );
-      if (assignDenied) {
-        return res.status(assignDenied.status).json({ error: assignDenied.error });
-      }
+    // Naming yourself is the first — a task starts with no assignees, so the
+    // delta here is the whole payload, and `requireAssignCapability` waves it
+    // through when it names nobody but the caller. An unassigned task and a
+    // self-assigned one both stay open to every contributor.
+    const assignDenied = requireAssignCapability(ctx, userId, assigneeIds);
+    if (assignDenied) {
+      return res.status(assignDenied.status).json({ error: assignDenied.error });
     }
 
     // Client Portal: the creator can publish the task to the client's portal in
@@ -1430,10 +1527,13 @@ const updateTask = async (req, res) => {
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
     // THE 'only my own tasks' rule. Someone who may not edit THIS task can still
-    // get exactly one thing through: a status change. Dragging a card along the
-    // board is its own capability precisely because it is not the same power as
-    // rewriting what the card says.
-    if (!canEditTask(ctx, task, userId)) {
+    // get exactly two things through: a status change, and claiming it. Dragging
+    // a card along the board is its own capability precisely because it is not
+    // the same power as rewriting what the card says; putting your own name on
+    // an unassigned row is how `task.edit_assigned` becomes reachable at all
+    // (see isSelfClaim). A claim falls through to the full-edit path below —
+    // it names no other field, so nothing else can ride along.
+    if (!canEditTask(ctx, task, userId) && !isSelfClaim(ctx, task, body, userId)) {
       const touchedKeys = Object.keys(body).filter((k) => body[k] !== undefined);
       const statusOnly =
         touchedKeys.length === 1 && touchedKeys[0] === 'status';
@@ -1505,10 +1605,14 @@ const updateTask = async (req, res) => {
       // `canEditTask` above says you may edit THIS task. It does not say you may
       // assign it to someone or wire it to another board — those are separate
       // capabilities, and a person / connect_boards cell is how you exercise them.
+      // `task` goes in so the person gate can diff the cell rather than judge the
+      // whole of it; the patch has not been applied yet, so it still reads the
+      // BEFORE value.
       const colDenied = await requireColumnPatchCapabilities(
         ctx,
         body.columnValues,
-        userId
+        userId,
+        task
       );
       if (colDenied) {
         return res.status(colDenied.status).json({ error: colDenied.error });
@@ -1588,14 +1692,13 @@ const updateTask = async (req, res) => {
         prevSet.size !== nextSet.size ||
         [...prevSet].some((id) => !nextSet.has(id));
       if (assigneesChanged) {
-        // Only an actual change of the assignee set counts as assigning. A client
-        // that echoes the current list back while editing an unrelated field must
-        // not trip a gate it never meant to touch.
-        const assignDenied = requireCapability(
-          ctx,
-          'task.assign',
-          'You do not have permission to assign people to tasks'
-        );
+        // Only an actual change of the assignee set counts as assigning, and
+        // only the people it MOVES are gated — adding or dropping yourself is
+        // the contributor's own work, anyone else is the `edit` rung's call.
+        const assignDenied = requireAssignCapability(ctx, userId, [
+          ...newAssigneeIds,
+          ...removedAssigneeIds,
+        ]);
         if (assignDenied) {
           return res.status(assignDenied.status).json({ error: assignDenied.error });
         }
@@ -2879,4 +2982,8 @@ module.exports = {
   uploadTaskAttachment,
   deleteTaskAttachment,
   getClientRequest,
+  // The self-assignment carve-out, exported for selfAssign.test.js. Both are
+  // pure — hand them a ctx-like `{ can }` and plain objects.
+  requireAssignCapability,
+  isSelfClaim,
 };
