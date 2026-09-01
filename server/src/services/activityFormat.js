@@ -337,6 +337,40 @@ const goalFieldLabel = (field, meta = {}) => {
 };
 
 /**
+ * One group event as a sentence.
+ *
+ * A group is called different things depending on the board it sits on — on a
+ * client board it IS a client — so `metadata.boardType`, captured at the time,
+ * picks the noun. Falling back to "group" is always correct, just less precise.
+ */
+const describeGroupActivity = (entry) => {
+  const actor = entry.actor?.name || 'Someone';
+  const meta = entry.metadata || {};
+  const noun = meta.boardType === 'client' ? 'client' : 'group';
+  const name = meta.groupName ? quote(truncate(meta.groupName, 60)) : `a ${noun}`;
+
+  if (entry.type === 'group.created') return `${actor} created the ${noun} ${name}.`;
+
+  if (entry.type === 'group.renamed') {
+    const from = entry.oldValue ? quote(truncate(entry.oldValue, 60)) : 'it';
+    const to = entry.newValue ? quote(truncate(entry.newValue, 60)) : 'something else';
+    return `${actor} renamed the ${noun} ${from} to ${to}.`;
+  }
+
+  if (entry.type === 'group.deleted') {
+    // What went with it. A bare "deleted the group" understates an action that
+    // cascades through every task, update, note, goal and budget underneath.
+    const parts = [];
+    if (meta.taskCount) parts.push(`${meta.taskCount} task${meta.taskCount === 1 ? '' : 's'}`);
+    if (meta.goalCount) parts.push(`${meta.goalCount} goal${meta.goalCount === 1 ? '' : 's'}`);
+    const carried = parts.length ? ` and the ${parts.join(' and ')} in it` : '';
+    return `${actor} deleted the ${noun} ${name}${carried}.`;
+  }
+
+  return `${actor} changed the ${noun} ${name}.`;
+};
+
+/**
  * One goal event as a sentence. Split out of `describeActivity` because it is
  * the longest branch by far and shares none of the task vocabulary.
  */
@@ -449,6 +483,9 @@ const describeActivity = (entry, { oldGroupName, newGroupName } = {}) => {
   const actor = entry.actor?.name || 'Someone';
   const meta = entry.metadata || {};
 
+  if (typeof entry.type === 'string' && entry.type.startsWith('group.')) {
+    return describeGroupActivity(entry);
+  }
   if (typeof entry.type === 'string' && entry.type.startsWith('goal.')) {
     return describeGoalActivity(entry);
   }
@@ -590,6 +627,9 @@ const EVENT_LABELS = {
   'ads_budget.created': 'Ads budget added',
   'ads_budget.deleted': 'Ads budget removed',
   'ads_budget.field_changed': 'Ads budget changed',
+  'group.created': 'Group created',
+  'group.renamed': 'Group renamed',
+  'group.deleted': 'Group deleted',
 };
 
 const eventLabel = (type) => EVENT_LABELS[type] || type;

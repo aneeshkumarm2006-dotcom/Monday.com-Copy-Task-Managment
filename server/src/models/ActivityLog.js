@@ -35,6 +35,20 @@ const ACTIVITY_TYPES = [
   'ads_budget.created',
   'ads_budget.deleted',
   'ads_budget.field_changed',
+  // A group's own lifecycle — the FOURTH subject. These rows carry `group` and
+  // no task, for the same reason goal rows do: a group is not a task, and a
+  // per-task feed must never be able to return one.
+  //
+  // `TaskGroup.createdBy` already answers "who made this group" for groups made
+  // after that field existed, so this is not merely a second copy of the byline.
+  // It records the two things the byline structurally cannot: a RENAME (the
+  // byline is set once and never written again, so a group silently becoming a
+  // different client leaves no trace) and a DELETE (which takes the byline, the
+  // group, and every task in it with it — see deleteGroup's cascade). The row
+  // outlives its subject, which is the whole point of an audit trail.
+  'group.created',
+  'group.renamed',
+  'group.deleted',
 ];
 
 // NOTE: this list is a VALIDATOR, and `activityService.logActivity` swallows its
@@ -111,9 +125,9 @@ const COLUMN_FIELD_RE = /^column:[\w.-]+$/;
 const CONFIG_FIELD_RE = /^config:[\w.-]+$/;
 
 const activityLogSchema = new mongoose.Schema({
-  // Required for every event EXCEPT a goal's or a budget row's, neither of
-  // which has a task to hang off. Exactly one of `task` / `goal` / `adsBudget`
-  // is set on any row.
+  // Required for every event EXCEPT a goal's, a budget row's or a group's, none
+  // of which has a task to hang off. Exactly one of `task` / `goal` /
+  // `adsBudget` / `group` is set on any row.
   //
   // Every new subject widens this condition. Forgetting to is not a subtle
   // failure: `logActivity` swallows its own errors, so the row would simply
@@ -122,7 +136,7 @@ const activityLogSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Task',
     required: function requireTaskUnlessSubjectRow() {
-      return !this.goal && !this.adsBudget;
+      return !this.goal && !this.adsBudget && !this.group;
     },
     default: null,
     index: true,
@@ -144,6 +158,24 @@ const activityLogSchema = new mongoose.Schema({
     ref: 'AdsBudget',
     default: null,
     index: true,
+  },
+  // Set only on `group.*` rows. Its own pointer for the same reason the two
+  // above have one.
+  //
+  // NOT indexed, unlike the other three. Those each back a per-subject history
+  // panel keyed on the id; a group has no such panel, and every read of these
+  // rows goes through the board activity export's `{ board, createdAt }` index
+  // instead. An index here would tax writes to serve a query nobody makes — the
+  // same call `TaskGroup.ownerTimeline` makes about `ownerTimeline.user`. Add
+  // one the day a per-group history view exists, not before.
+  //
+  // A `group.deleted` row deliberately points at an id that no longer resolves.
+  // That is not dangling data: the row's `metadata.groupName` is what it is read
+  // by, and the pointer is only there to tie the group's events together.
+  group: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'TaskGroup',
+    default: null,
   },
   // Null for personal tasks (no board).
   board: {

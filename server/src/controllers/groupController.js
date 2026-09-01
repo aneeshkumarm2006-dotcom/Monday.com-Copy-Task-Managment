@@ -20,6 +20,11 @@ const { resolveOwnerDisplay, EMPTY_OWNER_DISPLAY } = require('../services/groupO
 const { isMonthKey, monthKeyOf, addMonths, compareMonthKeys } = require('../utils/monthKey');
 const { generatePortalToken } = require('../utils/portalCrypto');
 const { inviteContact } = require('../services/portalInviteService');
+const {
+  logGroupCreated,
+  logGroupRenamed,
+  logGroupDeleted,
+} = require('../services/groupActivity');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -255,6 +260,16 @@ const createGroup = async (req, res) => {
       }
     }
 
+    // Record the creation. `createdBy` above already carries the byline, but
+    // that dies with the group — this row is what still answers "who set this
+    // up" after somebody deletes it.
+    //
+    // AWAITED, like every other logger in goalController and adsBudgetController:
+    // `logActivity` swallows its own errors and can never reject, so awaiting
+    // costs one round trip and buys the guarantee that the row exists before the
+    // caller is told the group does.
+    await logGroupCreated({ group, board: ctx.board, actor: userId });
+
     // Fan out a group.created event so GROUP_CREATED automations can
     // spawn predefined tasks into the new group. The dispatcher fetches
     // the live group doc itself, so we only need the ids + name here.
@@ -327,6 +342,11 @@ const updateGroup = async (req, res) => {
       'You do not have permission to edit groups'
     );
     if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    // The name as it stood before this request. Captured here rather than read
+    // back after `group.save()`, which would compare the document to its own
+    // mutated self and find no change at all.
+    const nameBefore = group.name;
 
     if (typeof name === 'string') {
       if (!name.trim()) {
@@ -443,6 +463,18 @@ const updateGroup = async (req, res) => {
     }
 
     await group.save();
+
+    // Only a real rename writes a row. `resolveGroupName` trims and de-dupes,
+    // so a save that re-sends the same name — the tags-only and order-only
+    // paths both do — resolves back to what was already there and logs nothing.
+    await logGroupRenamed({
+      group,
+      board: ctx.board,
+      from: nameBefore,
+      to: group.name,
+      actor: userId,
+    });
+
     await group.populate('createdBy', CREATOR_FIELDS);
 
     const [serialized] = await serializeGroups([group], {
@@ -547,6 +579,22 @@ const deleteGroup = async (req, res) => {
       );
     }
     await TaskGroup.deleteOne({ _id: id });
+
+    // Logged AFTER the group is actually gone, so a cascade that threw halfway
+    // never leaves behind a row claiming a delete that did not happen. The
+    // counts come from the ids collected above, before the cascade removed the
+    // documents they refer to — after this point there is nothing left to count.
+    //
+    // This row deliberately outlives its subject. `group` now points at an id
+    // that resolves to nothing, and `metadata.groupName` is what the export
+    // reads instead.
+    await logGroupDeleted({
+      group,
+      board: ctx.board,
+      actor: userId,
+      taskCount: taskIds.length,
+      goalCount: goalIds.length,
+    });
 
     return res.json({ success: true });
   } catch (err) {

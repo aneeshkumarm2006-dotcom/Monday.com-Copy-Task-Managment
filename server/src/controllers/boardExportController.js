@@ -36,12 +36,13 @@ const { buildTaskThreads } = require('../services/updateThread');
  * flag is the switch they were asked to throw, and honouring it only in the UI
  * would make it decorative.
  *
- * TWO KINDS OF ROW come back from one query. A tracker board's monthly goals
- * write to the same `ActivityLog` collection under `goal` instead of `task`, so
- * "everything recorded against this board" now genuinely means everything —
- * including who moved a target. `itemType` is what tells the two apart in the
- * sheet; the task-field columns are simply blank on a goal row, exactly as they
- * are for a task that has been deleted.
+ * THREE KINDS OF ROW come back from one query. A tracker board's monthly goals
+ * write to the same `ActivityLog` collection under `goal` instead of `task`,
+ * and a group's own lifecycle writes under `group`, so "everything recorded
+ * against this board" now genuinely means everything — including who moved a
+ * target and who deleted a whole client. `itemType` is what tells them apart in
+ * the sheet; the task-field columns are simply blank on a goal or group row,
+ * exactly as they are for a task that has been deleted.
  */
 
 /** Hard ceiling on rows in one export. Beyond this the response is truncated. */
@@ -278,6 +279,13 @@ const getActivityExport = async (req, res) => {
     const rows = [];
     for (const e of entries) {
       const isGoalRow = !!e.goal;
+      // A group's own lifecycle row — created, renamed, deleted. It has neither
+      // a task nor a goal, and it is EXEMPT from the orphaned-group filter
+      // below: `group.deleted` points at a group that by definition no longer
+      // exists, so applying that rule would silently drop the single event the
+      // filter's own rationale ("an audit export exists for exactly this") most
+      // wants kept.
+      const isGroupRow = !!e.group;
       const task = e.task ? taskMap.get(e.task.toString()) : null;
       const goal = e.goal ? goalMap.get(e.goal.toString()) : null;
 
@@ -320,12 +328,26 @@ const getActivityExport = async (req, res) => {
       // A goal row borrows the item columns: its name goes where a task's name
       // goes, so the sheet stays one table rather than two half-empty ones, and
       // `itemType` is the column that says which it is.
-      const itemName = isGoalRow
-        ? (goal?.name || e.metadata?.goalName || '(deleted goal)')
-        : (task?.name || e.metadata?.taskName || '(deleted task)');
-      const groupName = isGoalRow
-        ? ((goalGroupId && groupMap.get(goalGroupId)) || e.metadata?.groupName || '')
-        : ((task?.group && groupMap.get(task.group.toString())) || '');
+      //
+      // A group row names ITSELF in both columns: the group is the item, so
+      // repeating it is the honest answer rather than leaving the item column
+      // blank. Its name comes from the live document where one survives (a
+      // group renamed since the event exports under the name the board shows
+      // today, matching the goal rule above) and from the captured metadata
+      // where it does not — which is every `group.deleted` row.
+      const liveGroupName = e.group ? groupMap.get(e.group.toString()) : null;
+      const groupRowName = liveGroupName || e.metadata?.groupName || '(deleted group)';
+
+      let itemName;
+      if (isGroupRow) itemName = groupRowName;
+      else if (isGoalRow) itemName = goal?.name || e.metadata?.goalName || '(deleted goal)';
+      else itemName = task?.name || e.metadata?.taskName || '(deleted task)';
+
+      let groupName;
+      if (isGroupRow) groupName = groupRowName;
+      else if (isGoalRow) {
+        groupName = (goalGroupId && groupMap.get(goalGroupId)) || e.metadata?.groupName || '';
+      } else groupName = (task?.group && groupMap.get(task.group.toString())) || '';
 
       rows.push({
         at: e.createdAt,
@@ -333,7 +355,7 @@ const getActivityExport = async (req, res) => {
         taskId: e.task ? e.task.toString() : '',
         actorName,
         actorType: e.actorType || 'user',
-        itemType: isGoalRow ? 'goal' : 'task',
+        itemType: isGroupRow ? 'group' : (isGoalRow ? 'goal' : 'task'),
         // Which month a goal belongs to — the one thing about it that has no
         // task equivalent, and the thing that makes a row of them sortable.
         monthKey: isGoalRow ? (goal?.monthKey || e.metadata?.monthKey || '') : '',
