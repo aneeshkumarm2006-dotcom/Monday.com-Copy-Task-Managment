@@ -1,3 +1,5 @@
+import Dropdown from './Dropdown';
+
 /**
  * Shared form primitives for config modals.
  *
@@ -104,41 +106,40 @@ export const WeekdayChips = ({ value, onChange, disabled, chips = WEEKDAY_CHIPS 
   );
 };
 
-export const SelectField = ({ label, value, onChange, options, disabled, listId }) => (
-  <div>
-    {label && (
-      <label
-        className="block mb-2 font-body font-medium text-xs uppercase tracking-wide"
-        style={{ color: 'var(--color-text-secondary)' }}
-      >
-        {label}
-      </label>
-    )}
-    <select
-      value={value}
-      onChange={onChange}
-      disabled={disabled}
-      list={listId}
-      className="w-full font-body"
-      style={{
-        height: 38,
-        padding: '0 10px',
-        borderRadius: 'var(--radius-md)',
-        border: '1.5px solid var(--color-border)',
-        background: 'var(--color-bg-input)',
-        color: 'var(--color-text-primary)',
-        fontSize: 14,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: disabled ? 0.6 : 1,
-      }}
-    >
-      {options.map((opt) => (
-        <option key={opt.value} value={opt.value}>
-          {opt.label}
-        </option>
-      ))}
-    </select>
-  </div>
+/**
+ * A select that renders Macan's own `Dropdown` rather than the browser's.
+ *
+ * ---- Why it still takes an EVENT ------------------------------------------
+ *
+ * `Dropdown` hands its `onChange` the new VALUE; a native `<select>` hands it an
+ * event, and every one of this component's call sites was written against the
+ * latter — `onChange={(e) => set(e.target.value)}`. The synthetic
+ * `{ target: { value } }` below is a deliberate compatibility shim so this
+ * became a one-file change instead of a rewrite of call sites in modals whose
+ * surrounding logic nobody needed to touch.
+ *
+ * NEW CODE SHOULD USE `Dropdown` DIRECTLY. This shim exists to migrate what was
+ * already here, not to be the house style — a fake event is a thing worth doing
+ * once, on purpose, with a comment saying so.
+ *
+ * ---- `listId` is gone, and that is not an oversight ------------------------
+ *
+ * It fed `<select list=…>`, which is not a thing: `list` pairs a `<datalist>`
+ * with an `<input>`, and on a `<select>` browsers ignore it. No caller of this
+ * component passed it. The one real combobox in the app (the ads-budget
+ * platform field, which must accept a channel nobody has typed before) is an
+ * `Input` with its own `<datalist>` and is deliberately untouched — a dropdown
+ * of fixed options is the wrong control for a field whose whole point is that
+ * the list is open-ended.
+ */
+export const SelectField = ({ label, value, onChange, options, disabled }) => (
+  <Dropdown
+    label={label}
+    value={value}
+    options={options}
+    disabled={disabled}
+    onChange={(next) => onChange?.({ target: { value: next } })}
+  />
 );
 
 export const Toggle = ({ checked, onChange, disabled, label }) => (

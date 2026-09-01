@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatGoalValue, RATING_CHOICES } from '../../../utils/goalDisplay';
+import Dropdown from '../../ui/Dropdown';
+import DatePickerPopover from '../../ui/DatePickerPopover';
 
 /**
  * The editor for a goal's built-in numeric fields — baseline, target and the
@@ -118,47 +120,34 @@ const GoalValueCell = ({
   }
 
   if (kind === 'rating') {
+    // `size="sm"` because this sits in a grid row, not a form. The value goes
+    // back out as a NUMBER — the dropdown carries strings, and a rating stored
+    // as '50' would miss `isNum` in the scorer and read as untracked.
     return (
-      <select
+      <Dropdown
+        size="sm"
         value={isEmpty ? '' : String(value)}
         disabled={readOnly}
-        onChange={(e) => onChange?.(e.target.value === '' ? null : Number(e.target.value))}
-        className="font-body w-full"
-        style={{
-          fontSize: 13,
-          padding: '4px 6px',
-          textAlign: align === 'center' ? 'center' : undefined,
-          border: `1px solid ${flagged ? 'var(--color-status-stuck)' : 'var(--color-border)'}`,
-          borderRadius: 'var(--radius-sm)',
-          background: 'var(--color-bg-input)',
-          color: 'var(--color-text-primary)',
-        }}
-      >
-        <option value="">Not rated</option>
-        {RATING_CHOICES.map((c) => (
-          <option key={c.value} value={c.value}>{c.label}</option>
-        ))}
-      </select>
+        options={[
+          { value: '', label: 'Not rated' },
+          ...RATING_CHOICES.map((c) => ({ value: String(c.value), label: c.label })),
+        ]}
+        onChange={(next) => onChange?.(next === '' ? null : Number(next))}
+        ariaLabel="Rating"
+      />
     );
   }
 
   if (kind === 'date') {
+    // `actualDayKey` is stored as a raw 'YYYY-MM-DD' and the picker speaks the
+    // same, so there is no conversion here — deliberately, since introducing
+    // one is how a day key drifts by one on either side of UTC midnight.
     return (
-      <input
-        type="date"
+      <DatePickerPopover
+        variant="inline"
         value={value || ''}
         disabled={readOnly}
-        onChange={(e) => onChange?.(e.target.value || null)}
-        className="font-body w-full"
-        style={{
-          fontSize: 13,
-          padding: '4px 6px',
-          textAlign: align === 'center' ? 'center' : undefined,
-          border: `1px solid ${flagged ? 'var(--color-status-stuck)' : 'var(--color-border)'}`,
-          borderRadius: 'var(--radius-sm)',
-          background: 'var(--color-bg-input)',
-          color: 'var(--color-text-primary)',
-        }}
+        onChange={(next) => onChange?.(next || null)}
       />
     );
   }

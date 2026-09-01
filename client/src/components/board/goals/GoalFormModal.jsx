@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import {
   TrendingUp, CheckCircle2, ListChecks, Shield, Target, CalendarClock, Star, ChevronLeft, ChevronDown,
 } from 'lucide-react';
+import Dropdown from '../../ui/Dropdown';
+import DatePickerPopover from '../../ui/DatePickerPopover';
 import Modal from '../../ui/Modal';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
@@ -394,13 +396,18 @@ const GoalFormModal = ({
 
     if (col.type === 'date') {
       return (
-        <Input
-          key={key}
-          {...common}
-          type="date"
-          value={formatDateInput(value)}
-          onChange={(e) => set(e.target.value ? dateInputToISO(e.target.value) : null)}
-        />
+        <div key={key}>
+          {columnLabel(col)}
+          {/* `dateInputToISO` stays exactly where it was. The picker hands back
+              the same 'YYYY-MM-DD' day key the native input did, and that
+              conversion is the guard against the off-by-one that comes from
+              parsing a bare date as UTC. */}
+          <DatePickerPopover
+            value={formatDateInput(value)}
+            onChange={(next) => set(next ? dateInputToISO(next) : null)}
+          />
+          {columnMessage(message)}
+        </div>
       );
     }
 
@@ -430,21 +437,18 @@ const GoalFormModal = ({
       return (
         <div key={key}>
           {columnLabel(col)}
-          <select
+          {/* "Not set" is a real option rather than a placeholder, because
+              clearing a value someone already chose has to be reachable — a
+              placeholder only shows while nothing is selected. */}
+          <Dropdown
             value={value == null ? '' : String(value)}
-            onChange={(e) => set(e.target.value || null)}
-            className="w-full font-body text-[14px] h-[44px] md:h-[38px] px-3 bg-[color:var(--color-bg-input)]"
-            style={{
-              border: `1.5px solid ${message ? 'var(--color-status-stuck)' : 'var(--color-border)'}`,
-              borderRadius: 'var(--radius-md)',
-              color: 'var(--color-text-primary)',
-            }}
-          >
-            <option value="">Not set</option>
-            {options.map((o) => (
-              <option key={o.id} value={o.id}>{o.label}</option>
-            ))}
-          </select>
+            options={[
+              { value: '', label: 'Not set' },
+              ...options.map((o) => ({ value: o.id, label: o.label })),
+            ]}
+            onChange={(next) => set(next || null)}
+            ariaLabel={col.name}
+          />
           {columnMessage(message)}
         </div>
       );
@@ -516,15 +520,29 @@ const GoalFormModal = ({
   const renderConfigField = (field) => {
     if (field.type === 'number') return numberInput(field);
     if (field.type === 'date') {
+      // A raw day key both ways — `dueDayKey` is stored as 'YYYY-MM-DD' and the
+      // picker speaks the same, so there is deliberately no conversion here.
       return (
-        <Input
-          key={field.key}
-          label={field.label}
-          helperText={field.help}
-          type="date"
-          value={draft.config[field.key] || ''}
-          onChange={(e) => setConfig(field.key, e.target.value || null)}
-        />
+        <div key={field.key}>
+          <label
+            className="block mb-2 font-body font-medium text-xs uppercase tracking-wide"
+            style={{ color: 'var(--color-text-secondary)' }}
+          >
+            {field.label}
+          </label>
+          <DatePickerPopover
+            value={draft.config[field.key] || ''}
+            onChange={(next) => setConfig(field.key, next || null)}
+          />
+          {field.help && (
+            <p
+              className="mt-1.5 font-body"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+            >
+              {field.help}
+            </p>
+          )}
+        </div>
       );
     }
     if (field.type === 'choice') {
