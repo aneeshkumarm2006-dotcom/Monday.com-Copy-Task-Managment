@@ -24,9 +24,35 @@ const { loadBoardContext, requireCapability } = require('../utils/boardContext')
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 const { buildTaskDeepLink } = require('../utils/taskDeepLink');
 const { automationHolidayKeySetOf } = require('../utils/orgHolidays');
+const { monthKeyOf } = require('../utils/monthKey');
 
 const VALID_PRIORITIES = ['critical', 'high', 'medium', 'low'];
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Which month does an automation-spawned task belong to?
+ *
+ * MIRROR OF the rule in `taskController.createTask`, and it has to be: a
+ * tracker board reads its rows with `filter.monthKey = month`, so a task
+ * created with `monthKey: null` is not merely unfiled — it is INVISIBLE on
+ * every month of the board that owns it, and `goalEvidence.isAttachable`
+ * refuses it, so nobody can ever attach it to a goal either. Five daily
+ * SCHEDULE automations quietly produced 95 such tasks before this existed.
+ *
+ * There is no selected month at fire time — no human is looking at a board —
+ * so "now, in the board's timezone" is the only honest answer for a top-level
+ * task. A subitem inherits its parent's month for the same reason it does on
+ * the manual path: a subitem is part of the parent's work.
+ *
+ * `null` on a non-tracker board, where the field is meaningless.
+ */
+const automationMonthKey = (board, parentTask = null) => {
+  if (board?.boardType !== 'tracker') return null;
+  return (
+    (parentTask && parentTask.monthKey) ||
+    monthKeyOf(new Date(), board.monthTimezone || 'UTC')
+  );
+};
 
 /**
  * Automations are board CONTENT, not an org-wide admin power.
@@ -518,6 +544,9 @@ const runActionOnce = async (action, automation, board, triggeringTask) => {
     board: automation.board,
     group,
     parent,
+    // A CREATE_SUBITEM takes the triggering task's month; a CREATE_TASK takes
+    // the board's month now. See automationMonthKey.
+    monthKey: automationMonthKey(board, triggeringTask),
     priority: cfg.priority || 'medium',
     status,
     assignedTo: assigneeIds,
@@ -687,6 +716,7 @@ const runGroupCreatedTemplatesOnce = async (automation, board, group) => {
       name: tpl.name,
       board: automation.board,
       group: group._id,
+      monthKey: automationMonthKey(board),
       priority: tpl.priority || 'medium',
       status: initialStatus,
       assignedTo: assigneeIds,
@@ -729,6 +759,7 @@ const runLegacyTemplateOnce = async (automation, board) => {
     name: tpl.name,
     board: automation.board,
     group: tpl.group,
+    monthKey: automationMonthKey(board),
     priority: tpl.priority || 'medium',
     status: initialStatus,
     assignedTo: assigneeIds,
@@ -768,7 +799,12 @@ const runLegacyTemplateOnce = async (automation, board) => {
  * access that created it.
  */
 const runAutomationOnce = async (automation, ctx = {}) => {
-  const board = await Board.findById(automation.board).select('statuses');
+  // `boardType` and `monthTimezone` are as load-bearing as `statuses`:
+  // without them every task an automation spawns on a tracker board is filed
+  // under no month, and a task with no month cannot be seen or scored.
+  const board = await Board.findById(automation.board).select(
+    'statuses boardType monthTimezone'
+  );
 
   if (automation.triggerType === 'GROUP_CREATED') {
     if (!ctx.triggeringGroup) {

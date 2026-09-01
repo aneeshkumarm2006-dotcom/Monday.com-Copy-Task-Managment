@@ -249,6 +249,8 @@ const BoardDetailPage = () => {
   const updateTaskLocal = useTaskStore((s) => s.updateTask);
   const lastStatusChange = useTaskStore((s) => s.lastStatusChange);
   const clearLastStatusChange = useTaskStore((s) => s.clearLastStatusChange);
+  const goalOpenRequest = useTaskStore((s) => s.goalOpenRequest);
+  const clearGoalOpenRequest = useTaskStore((s) => s.clearGoalOpenRequest);
   // Set to a task id when finishing that task is what opened the detail panel,
   // so the panel can take the user to its Goal section. Cleared on close.
   const [goalFocusTaskId, setGoalFocusTaskId] = useState(null);
@@ -1427,6 +1429,20 @@ const BoardDetailPage = () => {
     setGoalFocusTaskId(found._id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastStatusChange]);
+
+  /**
+   * Someone clicked the goal marker on a row: open that task on its Goal
+   * section. The same destination as the on-done prompt above, reached
+   * deliberately rather than as a consequence of finishing something — which is
+   * the whole point, since a task nobody has finished yet shows no prompt.
+   */
+  useEffect(() => {
+    if (!goalOpenRequest) return;
+    clearGoalOpenRequest();
+    setSelectedTaskStack([goalOpenRequest]);
+    setGoalFocusTaskId(goalOpenRequest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [goalOpenRequest]);
   const canChangeStatus = () => {
     // All org members can change task status
     return !!currentUser;

@@ -47,6 +47,18 @@ const useTaskStore = create((set, get) => ({
   // access to. It records a fact; the page interprets it. That split is what
   // keeps a tracker-board feature out of the generic task store.
   lastStatusChange: null,
+
+  // Tracker boards: "I want to attach THIS task to a goal", as a task id.
+  // Written by the goal marker on a board row, read by the board page, which
+  // opens the task panel on its Goal section.
+  //
+  // A store signal rather than a callback threaded through both grids, for the
+  // same reason `groupsWithGoals` is read from here: `GoalEvidenceMarker` is
+  // dropped into `TaskRow` AND `DataGrid`, and anything it needs from the page
+  // would have to be plumbed through two unrelated component trees that would
+  // then drift. Same shape as `lastStatusChange` above — the store records the
+  // intent, the page decides what it means.
+  goalOpenRequest: null,
   loading: false,
   error: null,
   // Bumped when a realtime "board.changed" SSE frame arrives so the board view
@@ -244,6 +256,13 @@ const useTaskStore = create((set, get) => ({
 
   /** Consume the recorded transition, so one status change prompts once. */
   clearLastStatusChange: () => set({ lastStatusChange: null }),
+
+  /** A row asked to attach this task to a goal. */
+  requestGoalAttach: (taskId) =>
+    set({ goalOpenRequest: taskId ? String(taskId) : null }),
+
+  /** Consume it, so one click opens the panel once. */
+  clearGoalOpenRequest: () => set({ goalOpenRequest: null }),
 
   /**
    * Set the updates count for a single task (top-level or subitem). Used by
