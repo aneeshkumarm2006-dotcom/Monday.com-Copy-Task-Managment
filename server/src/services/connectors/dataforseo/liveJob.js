@@ -161,9 +161,6 @@ const runLiveJob = async ({
   rowsOf = itemsOf,
   unitsOf = null,
 }) => {
-  const blocked = T.liveGuardNote(project);
-  if (blocked) return { ok: false, capped: false, note: blocked, results: [], costUsd: 0 };
-
   const quota = P.quotaFromSession(session);
   let estimateUsd = 0;
   for (const request of requests) {
@@ -173,7 +170,7 @@ const runLiveJob = async ({
   const request = { endpoint: kind.endpoint, calls: requests.map((r) => r.payload) };
   const requestHash = T.requestHashFor(request);
   const periodKey = B.monthKeyFor(now);
-  const budgetDocs = await Budget.scopesFor(project, { periodKey });
+  const budgetDocs = await Budget.scopesFor(project, { periodKey, capUsd: session.getMonthlyCapUsd?.() });
   const expiresAt = new Date(now.getTime() + C.TASK_EXPIRY_HOURS * 3_600_000);
 
   /**

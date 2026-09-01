@@ -8,6 +8,7 @@ const {
   saveCredentials,
   handleCallback,
   disconnectAccount,
+  setConnectorAccountBudget,
   getBoardConnectors,
   setBoardConnector,
   getBoardConnectorProjects,
@@ -127,6 +128,14 @@ router.post('/orgs/:orgId/connectors/:provider/authorize', startAuthorization);
 router.post('/orgs/:orgId/connectors/:provider/credentials', saveCredentials);
 
 // --- A single account -------------------------------------------------------
+//
+// The budget PATCH is `org.manage_settings`, the same rung as connecting the
+// account, because a workspace-wide spending ceiling is credential-adjacent
+// policy rather than a board preference. It is SEPARATE from the credentials
+// POST above on purpose: a credential goes in and never comes back out, so
+// folding the cap into that form would make "raise my monthly cap" require
+// finding the API password again.
+router.patch('/connectors/:accountId/budget', setConnectorAccountBudget);
 router.delete('/connectors/:accountId', disconnectAccount);
 
 // --- Per-board enablement ---------------------------------------------------

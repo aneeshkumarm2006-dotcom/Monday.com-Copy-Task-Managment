@@ -4,6 +4,7 @@ const ConnectorAccount = require('../models/ConnectorAccount');
 const ConnectorAuthAttempt = require('../models/ConnectorAuthAttempt');
 const BoardConnector = require('../models/BoardConnector');
 const ConnectorProject = require('../models/ConnectorProject');
+const ConnectorBudget = require('../models/ConnectorBudget');
 const TaskGroup = require('../models/TaskGroup');
 
 const {
@@ -12,6 +13,7 @@ const {
   loadOrgContext,
 } = require('../utils/boardContext');
 const { getConnector, listConnectors } = require('../services/connectors');
+const { monthKeyFor } = require('../services/connectors/budget');
 const { refreshOrgProjects } = require('../services/connectors/projectMirror');
 const { isConnectorProvider, connectorProviderLabel } = require('../utils/connectorProviders');
 const connectorCrypto = require('../utils/connectorCrypto');
@@ -119,9 +121,46 @@ const publicAccount = (account) => ({
   lastSyncAt: account.lastSyncAt || null,
   lastSyncReport: account.lastSyncReport || null,
   lastSeenQuota: account.lastSeenQuota || {},
+  /**
+   * The workspace's own monthly ceiling, or null for none. Safe to return and
+   * necessary to: it is a setting its owner has to be able to SEE, and a cap
+   * nobody can read is the deployment variable this replaced.
+   */
+  monthlyCapUsd: account.monthlyCapUsd ?? null,
   createdAt: account.createdAt,
   updatedAt: account.updatedAt,
 });
+
+/**
+ * Read a monthly cap out of a request body.
+ *
+ * Three accepted spellings of "no ceiling" — absent, null, and empty string —
+ * because the form sends an empty input for it and JSON has no way to tell that
+ * apart from a field the client forgot. Zero is rejected rather than treated as
+ * unlimited: a zero cap means "never spend", which is a thing somebody might
+ * genuinely want, and silently reading it as its opposite would be the worst
+ * possible misreading of a money field.
+ *
+ * @param {any} value
+ * @returns {{ok: true, capUsd: number|null}|{ok: false, error: string}}
+ */
+const readMonthlyCap = (value) => {
+  if (value === undefined || value === null || value === '') {
+    return { ok: true, capUsd: null };
+  }
+  const asked = Number(value);
+  if (!Number.isFinite(asked) || asked <= 0) {
+    return {
+      ok: false,
+      error: 'Enter a monthly cap in dollars, or leave it blank for no cap.',
+    };
+  }
+  if (asked > 1_000_000) {
+    return { ok: false, error: 'That cap is too large. Leave it blank for no cap.' };
+  }
+  // Cents, so a cap cannot carry a fraction the ledger would round away.
+  return { ok: true, capUsd: Math.round(asked * 100) / 100 };
+};
 
 /**
  * Where the provider sends the browser back to.
@@ -432,6 +471,11 @@ const saveCredentials = async (req, res) => {
     const form = readCredentialForm(connector.apiKey, req.body);
     if (!form.ok) return res.status(400).json({ error: form.error });
 
+    // Read BEFORE the provider round trip below, so a malformed number is a
+    // fast 400 rather than a rejection that arrives after a network call.
+    const cap = readMonthlyCap(req.body?.monthlyCapUsd);
+    if (!cap.ok) return res.status(400).json({ error: cap.error });
+
     /**
      * Check the credential BEFORE storing it, where the provider offers a free
      * way to.
@@ -501,6 +545,7 @@ const saveCredentials = async (req, res) => {
               label: pre.label,
               sealedTokens,
               status: 'active',
+              monthlyCapUsd: cap.capUsd,
               updatedBy: req.user.userId,
             },
           },
@@ -516,6 +561,7 @@ const saveCredentials = async (req, res) => {
             sealedTokens,
             scopes: [],
             status: 'active',
+            monthlyCapUsd: cap.capUsd,
             createdBy: req.user.userId,
           })
         ).toObject();
@@ -637,6 +683,94 @@ const handleCallback = async (req, res) => {
       connector: 'error',
       reason: 'exchange',
     });
+  }
+};
+
+/**
+ * PATCH /api/connectors/:accountId/budget
+ * Body: { monthlyCapUsd: number|null }
+ *
+ * The workspace's monthly ceiling on this connected account.
+ *
+ * ---- Why this is its own endpoint ------------------------------------------
+ *
+ * `saveCredentials` also accepts the cap, because setting one while connecting
+ * is the natural moment. But changing a cap must NOT require re-entering the API
+ * key: credentials go in and never come back out, so a combined form would make
+ * "raise my cap" mean "find the password again", and the predictable result is
+ * an owner who leaves the cap where it is and files a support ticket about
+ * collection stopping.
+ *
+ * `org.manage_settings`, the same rung as connecting the account, because this
+ * is workspace-wide spending policy rather than a board-level preference. The
+ * BOARD allocation under it is `connector.manage` and stays there.
+ *
+ * Takes effect on the NEXT month's budget document, not this one — `capUsd` is
+ * written at `$setOnInsert`. An owner raising a cap mid-month to unblock a
+ * stalled collection needs it to apply now, so the current period's row is
+ * updated in place as well; that is the one write here that touches money, and
+ * it moves only the ceiling, never the counters.
+ */
+const setConnectorAccountBudget = async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    if (!isValidId(accountId)) {
+      return res.status(400).json({ error: 'Invalid account id' });
+    }
+
+    const account = await ConnectorAccount.findById(accountId).lean();
+    if (!account || account.status === 'revoked') {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    const ctx = await gateOrgAdmin(req, res, String(account.organisation));
+    if (!ctx) return undefined;
+
+    const cap = readMonthlyCap(req.body?.monthlyCapUsd);
+    if (!cap.ok) return res.status(400).json({ error: cap.error });
+
+    const updated = await ConnectorAccount.findByIdAndUpdate(
+      accountId,
+      { $set: { monthlyCapUsd: cap.capUsd, updatedBy: req.user.userId } },
+      { new: true }
+    ).lean();
+
+    /**
+     * The month already in progress.
+     *
+     * Its document was created with the OLD cap and `$setOnInsert` will not
+     * revisit it, so without this an owner raising a cap to unblock a stalled
+     * collection would wait until the 1st for it to mean anything. Only `capUsd`
+     * moves — `reservedUsd` and `spentUsd` are the ledger and are never
+     * rewritten from here.
+     *
+     * CLEARING the cap needs no write at all, and that is worth stating rather
+     * than leaving to be re-derived: an unbounded workspace contributes no org
+     * scope from `scopesFor`, so the stale row is simply never consulted again.
+     * Deleting it would throw away this month's `spentUsd`, which is what the
+     * Usage screen reports, in exchange for tidiness nobody can see.
+     *
+     * `updateOne` without `upsert`, so a workspace that has bought nothing this
+     * month does not get a budget document conjured out of a settings change.
+     * The first purchase creates it, at the new cap.
+     */
+    if (cap.capUsd !== null) {
+      await ConnectorBudget.updateOne(
+        {
+          organisation: account.organisation,
+          provider: account.provider,
+          scope: 'org',
+          scopeId: account.organisation,
+          periodKey: monthKeyFor(new Date()),
+        },
+        { $set: { capUsd: cap.capUsd } }
+      );
+    }
+
+    return res.json({ account: publicAccount(updated) });
+  } catch (err) {
+    console.error('setConnectorAccountBudget error:', err);
+    return res.status(500).json({ error: 'Server error' });
   }
 };
 
@@ -1446,6 +1580,7 @@ module.exports = {
   saveCredentials,
   handleCallback,
   disconnectAccount,
+  setConnectorAccountBudget,
   getBoardConnectors,
   setBoardConnector,
   getBoardConnectorProjects,

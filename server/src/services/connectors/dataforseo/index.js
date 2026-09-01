@@ -72,6 +72,21 @@ const descriptor = {
   requiresBrowserConsent: false,
 
   /**
+   * THIS PROVIDER BILLS PER CALL, against the workspace's own funded balance.
+   *
+   * Declared so the settings UI can offer a monthly cap without naming a
+   * provider — the same discipline `apiKey` and `availableKinds` are under.
+   * Ubersuggest omits it: its quota is a plan allowance rather than money, so a
+   * dollar ceiling would be a field with nothing behind it.
+   *
+   * It gates a FORM FIELD, never a purchase. The cap it exposes
+   * (`ConnectorAccount.monthlyCapUsd`) is a safety rail against our own bugs,
+   * and the absence of one means unlimited — see `./constants.js` on why the
+   * per-project live allowlist that used to gate spending was deleted.
+   */
+  metered: true,
+
+  /**
    * The credential form, as DATA.
    *
    * The server seals whatever these keys collect (`connectorCrypto.sealJson`

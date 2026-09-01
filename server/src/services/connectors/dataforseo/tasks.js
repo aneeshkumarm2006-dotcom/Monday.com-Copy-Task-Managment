@@ -364,45 +364,6 @@ const settleJobBudget = async (job, { actualUsd, now }) => {
 };
 
 /**
- * May this Site post against the LIVE host at all?
- *
- * ---- The second of the two switches that have to be thrown to go live -------
- *
- * A monthly cap bounds the money and not the blast radius. Thirty Sites sharing
- * one newly-live account would each buy a partial batch, each land a fraction of
- * a collection, and the first live pass would produce thirty half-collected
- * projects and an exhausted budget — with nothing to check against a browser,
- * because no project got a complete reading. The plan's line is "first live key
- * runs here, ON ONE PROJECT, with a $5 cap", and this is the "on one project"
- * half.
- *
- * An empty allowlist means NOTHING MAY POST, so pointing
- * `DATAFORSEO_API_ORIGIN` at production is not on its own enough to spend a
- * cent. Not enforced on the sandbox, which is free — restricting it would only
- * stop the integration being tested.
- *
- * @returns {string} a note to return as `pending`, or `''` for "go ahead"
- */
-const liveGuardNote = (project) => {
-  if (C.IS_SANDBOX) return '';
-
-  const id = String(project?._id ?? '');
-  if (C.LIVE_PROJECT_IDS.size === 0) {
-    return (
-      'DataForSEO is pointed at the live host but no site is cleared to spend on it. ' +
-      'Set DATAFORSEO_LIVE_PROJECTS to the site id you want collected first.'
-    );
-  }
-  if (!C.LIVE_PROJECT_IDS.has(id)) {
-    return (
-      'This site is not on the DataForSEO live allowlist, so nothing was bought for it. ' +
-      'Add its id to DATAFORSEO_LIVE_PROJECTS to collect it.'
-    );
-  }
-  return '';
-};
-
-/**
  * The provider's own floor under a board's cadence.
  *
  * ---- Why the planner's freshness check is not enough ------------------------
@@ -618,13 +579,10 @@ const postJob = async ({
   const expiryHours = kind.expiryHours || C.TASK_EXPIRY_HOURS;
   const expiresAt = new Date(now.getTime() + expiryHours * 3_600_000);
 
-  const blocked = liveGuardNote(project);
-  if (blocked) return { claimed: false, job: null, note: blocked, capped: false };
-
   const estimateUsd = spec.estimateUsd;
 
   const periodKey = B.monthKeyFor(now);
-  const budgetDocs = await Budget.scopesFor(project, { periodKey });
+  const budgetDocs = await Budget.scopesFor(project, { periodKey, capUsd: session.getMonthlyCapUsd?.() });
 
   let job;
   try {
@@ -1044,7 +1002,6 @@ module.exports = {
   requestHashFor,
   tagFor,
   estimateUsdFor,
-  liveGuardNote,
   settleJobBudget,
   probeCacheHits,
   findOpenJob,

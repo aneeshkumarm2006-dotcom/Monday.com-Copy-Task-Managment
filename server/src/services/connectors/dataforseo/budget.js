@@ -75,32 +75,67 @@ const C = require('./constants');
 /**
  * The budget documents one job answers to, most authoritative first.
  *
- * ORG FIRST, and the order is policy rather than convenience. Money is held at
- * ONE DataForSEO account owned by us — they have no sub-accounts and no reseller
- * programme, so per-tenant metering is entirely our problem — which makes the org
- * document the only real ceiling. A board budget is an ALLOCATION of that: it
- * answers "how much of the workspace's money may this client's board consume",
- * which is a billing question and not a solvency one.
+ * ORG FIRST, and the order is policy rather than convenience. The org document
+ * is the workspace's whole ceiling; a board budget is an ALLOCATION of it,
+ * answering "how much of this workspace's money may this client's board
+ * consume", which is a billing question and not a solvency one.
  *
  * So the org is reserved first and released last, and a board that refuses can
  * never leave the org's money held (see `reserveAll`'s unwind). The alternative
  * lets one over-allocated board shrink every other board's budget by failing
  * repeatedly.
  *
+ * ---- WHOSE money, and why that changed the ceiling -------------------------
+ *
+ * This used to read "money is held at ONE DataForSEO account owned by us, so
+ * per-tenant metering is entirely our problem", and every job reserved against a
+ * deployment-wide `DATAFORSEO_MONTHLY_CAP_USD` default of $5.
+ *
+ * THAT IS NO LONGER THE ARRANGEMENT. Each workspace connects its OWN DataForSEO
+ * credential and spends its OWN funded balance, so solvency is already bounded by
+ * the provider itself — a tenant cannot spend past the balance they funded, and
+ * no ceiling here is needed to make that true. Metering is not our problem
+ * because there is nothing of ours to meter.
+ *
+ * What survives is a SAFETY RAIL against our own bugs: a scheduler that reposts
+ * in a loop would spend a customer's balance, and an owner who wants a ceiling
+ * against that sets `ConnectorAccount.monthlyCapUsd` in Settings.
+ *
+ * ---- Why an unset cap omits the scope rather than passing a big number -----
+ *
+ * `reserve` refuses with `$expr: {$lte: [{$add: [reservedUsd, spentUsd, amount]},
+ * '$capUsd']}`. A null `capUsd` would make that comparison FALSE for every
+ * amount — BSON orders null below every number — so a workspace with no cap set
+ * would have every purchase refused, which is the exact opposite of "unlimited".
+ * A sentinel like `Infinity` is not storable and a big constant is a lie that
+ * eventually becomes a ceiling.
+ *
+ * So an unbounded workspace contributes NO org scope, and `reserveAll([])`
+ * returns ok — an absent ceiling, spelled as an absent document. A board
+ * allocation still works underneath it, because a board allocation is opt-in and
+ * means something on its own.
+ *
  * @param {Object} project - a ConnectorProject row
  * @returns {Promise<Object[]>} scope descriptors for `services/connectors/budget.js`
  */
-const scopesFor = async (project, { periodKey }) => {
+const scopesFor = async (project, { periodKey, capUsd = undefined }) => {
   const base = { organisation: project.organisation, provider: 'dataforseo', periodKey };
 
-  const scopes = [
-    {
-      ...base,
-      scope: 'org',
-      scopeId: project.organisation,
-      capUsd: C.DEFAULT_MONTHLY_CAP_USD,
-    },
-  ];
+  const scopes = [];
+
+  /**
+   * The workspace's own ceiling, handed in from the session that holds the
+   * account (`session.getMonthlyCapUsd`). `undefined` means the caller did not
+   * ask — a test, or a path with no session — and falls back to the deployment
+   * default, which is itself null unless a self-hosted operator set one.
+   *
+   * `null` is a real answer and means unbounded; only `undefined` falls back.
+   */
+  const asked = Number(capUsd === undefined ? C.DEFAULT_MONTHLY_CAP_USD : capUsd);
+
+  if (Number.isFinite(asked) && asked > 0) {
+    scopes.push({ ...base, scope: 'org', scopeId: project.organisation, capUsd: asked });
+  }
 
   if (!project.board) return scopes;
 
@@ -151,9 +186,9 @@ const scopesFor = async (project, { periodKey }) => {
  *
  * @returns {Promise<{ok: boolean, scopes: Object[], blocked: Object|null}>}
  */
-const reserveForJob = async ({ project, estimateUsd, now = new Date() }) => {
+const reserveForJob = async ({ project, estimateUsd, capUsd, now = new Date() }) => {
   const periodKey = B.monthKeyFor(now);
-  const scopes = await scopesFor(project, { periodKey });
+  const scopes = await scopesFor(project, { periodKey, capUsd });
   const { ok, blocked } = await B.reserveAll({ scopes, estimateUsd, now });
   return { ok, scopes, blocked };
 };
@@ -169,7 +204,15 @@ const noteForBlocked = (blocked) => {
   if (blocked?.scope === 'board') {
     return `${CAP_NOTE} This board's own monthly allocation of $${blocked.capUsd} is used up.`;
   }
-  return `${CAP_NOTE} The workspace's $${blocked?.capUsd ?? C.DEFAULT_MONTHLY_CAP_USD} monthly cap for DataForSEO is used up.`;
+  /**
+   * The org cap is a number somebody CHOSE now, not a deployment default, so the
+   * sentence says where to change it. A ceiling a person cannot find is the
+   * failure this whole change was about.
+   */
+  return (
+    `${CAP_NOTE} The workspace's $${blocked?.capUsd} monthly cap for DataForSEO is used up. ` +
+    'Raise or clear it in Settings → Connectors.'
+  );
 };
 
 // ---------------------------------------------------------------------------

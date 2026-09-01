@@ -55,6 +55,12 @@ const listConnectors = () =>
       blurb: c.blurb,
       requiresBrowserConsent: !!c.requiresBrowserConsent,
       /**
+       * Whether this provider spends money per call, so the settings form knows
+       * to offer a monthly cap. A plan-quota provider gets no dollar field,
+       * because a dollar ceiling on an allowance would mean nothing.
+       */
+      metered: !!c.metered,
+      /**
        * The credential form to render for a provider that has no consent screen,
        * or null for one that does.
        *

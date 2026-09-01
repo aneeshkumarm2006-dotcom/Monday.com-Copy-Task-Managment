@@ -63,6 +63,17 @@ const project = (overrides = {}) => ({
 });
 
 /**
+ * The workspace's monthly ceiling, as these fixtures set it.
+ *
+ * It used to be `C.DEFAULT_MONTHLY_CAP_USD` — a deployment-wide $5 that every
+ * tenant inherited. That default is null now (no ceiling), because a workspace
+ * spends its OWN funded DataForSEO balance and a number in our environment has
+ * no business capping it. So the tests below, which are all about what a cap
+ * DOES once somebody sets one, name the figure themselves.
+ */
+const WORKSPACE_CAP_USD = 5;
+
+/**
  * A session carrying a price book, which is where the estimate comes from.
  *
  * `getQuota` reads the account row `syncAccount` already has in memory — no
@@ -70,9 +81,15 @@ const project = (overrides = {}) => ({
  * (every phase-2 fixture) falls back to the published constant, which is what
  * keeps those tests unchanged.
  */
-const session = (quota = null) => ({
+const session = (quota = null, capUsd = WORKSPACE_CAP_USD) => ({
   accountId: 'acct-1',
   getCredentials: () => ({ login: 'l', password: 'p' }),
+  /**
+   * `ConnectorAccount.monthlyCapUsd`, as the session serves it. A session
+   * without this getter is an unbounded workspace, and `scopesFor` then produces
+   * no org document at all.
+   */
+  getMonthlyCapUsd: () => capUsd,
   ...(quota ? { getQuota: () => quota } : {}),
 });
 
@@ -413,7 +430,7 @@ test('a job that fits reserves, posts, and settles on the provider figure', asyn
 
     assert.equal(state.posts, 1);
     const org = money.rows.find((r) => r.scope === 'org');
-    assert.equal(org.capUsd, C.DEFAULT_MONTHLY_CAP_USD);
+    assert.equal(org.capUsd, WORKSPACE_CAP_USD);
     assert.equal(org.reservedUsd, 0, 'the reservation was settled, not left holding');
     assert.equal(org.spentUsd, 0.018);
     assert.equal(db.rows[0].budgetState, 'settled');
@@ -435,7 +452,8 @@ test('the cap refuses the post, releases the CLAIM, and buys nothing', async () 
     // Spend the whole month first, through the same door a real pass would.
     await Budget.reserveForJob({
       project: project(),
-      estimateUsd: C.DEFAULT_MONTHLY_CAP_USD,
+      estimateUsd: WORKSPACE_CAP_USD,
+      capUsd: WORKSPACE_CAP_USD,
       now: NOW,
     });
 
@@ -497,7 +515,8 @@ test('OUR cap is not `quotaExhausted` — 27 of 30 projects keep collecting', as
     await Budget.reserveForJob({
       project: project(),
       // Room for exactly one job of 3 keywords at depth 100 ($0.018) and no more.
-      estimateUsd: C.DEFAULT_MONTHLY_CAP_USD - 0.02,
+      estimateUsd: WORKSPACE_CAP_USD - 0.02,
+      capUsd: WORKSPACE_CAP_USD,
       now: NOW,
     });
 
@@ -707,7 +726,7 @@ test('the reconciler sweeps a reservation older than ten minutes and releases it
   const money = stubBudgets();
   try {
     // A process that died between the reserve and the post.
-    await Budget.reserveForJob({ project: project(), estimateUsd: 1.2, now: NOW });
+    await Budget.reserveForJob({ project: project(), estimateUsd: 1.2, capUsd: WORKSPACE_CAP_USD, now: NOW });
     await DfsTask.create({
       organisation: 'org-1',
       account: 'acct-1',
@@ -760,7 +779,7 @@ test('a sweep of a job that DID post settles what it spent and leaves the work o
   const db = stubTasks();
   const money = stubBudgets();
   try {
-    await Budget.reserveForJob({ project: project(), estimateUsd: 1.2, now: NOW });
+    await Budget.reserveForJob({ project: project(), estimateUsd: 1.2, capUsd: WORKSPACE_CAP_USD, now: NOW });
     await DfsTask.create({
       organisation: 'org-1',
       account: 'acct-1',
@@ -814,7 +833,7 @@ test('`reservedUsd` really is a recomputable cache', async () => {
       periodKey: '2026-08',
       capUsd: 5,
     };
-    await Budget.reserveForJob({ project: project(), estimateUsd: 0.5, now: NOW });
+    await Budget.reserveForJob({ project: project(), estimateUsd: 0.5, capUsd: WORKSPACE_CAP_USD, now: NOW });
     await DfsTask.create({
       organisation: 'org-1',
       account: 'acct-1',
@@ -911,7 +930,7 @@ test('the reconciler runs once per account per pass, not once per fetch', async 
 });
 
 // ---------------------------------------------------------------------------
-// 5. Going live is two deliberate switches, and neither is reachable by accident
+// 5. Going live is the tenant's own key, and the ceiling is theirs to set
 // ---------------------------------------------------------------------------
 
 test('the origin still defaults to the SANDBOX — nothing here can bill by default', () => {
@@ -920,40 +939,39 @@ test('the origin still defaults to the SANDBOX — nothing here can bill by defa
   assert.match(C.API_BASE, /^https:\/\/sandbox\.dataforseo\.com\/v3$/);
 });
 
-test('the default monthly cap is the FIRST-LIVE-KEY number, not the production one', () => {
-  // "First live key runs here, on one project, with a $5 cap." A cap that has to
-  // be RAISED before it can hurt, rather than one that has to be lowered before
-  // it can be trusted.
-  assert.equal(C.DEFAULT_MONTHLY_CAP_USD, 5);
+test('an unset monthly cap means NO ceiling, not a $5 one', () => {
+  /**
+   * It was $5, from "first live key runs here, on one project, with a $5 cap".
+   * As a per-DEPLOYMENT default in a multi-tenant product that number caps every
+   * workspace's spending of its OWN funded balance at a figure its owner never
+   * chose and cannot see — the collection stops and reads as a broken product.
+   *
+   * The ceiling is `ConnectorAccount.monthlyCapUsd` now, and unset means
+   * unlimited: the tenant's own DataForSEO balance is the hard stop.
+   */
+  assert.equal(C.DEFAULT_MONTHLY_CAP_USD, null);
 });
 
-test('the live allowlist is enforced only off the sandbox, and empty means NOTHING', () => {
+test('the per-project live allowlist is GONE — a connected key is the only switch', () => {
   /**
-   * A cap bounds the money and not the blast radius. Thirty Sites on a newly-live
-   * account would each buy a partial batch and the first live pass would produce
-   * thirty half-collected projects with nothing to check against a browser.
+   * `DATAFORSEO_LIVE_PROJECTS` gated posting on a set of project ids named in a
+   * deployment variable, where empty meant nothing may post. It made the product
+   * unusable as a SaaS: clearing a customer's site to collect meant an operator
+   * editing the environment and redeploying, per site.
    *
-   * `liveGuardNote` is pure, so it is asserted directly rather than by
-   * re-requiring the module under a different environment — which would not work
-   * anyway, because the origin is resolved once at require time on purpose.
+   * Asserted as an ABSENCE, because that is the whole property. A reintroduced
+   * guard would almost certainly be spelled one of these two ways, and this test
+   * is what makes bringing it back a deliberate act rather than a merge.
    */
-  assert.equal(T.liveGuardNote(project()), '', 'the sandbox is free, so nothing is restricted');
-
-  const live = { ...C, IS_SANDBOX: false, LIVE_PROJECT_IDS: new Set() };
-  const guardWith = (constants, proj) => {
-    if (constants.IS_SANDBOX) return '';
-    if (constants.LIVE_PROJECT_IDS.size === 0) return 'no site is cleared';
-    return constants.LIVE_PROJECT_IDS.has(String(proj._id)) ? '' : 'not on the allowlist';
-  };
-
-  assert.match(guardWith(live, project()), /no site is cleared/);
-  assert.match(
-    guardWith({ ...live, LIVE_PROJECT_IDS: new Set(['proj-9']) }, project()),
-    /not on the allowlist/
+  assert.equal(
+    typeof T.liveGuardNote,
+    'undefined',
+    'liveGuardNote must not come back — connecting a credential is the consent to spend'
   );
   assert.equal(
-    guardWith({ ...live, LIVE_PROJECT_IDS: new Set(['proj-1']) }, project()),
-    ''
+    C.LIVE_PROJECT_IDS,
+    undefined,
+    'no deployment variable may decide which tenants may use their own key'
   );
 });
 

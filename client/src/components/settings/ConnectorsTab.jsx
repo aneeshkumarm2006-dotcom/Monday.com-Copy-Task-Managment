@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plug, Plus, RotateCw, Trash2, TriangleAlert } from 'lucide-react';
+import { Plug, Plus, RotateCw, Trash2, TriangleAlert, Wallet } from 'lucide-react';
 
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -13,6 +13,7 @@ import {
   getOrgConnectors,
   startConnectorAuthorization,
   saveConnectorCredentials,
+  setConnectorAccountBudget,
   disconnectConnectorAccount,
 } from '../../services/connectorService';
 
@@ -92,6 +93,19 @@ const ConnectorsTab = () => {
   // Never prefilled, including on a re-authorise: no endpoint returns a stored
   // credential, so an apparently populated field would be a lie.
   const [credentials, setCredentials] = useState({});
+  /**
+   * The optional monthly ceiling, for a connector that declares `metered`. A
+   * STRING, because it is an input's value and the empty string is the answer
+   * that means "no cap" — coercing to a number here would turn blank into 0,
+   * which the server correctly reads as "never spend".
+   */
+  const [capInput, setCapInput] = useState('');
+
+  // The per-account cap editor, open for at most one row at a time.
+  const [capFor, setCapFor] = useState(null);
+  const [capDraft, setCapDraft] = useState('');
+  const [capSaving, setCapSaving] = useState(false);
+  const [capError, setCapError] = useState('');
 
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -147,12 +161,48 @@ const ConnectorsTab = () => {
     setLabel(account?.label || '');
     setLabelError('');
     setCredentials({});
+    // Prefilled, unlike the credentials: a cap is a setting, not a secret, and
+    // re-authorising must not silently clear one somebody set.
+    setCapInput(
+      account?.monthlyCapUsd === null || account?.monthlyCapUsd === undefined
+        ? ''
+        : String(account.monthlyCapUsd)
+    );
   };
 
   /** The catalog entry decides the dialog; this file decides nothing. */
   const usesCredentials =
     !!connectFor && connectFor.connector.requiresBrowserConsent === false;
   const credentialFields = connectFor?.connector?.credentialForm?.fields || [];
+  /** Whether this provider spends money per call, so a cap means something. */
+  const isMetered = !!connectFor?.connector?.metered;
+
+  /**
+   * Save one account's monthly cap.
+   *
+   * An empty box clears it, and clearing means NO ceiling — the workspace's own
+   * DataForSEO balance is then the only limit, which is the correct default for
+   * money the workspace funded itself.
+   */
+  const submitCap = async () => {
+    const trimmed = capDraft.trim();
+    if (trimmed && !(Number(trimmed) > 0)) {
+      setCapError('Enter an amount in dollars, or leave it blank for no cap.');
+      return;
+    }
+
+    setCapSaving(true);
+    try {
+      await setConnectorAccountBudget(capFor._id, trimmed === '' ? null : Number(trimmed));
+      setCapFor(null);
+      await load({ quiet: true });
+      toastSuccess(trimmed === '' ? 'Monthly cap removed.' : 'Monthly cap saved.');
+    } catch (err) {
+      setCapError(err?.response?.data?.error || 'Could not save that cap.');
+    } finally {
+      setCapSaving(false);
+    }
+  };
 
   const beginConsent = async () => {
     const trimmed = label.trim();
@@ -208,6 +258,9 @@ const ConnectorsTab = () => {
           (acc, f) => ({ ...acc, [f.key]: (credentials[f.key] || '').trim() }),
           {}
         ),
+        // Blank means no ceiling. Only sent for a provider that bills, so a
+        // plan-quota connector never carries a dollar figure it cannot spend.
+        monthlyCapUsd: isMetered && capInput.trim() ? Number(capInput.trim()) : null,
         reconnectAccount: connectFor.account?._id || undefined,
       });
       setConnectFor(null);
@@ -394,11 +447,41 @@ const ConnectorsTab = () => {
                           {account.lastSyncAt
                             ? ` · last synced ${new Date(account.lastSyncAt).toLocaleDateString()}`
                             : ' · not synced yet'}
+                          {/*
+                            Stated on every metered account, including when there
+                            is no cap. "No monthly cap" is information somebody
+                            spending their own money should not have to go looking
+                            for, and its absence is exactly what made the old
+                            deployment-wide $5 ceiling so hard to diagnose.
+                          */}
+                          {connector.metered
+                            ? account.monthlyCapUsd
+                              ? ` · $${account.monthlyCapUsd}/mo cap`
+                              : ' · no monthly cap'
+                            : ''}
                         </p>
                       </div>
 
                       {canManage && (
                         <div className="flex items-center gap-1 shrink-0">
+                          {connector.metered && (
+                            <Button
+                              variant="ghost"
+                              icon={Wallet}
+                              onClick={() => {
+                                setCapFor(account);
+                                setCapDraft(
+                                  account.monthlyCapUsd === null ||
+                                    account.monthlyCapUsd === undefined
+                                    ? ''
+                                    : String(account.monthlyCapUsd)
+                                );
+                                setCapError('');
+                              }}
+                            >
+                              Cap
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             icon={RotateCw}
@@ -492,6 +575,33 @@ const ConnectorsTab = () => {
             </div>
           ))}
 
+        {/*
+          The monthly ceiling, for a provider that bills per call. OPTIONAL, and
+          the caption says what blank does — an unexplained empty money box is
+          how somebody ends up assuming there is a limit when there is not.
+        */}
+        {isMetered && (
+          <div className="mt-4">
+            <Input
+              label="Monthly spending cap (optional)"
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="No cap"
+              value={capInput}
+              onChange={(e) => setCapInput(e.target.value)}
+            />
+            <p
+              className="font-body mt-1.5"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+            >
+              Leave blank for no cap — your own {connectFor?.connector?.label} balance
+              is the limit either way. Set an amount if you want collection to stop
+              before it.
+            </p>
+          </div>
+        )}
+
         {usesCredentials && labelError && (
           <p
             className="font-body mt-3"
@@ -509,6 +619,56 @@ const ConnectorsTab = () => {
             {usesCredentials
               ? 'Entering the credentials again keeps this account’s project mappings and everything already collected.'
               : 'Reconnecting keeps this account’s project mappings and everything already collected.'}
+          </p>
+        )}
+      </Modal>
+
+      {/* ---- Monthly cap --------------------------------------------------
+        Its own dialog rather than a field on the connect form, because changing
+        a cap must never require re-entering the API key: credentials go in and
+        never come back out, so a combined form would make "raise my cap" mean
+        "find the password again".
+      */}
+      <Modal
+        isOpen={!!capFor}
+        onClose={() => setCapFor(null)}
+        title="Monthly spending cap"
+        maxWidth={440}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setCapFor(null)}>
+              Cancel
+            </Button>
+            <Button onClick={submitCap} loading={capSaving}>
+              Save
+            </Button>
+          </div>
+        }
+      >
+        <Input
+          label={`Cap for ${capFor?.label || 'this account'}`}
+          type="number"
+          min="0"
+          step="0.01"
+          placeholder="No cap"
+          value={capDraft}
+          onChange={(e) => setCapDraft(e.target.value)}
+          autoFocus
+        />
+        <p
+          className="font-body mt-2"
+          style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+        >
+          Leave it blank for no cap. This bounds what this workspace may spend in a
+          calendar month against its own account — it applies to the current month
+          straight away.
+        </p>
+        {capError && (
+          <p
+            className="font-body mt-3"
+            style={{ fontSize: 12.5, color: 'var(--color-status-stuck)' }}
+          >
+            {capError}
           </p>
         )}
       </Modal>

@@ -156,11 +156,16 @@ const keywordsFor = (project) => {
  * The provider's own floor under a board's cadence.
  *
  * MOVED to `./tasks.js` in phase 8 and re-exported here, so nothing that
- * imported it from this module had to change. It sits beside `liveGuardNote`
- * now for the same reason that one does: both are "may we spend at all"
- * questions, both are asked by more than one family's runner, and `onpage.js`
- * cannot import them from here without a require cycle through this file's
- * runner table.
+ * imported it from this module had to change. It lives there because it is a
+ * "may we spend at all" question asked by more than one family's runner, and
+ * `onpage.js` cannot import it from here without a require cycle through this
+ * file's runner table.
+ *
+ * It used to sit beside `liveGuardNote`, the per-project live allowlist, which
+ * was deleted when this stopped being a single-tenant rollout — see the note in
+ * `./constants.js`. This one stays: it is a FRESHNESS floor that stops us
+ * re-buying a reading we already hold, not a permission gate, so it saves a
+ * tenant money rather than standing between them and their own key.
  */
 const rebuyGuard = T.rebuyGuard;
 

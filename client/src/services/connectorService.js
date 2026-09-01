@@ -81,6 +81,27 @@ export const saveConnectorCredentials = async (orgId, provider, payload) => {
 };
 
 /**
+ * Set (or clear) the workspace's monthly spending ceiling on one connected
+ * account, for a provider that bills per call.
+ *
+ * SEPARATE from `saveConnectorCredentials` on purpose: a credential goes in and
+ * never comes back out, so folding the cap into that form would make changing a
+ * cap mean finding the API password again.
+ *
+ * @param {string} accountId
+ * @param {number|null} monthlyCapUsd - null clears it, which means NO ceiling
+ * @returns {Promise<Object>} the updated account
+ */
+export const setConnectorAccountBudget = async (accountId, monthlyCapUsd) => {
+  const { data } = await api.patch(
+    `/api/connectors/${accountId}/budget`,
+    { monthlyCapUsd },
+    { suppressErrorToast: true }
+  );
+  return data.account;
+};
+
+/**
  * Disconnect an account. The server revokes and drops the tokens rather than
  * deleting the row, so mappings and stored history survive.
  * @param {string} accountId

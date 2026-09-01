@@ -118,6 +118,37 @@ const connectorAccountSchema = new mongoose.Schema(
     // asked for. Ubersuggest adds `profile` to every request, so the two differ.
     scopes: { type: [String], default: [] },
 
+    /**
+     * The workspace's own monthly ceiling on what this account may spend, in
+     * USD. `null` means NO CEILING, and null is the default.
+     *
+     * ---- Why this is a field and not a deployment variable ------------------
+     *
+     * It replaced `DATAFORSEO_MONTHLY_CAP_USD`-as-the-only-answer, alongside the
+     * deletion of the `DATAFORSEO_LIVE_PROJECTS` allowlist, when the connector
+     * stopped being a single-tenant rollout. Both had the same defect: a number
+     * in the deployment decided what every tenant was allowed to do with THEIR
+     * OWN key and THEIR OWN balance, so an operator had to edit the environment
+     * and redeploy before a customer's purchase could take effect.
+     *
+     * ---- Why the default is null rather than a small safe number ------------
+     *
+     * Because the money is not ours. A workspace connects its own credential and
+     * spends its own funded balance, so the provider's balance is already a hard
+     * ceiling that nothing here can exceed — and a default ceiling BELOW it would
+     * stop a correctly-configured tenant with a note about a limit they never
+     * chose. That failure reads as a broken integration, not as a budget.
+     *
+     * What it is FOR: bounding our own bugs. A scheduler that re-posts in a loop
+     * spends somebody else's money, and an owner who wants a ceiling against that
+     * can set one here. It is a safety rail, never a permission.
+     *
+     * Read by `services/connectors/dataforseo/budget.js` `scopesFor`, which
+     * simply omits the org budget scope when this is null — an absent scope is an
+     * unbounded one, and that is cleaner than encoding "infinity" as a number.
+     */
+    monthlyCapUsd: { type: Number, default: null, min: 0 },
+
     status: {
       type: String,
       enum: ['active', 'needs_reauth', 'revoked'],

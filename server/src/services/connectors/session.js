@@ -245,6 +245,26 @@ const openSession = async (accountOrId) => {
      * the strength of it.
      */
     getQuota: () => ({ ...(account.lastSeenQuota || {}) }),
+
+    /**
+     * The workspace's own monthly spending ceiling for this account, in USD, or
+     * `null` for none.
+     *
+     * UNLIKE `getQuota`, this one IS a gate — it is the number
+     * `ConnectorBudget` enforces. It rides on the session rather than being read
+     * from the database by the budget module because the account row is already
+     * in memory here: a lookup per job would be one query per kind per project
+     * per pass for a value that cannot change mid-pass, and it would make the
+     * budget module depend on a real `ConnectorAccount` document for what is
+     * otherwise pure arithmetic.
+     *
+     * `null` and `undefined` collapse to null, so an account row written before
+     * the field existed reads as unbounded rather than as zero.
+     */
+    getMonthlyCapUsd: () =>
+      Number.isFinite(account.monthlyCapUsd) && account.monthlyCapUsd > 0
+        ? account.monthlyCapUsd
+        : null,
   };
 
   return session;

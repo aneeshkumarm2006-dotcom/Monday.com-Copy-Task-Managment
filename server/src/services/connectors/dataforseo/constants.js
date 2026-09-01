@@ -902,62 +902,73 @@ const SERP_UNIT_USD = 0.0006;
 // ---------------------------------------------------------------------------
 
 /**
- * The default monthly ceiling for one organisation, in USD.
+ * The FALLBACK monthly ceiling for a workspace that has not set one, in USD, or
+ * `null` for "no ceiling".
  *
- * FIVE DOLLARS, and the number is chosen for the first live key rather than for
- * production. The plan's own line is "first live key runs here, on one project,
- * with a $5 cap", and the way to make that real is for the DEFAULT to be the
- * safe number — a cap that has to be raised before it can hurt, rather than one
- * that has to be lowered before it can be trusted.
+ * ---- Why the default is null now rather than five --------------------------
  *
- * The recommended production tier is ~$318/mo at 25 clients x 200 keywords
- * (outstanding item #3 in the plan, still undecided). Raising this is a
- * deliberate act: set `DATAFORSEO_MONTHLY_CAP_USD`, or edit the org's
- * `ConnectorBudget` row directly, which is what an operator raising a cap
- * mid-month does.
+ * It was five dollars, chosen for the plan's "first live key runs here, on one
+ * project, with a $5 cap". As a per-DEPLOYMENT default in a multi-tenant product
+ * that number is a trap: every workspace would start capped at $5/month against
+ * ITS OWN DataForSEO balance, stop collecting a few thousand keywords in, and
+ * show a note about a cap its owner never set and cannot find. A silent ceiling
+ * on somebody else's money is worse than no ceiling, because the failure reads
+ * as a broken product rather than as a budget.
+ *
+ * So the ceiling is DATA now — `ConnectorAccount.monthlyCapUsd`, set by the
+ * workspace owner in Settings beside the credential it bounds. Unset means
+ * unlimited, and unlimited is the right default for the reason the removed
+ * allowlist note gives: the tenant's own DataForSEO balance is the hard stop,
+ * and they funded it themselves.
+ *
+ * `DATAFORSEO_MONTHLY_CAP_USD` survives for the SELF-HOSTED single-tenant case,
+ * where the operator and the tenant are the same person and a deployment-wide
+ * default is a reasonable thing to want. It is a fallback for a workspace that
+ * has set nothing, never an override of one that has.
  *
  * The value is only ever read at `$setOnInsert` time, so changing it does not
  * move a month already in progress — a cap that silently rose because somebody
  * redeployed would be worse than no cap.
+ *
+ * @returns {number|null}
  */
 const readCapUsd = () => {
   const asked = Number(process.env.DATAFORSEO_MONTHLY_CAP_USD);
   if (Number.isFinite(asked) && asked > 0) return asked;
-  return 5;
+  return null;
 };
 
 const DEFAULT_MONTHLY_CAP_USD = readCapUsd();
 
 /**
- * Which Sites may post against the LIVE host. The second safety, and the one
- * that makes "on one project" real.
+ * ---- REMOVED: the per-project live allowlist -------------------------------
  *
- * ---- Why a cap alone is not enough -----------------------------------------
+ * There was a `DATAFORSEO_LIVE_PROJECTS` env var here — a set of project ids
+ * cleared to post against the live host, where an EMPTY SET MEANT NOTHING MAY
+ * POST. It was the "on one project" half of the plan's "first live key runs
+ * here, on one project, with a $5 cap", and for that first controlled run it was
+ * right.
  *
- * A $5 cap bounds the money and not the blast radius. Thirty Sites sharing one
- * newly-live account would each buy a partial batch, each land a fraction of a
- * collection, and the first live pass would produce thirty half-collected
- * projects and an exhausted budget — with nothing to compare against, because no
- * project got a complete reading. The point of a first live run is one project
- * collected COMPLETELY, so its numbers can be checked against a browser.
+ * IT IS INCOMPATIBLE WITH A MULTI-TENANT PRODUCT, and not marginally so. Every
+ * workspace connects ITS OWN DataForSEO key and spends ITS OWN balance, so
+ * clearing a site to collect would mean an operator editing a deployment
+ * variable and redeploying every time any customer added a domain. A tenant
+ * cannot be asked to file a ticket to use the feature they just configured, and
+ * an operator cannot be the bottleneck on every signup.
  *
- * So on the live host the allowlist is enforced and an EMPTY LIST MEANS NOTHING
- * MAY POST. Pointing `DATAFORSEO_API_ORIGIN` at production is therefore not
- * enough to spend a cent on its own; the operator has to name the project too.
- * Two switches, both explicit, neither reachable by accident.
+ * WHAT AUTHORISES SPEND NOW: connecting the credential. A workspace that has
+ * pasted its own API login is a workspace that has agreed to spend its own
+ * money, and its DataForSEO balance is the hard ceiling that no code here can
+ * exceed. That is the honest consent boundary for a SaaS, and it needs no
+ * second switch.
  *
- * Not enforced on the sandbox, which is free — restricting it would only stop
- * the integration being tested.
+ * WHAT BOUNDS A RUNAWAY: `ConnectorAccount.monthlyCapUsd`, which is DATA the
+ * workspace owner sets in Settings rather than a deployment variable — see
+ * `DEFAULT_MONTHLY_CAP_USD` directly above and `./budget.js` `scopesFor`. The
+ * distinction that matters: a cap protects against OUR bug spending THEIR money,
+ * which is a real risk worth a ceiling; it is not a permission system, and it
+ * must never be the thing that stops a correctly-configured tenant from working.
  */
-const readLiveProjects = () =>
-  new Set(
-    String(process.env.DATAFORSEO_LIVE_PROJECTS || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-  );
-
-const LIVE_PROJECT_IDS = readLiveProjects();
 
 /**
  * How long a task may hold a budget reservation before the reconciler takes it
@@ -1253,8 +1264,14 @@ const ALERT_CRON_EXPRESSION = '30 * * * *';
 // four structural complications", and the measurement could never happen,
 // because nothing in phases 1-10 has ever run against a live account. So both
 // halves ship: the measurement became durable and per-kind, and the cache ships
-// BEHIND AN EMPTY ALLOWLIST. Turning it on is a deliberate per-workspace act,
-// exactly like `DATAFORSEO_LIVE_PROJECTS`.
+// BEHIND AN EMPTY ALLOWLIST. Turning it on is a deliberate per-workspace act.
+//
+// This allowlist stays an env var while `DATAFORSEO_LIVE_PROJECTS` was deleted,
+// and the difference is who it protects. That one gated a tenant's use of their
+// OWN key, so an operator holding it was a bottleneck on the product working at
+// all. This one decides whether one workspace's paid SERP may be served to
+// ANOTHER — a cross-tenant data-sharing decision that genuinely belongs to
+// whoever runs the deployment, and that no tenant can make on its own behalf.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1364,7 +1381,6 @@ module.exports = {
   CACHE_HIT_RATE_THRESHOLD,
   CACHE_MIN_OBSERVED_UNITS,
   CACHE_MEASUREMENT_WINDOW_DAYS,
-  LIVE_PROJECT_IDS,
   RESERVATION_STALE_MS,
   SERP_RENDER_DEPTH,
   MAX_SERP_DOC_BYTES,
