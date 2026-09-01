@@ -21,6 +21,7 @@ import FieldMappingPanel from './FieldMappingPanel';
 import SiteFormModal from './SiteFormModal';
 import ConnectorSettingsPanel from './ConnectorSettingsPanel';
 import AdsBudgetAddonCard from './AdsBudgetAddonCard';
+import GoalVocabularyCard from './GoalVocabularyCard';
 import {
   getBoardConnectors,
   setBoardConnector,
@@ -100,6 +101,12 @@ const AddonsTab = ({
   adsBudget = null,
   canManageAdsBudget = false,
   onAdsBudgetChanged = null,
+  // The board's goal WORDING, and whether this person owns the board. A
+  // separate gate from every other card here on purpose — see
+  // GoalVocabularyCard for why it is the owner rather than an org admin.
+  goalVocabulary = null,
+  canManageGoalVocabulary = false,
+  onBoardChanged = null,
 }) => {
   const toastError = useToastStore((s) => s.error);
   const toastSuccess = useToastStore((s) => s.success);
@@ -310,6 +317,12 @@ const AddonsTab = ({
           adsBudget={adsBudget}
           canManage={canManageAdsBudget}
           onChanged={onAdsBudgetChanged}
+        />
+        <GoalVocabularyCard
+          boardId={boardId}
+          goalVocabulary={goalVocabulary}
+          canManage={canManageGoalVocabulary}
+          onChanged={onBoardChanged}
         />
       </div>
 

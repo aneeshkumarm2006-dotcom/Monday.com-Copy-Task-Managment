@@ -2482,6 +2482,16 @@ const BoardDetailPage = () => {
             onAdsBudgetChanged={(next) =>
               board && updateBoardLocal({ ...board, adsBudget: next })
             }
+            // Goal wording. Gated on ownership of the BOARD rather than on any
+            // goal capability — see GoalVocabularyCard. `canManageAccess` is
+            // resolved by the server and travels on the board's permissions, so
+            // this is the server's own answer rather than a second guess at it.
+            goalVocabulary={board?.goalVocabulary || null}
+            canManageGoalVocabulary={!!board?.permissions?.canManageAccess}
+            // The whole board comes back, not a fragment: the Goals tab reads
+            // `goalVocabulary` off the same copy, so patching the store is what
+            // makes the type cards rename without a reload.
+            onBoardChanged={(next) => next && updateBoardLocal(next)}
           />
         </ErrorBoundary>
       )}
