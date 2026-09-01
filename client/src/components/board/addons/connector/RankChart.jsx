@@ -153,6 +153,37 @@ const KeywordChart = ({ history }) => {
  * "0.0 average position" on a client report is worse than a gap because it looks
  * like an answer.
  */
+/**
+ * The average position a stored collection reports — whoever computed it.
+ *
+ * Two providers answer this in two shapes and NEITHER is going to be renamed.
+ * One puts a single `totals.averageRank` on the snapshot, computed over the
+ * keywords that ranked. The other returns no aggregate at all on the totals and
+ * instead ships `average_positions` — its OWN running series, of which the last
+ * point is the reading for that collection.
+ *
+ * The two are not the same number and the difference is documented rather than
+ * smoothed over: the second provider counts a keyword outside the top 100 as
+ * +100 in its mean, so it cannot be reproduced from the ranks in its own table
+ * and moves when a keyword leaves the measured depth. It is still the number
+ * that provider publishes, and charting it beats charting nothing — but a line
+ * mixing the two would be meaningless, which is fine here because one series is
+ * one project on one provider.
+ *
+ * `typeof` rather than `??` throughout, for the reason stated everywhere else a
+ * rank is read: a legitimate null is an answer, not an absent field.
+ */
+const averageOf = (point) => {
+  const totals = point?.totals || {};
+  if (typeof totals.averageRank === 'number') return totals.averageRank;
+
+  const series = Array.isArray(point?.averagePositions) ? point.averagePositions : [];
+  for (let i = series.length - 1; i >= 0; i -= 1) {
+    if (typeof series[i]?.value === 'number') return series[i].value;
+  }
+  return null;
+};
+
 const TrendChart = ({ trend }) => {
   const data = useMemo(
     () =>
@@ -161,8 +192,7 @@ const TrendChart = ({ trend }) => {
         return {
           periodKey: point.periodKey,
           label: shortDay(point.periodKey),
-          averageRank:
-            typeof totals.averageRank === 'number' ? totals.averageRank : null,
+          averageRank: averageOf(point),
           // Two providers spell this differently on the same shape; both mean
           // "how many of the tracked keywords ranked at all".
           ranking:

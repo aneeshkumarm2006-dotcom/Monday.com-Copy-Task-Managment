@@ -21,7 +21,7 @@ import { formatMoney, formatNumber } from '../../../../utils/connectorFormat';
  * number line "this domain gets no organic traffic" and "we could not locate the
  * traffic field" are both 0 and they mean opposite things.
  */
-const DomainSection = ({ kind, snapshot }) => {
+const DomainSection = ({ kind, snapshot, showTitle = true }) => {
   const data = snapshot?.data || {};
 
   return (
@@ -29,6 +29,7 @@ const DomainSection = ({ kind, snapshot }) => {
       kind={kind}
       snapshot={snapshot}
       icon={Globe}
+      showTitle={showTitle}
       emptyTitle="No traffic estimate yet"
       emptyDescription="This fills in on the next connector run."
     >

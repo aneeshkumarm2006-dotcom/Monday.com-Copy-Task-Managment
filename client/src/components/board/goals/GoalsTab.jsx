@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Target, Settings2, Link2 } from 'lucide-react';
+import { Target, Settings2, Link2, CopyPlus } from 'lucide-react';
 import EmptyState from '../../ui/EmptyState';
 import Spinner from '../../ui/Spinner';
 import Modal from '../../ui/Modal';
@@ -11,6 +11,7 @@ import GoalColumnsModal from './GoalColumnsModal';
 import GoalLinkModal from './GoalLinkModal';
 import GoalBulkLinkModal from './GoalBulkLinkModal';
 import GoalHistoryModal from './GoalHistoryModal';
+import GoalCarryForwardModal from './GoalCarryForwardModal';
 import UnclosedMonthBanner from './UnclosedMonthBanner';
 import * as goalService from '../../../services/goalService';
 import {
@@ -48,6 +49,10 @@ const GoalsTab = ({
   boardId,
   monthKey,
   monthLabel,
+  // The board's month list, straight from `/months`. Only the carry-forward
+  // modal needs it — the client does no date arithmetic of its own, so "what is
+  // next month" is a question only the server's list can answer.
+  months = [],
   canTrack = false,
   canManage = false,
   canManageColumns = false,
@@ -60,6 +65,9 @@ const GoalsTab = ({
   goalVocabulary = null,
   onOpenTask,
   onGoalsChanged,
+  // Move the whole board to another month. Offered once, after a carry-forward,
+  // so somebody who just filled October can go and look at it.
+  onGoToMonth,
 }) => {
   const [data, setData] = useState(null);
   const [types, setTypes] = useState([]);
@@ -93,6 +101,7 @@ const GoalsTab = ({
   const [linkError, setLinkError] = useState(null);
   const [acceptingGoalId, setAcceptingGoalId] = useState(null);
   const [bulkLinkOpen, setBulkLinkOpen] = useState(false);
+  const [carryOpen, setCarryOpen] = useState(false);
 
   const boardRefreshSignal = useTaskStore((s) => s.boardRefreshSignal);
   const boardRefreshTarget = useTaskStore((s) => s.boardRefreshTarget);
@@ -441,6 +450,17 @@ const GoalsTab = ({
 
   const { groups = [], columns = [], summary, unclosed, missingCount } = data;
 
+  /**
+   * Offered only where there is something to copy AND somewhere to copy it to.
+   *
+   * `months.length > 1` is the second half and it is not paranoia: a board in
+   * its first month has exactly one month plus the one ahead, and a board that
+   * failed to load its month list has none — neither has a target to offer, and
+   * a button that opens a modal with an empty dropdown is worse than no button.
+   */
+  const canCarry =
+    canManage && months.length > 1 && groups.some((g) => g.goals.length > 0);
+
   return (
     <div className="flex flex-col gap-4">
       {unclosed && (
@@ -511,8 +531,13 @@ const GoalsTab = ({
         </Suspense>
       )}
 
-      {(canBulkLink || canManageColumns) && (
+      {(canCarry || canBulkLink || canManageColumns) && (
         <div className="flex justify-end gap-1">
+          {canCarry && (
+            <Button variant="ghost" icon={CopyPlus} onClick={() => setCarryOpen(true)}>
+              Carry goals to another month
+            </Button>
+          )}
           {canBulkLink && (
             <Button variant="ghost" icon={Link2} onClick={() => setBulkLinkOpen(true)}>
               Link goals to keywords
@@ -573,6 +598,24 @@ const GoalsTab = ({
             fetchLinks();
             onGoalsChanged?.();
           }}
+        />
+      )}
+
+      {carryOpen && (
+        <GoalCarryForwardModal
+          open
+          boardId={boardId}
+          fromMonth={monthKey}
+          fromLabel={monthLabel}
+          months={months}
+          groupOrder={groups.map((g) => g._id)}
+          onClose={() => setCarryOpen(false)}
+          // The rows landed in ANOTHER month, so there is nothing on screen to
+          // repaint — but the month dropdown's unclosed badge is computed over
+          // every month at once, and it just gained a table's worth of rows
+          // waiting for their numbers.
+          onCarried={() => onGoalsChanged?.()}
+          onGoToMonth={onGoToMonth}
         />
       )}
 

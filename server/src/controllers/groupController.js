@@ -28,6 +28,11 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // a board obeys the same ceiling.
 const MAX_GROUP_NAME = 60;
 
+// The User fields a group's byline needs, and the only ones it may carry. Same
+// projection the task/automation reads use, so a person's chip looks identical
+// wherever it is drawn.
+const CREATOR_FIELDS = 'name profilePic email';
+
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
@@ -156,6 +161,7 @@ const getGroups = async (req, res) => {
 
     const groups = await TaskGroup.find({ board: boardId })
       .sort({ order: 1, createdAt: 1 })
+      .populate('createdBy', CREATOR_FIELDS)
       .lean();
 
     return res.json({
@@ -226,6 +232,7 @@ const createGroup = async (req, res) => {
       name: groupName,
       board: boardId,
       order: resolvedOrder,
+      createdBy: userId,
       ...portalFields,
     });
 
@@ -257,6 +264,12 @@ const createGroup = async (req, res) => {
       boardId,
       createdByUserId: userId,
     });
+
+    // Hydrate the byline before it goes out. Every write path returns a group
+    // the client swaps into its list wholesale, so an unpopulated `createdBy`
+    // here does not merely omit the author — it replaces a hydrated one with a
+    // bare id and blanks the chip until the next full load.
+    await group.populate('createdBy', CREATOR_FIELDS);
 
     // A brand-new group's timeline is empty, but the rule is "nothing leaves
     // this controller carrying it" — no exceptions to audit later. Creation
@@ -430,6 +443,7 @@ const updateGroup = async (req, res) => {
     }
 
     await group.save();
+    await group.populate('createdBy', CREATOR_FIELDS);
 
     const [serialized] = await serializeGroups([group], {
       board: ctx.board,
@@ -600,6 +614,7 @@ const reorderGroups = async (req, res) => {
     // every avatar on the board until the next full load.
     const groups = await TaskGroup.find({ board: boardId })
       .sort({ order: 1, createdAt: 1 })
+      .populate('createdBy', CREATOR_FIELDS)
       .lean();
     return res.json({
       groups: await serializeGroups(groups, {

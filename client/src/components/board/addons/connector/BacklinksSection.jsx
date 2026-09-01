@@ -19,7 +19,7 @@ import { formatNumber } from '../../../../utils/connectorFormat';
  * enough to spot the thing anyone is actually looking for here — a profile whose
  * anchors are all exact-match commercial terms.
  */
-const BacklinksSection = ({ kind, snapshot }) => {
+const BacklinksSection = ({ kind, snapshot, showTitle = true }) => {
   const data = snapshot?.data || {};
   const anchors = data.anchors || [];
 
@@ -28,6 +28,7 @@ const BacklinksSection = ({ kind, snapshot }) => {
       kind={kind}
       snapshot={snapshot}
       icon={Link2}
+      showTitle={showTitle}
       emptyTitle="No backlink data yet"
       emptyDescription="This fills in on the next connector run."
     >

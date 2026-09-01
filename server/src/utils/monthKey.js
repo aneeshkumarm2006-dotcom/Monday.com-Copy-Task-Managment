@@ -125,6 +125,33 @@ const addMonths = (monthKey, delta) => {
   return makeMonthKey(Math.floor(total / 12), (total % 12) + 1);
 };
 
+/**
+ * Shift a DAY key by whole calendar months, keeping the day of the month.
+ *
+ * The companion to `addMonths` for the one place a month-level operation has to
+ * move a date: carrying a goal forward. A `deadline` goal's promise is a day
+ * key — "the report is due on the 5th" — and copying that verbatim into next
+ * month lands a due date in the past, so the row is born late.
+ *
+ * Day-of-month is CLAMPED to the target month's last day rather than allowed to
+ * roll over, which is the whole reason this is not `new Date(y, m + 1, d)`:
+ * that turns 31 January into 3 March and files a goal in the wrong month
+ * entirely. 31 January + 1 month is 28 February here (29 in a leap year), which
+ * is what "the same day next month" means to a person looking at a calendar.
+ *
+ * Pure string math, no timezone: a day key is a calendar label, not an instant.
+ */
+const shiftDayKeyByMonths = (dayKey, delta) => {
+  const parsed = parseDayKey(dayKey);
+  if (!parsed) return null;
+  if (!Number.isInteger(delta)) return null;
+  const shifted = addMonths(makeMonthKey(parsed.year, parsed.month), delta);
+  if (!shifted) return null;
+  const target = parseMonthKey(shifted);
+  const day = Math.min(parsed.day, getLastDayOfMonth(target.year, target.month));
+  return makeDayKey(target.year, target.month, day);
+};
+
 /** Whole calendar months from `fromMonthKey` to `toMonthKey`. Negative if earlier. */
 const monthsBetween = (fromMonthKey, toMonthKey) => {
   const a = parseMonthKey(fromMonthKey);
@@ -184,6 +211,7 @@ module.exports = {
   lastDayKeyOf,
   monthKeyToUtcRange,
   addMonths,
+  shiftDayKeyByMonths,
   monthsBetween,
   compareMonthKeys,
   monthKeysBetween,

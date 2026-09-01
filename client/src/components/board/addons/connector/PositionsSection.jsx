@@ -37,6 +37,9 @@ const PositionsSection = ({
   keywordHistory,
   onSelectKeyword,
   historyChart,
+  // False when this card IS the screen and the heading above it has already
+  // said so. See `SectionShell`.
+  showTitle = true,
 }) => {
   const [query, setQuery] = useState('');
 
@@ -71,6 +74,7 @@ const PositionsSection = ({
       kind={kind}
       snapshot={snapshot}
       icon={TrendingUp}
+      showTitle={showTitle}
       emptyTitle="No rankings collected yet"
       emptyDescription="Rankings arrive on the next connector run. Ubersuggest collects them once a week on every plan."
     >

@@ -32,6 +32,19 @@ const taskGroupSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // Who made this group. Set once, at creation, and never written again — a
+  // rename or a reorder does not change authorship, and there is deliberately no
+  // endpoint that reassigns it (unlike `Board.createdBy`, which IS ownership and
+  // therefore transferable; this is a byline, and confers nothing).
+  //
+  // Absent on every group that predates this field, and that is a permanent
+  // state rather than a migration waiting to happen: the information was never
+  // recorded, so nothing can backfill it. Every reader must tolerate null.
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
   // Group tags — ids into the parent board's `groupTags` catalog, the group-level
   // counterpart of a task's tags. Stored as ids rather than names so a rename or
   // recolour on the board propagates without touching a single group.

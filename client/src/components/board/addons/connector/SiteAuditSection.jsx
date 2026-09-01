@@ -34,7 +34,14 @@ const CATEGORIES = [
  * at runtime from the response, which is why the list below is rendered from
  * whatever arrived rather than from a fixed set of known issues.
  */
-const SiteAuditSection = ({ kind, snapshot, canManage, onRunAudit, project }) => {
+const SiteAuditSection = ({
+  kind,
+  snapshot,
+  canManage,
+  onRunAudit,
+  project,
+  showTitle = true,
+}) => {
   const [running, setRunning] = useState(false);
 
   const data = snapshot?.data;
@@ -67,6 +74,7 @@ const SiteAuditSection = ({ kind, snapshot, canManage, onRunAudit, project }) =>
       kind={kind}
       snapshot={snapshot}
       icon={ShieldCheck}
+      showTitle={showTitle}
       actions={auditButton}
       emptyTitle="No audit for this domain yet"
       emptyDescription={

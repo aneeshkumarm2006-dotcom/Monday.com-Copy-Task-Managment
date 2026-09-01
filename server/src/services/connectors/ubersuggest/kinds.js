@@ -5,7 +5,8 @@
  *
  * Three different things need to agree about what a "kind" is: the runner
  * (which iterates them), `BoardConnector.kinds` (which narrows them per board),
- * and the tab (which renders one section per kind). A switch in the fetcher
+ * and the tab (which renders one SCREEN per kind, and derives its nav and its
+ * headings from `label`, `blurb` and `subject` below). A switch in the fetcher
  * would leave the other two guessing, so the catalog is a plain array that
  * serialises straight to the client and the fetcher is a lookup against it.
  *
@@ -40,9 +41,10 @@
 /**
  * @typedef {Object} SnapshotKind
  * @property {string} key          - stored on the snapshot row; never renamed casually
- * @property {string} label        - the section heading in the tab
- * @property {string} blurb        - one line, shown under the heading
- * @property {'project'|'domain'} subject - what the provider is asked about
+ * @property {string} label        - the screen's name in the tab's nav
+ * @property {string} blurb        - one line, shown under the screen heading
+ * @property {'project'|'domain'} subject - what the provider is asked about; also
+ *   the heading the tab files this screen's nav entry under
  * @property {string[]} tools      - the MCP tools this kind spends, for the audit trail
  * @property {string|null} requires - a field the project must have for this to be fetchable
  * @property {string[]} dependsOn  - kinds whose result this one reads

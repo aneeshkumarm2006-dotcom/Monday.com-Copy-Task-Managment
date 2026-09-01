@@ -4,6 +4,7 @@ import { Activity, ArrowRight, Hourglass, Search } from 'lucide-react';
 import EmptyState from '../../../ui/EmptyState';
 import { SkeletonText } from '../../../ui/Skeleton';
 import SectionShell, {
+  Delta,
   ScrollTable,
   Stat,
   StatRow,
@@ -19,7 +20,7 @@ import {
 import { rankRowsFrom, summariseRankRows } from '../../../../utils/rankRows';
 
 // ~95 KB, and only this tab and the goals trend use it. See RankChart's header.
-const RankChart = lazy(() => import('./RankChart'));
+const RankChart = lazy(() => import('../connector/RankChart'));
 
 /**
  * Overview — where this site stands, and what moved.
@@ -50,22 +51,6 @@ const RankChart = lazy(() => import('./RankChart'));
 
 /** How many movers each column lists. Enough to be useful, short enough to scan. */
 const MOVER_LIMIT = 8;
-
-const Delta = ({ value, invert = false }) => {
-  if (typeof value !== 'number' || value === 0) {
-    return (
-      <span style={{ color: 'var(--color-text-muted)' }}>No change</span>
-    );
-  }
-  // `invert` is for rank-like numbers, where SMALLER is better. Counts are the
-  // other way round, and getting this backwards colours every improvement red.
-  const good = invert ? value < 0 : value > 0;
-  return (
-    <span style={{ color: toneColor(good ? 'positive' : 'negative') }}>
-      {value > 0 ? '▲' : '▼'} {Math.abs(Math.round(value * 10) / 10)}
-    </span>
-  );
-};
 
 const MoverList = ({ title, rows, emptyLabel, onSelectKeyword }) => (
   <div className="flex-1 min-w-0">

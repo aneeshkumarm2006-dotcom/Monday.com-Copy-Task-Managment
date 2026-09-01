@@ -4,6 +4,7 @@ const {
   getGoalTypes,
   getGoals,
   createGoal,
+  carryForwardGoals,
   updateGoal,
   deleteGoal,
   getGoalActivity,
@@ -45,6 +46,11 @@ router.get('/boards/:boardId/goals/trend', getGoalTrend);
 router.get('/boards/:boardId/goals', getGoals);
 router.post('/boards/:boardId/goals', createGoal);
 router.put('/boards/:boardId/goals/reorder', reorderGoals);
+// Copy a month's promises into another month — `goal.manage`, because every row
+// it writes is a new promise. MANUAL by design: there is no scheduled version of
+// this and there must not be one. `dryRun: true` in the body returns the plan
+// and writes nothing, which is what the confirmation modal shows.
+router.post('/boards/:boardId/goals/carry-forward', carryForwardGoals);
 
 // --- A single goal ----------------------------------------------------------
 router.put('/goals/:id', updateGoal);

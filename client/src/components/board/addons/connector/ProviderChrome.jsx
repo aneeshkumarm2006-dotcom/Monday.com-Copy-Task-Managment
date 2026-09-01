@@ -7,6 +7,7 @@ import {
   Gauge,
   Globe,
   Hourglass,
+  KeyRound,
   Link2,
   MapPin,
   RefreshCw,
@@ -26,7 +27,22 @@ import DateRangePicker from '../../../ui/DateRangePicker';
 import { marketLabel, staleness } from '../../../../utils/connectorFormat';
 
 /**
- * The chrome the SEO screens sit in — a project bar, a grouped rail, a heading.
+ * The chrome a connector dashboard sits in — a project bar, a grouped rail, a
+ * heading. Shared by BOTH connector tabs, which is why it lives here and not in
+ * either provider's directory and why nothing in it names one.
+ *
+ * ---- Why it is shared ------------------------------------------------------
+ *
+ * The two tabs arrive at their screen list differently — one is handed
+ * `provider.screens` by the server, the other derives it from the kind catalog
+ * (`utils/connectorScreens.js`) — but from here down they are the same page, and
+ * they have to stay the same page. A user reading two clients' data in one
+ * afternoon should not have to learn where the Refresh button is twice, and a
+ * fix to the staleness stamp should not have to be made twice to be true.
+ *
+ * Everything below is driven by props: a list of screens, a list of headings, a
+ * project and the pickers that narrow it. It does not know which provider
+ * produced any of it.
  *
  * ---- What this replaced, and why -------------------------------------------
  *
@@ -77,6 +93,16 @@ import { marketLabel, staleness } from '../../../../utils/connectorFormat';
 const ICONS = {
   overview: Gauge,
   rank_tracking: TrendingUp,
+  /**
+   * The second provider's KIND keys, which are its screen keys too — see
+   * `utils/connectorScreens.js`. Kept in the same map rather than in a second
+   * one per provider: a key means the same thing on both sides (`site_audit` is
+   * a crawl either way, `backlinks` a link profile) and two maps would be two
+   * places for the same screen to end up with two different icons.
+   */
+  positions: TrendingUp,
+  keyword_metrics: KeyRound,
+  domain_overview: Globe,
   ai_visibility: Sparkles,
   cannibalization: Split,
   keyword_research: Search,
@@ -173,8 +199,8 @@ const GroupLabel = ({ children }) => (
   </p>
 );
 
-/** The left rail. Hidden below `lg`, where `SeoNavBar` takes over. */
-export const SeoNav = ({ screens, groups, active, onChange }) => {
+/** The left rail. Hidden below `lg`, where `ProviderNavBar` takes over. */
+export const ProviderNav = ({ screens, groups, active, onChange }) => {
   const { top, sections } = useMemo(
     () => arrangeScreens(screens, groups),
     [screens, groups]
@@ -189,7 +215,7 @@ export const SeoNav = ({ screens, groups, active, onChange }) => {
         background: 'var(--color-bg-surface)',
       }}
     >
-      <nav className="flex flex-col gap-0.5 px-2 py-3" aria-label="SEO screens">
+      <nav className="flex flex-col gap-0.5 px-2 py-3" aria-label="Screens">
         {top.map((s) => (
           <NavItem key={s.key} screen={s} active={active} onChange={onChange} />
         ))}
@@ -214,7 +240,7 @@ export const SeoNav = ({ screens, groups, active, onChange }) => {
  * ordered. Mirrors `SettingsTabBar`, which solved this exact problem for the
  * settings rail.
  */
-export const SeoNavBar = ({ screens, active, onChange }) => (
+export const ProviderNavBar = ({ screens, active, onChange }) => (
   <div
     className="lg:hidden flex items-center gap-1 overflow-x-auto"
     style={{ padding: 8, borderBottom: '1px solid var(--color-border)' }}
@@ -258,7 +284,7 @@ export const SeoNavBar = ({ screens, active, onChange }) => (
  * working. `SectionShell` makes that argument per card; this is the one place
  * it is made about the whole page.
  */
-export const SeoProjectBar = ({
+export const ProviderProjectBar = ({
   project,
   projectOptions,
   projectId,
@@ -271,6 +297,14 @@ export const SeoProjectBar = ({
   queued = 0,
   canManage,
   refreshing,
+  /**
+   * A reason Refresh cannot do anything, distinct from `refreshing`.
+   *
+   * A project that has been deleted at the provider can never be collected
+   * again, and the button is disabled rather than hidden: a control that
+   * vanishes reads as a permission problem, and this is not one.
+   */
+  refreshDisabled = false,
   onRefresh,
 }) => {
   const title = project?.domain || project?.name || project?.externalId || 'This site';
@@ -378,7 +412,7 @@ export const SeoProjectBar = ({
             variant="secondary"
             icon={RefreshCw}
             onClick={onRefresh}
-            disabled={refreshing}
+            disabled={refreshing || refreshDisabled}
           >
             {refreshing ? 'Working…' : 'Refresh'}
           </Button>

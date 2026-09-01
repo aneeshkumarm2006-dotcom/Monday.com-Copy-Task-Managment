@@ -10,6 +10,7 @@ const {
   lastDayKeyOf,
   monthKeyToUtcRange,
   addMonths,
+  shiftDayKeyByMonths,
   monthsBetween,
   compareMonthKeys,
   monthKeysBetween,
@@ -209,4 +210,35 @@ test('monthKeyToPeriodKey agrees with trackerPeriods.periodKeyFor', () => {
       monthKeyToPeriodKey('2026-08')
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// shiftDayKeyByMonths — the one place month math has to move a DATE
+// ---------------------------------------------------------------------------
+
+test('shiftDayKeyByMonths keeps the day of the month', () => {
+  assert.strictEqual(shiftDayKeyByMonths('2026-09-05', 1), '2026-10-05');
+  assert.strictEqual(shiftDayKeyByMonths('2026-09-05', -1), '2026-08-05');
+  assert.strictEqual(shiftDayKeyByMonths('2026-09-05', 0), '2026-09-05');
+});
+
+test('shiftDayKeyByMonths rolls the year in both directions', () => {
+  assert.strictEqual(shiftDayKeyByMonths('2026-12-15', 1), '2027-01-15');
+  assert.strictEqual(shiftDayKeyByMonths('2026-01-15', -1), '2025-12-15');
+});
+
+test('shiftDayKeyByMonths CLAMPS rather than rolling over', () => {
+  // The whole reason this is not new Date(y, m + 1, d), which gives 3 March.
+  assert.strictEqual(shiftDayKeyByMonths('2026-01-31', 1), '2026-02-28');
+  assert.strictEqual(shiftDayKeyByMonths('2028-01-31', 1), '2028-02-29');
+  assert.strictEqual(shiftDayKeyByMonths('2026-03-31', -1), '2026-02-28');
+  assert.strictEqual(shiftDayKeyByMonths('2026-08-31', 1), '2026-09-30');
+});
+
+test('shiftDayKeyByMonths refuses anything that is not a day key and a whole number', () => {
+  assert.strictEqual(shiftDayKeyByMonths('2026-09', 1), null);
+  assert.strictEqual(shiftDayKeyByMonths('', 1), null);
+  assert.strictEqual(shiftDayKeyByMonths(null, 1), null);
+  assert.strictEqual(shiftDayKeyByMonths('2026-09-05', 1.5), null);
+  assert.strictEqual(shiftDayKeyByMonths('2026-09-05', undefined), null);
 });

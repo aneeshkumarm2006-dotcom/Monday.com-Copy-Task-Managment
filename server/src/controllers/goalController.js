@@ -49,7 +49,10 @@ const {
   missingFinalValues, monthIsUnclosed, describeGoalTypes,
   normaliseGoalVocabulary, UNITS,
 } = require('../utils/goalTypes');
-const { isMonthKey, monthKeyOf, addMonths, monthKeysBetween } = require('../utils/monthKey');
+const {
+  isMonthKey, monthKeyOf, addMonths, monthKeysBetween, monthsBetween, formatMonth,
+} = require('../utils/monthKey');
+const { planCarryForward } = require('../services/goalCarryForward');
 const { mergeGoalOrder, isOneTable } = require('../utils/goalOrdering');
 const { resolveOwnerDisplay, EMPTY_OWNER_DISPLAY } = require('../services/groupOwnerDisplay');
 
@@ -492,6 +495,249 @@ const createGoal = async (req, res) => {
     return res.status(201).json({ goal: decorate(lean, liveColumns(board)) });
   } catch (err) {
     console.error('createGoal error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/** Ceilings on one carry: how many rows, and how far across the calendar. */
+const CARRY_MAX_GOALS = 500;
+const CARRY_MAX_MONTHS = 24;
+
+/**
+ * POST /api/boards/:boardId/goals/carry-forward
+ *
+ * Body: { fromMonth, toMonth, goalIds?, rollBaseline?, carryLinks?, dryRun? }
+ *
+ * Copy a month's PROMISES into another month — by default this month's into
+ * next month's, which is the only reason anybody opens it. Deliberately a
+ * request somebody makes rather than a job that runs: see the header of
+ * [services/goalCarryForward.js](../services/goalCarryForward.js) for why a
+ * self-renewing goal is not a goal.
+ *
+ * `goal.manage`, because every row it writes is a new promise — the same rung
+ * as typing one in by hand, and emphatically not the `goal.track` rung that only
+ * fills in what a month ended on.
+ *
+ * `dryRun` runs the identical plan and writes nothing, which is what the modal
+ * previews. One planner, so the sentence the user reads before confirming is
+ * produced by the code that will actually do the work — a preview computed
+ * separately on the client is a second implementation of the duplicate rule,
+ * and the two would disagree the first time a goal was renamed.
+ */
+const carryForwardGoals = async (req, res) => {
+  try {
+    const ctx = await gate(req, res, 'goal.manage');
+    if (!ctx) return undefined;
+    const { board } = ctx;
+    const body = req.body || {};
+
+    const fromMonth = body.fromMonth;
+    const toMonth = body.toMonth;
+    if (!isMonthKey(fromMonth) || !isMonthKey(toMonth)) {
+      return res.status(400).json({ error: 'Both months (YYYY-MM) are required' });
+    }
+    if (fromMonth === toMonth) {
+      return res.status(400).json({ error: 'Pick a different month to copy into.' });
+    }
+
+    // Bounded so a stray payload cannot ask for a hundred years of copies. The
+    // window is generous in both directions on purpose: copying backwards to
+    // fill in a month somebody forgot is a real thing people do.
+    const monthDelta = monthsBetween(fromMonth, toMonth);
+    if (!Number.isInteger(monthDelta) || Math.abs(monthDelta) > CARRY_MAX_MONTHS) {
+      return res.status(400).json({
+        error: `Goals can only be carried up to ${CARRY_MAX_MONTHS} months away.`,
+      });
+    }
+
+    // An explicit selection, or the whole month. Validated as ids before it
+    // reaches a query, and scoped to this board and this month by the filter —
+    // an id from another board simply finds nothing.
+    let selection = null;
+    if (body.goalIds !== undefined) {
+      if (!Array.isArray(body.goalIds) || !body.goalIds.every(isValidId)) {
+        return res.status(400).json({ error: 'goalIds must be an array of goal ids' });
+      }
+      if (body.goalIds.length === 0) {
+        return res.status(400).json({ error: 'Pick at least one goal to carry forward.' });
+      }
+      selection = body.goalIds;
+    }
+
+    const sourceFilter = { board: board._id, monthKey: fromMonth };
+    if (selection) sourceFilter._id = { $in: selection };
+
+    const [sourceGoals, targetGoals, groups] = await Promise.all([
+      Goal.find(sourceFilter).sort({ order: 1, createdAt: 1 }).lean(),
+      Goal.find({ board: board._id, monthKey: toMonth })
+        .select('group nameKey name order').lean(),
+      TaskGroup.find({ board: board._id }).sort({ order: 1 }).select('name order').lean(),
+    ]);
+
+    if (sourceGoals.length === 0) {
+      return res.status(400).json({
+        error: `There are no goals in ${formatMonth(fromMonth, { long: true })} to carry forward.`,
+      });
+    }
+    if (sourceGoals.length > CARRY_MAX_GOALS) {
+      return res.status(400).json({
+        error: `That is more than ${CARRY_MAX_GOALS} goals. Carry them a few groups at a time.`,
+      });
+    }
+
+    const columns = liveColumns(board);
+    const { copies, skipped } = planCarryForward({
+      sourceGoals,
+      targetGoals,
+      groups,
+      columns,
+      toMonth,
+      monthDelta,
+      rollBaseline: body.rollBaseline === true,
+      maxPerGroup: MAX_GOALS_PER_GROUP,
+    });
+
+    // Whether the keyword wiring travels too, and whether this person is
+    // allowed to move it. Pointing a goal at a tracked keyword is
+    // `connector.manage` — the same rung `setGoalLink` is on — so somebody who
+    // can define goals but not touch connectors carries the goals and is TOLD
+    // the links stayed behind, rather than silently getting half a board.
+    const wantsLinks = body.carryLinks !== false;
+    const canLink = !!ctx.can('connector.manage');
+    const linksTravel = wantsLinks && canLink;
+    const sourceIds = copies.map((c) => c.sourceId);
+    // Looked up even when they cannot travel, so "the links stayed behind" is
+    // said only where there were links to leave behind. A tracker board with no
+    // connector at all must not be warned about connector wiring.
+    const sourceLinks = wantsLinks && sourceIds.length
+      ? await GoalConnectorLink.find({ goal: { $in: sourceIds } }).lean()
+      : [];
+    const linksBySource = new Map(sourceLinks.map((l) => [String(l.goal), l]));
+
+    const plan = copies.map((c) => ({
+      sourceId: c.sourceId,
+      name: c.name,
+      group: String(c.group),
+      groupName: c.groupName,
+      type: c.type,
+      hasLink: linksBySource.has(c.sourceId),
+    }));
+
+    const linkReport = {
+      carried: linksTravel ? linksBySource.size : 0,
+      // Named so the modal can say WHY none travelled rather than leaving a
+      // connector board's owner wondering where their wiring went.
+      blocked: wantsLinks && !canLink && linksBySource.size > 0,
+    };
+
+    if (body.dryRun === true) {
+      return res.json({
+        fromMonth,
+        toMonth,
+        dryRun: true,
+        copied: 0,
+        plan,
+        skipped,
+        links: linkReport,
+      });
+    }
+
+    if (copies.length === 0) {
+      return res.json({
+        fromMonth, toMonth, copied: 0, plan, skipped, links: { carried: 0, blocked: false },
+      });
+    }
+
+    // Ordered, so a row that somehow fails schema validation stops the batch
+    // rather than scattering half a month. Partial is survivable here in a way
+    // it is not elsewhere: the carry is idempotent by name, so running it again
+    // finishes the job and copies nothing twice.
+    const created = await Goal.insertMany(
+      copies.map((c) => ({
+        board: board._id,
+        organisation: board.organisation,
+        group: c.group,
+        monthKey: c.monthKey,
+        name: c.name,
+        type: c.type,
+        config: c.config,
+        unit: c.unit,
+        unitLabel: c.unitLabel,
+        weight: c.weight,
+        owner: c.owner,
+        note: c.note,
+        columnValues: c.columnValues,
+        order: c.order,
+        actual: null,
+        actualDayKey: null,
+        createdBy: req.user.userId,
+      }))
+    );
+
+    // The links, pointed at the NEW rows. `applied` / `suggested` / `claimedAt`
+    // are deliberately not copied: provenance is a fact about what a connector
+    // did to ONE month's row, and inheriting August's claim would let the next
+    // run overwrite a September cell it has never written. A fresh link with no
+    // claim is exactly the day-one case `claimedAt` was designed for.
+    let linksCarried = 0;
+    if (linksTravel && linksBySource.size > 0) {
+      const rows = [];
+      created.forEach((doc, i) => {
+        const src = linksBySource.get(copies[i].sourceId);
+        if (!src) return;
+        rows.push({
+          goal: doc._id,
+          board: board._id,
+          organisation: board.organisation,
+          group: doc.group,
+          monthKey: doc.monthKey,
+          provider: src.provider,
+          project: src.project || null,
+          keyword: src.keyword ?? null,
+          variant: src.variant ?? null,
+          autoFill: src.autoFill !== false,
+          linkedBy: req.user.userId,
+          updatedBy: req.user.userId,
+        });
+      });
+      if (rows.length) {
+        // `ordered: false` so one link that cannot be written — a project
+        // unmapped since, most likely — does not strand the rest. The goals are
+        // already saved either way, and a missing link is re-makeable in the
+        // modal; a half-written month is not.
+        const inserted = await GoalConnectorLink.insertMany(rows, { ordered: false })
+          .catch((err) => {
+            console.error('carryForwardGoals: some links did not carry', err?.message);
+            // Report what DID land rather than zero. `ordered: false` keeps
+            // going past a bad row, and telling somebody nothing carried when
+            // twenty-five links did is how they redo work that is already done.
+            return err?.insertedDocs || [];
+          });
+        linksCarried = inserted.length;
+      }
+    }
+
+    // One `goal.created` row per copy, carrying the same promise the goal does —
+    // so the new month's history opens with what was committed to and who
+    // committed to it, exactly as a hand-typed goal's does. Awaited for the
+    // same reason `createGoal` awaits its own: a history panel opened seconds
+    // later must not be empty. `logActivity` swallows its own failures.
+    await Promise.all(created.map((doc, i) => logGoalCreated({
+      goal: doc,
+      actor: req.user.userId,
+      groupName: copies[i].groupName,
+    })));
+
+    return res.json({
+      fromMonth,
+      toMonth,
+      copied: created.length,
+      plan,
+      skipped,
+      links: { carried: linksCarried, blocked: linkReport.blocked },
+    });
+  } catch (err) {
+    console.error('carryForwardGoals error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -1068,6 +1314,7 @@ module.exports = {
   getGoalTypes,
   getGoals,
   createGoal,
+  carryForwardGoals,
   updateGoal,
   deleteGoal,
   getGoalActivity,

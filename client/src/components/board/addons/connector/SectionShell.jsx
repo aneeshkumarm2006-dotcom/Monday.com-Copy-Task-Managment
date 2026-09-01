@@ -1,6 +1,6 @@
 import { TriangleAlert } from 'lucide-react';
 import EmptyState from '../../../ui/EmptyState';
-import { formatDay, staleness } from '../../../../utils/connectorFormat';
+import { formatDay, staleness, toneColor } from '../../../../utils/connectorFormat';
 
 /**
  * The frame every connector section sits in.
@@ -27,8 +27,24 @@ const SectionShell = ({
   emptyDescription,
   children,
   actions,
+  /**
+   * Whether the card prints its own name.
+   *
+   * False when the card IS the screen and `ScreenHeading` has already said what
+   * it is — printing "Rank tracking" twice, eighteen pixels apart, reads as a
+   * rendering bug. The staleness stamp survives either way, because it is the
+   * one line on the card that is never decoration: see the header.
+   */
+  showTitle = true,
 }) => {
   const collected = snapshot?.collectedAt || snapshot?.fetchedAt || null;
+
+  const stamp = collected ? (
+    <>
+      Collected {staleness(collected)}
+      {snapshot?.periodKey ? ` · ${formatDay(snapshot.periodKey)}` : ''}
+    </>
+  ) : null;
 
   return (
     <section
@@ -40,33 +56,30 @@ const SectionShell = ({
       }}
     >
       <header
-        className="flex flex-wrap items-start gap-3 px-4 py-3"
+        className="flex flex-wrap items-center gap-3 px-4 py-3"
         style={{ borderBottom: '1px solid var(--color-border)' }}
       >
         <div className="flex-1 min-w-0">
-          <h3
-            className="font-body font-medium"
-            style={{
-              fontSize: 11,
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              color: 'var(--color-text-secondary)',
-            }}
-          >
-            {kind?.label || 'Data'}
-          </h3>
+          {showTitle && (
+            <h3
+              className="font-body font-medium"
+              style={{
+                fontSize: 11,
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                color: 'var(--color-text-secondary)',
+              }}
+            >
+              {kind?.label || 'Data'}
+            </h3>
+          )}
           <p
-            className="font-body mt-1"
+            className={`font-body${showTitle ? ' mt-1' : ''}`}
             style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
           >
-            {collected ? (
-              <>
-                Collected {staleness(collected)}
-                {snapshot?.periodKey ? ` · ${formatDay(snapshot.periodKey)}` : ''}
-              </>
-            ) : (
-              kind?.blurb || ''
-            )}
+            {/* With no title above it this line carries the card on its own, so
+                "never collected" is said out loud rather than left blank. */}
+            {stamp || (showTitle ? kind?.blurb || '' : 'Never collected')}
           </p>
         </div>
         {actions ? <div className="shrink-0">{actions}</div> : null}
@@ -137,6 +150,34 @@ export const Stat = ({ label, value, sub }) => (
     ) : null}
   </div>
 );
+
+/**
+ * The change in one number since the previous collection.
+ *
+ * ---- `invert` is the whole of the danger -----------------------------------
+ *
+ * A COUNT going up is good; a RANK going up is bad, because rank 3 beats rank 8.
+ * The same arrow therefore has to be green in one column and red in the next,
+ * and getting it backwards colours every improvement red — a mistake that
+ * renders beautifully and is invisible in a screenshot, on a page somebody is
+ * about to send to a client. So the caller must say which kind of number it is,
+ * and rank-like ones pass `invert`.
+ *
+ * Zero and a missing comparison are both "No change" in grey rather than a
+ * coloured zero: with one collection stored there is nothing to compare, and an
+ * arrow pointing anywhere would be an invention.
+ */
+export const Delta = ({ value, invert = false }) => {
+  if (typeof value !== 'number' || value === 0) {
+    return <span style={{ color: 'var(--color-text-muted)' }}>No change</span>;
+  }
+  const good = invert ? value < 0 : value > 0;
+  return (
+    <span style={{ color: toneColor(good ? 'positive' : 'negative') }}>
+      {value > 0 ? '▲' : '▼'} {Math.abs(Math.round(value * 10) / 10)}
+    </span>
+  );
+};
 
 /** A row of stats that reflows rather than scrolling. */
 export const StatRow = ({ children }) => (

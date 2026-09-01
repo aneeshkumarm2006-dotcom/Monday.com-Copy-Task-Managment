@@ -72,6 +72,7 @@ import BoardFilterBar from '../components/board/BoardFilterBar';
 import BoardAccessModal from '../components/board/BoardAccessModal';
 import DeliveryTab from '../components/board/delivery/DeliveryTab';
 import BoardTypePill from '../components/board/BoardTypePill';
+import CreatedByChip from '../components/board/CreatedByChip';
 import ConvertToTrackerModal from '../components/board/ConvertToTrackerModal';
 import BoardTimezoneModal from '../components/board/BoardTimezoneModal';
 import GoalsTab from '../components/board/goals/GoalsTab';
@@ -2219,6 +2220,12 @@ const BoardDetailPage = () => {
               {board?.name || '—'}
             </h1>
             <BoardTypePill board={board} />
+            {/* The byline sits with the board's IDENTITY, next to the type pill,
+                rather than in the "Created <date> · N tasks" line below it: that
+                line is board STATS and changes as tasks come and go, while who
+                made this is fixed. It also renders nothing when the owner is not
+                hydrated, which would leave a dangling "·" mid-sentence there. */}
+            <CreatedByChip user={board?.createdBy} at={board?.createdAt} />
           </div>
           <p
             className="mt-1 font-body"
@@ -2398,6 +2405,10 @@ const BoardDetailPage = () => {
             boardId={boardId}
             monthKey={monthKey}
             monthLabel={selectedMonth?.label}
+            // Only the carry-forward modal reads this — "what is next month" is
+            // a question about the board's timezone, so the client picks from
+            // the server's list rather than working one out.
+            months={months}
             canTrack={canTrackGoals}
             canManage={canManageGoals}
             canManageColumns={canManageGoalColumns}
@@ -2428,6 +2439,10 @@ const BoardDetailPage = () => {
               });
             }}
             onGoalsChanged={refreshMonths}
+            // The carry-forward lands rows in a month the user is not looking
+            // at. `setMonth` is the same URL-owning setter the dropdown uses,
+            // so going there is a normal navigation and stays pasteable.
+            onGoToMonth={setMonth}
           />
         </ErrorBoundary>
       )}

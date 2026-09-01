@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeft, Plus, StickyNote, Trash2, X } from 'lucide-react';
 import RichEditor from './RichEditor';
+import CreatedByChip from './CreatedByChip';
 import { ReadOnlyRichBody } from './UpdatesTab';
 import useTaskStore from '../../store/taskStore';
 import useToastStore from '../../store/toastStore';
@@ -363,6 +364,30 @@ const GroupNotesPanel = ({ isOpen, group, canEdit = false, onClose }) => {
             <X size={18} color="var(--color-text-secondary)" aria-hidden="true" />
           </button>
         </div>
+
+        {/* Group byline — a sub-bar under the header, LIST VIEW ONLY. It names
+            the group, and in the note view the header has already handed the
+            title over to the note being read; repeating the group's author above
+            somebody else's note reads as an attribution for that note.
+
+            Renders nothing for a group created before the field existed, which
+            collapses the whole bar rather than leaving an empty strip. */}
+        {view === 'list' && group.createdBy && (
+          <div
+            style={{
+              padding: '8px 16px',
+              borderBottom: '1px solid var(--color-border)',
+              flexShrink: 0,
+              background: 'var(--color-bg-subtle)',
+            }}
+          >
+            <CreatedByChip
+              user={group.createdBy}
+              at={group.createdAt}
+              label="Group created by"
+            />
+          </div>
+        )}
 
         {/* Body */}
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

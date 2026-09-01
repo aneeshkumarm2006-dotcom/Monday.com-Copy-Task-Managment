@@ -20,7 +20,7 @@ import { formatMoney, formatNumber } from '../../../../utils/connectorFormat';
  * paid number in a column headed KD is exactly the silent error this feature
  * exists to remove.
  */
-const KeywordsSection = ({ kind, snapshot }) => {
+const KeywordsSection = ({ kind, snapshot, showTitle = true }) => {
   const rows = snapshot?.data?.keywords || [];
   const truncated = snapshot?.data?.truncated;
   const trackedTotal = snapshot?.data?.trackedTotal;
@@ -30,6 +30,7 @@ const KeywordsSection = ({ kind, snapshot }) => {
       kind={kind}
       snapshot={snapshot}
       icon={KeyRound}
+      showTitle={showTitle}
       emptyTitle="No keyword metrics yet"
       emptyDescription="These fill in alongside the rankings on the next connector run."
     >

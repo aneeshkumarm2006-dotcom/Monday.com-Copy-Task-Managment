@@ -214,7 +214,8 @@ const getConnectorData = async (req, res) => {
         kinds: connector.kinds,
         /**
          * The dashboard screens this provider declares, or `[]` for one that
-         * renders through the generic one-section-per-kind tab.
+         * renders through the generic tab, which derives its own screen list
+         * from `kinds` (see `client/src/utils/connectorScreens.js`).
          *
          * Sent from the SAME request the tab already makes, rather than from a
          * second one against the catalog. The shell has to know which screens

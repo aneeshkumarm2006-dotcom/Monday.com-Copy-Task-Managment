@@ -17,11 +17,11 @@ import {
 import { marketLabel } from '../../../../utils/connectorFormat';
 
 import {
+  ProviderNav,
+  ProviderNavBar,
+  ProviderProjectBar,
   ScreenHeading,
-  SeoNav,
-  SeoNavBar,
-  SeoProjectBar,
-} from './SeoChrome';
+} from '../connector/ProviderChrome';
 import OverviewScreen from './OverviewScreen';
 import RankTrackingScreen from './RankTrackingScreen';
 import KeywordResearchScreen from './KeywordResearchScreen';
@@ -42,13 +42,14 @@ import UsageScreen from './UsageScreen';
  *
  * ---- Why this is a second tab and not more sections in the first one --------
  *
- * `ConnectorDataTab` renders one section per snapshot kind, which is exactly
- * right for a provider with five kinds and one number each. This provider is a
- * rank tracker with a competitive census behind it, and phases 6-8 add keyword
- * research, competitors, backlinks and a site audit — four more screens, each
- * with its own table, its own sort and its own export. Stacked as sections that
- * is one page nobody can find anything on, and every visitor downloads every
- * screen's chart to look at any of them.
+ * `ConnectorDataTab` renders one SCREEN per snapshot kind, deriving its rail
+ * from the kind catalog. That is exactly right for a provider with five kinds
+ * and one number each. This provider is a rank tracker with a competitive
+ * census behind it, and phases 6-8 add keyword research, competitors, backlinks
+ * and a site audit — four more screens, each with its own table, its own sort
+ * and its own export, plus alerts and a spend ledger that no kind describes. So
+ * its screen list is DECLARED on the server rather than derived, and the two
+ * tabs share the shell (`connector/ProviderChrome`) rather than the data path.
  *
  * Neither tab names a provider. The SCREENS come from the server as part of the
  * payload (`data.provider.screens`, narrowed by `data.selectedScreens`), the
@@ -61,11 +62,13 @@ import UsageScreen from './UsageScreen';
  * page: a board with both connectors switched on used to show whichever came
  * back first and drop the other one entirely.
  *
- * ---- The shell lives in `SeoChrome` ----------------------------------------
+ * ---- The shell lives in `connector/ProviderChrome` --------------------------
  *
- * The nav, the project bar and the per-screen heading were lifted into
- * `SeoChrome.jsx` when the flat row of fourteen buttons became a grouped rail.
- * This file is the data and the state; that one is the layout. The grouping is
+ * The nav, the project bar and the per-screen heading were lifted out when the
+ * flat row of fourteen buttons became a grouped rail, and moved again — into
+ * `connector/`, under a name that carries no provider — when the OTHER connector
+ * tab adopted the same layout. This file is the data and the state; that one is
+ * the layout, and it is now shared. The grouping is
  * the descriptor's too — `screen.group` against `provider.screenGroups` — for
  * the same reason the screen list is, so a screen declared in a later phase
  * lands under the right heading with nothing in the client to edit.
@@ -310,8 +313,8 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
 
   /**
    * The rail's headings, in nav order — from the descriptor, like the screens
-   * themselves. Empty for a provider that declares no grouping, which `SeoNav`
-   * renders as one flat list. See `SeoChrome`.
+   * themselves. Empty for a provider that declares no grouping, which
+   * `ProviderNav` renders as one flat list. See `ProviderChrome`.
    */
   const screenGroups = data?.provider?.screenGroups || [];
 
@@ -415,7 +418,7 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
       {/* ---------------------------------------------------------------------
           The shell: one card holding the project bar, the rail and the screen.
           The nav is grouped and the pickers appear only where there is a choice
-          — see `SeoChrome` for what that replaced and why.
+          — see `connector/ProviderChrome` for what that replaced and why.
       --------------------------------------------------------------------- */}
       <div
         style={{
@@ -425,7 +428,7 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
           overflow: 'hidden',
         }}
       >
-        <SeoProjectBar
+        <ProviderProjectBar
           project={data.project}
           projectOptions={projectOptions}
           projectId={projectId}
@@ -479,7 +482,7 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
 
         <div className="flex items-stretch">
           {multiScreen && (
-            <SeoNav
+            <ProviderNav
               screens={screens}
               groups={screenGroups}
               active={activeScreen}
@@ -490,7 +493,7 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
           <div className="flex-1 min-w-0">
             {/* The same nav, as a scrolling row, below `lg`. */}
             {multiScreen && (
-              <SeoNavBar
+              <ProviderNavBar
                 screens={screens}
                 active={activeScreen}
                 onChange={setScreen}

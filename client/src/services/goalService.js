@@ -108,6 +108,34 @@ export const reorderGoals = async (boardId, orderedIds) => {
   return data;
 };
 
+/**
+ * Copy a month's PROMISES into another month — normally this month's into next.
+ *
+ * Manual by design: there is no scheduled version of this and there must not be
+ * one (see the server's `services/goalCarryForward.js`). `actual` never travels,
+ * a goal already present in the target month is skipped rather than duplicated,
+ * and the whole thing is therefore safe to run twice.
+ *
+ * `dryRun: true` returns the identical plan and writes nothing — that is what
+ * the modal previews, so the sentence somebody reads before confirming comes
+ * from the code that will actually do the work.
+ *
+ * @param {string} boardId
+ * @param {object} payload
+ * @param {string} payload.fromMonth
+ * @param {string} payload.toMonth
+ * @param {string[]} [payload.goalIds]     - omit for the whole month
+ * @param {boolean} [payload.rollBaseline] - start from where this month landed
+ * @param {boolean} [payload.carryLinks]   - bring the connector wiring too
+ * @param {boolean} [payload.dryRun]
+ */
+export const carryForwardGoals = async (boardId, payload) => {
+  const { data } = await api.post(`/api/boards/${boardId}/goals/carry-forward`, payload, {
+    suppressErrorToast: true,
+  });
+  return data;
+};
+
 /** Per-group scores month by month, for the trend chart. */
 export const getGoalTrend = async (boardId, { months = 12, through } = {}) => {
   const { data } = await api.get(`/api/boards/${boardId}/goals/trend`, {

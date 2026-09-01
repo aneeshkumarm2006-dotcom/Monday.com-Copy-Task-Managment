@@ -103,6 +103,17 @@ const boardVisibilityFilter = (access, userId) => {
   return { $or: clauses };
 };
 
+// The User fields a board's byline needs. `createdBy` is shipped POPULATED on
+// every board the client caches, so the header can name the owner without a
+// second round-trip and without guessing at the org roster (which does not
+// contain everyone a private board's owner might be).
+//
+// Populating it is safe everywhere it is read: `idOf` in utils/permissions.js
+// and utils/boardAccess.js already accepts either shape, which is what makes
+// "the creator owns their board" keep working with a User document sitting in
+// that slot instead of an id.
+const CREATOR_FIELDS = 'name profilePic email';
+
 /**
  * Attach this user's resolved capability set to a board, for the client.
  *
@@ -263,7 +274,9 @@ const getBoards = async (req, res) => {
     const boards = await Board.find({
       organisation: orgId,
       ...boardVisibilityFilter(orgAccess, userId),
-    }).sort({ order: 1, updatedAt: -1 });
+    })
+      .sort({ order: 1, updatedAt: -1 })
+      .populate('createdBy', CREATOR_FIELDS);
 
     // Lazy heal: pre-migration boards may have an empty `statuses` array,
     // which causes the client's status picker to fall back to legacy enum
@@ -515,7 +528,10 @@ const createBoard = async (req, res) => {
     // Attach the creator's resolved permissions, as getBoards does. The client
     // prepends this to its cache and may open it straight away without a
     // refetch; a bare board would leave `permissions` undefined, hiding the
-    // owner's own Share/manage controls until the next full boards load.
+    // owner's own Share/manage controls until the next full boards load. The
+    // byline is hydrated for the same reason — the cached copy is what the
+    // header reads.
+    await board.populate('createdBy', CREATOR_FIELDS);
     return res.status(201).json({ board: withPermissions(board, org, userId) });
   } catch (err) {
     console.error('createBoard error:', err);
@@ -638,6 +654,7 @@ const updateBoard = async (req, res) => {
     }
 
     await board.save();
+    await board.populate('createdBy', CREATOR_FIELDS);
     // Re-resolve permissions off the saved board so the client's cached copy
     // keeps them (and reflects a visibility change): the store writes this
     // response over the board it holds, and a bare board would strip the
@@ -1492,6 +1509,7 @@ const setBoardAccess = async (req, res) => {
       });
     }
 
+    await board.populate('createdBy', CREATOR_FIELDS);
     const populated = await Board.findById(board._id).populate(
       'memberAccess.user',
       'name email profilePic'
@@ -1616,6 +1634,7 @@ const transferBoardOwnership = async (req, res) => {
       actorId: userId,
     });
 
+    await board.populate('createdBy', CREATOR_FIELDS);
     const populated = await Board.findById(board._id).populate(
       'memberAccess.user',
       'name email profilePic'

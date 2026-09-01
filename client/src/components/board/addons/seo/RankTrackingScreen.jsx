@@ -31,7 +31,7 @@ import {
 } from '../../../../utils/rankRows';
 import { downloadRankExport } from '../../../../utils/rankExport';
 
-const RankChart = lazy(() => import('./RankChart'));
+const RankChart = lazy(() => import('../connector/RankChart'));
 
 /**
  * Rank tracking — every keyword, sortable, filterable and exportable.
