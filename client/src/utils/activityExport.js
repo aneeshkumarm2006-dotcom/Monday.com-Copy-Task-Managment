@@ -37,13 +37,17 @@ import { saveBlob } from './fileUrl';
 const COLUMNS = [
   { key: 'when', header: 'Date & time', width: 24 },
   { key: 'groupName', header: 'Group', width: 20 },
-  // Two kinds of thing land in this column now. A tracker board's monthly goals
-  // record their own activity against the same board, so the report covers both
-  // — and the `Item type` column beside it is what tells a reader which of the
-  // two a row is about. That column is CSV-only: the sheet is a dataset and
-  // wants something to filter on, while on the printed page the Activity
-  // sentence already says "added the goal" or "created the task" — and the PDF
-  // has no millimetres to spare for a word it is already carrying.
+  // Three kinds of thing land in this column now. A tracker board's monthly
+  // goals record their own activity against the same board, and so does a
+  // group's own lifecycle, so the report covers all three — and the `Item type`
+  // column beside it is what tells a reader which a row is about. That column is
+  // CSV-only: the sheet is a dataset and wants something to filter on, while on
+  // the printed page the Activity sentence already says "added the goal",
+  // "created the task" or "deleted the group" — and the PDF has no millimetres
+  // to spare for a word it is already carrying.
+  //
+  // A group row repeats its name here and in `Group`. That is not a bug: the
+  // group IS the item the row is about.
   { key: 'taskName', header: 'Item', width: 32 },
   { key: 'itemType', header: 'Item type', csvOnly: true },
   { key: 'monthKey', header: 'Goal month', csvOnly: true },
@@ -111,8 +115,12 @@ const humanize = (value) => {
 /** Subitems are tasks too; mark them so the report doesn't read as duplicates. */
 const displayTask = (row) => (row.isSubitem ? `↳ ${row.taskName}` : row.taskName);
 
-/** 'goal' → 'Goal'. A row written before goals were logged has no type. */
-const itemTypeLabel = (row) => (row.itemType === 'goal' ? 'Goal' : 'Task');
+/**
+ * 'goal' → 'Goal'. A row written before goals were logged has no type at all,
+ * which is why 'Task' is the fallback rather than an entry in the map.
+ */
+const ITEM_TYPE_LABELS = { goal: 'Goal', group: 'Group' };
+const itemTypeLabel = (row) => ITEM_TYPE_LABELS[row.itemType] || 'Task';
 
 const list = (values) => (Array.isArray(values) ? values.join(', ') : '');
 
