@@ -67,7 +67,7 @@ const getAnalytics = async (req, res) => {
       (m) => (m._id || m).toString() === userId
     );
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this organisation' });
+      return res.status(403).json({ error: 'Not a member of this workspace' });
     }
 
     // Orgs created before the role system carry no `roles`, and the resolver
@@ -105,7 +105,7 @@ const getAnalytics = async (req, res) => {
       // deliberate: a 403 would confirm the board exists.
       const match = orgBoardIds.find((id) => id.toString() === boardFilter);
       if (!match) {
-        return res.status(404).json({ error: 'Board not found in organisation' });
+        return res.status(404).json({ error: 'Board not found in workspace' });
       }
       scopedBoardIds = [match];
     }

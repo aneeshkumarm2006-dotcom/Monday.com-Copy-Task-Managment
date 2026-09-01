@@ -324,7 +324,7 @@ const assignRole = async (req, res) => {
     if (!isMember) {
       return res
         .status(400)
-        .json({ error: 'User is not a member of this organisation' });
+        .json({ error: 'User is not a member of this workspace' });
     }
 
     // The owner's role is nobody's to change — not even their own. Demoting the

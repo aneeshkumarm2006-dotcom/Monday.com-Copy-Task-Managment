@@ -251,7 +251,7 @@ const getBoards = async (req, res) => {
     const { org, isMember } = await loadOrgForMember(orgId, userId);
     if (!org) return res.status(404).json({ error: 'Organisation not found' });
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this organisation' });
+      return res.status(403).json({ error: 'Not a member of this workspace' });
     }
 
     // What you see is your ROLE's reach, not your position in an admins array:
@@ -344,7 +344,7 @@ const getDashboardStats = async (req, res) => {
     const { org, isMember } = await loadOrgForMember(orgId, userId);
     if (!org) return res.status(404).json({ error: 'Organisation not found' });
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this organisation' });
+      return res.status(403).json({ error: 'Not a member of this workspace' });
     }
 
     // Only the fields `resolveAccess` reads — a query that omitted any of them
@@ -466,7 +466,7 @@ const createBoard = async (req, res) => {
     // failed closed for outsiders by accident. Capabilities resolve to the
     // default role for anyone, so the check has to be explicit.
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this organisation' });
+      return res.status(403).json({ error: 'Not a member of this workspace' });
     }
     if (!resolveOrgAccess(org, userId).can('board.create')) {
       return res
@@ -1148,7 +1148,7 @@ const reorderBoards = async (req, res) => {
     const { org, isMember } = await loadOrgForMember(organisation, userId);
     if (!org) return res.status(404).json({ error: 'Organisation not found' });
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this organisation' });
+      return res.status(403).json({ error: 'Not a member of this workspace' });
     }
 
     const orgAccess = resolveOrgAccess(org, userId);
@@ -1168,7 +1168,7 @@ const reorderBoards = async (req, res) => {
     ) {
       return res
         .status(400)
-        .json({ error: 'orderedIds must list every visible board in the organisation exactly once' });
+        .json({ error: 'orderedIds must list every visible board in the workspace exactly once' });
     }
 
     const ops = orderedIds.map((id, idx) => ({
@@ -1426,7 +1426,7 @@ const setBoardAccess = async (req, res) => {
     if (!isMember) {
       return res
         .status(400)
-        .json({ error: 'User is not a member of this organisation' });
+        .json({ error: 'User is not a member of this workspace' });
     }
 
     const existing = (board.memberAccess || []).find(
@@ -1576,7 +1576,7 @@ const transferBoardOwnership = async (req, res) => {
     if (!isMember) {
       return res
         .status(400)
-        .json({ error: 'User is not a member of this organisation' });
+        .json({ error: 'User is not a member of this workspace' });
     }
 
     // The outgoing owner is the caller — `access.board.creator` above is exactly

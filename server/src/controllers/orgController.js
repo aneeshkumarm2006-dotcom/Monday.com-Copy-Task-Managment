@@ -82,7 +82,7 @@ const getOrg = async (req, res) => {
       (m) => m._id.toString() === req.user.userId
     );
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this organisation' });
+      return res.status(403).json({ error: 'Not a member of this workspace' });
     }
 
     if (org.ensureSystemRoles()) await org.save();
@@ -206,7 +206,7 @@ const listMembers = async (req, res) => {
       (m) => m._id.toString() === req.user.userId
     );
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this organisation' });
+      return res.status(403).json({ error: 'Not a member of this workspace' });
     }
 
     if (org.ensureSystemRoles()) await org.save();
@@ -407,7 +407,7 @@ const transferOrgOwnership = async (req, res) => {
     if (!isMember) {
       return res
         .status(400)
-        .json({ error: 'User is not a member of this organisation' });
+        .json({ error: 'User is not a member of this workspace' });
     }
 
     org.ensureSystemRoles();
@@ -555,7 +555,7 @@ const listHolidays = async (req, res) => {
 
     const isMember = org.members.some((m) => m.toString() === req.user.userId);
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this organisation' });
+      return res.status(403).json({ error: 'Not a member of this workspace' });
     }
 
     if (req.query.year !== undefined) {

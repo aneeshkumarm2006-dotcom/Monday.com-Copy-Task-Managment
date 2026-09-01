@@ -70,7 +70,7 @@ const getProductivity = async (req, res) => {
       (m) => (m._id || m).toString() === userId
     );
     if (!isMember) {
-      return res.status(403).json({ error: 'Not a member of this organisation' });
+      return res.status(403).json({ error: 'Not a member of this workspace' });
     }
 
     // Orgs created before the role system carry no `roles`, and the resolver

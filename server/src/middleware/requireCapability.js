@@ -41,7 +41,7 @@ const requireCapability = (capability, message) => async (req, res, next) => {
     if (!isMember) {
       return res
         .status(403)
-        .json({ error: 'Not a member of this organisation' });
+        .json({ error: 'Not a member of this workspace' });
     }
 
     // Orgs created before the role system have no `roles` yet. Seed them on

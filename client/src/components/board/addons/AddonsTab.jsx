@@ -83,7 +83,7 @@ import {
 
 /** Fixed copy — never the provider's own error text, which is uncontrolled. */
 const NO_ACCOUNTS =
-  'No account is connected to this workspace yet. An organisation admin can add one under Settings → Connectors.';
+  'No account is connected to this workspace yet. A workspace admin can add one under Settings → Connectors.';
 
 const AddonsTab = ({
   boardId,
@@ -494,7 +494,7 @@ const AddonsTab = ({
                         {stale.map((a) => a.label).join(', ')} need
                         {stale.length === 1 ? 's' : ''} reconnecting before
                         {stale.length === 1 ? ' its' : ' their'} projects can be
-                        refreshed. An organisation admin can do that under
+                        refreshed. A workspace admin can do that under
                         Settings &rarr; Connectors.
                       </span>
                     </div>

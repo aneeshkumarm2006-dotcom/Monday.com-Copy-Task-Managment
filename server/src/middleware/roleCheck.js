@@ -70,7 +70,7 @@ const requireOrgOwner = async (req, res, next) => {
     }
 
     if (org.admin.toString() !== req.user.userId) {
-      return res.status(403).json({ error: 'Only the organisation owner can perform this action' });
+      return res.status(403).json({ error: 'Only the workspace owner can perform this action' });
     }
 
     req.org = org;

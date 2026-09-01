@@ -95,7 +95,7 @@ const OrgSidebar = () => {
         style={{ borderBottom: '1px solid var(--color-border)' }}
       >
         <span className="font-body font-semibold text-[11px] uppercase tracking-wide text-[color:var(--color-text-muted)]">
-          Organisations
+          Workspaces
         </span>
       </div>
 
@@ -162,7 +162,7 @@ const OrgSidebar = () => {
                   <Plus size={15} color="var(--color-accent)" aria-hidden="true" />
                 </div>
                 <span className="font-body text-[13px] font-medium text-[color:var(--color-accent)]">
-                  Create Organisation
+                  Create Workspace
                 </span>
               </button>
               <button
@@ -182,7 +182,7 @@ const OrgSidebar = () => {
                   <Users size={15} color="var(--color-text-secondary)" aria-hidden="true" />
                 </div>
                 <span className="font-body text-[13px] font-medium text-[color:var(--color-text-secondary)]">
-                  Join Organisation
+                  Join Workspace
                 </span>
               </button>
             </div>
@@ -201,14 +201,14 @@ const OrgSidebar = () => {
               Back
             </button>
             <p className="font-display font-bold text-[14px] text-[color:var(--color-text-primary)] mb-4">
-              Create Organisation
+              Create Workspace
             </p>
             <form onSubmit={handleCreate}>
               <input
                 type="text"
                 value={orgName}
                 onChange={(e) => setOrgName(e.target.value)}
-                placeholder="Organisation name"
+                placeholder="Workspace name"
                 autoFocus
                 disabled={submitting}
                 className="w-full h-9 px-3 font-body text-[13px] text-[color:var(--color-text-primary)] bg-[color:var(--color-bg-input)] focus:outline-none"
@@ -244,7 +244,7 @@ const OrgSidebar = () => {
               Back
             </button>
             <p className="font-display font-bold text-[14px] text-[color:var(--color-text-primary)] mb-4">
-              Join Organisation
+              Join Workspace
             </p>
             <form onSubmit={handleJoin}>
               <input

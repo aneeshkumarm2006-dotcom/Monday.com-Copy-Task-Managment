@@ -39,7 +39,7 @@ const googleCallback = (req, res) => {
 };
 
 /**
- * GET /auth/me — return the current authenticated user (populated organisations).
+ * GET /auth/me — return the current authenticated user (populated workspaces).
  */
 const getCurrentUser = async (req, res) => {
   try {

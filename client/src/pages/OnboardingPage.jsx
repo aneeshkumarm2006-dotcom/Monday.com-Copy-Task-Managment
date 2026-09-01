@@ -85,7 +85,7 @@ const OnboardingPage = () => {
 
         {/* Option cards */}
         <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {/* Create Organisation */}
+          {/* Create Workspace */}
           <button
             type="button"
             onClick={() => {
@@ -110,14 +110,14 @@ const OnboardingPage = () => {
               strokeWidth={2}
             />
             <h3 className="mt-3 font-display font-bold text-[15px] text-[color:var(--color-text-primary)]">
-              Create Organisation
+              Create Workspace
             </h3>
             <p className="mt-1 text-sm text-[color:var(--color-text-secondary)] font-body">
               Start a new workspace for your team
             </p>
           </button>
 
-          {/* Join Organisation */}
+          {/* Join Workspace */}
           <button
             type="button"
             onClick={() => {
@@ -142,7 +142,7 @@ const OnboardingPage = () => {
               strokeWidth={2}
             />
             <h3 className="mt-3 font-display font-bold text-[15px] text-[color:var(--color-text-primary)]">
-              Join Organisation
+              Join Workspace
             </h3>
             <p className="mt-1 text-sm text-[color:var(--color-text-secondary)] font-body">
               Enter an invite code to join a workspace
@@ -154,7 +154,7 @@ const OnboardingPage = () => {
         {mode === 'create' && (
           <form onSubmit={handleCreate} className="mt-6">
             <label className="block text-xs font-body font-medium text-[color:var(--color-text-secondary)] mb-2 uppercase tracking-wide">
-              Organisation name
+              Workspace name
             </label>
             <input
               type="text"
@@ -175,7 +175,7 @@ const OnboardingPage = () => {
               className="mt-4 w-full h-11 font-body font-semibold text-sm text-white bg-accent hover:bg-accent-hover disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
               style={{ borderRadius: 'var(--radius-md)' }}
             >
-              {submitting ? 'Creating…' : 'Create Organisation'}
+              {submitting ? 'Creating…' : 'Create Workspace'}
             </button>
           </form>
         )}

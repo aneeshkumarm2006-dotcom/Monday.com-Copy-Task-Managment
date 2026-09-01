@@ -30,7 +30,7 @@ const DOORS = {
   },
   escrow: {
     lead:
-      'Enter the workspace recovery passphrase. This is the organisation’s ' +
+      'Enter the workspace recovery passphrase. This is the workspace’s ' +
       'break-glass key, not this board’s password.',
     label: 'Workspace recovery passphrase',
   },

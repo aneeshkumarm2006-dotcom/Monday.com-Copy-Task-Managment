@@ -83,7 +83,7 @@ const gateBoard = async (req, res, capability) => {
  */
 const gateOrgAdmin = async (req, res, orgId) => {
   if (!isValidId(orgId)) {
-    res.status(400).json({ error: 'Invalid organisation id' });
+    res.status(400).json({ error: 'Invalid workspace id' });
     return null;
   }
 
@@ -95,7 +95,7 @@ const gateOrgAdmin = async (req, res, orgId) => {
 
   if (!ctx.can('org.manage_settings')) {
     res.status(403).json({
-      error: 'Only an organisation admin can connect or remove a connector account.',
+      error: 'Only a workspace admin can connect or remove a connector account.',
     });
     return null;
   }
@@ -175,7 +175,7 @@ const listOrgConnectors = async (req, res) => {
   try {
     const { orgId } = req.params;
     if (!isValidId(orgId)) {
-      return res.status(400).json({ error: 'Invalid organisation id' });
+      return res.status(400).json({ error: 'Invalid workspace id' });
     }
 
     const ctx = await loadOrgContext(orgId, req.user.userId);

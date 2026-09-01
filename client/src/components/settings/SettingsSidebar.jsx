@@ -14,7 +14,7 @@ import {
  * Props:
  *   activeTab: 'organisation' | 'profile' | 'notifications' | 'features'
  *   onTabChange: (tab) => void
- *   showAdminTabs: boolean — hide Organisation tab for non-admins
+ *   showAdminTabs: boolean — hide Workspace tab for non-admins
  *   canExtraFeatures: boolean — hide Extra features unless the caller holds a
  *     capability for at least one opt-in tool. Kept as its own flag rather than
  *     folded into `showAdminTabs`, because the two answer different questions:
@@ -26,11 +26,11 @@ import {
  *     into `showAdminTabs` would hide the tab from exactly those people.
  */
 const TABS = [
-  { key: 'organisation', label: 'Organisation', icon: Building2, adminOnly: true },
+  { key: 'organisation', label: 'Workspace', icon: Building2, adminOnly: true },
   { key: 'profile', label: 'Profile', icon: UserCircle2, adminOnly: false },
   { key: 'notifications', label: 'Notifications', icon: Bell, adminOnly: false },
   // Connecting an external account is credential handling for the whole
-  // workspace, so it sits with Organisation on `adminOnly` rather than being a
+  // workspace, so it sits with Workspace on `adminOnly` rather than being a
   // personal setting. Switching a connector on for one board is a separate,
   // board-level act and lives on that board's Add-ons tab.
   { key: 'connectors', label: 'Connectors', icon: Plug, adminOnly: true },

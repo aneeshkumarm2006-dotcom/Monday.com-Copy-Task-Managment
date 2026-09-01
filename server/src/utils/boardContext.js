@@ -44,7 +44,7 @@ const loadBoardContext = async (boardId, userId, { requireRead = true } = {}) =>
     (m) => String(m?._id || m) === String(userId)
   );
   if (!isMember) {
-    return { status: 403, error: 'Not a member of this organisation' };
+    return { status: 403, error: 'Not a member of this workspace' };
   }
 
   // An org created before the role system carries no `roles`, so every capability
@@ -99,7 +99,7 @@ const loadOrgContext = async (orgId, userId) => {
     (m) => String(m?._id || m) === String(userId)
   );
   if (!isMember) {
-    return { status: 403, error: 'Not a member of this organisation' };
+    return { status: 403, error: 'Not a member of this workspace' };
   }
 
   if (org.ensureSystemRoles()) await org.save();

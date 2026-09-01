@@ -430,7 +430,7 @@ const validateAssignees = async (assignedTo, org, board) => {
       return { error: 'Invalid assignee id' };
     }
     if (!memberIds.has(id)) {
-      return { error: 'Assignee is not a member of this organisation' };
+      return { error: 'Assignee is not a member of this workspace' };
     }
     if (seen.has(id)) continue;
     seen.add(id);

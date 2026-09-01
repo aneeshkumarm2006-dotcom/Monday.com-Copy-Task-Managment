@@ -83,7 +83,7 @@ const Chip = ({ children, variant = 'grey' }) => {
   );
 };
 
-/* ------------------------- Organisation tab ------------------------- */
+/* ------------------------- Workspace tab ------------------------- */
 
 const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
   const [copied, setCopied] = useState(false);
@@ -137,7 +137,7 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
     try {
       await onDeleteOrg();
     } catch (err) {
-      setDeleteError(err.response?.data?.error || 'Failed to delete organisation. Please try again.');
+      setDeleteError(err.response?.data?.error || 'Failed to delete workspace. Please try again.');
       setDeleting(false);
     }
   };
@@ -156,7 +156,7 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
           className="font-display font-bold text-[color:var(--color-text-primary)]"
           style={{ fontSize: 20 }}
         >
-          Organisation
+          Workspace
         </h2>
         <p className="mt-1 font-body text-sm text-[color:var(--color-text-secondary)]">
           {org?.name || 'Workspace settings'}
@@ -233,7 +233,7 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
           Danger Zone
         </h3>
         <p className="mt-1 font-body text-xs text-[color:var(--color-text-muted)]">
-          Irreversible actions for this organisation.
+          Irreversible actions for this workspace.
         </p>
         <div
           className="mt-3"
@@ -274,7 +274,7 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
               <div>
                 <div className="flex items-center gap-2">
                   <p className="font-body font-semibold text-[13px] text-[color:var(--color-text-primary)]">
-                    Delete this organisation
+                    Delete this workspace
                   </p>
                   <span
                     className="inline-flex items-center font-body font-semibold"
@@ -306,14 +306,14 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
                   setShowDeleteModal(true);
                 }}
               >
-                Delete Organisation
+                Delete Workspace
               </Button>
             </div>
           )}
         </div>
       </section>
 
-      {/* Delete-organisation confirmation modal */}
+      {/* Delete-workspace confirmation modal */}
       <Modal
         isOpen={showDeleteModal}
         onClose={closeDeleteModal}
@@ -335,7 +335,7 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
               onClick={handleDeleteConfirm}
               disabled={deleting || !confirmMatches}
             >
-              {deleting ? 'Deleting…' : 'Delete Organisation'}
+              {deleting ? 'Deleting…' : 'Delete Workspace'}
             </Button>
           </>
         }
@@ -351,7 +351,7 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
             </p>
           </div>
           <p className="font-body text-[14px] text-[color:var(--color-text-primary)]">
-            Deleting this organisation will:
+            Deleting this workspace will:
           </p>
           <ul
             className="font-body text-[13px] text-[color:var(--color-text-secondary)] flex flex-col gap-1"
@@ -359,7 +359,7 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
           >
             <li>Delete every board, group, task, comment, and update in this workspace</li>
             <li>Delete all automations configured for this workspace</li>
-            <li>Delete all notifications scoped to this organisation</li>
+            <li>Delete all notifications scoped to this workspace</li>
             <li>Remove all {org?.members?.length || ''} members from the workspace</li>
           </ul>
           <div className="mt-1">
@@ -690,8 +690,8 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
             Deleting your account will:
           </p>
           <ul className="font-body text-[13px] text-[color:var(--color-text-secondary)] flex flex-col gap-1" style={{ paddingLeft: 16, listStyleType: 'disc' }}>
-            <li>Delete all organisations you own (including all their boards, tasks, and members)</li>
-            <li>Remove you from all other organisations</li>
+            <li>Delete all workspaces you own (including all their boards, tasks, and members)</li>
+            <li>Remove you from all other workspaces</li>
             <li>Delete all your personal tasks and comments</li>
             <li>Delete your profile and all account data</li>
           </ul>
@@ -720,7 +720,7 @@ const SettingsPage = () => {
   const { can, isOwner } = usePermissions();
   const [searchParams] = useSearchParams();
 
-  // The Organisation tab is nothing but org settings — the invite code lives there.
+  // The Workspace tab is nothing but org settings — the invite code lives there.
   const canManageOrg = can('org.manage_settings');
   // Extra features only exists if at least one opt-in tool is available to you.
   // Derived from the feature table itself, so a new entry brings its own audience
@@ -733,7 +733,7 @@ const SettingsPage = () => {
     !!currentOrg && !permissionsLoading && loadedForOrg === currentOrg._id;
 
   // Seeded from `?tab=` so a link can point at one section — the connector OAuth
-  // callback returns to `/settings?tab=connectors`, and landing on Organisation
+  // callback returns to `/settings?tab=connectors`, and landing on Workspace
   // instead would leave the user staring at the wrong screen after a consent.
   // Deliberately a SEED, not a source of truth: the tab is state from then on,
   // matching how this page has always worked.
@@ -758,7 +758,7 @@ const SettingsPage = () => {
     if (!canExtraFeatures && activeTab === 'features') setActiveTab('profile');
   }, [permissionsResolved, canManageOrg, canExtraFeatures, canManageHolidays, activeTab]);
 
-  // Fetch org details (with inviteCode) for Organisation tab
+  // Fetch org details (with inviteCode) for Workspace tab
   useEffect(() => {
     if (activeTab === 'organisation' && currentOrg?._id && !orgState?.inviteCode) {
       orgService
@@ -859,7 +859,7 @@ const SettingsPage = () => {
             Settings
           </h1>
           <p className="mt-1 font-body text-sm text-[color:var(--color-text-secondary)]">
-            Manage your organisation and profile
+            Manage your workspace and profile
           </p>
         </header>
 

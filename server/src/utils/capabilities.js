@@ -37,10 +37,10 @@ const CAPABILITY_GROUPS = [
     capabilities: [
       ['org.view_members', 'See the member list'],
       ['org.invite_members', 'Invite people and send invite links'],
-      ['org.remove_members', 'Remove people from the organisation'],
+      ['org.remove_members', 'Remove people from the workspace'],
       ['org.assign_roles', 'Change which role a person has'],
       ['org.manage_roles', 'Create and edit roles — edit this matrix'],
-      ['org.manage_settings', 'Rename the org, rotate the invite code'],
+      ['org.manage_settings', 'Rename the workspace, rotate the invite code'],
       // Its own capability rather than riding on org.manage_settings: marking a
       // day off changes what every board in the workspace counts as owed, which
       // an ops lead may well need to do without also being able to rename the
