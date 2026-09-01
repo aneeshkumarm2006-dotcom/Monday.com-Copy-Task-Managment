@@ -46,7 +46,8 @@ const {
 const { resolveFieldValue, collectUserIds } = require('../services/activityFormat');
 const {
   getGoalType, isGoalType, scoreGoal, scoreGroup, scoreBoard,
-  missingFinalValues, monthIsUnclosed, describeGoalTypes, UNITS,
+  missingFinalValues, monthIsUnclosed, describeGoalTypes,
+  normaliseGoalVocabulary, UNITS,
 } = require('../utils/goalTypes');
 const { isMonthKey, monthKeyOf, addMonths, monthKeysBetween } = require('../utils/monthKey');
 const { mergeGoalOrder, isOneTable } = require('../utils/goalOrdering');
@@ -140,14 +141,27 @@ const decorate = (goal, columns) => ({
 });
 
 /**
- * GET /api/goal-types — the type catalog, for generating the add-a-goal form.
+ * GET /api/goal-types[?vocabulary=ads] — the type catalog, for generating the
+ * add-a-goal form.
  *
  * Served rather than duplicated on the client so a new goal type arrives in the
  * UI with the right inputs and labels without a second table to keep in sync.
- * Static; safe to cache.
+ *
+ * `vocabulary` is WORDING ONLY — it renames types and swaps their examples, and
+ * cannot change what any type is scored by (`goalTypes.test.js` asserts that).
+ * That is why it is taken from the query string rather than resolved from a
+ * board id: there is nothing here to authorise. A board id would buy a lookup,
+ * an access check and a 403 path on a catalog endpoint, in exchange for
+ * protecting a set of English sentences the client is about to render anyway.
+ *
+ * An unrecognised value falls back to the default wording rather than 400ing,
+ * so a client left open across a deploy that removed a vocabulary still gets a
+ * usable form instead of a broken tab. Still cacheable — but per vocabulary,
+ * which is why it is echoed back in the response.
  */
 const getGoalTypes = async (req, res) => {
-  res.json({ types: describeGoalTypes(), units: UNITS });
+  const vocabulary = normaliseGoalVocabulary(req.query.vocabulary);
+  res.json({ types: describeGoalTypes(vocabulary), units: UNITS, vocabulary });
 };
 
 /**

@@ -22,6 +22,7 @@ import Chip from '../ui/Chip';
 import Avatar from '../ui/Avatar';
 import NotificationFeed from '../notifications/NotificationFeed';
 import { resolveNotifLink } from '../notifications/notificationMeta';
+import macanMark from '../../assets/macan-mark.png';
 
 /**
  * Top navigation bar. Sticky, 56px tall, white, with:
@@ -29,21 +30,28 @@ import { resolveNotifLink } from '../notifications/notificationMeta';
  * See Macan_Design.md Section 6.1.
  */
 
+/**
+ * The brand mark, then the wordmark as live text.
+ *
+ * The mark is `aria-hidden` with an empty `alt` and the wordmark beside it is
+ * real text, so the pair announces once as "Macan" rather than twice. That was
+ * true of the letter tile this replaced and is the reason the supplied artwork
+ * is the SYMBOL ONLY — the version with the wordmark baked in would have put
+ * "Macan" on the screen twice, once as pixels no screen reader can read.
+ *
+ * `width`/`height` are set on the element as well as in CSS so the row reserves
+ * its 32px before the image decodes and the nav does not shift on first paint.
+ */
 const Logo = () => (
   <div className="flex items-center gap-2.5 shrink-0">
-    <div
-      className="flex items-center justify-center bg-accent"
-      style={{
-        width: 32,
-        height: 32,
-        borderRadius: 'var(--radius-sm)',
-      }}
+    <img
+      src={macanMark}
+      alt=""
       aria-hidden="true"
-    >
-      <span className="font-display font-bold text-white text-[16px] leading-none">
-        M
-      </span>
-    </div>
+      width={32}
+      height={32}
+      style={{ width: 32, height: 32, objectFit: 'contain' }}
+    />
     <span className="font-display font-bold text-[18px] text-[color:var(--color-text-primary)] tracking-tight">
       Macan
     </span>

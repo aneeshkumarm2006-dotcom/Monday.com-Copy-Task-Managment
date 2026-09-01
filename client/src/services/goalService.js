@@ -11,9 +11,23 @@ import api from './api';
  * renders the server's own sentence rather than firing a generic toast.
  */
 
-/** The type catalog that generates the add-a-goal form. Static; fetched once. */
-export const getGoalTypes = async () => {
-  const { data } = await api.get('/api/goal-types', { suppressErrorToast: true });
+/**
+ * The type catalog that generates the add-a-goal form.
+ *
+ * `vocabulary` is the BOARD's `goalVocabulary` and changes wording only — the
+ * labels and examples a picker shows, never what a type is scored by. Passing
+ * nothing (or a key the server does not know) returns the default wording, so a
+ * board that has never opted into a trade's vocabulary is unaffected.
+ *
+ * Fetched per board rather than once per session, because two boards open in
+ * one session can want different wording and a single cached catalog would
+ * serve whichever tab loaded first.
+ */
+export const getGoalTypes = async (vocabulary = null) => {
+  const { data } = await api.get('/api/goal-types', {
+    params: vocabulary ? { vocabulary } : undefined,
+    suppressErrorToast: true,
+  });
   return data;
 };
 

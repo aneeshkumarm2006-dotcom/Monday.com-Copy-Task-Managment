@@ -1,4 +1,5 @@
 import { useSearchParams } from 'react-router-dom';
+import macanMark from '../assets/macan-mark.png';
 
 const GoogleIcon = () => (
   <svg
@@ -44,16 +45,18 @@ const LoginPage = () => {
           boxShadow: 'var(--shadow-md)',
         }}
       >
-        {/* Logo + wordmark */}
+        {/* Logo + wordmark. The mark is decorative — the <h1> below is the
+            accessible name, so it carries an empty alt rather than "Macan",
+            which would otherwise be announced twice in a row. */}
         <div className="flex flex-col items-center">
-          <div
-            className="w-12 h-12 flex items-center justify-center bg-accent"
-            style={{ borderRadius: 'var(--radius-md)' }}
-          >
-            <span className="font-display font-bold text-white text-[22px] leading-none">
-              M
-            </span>
-          </div>
+          <img
+            src={macanMark}
+            alt=""
+            aria-hidden="true"
+            width={56}
+            height={56}
+            style={{ width: 56, height: 56, objectFit: 'contain' }}
+          />
           <h1 className="mt-4 font-display font-extrabold text-[22px] tracking-tight text-[color:var(--color-text-primary)]">
             Macan
           </h1>

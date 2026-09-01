@@ -654,6 +654,140 @@ const formatValue = (value, goal) => {
 };
 
 /**
+ * PER-DISCIPLINE WORDING. The same seven engines, named the way one trade
+ * actually speaks.
+ *
+ * ---- Why this is an overlay and not a second table ------------------------
+ *
+ * Nothing here touches `score`, `validateConfig`, `configFields` or
+ * `actualField`. A vocabulary may rename a type and re-example it; it may not
+ * change what the type DOES. That is the whole safety property: a board on the
+ * `ads` vocabulary and a board on the default one are scored by identical code,
+ * so a goal keeps its meaning if a board's vocabulary is ever changed, and
+ * "add wording for a trade" can never become "fork the scorer".
+ *
+ * ---- The default is not a vocabulary --------------------------------------
+ *
+ * `GOAL_TYPES` above IS the default wording, and it stays exactly as it is.
+ * Boards with no vocabulary set — which is every board that exists today —
+ * resolve to it untouched. Adding `ads` here cannot alter a single word an SEO
+ * board renders, and an unknown vocabulary key falls back rather than throwing,
+ * so a stale client asking for a vocabulary that has been removed still gets a
+ * usable form.
+ *
+ * ---- `notWhen` MUST be rewritten, and it is the easy thing to miss ---------
+ *
+ * The header of this file records why `notWhen` names the type you probably
+ * wanted instead: seven labels with no cross-references is a list, seven that
+ * point at each other is a decision tree, and picking the wrong kind is the
+ * actual failure mode. An overlay that renames `checklist` to "Count" while
+ * leaving `numeric.notWhen` pointing at "Tick off a list" breaks that tree and
+ * sends people to a card that is not on screen. Every `notWhen` below therefore
+ * names an ADS label, and `goalTypes.test.js` asserts that for every vocabulary
+ * rather than trusting it — a renamed label with a stale cross-reference is
+ * invisible in review and obvious in a test.
+ */
+const GOAL_VOCABULARIES = {
+  ads: {
+    numeric: {
+      label: 'Target',
+      hint: 'A number you want to move by the end of the month — up or down.',
+      useWhen: 'You are pushing a number somewhere new.',
+      notWhen: 'Just counting how many you shipped? Use “Count”.',
+      examples: [
+        'Cost per lead: $38 → $30',
+        'ROAS: 2.1 → 3.0',
+        'Amazon ACoS: 34% → 26%',
+      ],
+      namePlaceholder: 'Bring cost per lead down',
+    },
+    threshold: {
+      label: 'Limit',
+      hint: 'A line you must not cross. You are holding a number, not pushing it somewhere new.',
+      useWhen: 'The win is not slipping, rather than improving.',
+      notWhen: 'Want credit for improving month on month? Use “Target”.',
+      examples: [
+        'Keep spend under $5,000',
+        'Keep CPA under $35',
+        'Keep ROAS above 2.5',
+      ],
+      namePlaceholder: 'Keep spend under budget',
+    },
+    checklist: {
+      label: 'Count',
+      hint: 'You promised a number of things this month. At the end you count how many you shipped.',
+      useWhen: 'The same kind of thing, done several times.',
+      notWhen: 'Only one thing to deliver? Use “Yes / No”.',
+      answerShape: 'how many you shipped',
+      examples: [
+        'Ship 12 responsive search ads',
+        'Test 8 new Meta creatives',
+        'Launch 5 Pinterest campaigns',
+      ],
+      namePlaceholder: 'Ship 12 responsive search ads',
+    },
+    boolean: {
+      label: 'Yes / No',
+      hint: 'One thing that either went live or it did not. There is no half.',
+      useWhen: 'A single thing to deliver, and half of it is worth nothing.',
+      notWhen: 'Has to land by a particular day? Use “Deadline”.',
+      examples: [
+        'Get Performance Max live',
+        'Install the Meta CAPI',
+        'Set up enhanced conversions',
+      ],
+      namePlaceholder: 'Get Performance Max live',
+    },
+    deadline: {
+      label: 'Deadline',
+      hint: 'Something that had to be live or delivered by a particular day. Being late costs points.',
+      useWhen: 'When it lands matters as much as whether it lands.',
+      notWhen: 'Date does not really matter? Use “Yes / No”.',
+      examples: [
+        'Monthly report by the 5th',
+        'BFCM budgets in place by 20 Nov',
+        'Campaign live before the sale',
+      ],
+      namePlaceholder: 'Send the monthly report',
+    },
+    band: {
+      label: 'Range',
+      hint: 'A window you have to end up inside. Too high and too low are both misses.',
+      useWhen: 'Being inside the range is the win, and overshooting is not better.',
+      notWhen: 'Only one side matters? Use “Limit”.',
+      examples: [
+        'Keep ad frequency between 1.5 and 3',
+        'Impression share 65–85%',
+        'Keep CPM between $8 and $14',
+      ],
+      namePlaceholder: 'Keep ad frequency in range',
+    },
+    rating: {
+      label: 'Rating',
+      hint: 'Work that matters but that nothing counts. A person decides at the end of the month.',
+      useWhen: 'You would know it went well, but no report will tell you.',
+      examples: [
+        'Creative quality held up',
+        'Account hygiene held up',
+        'Client happy this month',
+      ],
+      namePlaceholder: 'Creative quality held up',
+    },
+  },
+};
+
+const GOAL_VOCABULARY_KEYS = Object.keys(GOAL_VOCABULARIES);
+
+/**
+ * A vocabulary key, or null for the default wording. Unknown keys resolve to
+ * null rather than throwing — see the overlay header.
+ */
+const isGoalVocabulary = (key) =>
+  Object.prototype.hasOwnProperty.call(GOAL_VOCABULARIES, key);
+
+const normaliseGoalVocabulary = (key) => (isGoalVocabulary(key) ? key : null);
+
+/**
  * The type table as the client needs it for form generation — no functions.
  * Served by `GET /api/goal-types` so the add-a-goal form is generated from the
  * same table the scorer uses, rather than a hand-kept copy that drifts.
@@ -661,22 +795,31 @@ const formatValue = (value, goal) => {
  * `example` is the singular kept for older clients, which rendered one line of
  * example text per card; it is simply the first of `examples`, so there is still
  * only one place to edit the wording.
+ *
+ * `vocabulary` overlays wording only, field by field: anything a vocabulary
+ * does not mention keeps the default sentence, so an overlay is a diff rather
+ * than a retyped copy of all nine strings. Omitting `partialCredit` from every
+ * ads entry below is deliberate for exactly that reason — the scoring is
+ * identical, so the sentence describing it should be too.
  */
-const describeGoalTypes = () =>
-  GOAL_TYPE_KEYS.map((key) => {
+const describeGoalTypes = (vocabulary = null) => {
+  const overlay = GOAL_VOCABULARIES[normaliseGoalVocabulary(vocabulary)] || {};
+  return GOAL_TYPE_KEYS.map((key) => {
     const t = GOAL_TYPES[key];
+    const o = overlay[key] || {};
+    const examples = o.examples || t.examples;
     return {
       key: t.key,
-      label: t.label,
-      hint: t.hint,
-      useWhen: t.useWhen,
-      notWhen: t.notWhen,
-      setupShape: t.setupShape,
-      answerShape: t.answerShape,
-      partialCredit: t.partialCredit,
-      examples: t.examples,
-      example: t.examples[0],
-      namePlaceholder: t.namePlaceholder,
+      label: o.label ?? t.label,
+      hint: o.hint ?? t.hint,
+      useWhen: o.useWhen ?? t.useWhen,
+      notWhen: o.notWhen ?? t.notWhen,
+      setupShape: o.setupShape ?? t.setupShape,
+      answerShape: o.answerShape ?? t.answerShape,
+      partialCredit: o.partialCredit ?? t.partialCredit,
+      examples,
+      example: examples[0],
+      namePlaceholder: o.namePlaceholder ?? t.namePlaceholder,
       /**
        * WHICH config field the goals table's "Target" cell edits, declared
        * here rather than in a table on the client.
@@ -698,13 +841,18 @@ const describeGoalTypes = () =>
       actualField: t.actualField,
     };
   });
+};
 
 module.exports = {
   GOAL_TYPES,
   GOAL_TYPE_KEYS,
+  GOAL_VOCABULARIES,
+  GOAL_VOCABULARY_KEYS,
   STATES,
   UNITS,
   isGoalType,
+  isGoalVocabulary,
+  normaliseGoalVocabulary,
   getGoalType,
   actualValueOf,
   scoreGoal,

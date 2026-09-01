@@ -2406,6 +2406,11 @@ const BoardDetailPage = () => {
             // project feeds which group — and writes nothing to a goal, which is
             // why it is `connector.manage` and not one of the three above.
             canLinkConnector={canManageConnectors}
+            // Which WORDING this board's goal types carry — the Ads vocabulary
+            // renames "Move a number" to "Target" and re-examples every card.
+            // Null on every board that has not opted in, which is the default
+            // wording, so an SEO board is untouched by an Ads overlay existing.
+            goalVocabulary={board?.goalVocabulary || null}
             // A goal chip lists the work behind it; clicking a row has to LAND
             // on that work. Same params the deep links use (utils/taskLink.js),
             // so there is one way to reach a task. Carrying the task's own

@@ -485,3 +485,76 @@ test('every type validates its own config', () => {
     if (err !== null) assert.strictEqual(typeof err, 'string');
   }
 });
+
+// ---------------------------------------------------------------------------
+// Vocabularies — wording per discipline, over one unchanged scoring table
+// ---------------------------------------------------------------------------
+
+const {
+  GOAL_VOCABULARY_KEYS,
+  normaliseGoalVocabulary,
+} = require('./goalTypes');
+
+/**
+ * The promise the overlay makes: a vocabulary renames and re-examples, and
+ * changes NOTHING a goal is scored by. If this fails, two boards are running
+ * two different scorers and a goal's meaning depends on where it lives.
+ */
+test('a vocabulary cannot change how a type is set up or answered', () => {
+  const def = describeGoalTypes();
+  for (const vocab of GOAL_VOCABULARY_KEYS) {
+    const got = describeGoalTypes(vocab);
+    assert.strictEqual(got.length, def.length, `${vocab}: type count changed`);
+    got.forEach((t, i) => {
+      const d = def[i];
+      assert.strictEqual(t.key, d.key, `${vocab}: type order changed`);
+      assert.deepStrictEqual(t.configFields, d.configFields, `${vocab}/${t.key}: configFields`);
+      assert.deepStrictEqual(t.actualField, d.actualField, `${vocab}/${t.key}: actualField`);
+      assert.strictEqual(t.targetConfigKey, d.targetConfigKey, `${vocab}/${t.key}: targetConfigKey`);
+      assert.strictEqual(t.supportsUnit, d.supportsUnit, `${vocab}/${t.key}: supportsUnit`);
+    });
+  }
+});
+
+/**
+ * The default wording is not a vocabulary and must stay reachable untouched —
+ * this is what keeps an SEO board's form identical after an Ads overlay lands.
+ */
+test('an unknown or absent vocabulary resolves to the default wording', () => {
+  const def = describeGoalTypes();
+  assert.deepStrictEqual(describeGoalTypes(null), def);
+  assert.deepStrictEqual(describeGoalTypes('no-such-trade'), def);
+  assert.strictEqual(normaliseGoalVocabulary('no-such-trade'), null);
+});
+
+/**
+ * `notWhen` points at the type you probably wanted instead, BY LABEL. Rename a
+ * label in one vocabulary and forget its cross-references and the decision tree
+ * sends people to a card that is not on screen — invisible in review, which is
+ * why it is asserted here.
+ */
+test('every notWhen cross-reference names a label in its own vocabulary', () => {
+  for (const vocab of [null, ...GOAL_VOCABULARY_KEYS]) {
+    const types = describeGoalTypes(vocab);
+    const labels = new Set(types.map((t) => t.label));
+    for (const t of types) {
+      const quoted = String(t.notWhen || '').match(/[“"']([^”"']+)[”"']/);
+      if (!quoted) continue;
+      assert.ok(
+        labels.has(quoted[1]),
+        `${vocab || 'default'}/${t.key}: notWhen points at "${quoted[1]}", which is not a label here`
+      );
+    }
+  }
+});
+
+/** Examples are what make somebody pick the right type; a blank card is a bug. */
+test('every type in every vocabulary keeps a label and examples', () => {
+  for (const vocab of [null, ...GOAL_VOCABULARY_KEYS]) {
+    for (const t of describeGoalTypes(vocab)) {
+      assert.ok(t.label && t.label.trim(), `${vocab}/${t.key}: empty label`);
+      assert.ok(Array.isArray(t.examples) && t.examples.length >= 1, `${vocab}/${t.key}: no examples`);
+      assert.strictEqual(t.example, t.examples[0], `${vocab}/${t.key}: example drifted`);
+    }
+  }
+});

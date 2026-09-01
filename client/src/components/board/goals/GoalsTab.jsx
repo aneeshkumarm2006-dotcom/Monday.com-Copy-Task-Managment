@@ -56,6 +56,8 @@ const GoalsTab = ({
   // nothing to a goal, so it is deliberately NOT one of the goal capabilities
   // above. Every write below is gated again server-side.
   canLinkConnector = false,
+  // The board's `goalVocabulary`. Wording only — see goalService.getGoalTypes.
+  goalVocabulary = null,
   onOpenTask,
   onGoalsChanged,
 }) => {
@@ -160,9 +162,14 @@ const GoalsTab = ({
   // the guard — and the board you actually navigated to opens fully expanded.
   useEffect(() => { setData(null); }, [boardId]);
 
+  // Re-fetched when the board's vocabulary changes, because the catalog IS the
+  // wording — a cached copy from another board would label this board's picker.
   useEffect(() => {
-    goalService.getGoalTypes().then((d) => setTypes(d.types || [])).catch(() => setTypes([]));
-  }, []);
+    goalService
+      .getGoalTypes(goalVocabulary)
+      .then((d) => setTypes(d.types || []))
+      .catch(() => setTypes([]));
+  }, [goalVocabulary]);
 
   useEffect(() => {
     if (!boardId || !monthKey || !prefs.showTrend) return;

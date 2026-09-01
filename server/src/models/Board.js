@@ -349,6 +349,25 @@ const boardSchema = new mongoose.Schema(
       enabled: { type: Boolean, default: false },
       currency: { type: String, default: 'USD', trim: true, uppercase: true, maxlength: 3 },
     },
+
+    /**
+     * Which WORDING this board's Goals tab uses — see `GOAL_VOCABULARIES` in
+     * utils/goalTypes.js. `null` is the default vocabulary, and it is what
+     * every board that already exists resolves to, so adding a trade's wording
+     * can never change a word on a board nobody opted in.
+     *
+     * NOT an enum, and no `required`. An unrecognised value falls back to the
+     * default rather than failing validation, which is what lets a vocabulary
+     * be retired without a migration over every board that named it.
+     *
+     * WORDING ONLY. It selects labels and examples; it cannot reach the scoring
+     * table, so moving a board between vocabularies never re-scores a goal. It
+     * lives on the BOARD rather than on each goal because a board is already
+     * single-discipline in practice — an "Ads" workspace holding a "Meta Ads"
+     * board has said so twice before a goal exists — and a per-goal copy would
+     * be a third answer free to contradict both.
+     */
+    goalVocabulary: { type: String, default: null, trim: true, maxlength: 40 },
   },
   { timestamps: true }
 );

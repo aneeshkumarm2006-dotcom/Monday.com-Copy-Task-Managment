@@ -22,6 +22,7 @@ const { isBoardCreator } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
 const { BOARD_LEVELS } = require('../utils/capabilities');
+const { isGoalVocabulary, GOAL_VOCABULARY_KEYS } = require('../utils/goalTypes');
 const { isBoardType } = require('../utils/boardTypes');
 const { isValidTimezone } = require('../utils/tzDay');
 const { monthKeyOf } = require('../utils/monthKey');
@@ -544,7 +545,9 @@ const updateBoard = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { id } = req.params;
-    const { name, visibility, description, publicDefaultLevel } = req.body;
+    const {
+      name, visibility, description, publicDefaultLevel, goalVocabulary,
+    } = req.body;
 
     const ctx = await loadBoard(id, userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
@@ -591,6 +594,47 @@ const updateBoard = async (req, res) => {
     }
     if (typeof description === 'string') {
       board.description = description.trim();
+    }
+
+    /**
+     * The Goals tab's WORDING for this board — see `Board.goalVocabulary`.
+     *
+     * THE BOARD'S OWNER SETS THIS, which is `canManageAccess`: the creator, a
+     * member the creator granted full access, and the matrix overrides that
+     * resolve to owner-equivalent. Deliberately NOT the two neighbouring gates,
+     * both of which were considered:
+     *
+     *   `org.manage_settings` — what goal COLUMNS use, because a column is a
+     *     reporting field an agency compares clients across. Wording is not:
+     *     an Ads board calling a type "Target" while an SEO board calls it
+     *     "Move a number" is the POINT, so routing it through an org admin
+     *     makes the org sign off on a decision that belongs to the board.
+     *   `goal.manage` — held by every member at the `edit` rung, so any of them
+     *     could rename the type cards under everyone else on the board.
+     *
+     * Empty string means "back to the default wording" and is stored as null,
+     * so there is one representation of the default rather than two that both
+     * have to be checked for. An unknown key is REFUSED here even though
+     * `describeGoalTypes` would fall back to the default for it — a typo that
+     * silently does nothing is worse at the point of writing than at the point
+     * of reading, where falling back keeps a stale client working.
+     */
+    if (goalVocabulary !== undefined) {
+      if (!ctx.access?.canManageAccess) {
+        return res.status(403).json({
+          error: 'Goal wording applies to the whole board, so only the board '
+            + 'owner can change it.',
+        });
+      }
+      if (goalVocabulary === null || goalVocabulary === '') {
+        board.goalVocabulary = null;
+      } else if (typeof goalVocabulary !== 'string' || !isGoalVocabulary(goalVocabulary)) {
+        return res.status(400).json({
+          error: `Unknown goal wording. Available: ${GOAL_VOCABULARY_KEYS.join(', ')}.`,
+        });
+      } else {
+        board.goalVocabulary = goalVocabulary;
+      }
     }
 
     await board.save();
