@@ -1,5 +1,6 @@
 import {
   UserPlus,
+  Sunrise,
   UserMinus,
   CheckCircle2,
   MessageSquare,
@@ -29,6 +30,7 @@ export const NOTIF_TYPE_COLOR = {
   mentioned: 'var(--color-accent)',
   statusChanged: 'var(--color-status-done)',
   dueSoon: 'var(--color-status-stuck)',
+  dueDigest: 'var(--color-accent)',
   dueDateChanged: 'var(--color-status-stuck)',
   taskMoved: 'var(--color-status-working)',
   invited: 'var(--color-accent)',
@@ -53,6 +55,7 @@ export const NOTIF_TYPE_ICON = {
   mentioned: AtSign,
   statusChanged: CheckCircle2,
   dueSoon: Clock,
+  dueDigest: Sunrise,
   dueDateChanged: CalendarClock,
   taskMoved: ArrowLeftRight,
   invited: Share2,
@@ -94,6 +97,11 @@ export const FILTER_TABS = [
  */
 export const resolveNotifLink = (notif) => {
   if (!notif) return null;
+
+  // The morning digest is about the PERSON, not a board — it lands on My Work,
+  // where every task it counted is already filtered to them.
+  if (notif.type === 'dueDigest' || notif.tab === 'myWork') return '/my-tasks';
+
   const boardId =
     notif.board?._id ||
     (typeof notif.board === 'string' ? notif.board : null) ||

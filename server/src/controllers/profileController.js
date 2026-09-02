@@ -6,6 +6,40 @@ const Notification = require('../models/Notification');
 const NotificationPreference = require('../models/NotificationPreference');
 const ItemFollow = require('../models/ItemFollow');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
+const { isValidTimezone } = require('../utils/tzDay');
+
+/**
+ * PUT /api/profile/timezone — record the browser's resolved IANA zone.
+ *
+ * Fired silently by the client on app load whenever the browser's zone differs
+ * from the stored one — nobody chooses a timezone from a dropdown, the machine
+ * already knows. Its own endpoint rather than a field on `updateProfile`,
+ * because that handler requires `name` and this write must never be able to
+ * touch the display name (or anything else) as a side effect.
+ *
+ * Read by the morning due-task digest, which is the whole reason it exists:
+ * "9am" has to be this person's 9am. Invalid zones are refused rather than
+ * stored — a zone Intl cannot parse would make the digest silently never fire
+ * for this user, which is the worst failure a reminder can have.
+ */
+const updateTimezone = async (req, res) => {
+  try {
+    const { timezone } = req.body;
+    if (typeof timezone !== 'string' || !isValidTimezone(timezone)) {
+      return res.status(400).json({ error: 'That is not a recognised timezone.' });
+    }
+    const user = await User.findByIdAndUpdate(
+      req.user.userId,
+      { timezone },
+      { new: true }
+    ).select('_id timezone');
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    return res.json({ timezone: user.timezone });
+  } catch (err) {
+    console.error('updateTimezone error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
 
 /**
  * PUT /api/profile — Update the current user's display name.
@@ -184,6 +218,7 @@ const deleteAccount = async (req, res) => {
 };
 
 module.exports = {
+  updateTimezone,
   updateProfile,
   updateFeatures,
   uploadAvatar,

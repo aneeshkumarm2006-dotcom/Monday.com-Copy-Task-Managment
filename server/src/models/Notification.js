@@ -38,6 +38,11 @@ const notificationSchema = new mongoose.Schema(
         'taskMoved',
         'unassigned',
         'dueDateChanged',
+        // The 9am morning digest — ONE row per morning counting everything due
+        // and overdue, where `dueSoon` above is one row per task and only
+        // materialises when somebody opens the bell. Mapped to the `dueDates`
+        // category in notificationService, so the existing toggle governs both.
+        'dueDigest',
         // Client Portal — team-facing alerts about external client activity.
         'clientIssueCreated',
         'clientReplied',
@@ -100,6 +105,9 @@ const notificationSchema = new mongoose.Schema(
         // no task either — it is about a site, not a row — so it opens the
         // board's SEO tab.
         'seo',
+        // Not a board anything: the morning digest is about the PERSON, so it
+        // opens My Work, where every task it counted is already theirs.
+        'myWork',
         null,
       ],
       default: null,

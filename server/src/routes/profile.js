@@ -3,6 +3,7 @@ const authMiddleware = require('../middleware/auth');
 const { avatarUpload } = require('../config/cloudinary');
 const {
   updateProfile,
+  updateTimezone,
   updateFeatures,
   uploadAvatar,
   deleteAccount,
@@ -14,6 +15,9 @@ router.use(authMiddleware);
 
 // PUT /api/profile — update display name
 router.put('/', updateProfile);
+
+// PUT /api/profile/timezone — silent browser-zone sync; feeds the 9am digest
+router.put('/timezone', updateTimezone);
 
 // PUT /api/profile/features — toggle opt-in extras (activity export, …)
 router.put('/features', updateFeatures);

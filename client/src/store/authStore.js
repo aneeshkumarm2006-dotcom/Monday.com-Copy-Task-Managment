@@ -5,6 +5,25 @@ import useVaultStore from './vaultStore';
 
 const TOKEN_KEY = 'macan_token';
 
+/**
+ * Tell the server what timezone this browser resolves to, if it differs from
+ * what the account has stored. Fire-and-forget on purpose: the 9am due-task
+ * digest is the only consumer, nothing on this screen depends on the answer,
+ * and a failed sync must never surface as an error on app load — the digest
+ * simply keeps using the previous zone until the next visit.
+ */
+const syncTimezone = (user) => {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!zone || user?.timezone === zone) return;
+    import('../services/api').then(({ default: api }) =>
+      api.put('/api/profile/timezone', { timezone: zone }, { suppressErrorToast: true })
+    ).catch(() => {});
+  } catch {
+    /* Intl unavailable — nothing to sync */
+  }
+};
+
 const useAuthStore = create((set, get) => ({
   user: null,
   token: localStorage.getItem(TOKEN_KEY) || null,
@@ -35,6 +54,7 @@ const useAuthStore = create((set, get) => ({
     try {
       const user = await authService.getCurrentUser();
       set({ user, isAuthenticated: true, loading: false });
+      syncTimezone(user);
       return user;
     } catch (err) {
       // Token is bad — clear state

@@ -17,6 +17,20 @@ const userSchema = new mongoose.Schema({
   profilePic: {
     type: String,
   },
+  /**
+   * IANA zone, synced from the browser on app load (PUT /api/profile/timezone).
+   * What makes "9am" mean THIS person's 9am for the morning due-task digest —
+   * the same reason Tracker refuses to default its zone: a digest silently on
+   * UTC for a team in Calcutta arrives at 2:30 in the afternoon. Null until the
+   * first app-open after this shipped; utils/dueDigest.js falls back to the
+   * majority board zone until then.
+   */
+  timezone: {
+    type: String,
+    default: null,
+    trim: true,
+    maxlength: 64,
+  },
   organisations: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Organisation',

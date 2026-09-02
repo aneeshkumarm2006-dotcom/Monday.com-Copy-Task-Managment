@@ -667,3 +667,129 @@ module.exports = {
   sendPortalSharedTaskEmail,
   sendPortalResolvedEmail,
 };
+
+/* ---------------------------------------------------------------------------
+ * The morning due-task digest.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * One row of the digest — a task with where it lives and how late it is.
+ * Inline styles throughout, because email clients strip <style> blocks
+ * unpredictably; the classes on the assignment email above survive most
+ * clients, but a digest is read on phones at 9am and gets the paranoid
+ * treatment.
+ */
+const digestRow = ({ name, context, daysLate, priority }, { overdue }) => {
+  const lateBadge = overdue
+    ? `<td align="right" style="padding:10px 16px;white-space:nowrap">
+         <span style="display:inline-block;font-size:11px;font-weight:600;color:#B91C1C;background:#FEF2F2;border:1px solid #FECACA;border-radius:999px;padding:2px 10px">
+           ${daysLate === 1 ? '1 day late' : `${daysLate} days late`}
+         </span>
+       </td>`
+    : `<td align="right" style="padding:10px 16px;white-space:nowrap">
+         <span style="display:inline-block;font-size:11px;font-weight:600;color:#1E40AF;background:#EFF6FF;border:1px solid #BFDBFE;border-radius:999px;padding:2px 10px">
+           today
+         </span>
+       </td>`;
+  const prio = priority === 'critical' || priority === 'high'
+    ? `<span style="color:${priority === 'critical' ? '#DC2626' : '#EA580C'};font-weight:700"> · ${priority}</span>`
+    : '';
+  return `
+    <tr>
+      <td style="padding:10px 16px;border-top:1px solid #F3F4F6">
+        <div style="font-size:14px;font-weight:600;color:#111827;line-height:1.4">${escapeHtml(name)}</div>
+        <div style="font-size:12px;color:#9CA3AF;margin-top:1px">${escapeHtml(context)}${prio}</div>
+      </td>
+      ${lateBadge.replace('padding:10px 16px', 'padding:10px 16px;border-top:1px solid #F3F4F6')}
+    </tr>`;
+};
+
+const digestSection = (title, color, tasks, { overdue }) => {
+  if (!tasks.length) return '';
+  return `
+    <div style="margin:0 0 20px">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${color};margin:0 0 8px">
+        ${title} · ${tasks.length}
+      </div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+             style="background:#FFFFFF;border:1.5px solid #E5E7EB;border-radius:10px;border-collapse:separate;overflow:hidden">
+        ${tasks.map((t, i) => digestRow(t, { overdue }).replace(
+          i === 0 ? 'border-top:1px solid #F3F4F6' : '__never__',
+          'border-top:0'
+        )).join('')}
+      </table>
+    </div>`;
+};
+
+const buildDueDigestHtml = ({ name, overdue, dueToday, link }) => {
+  const total = overdue.length + dueToday.length;
+  const firstName = escapeHtml(String(name || '').trim().split(/\s+/)[0] || 'there');
+  const summary = overdue.length
+    ? `${total} task${total === 1 ? '' : 's'} need${total === 1 ? 's' : ''} you today — <strong style="color:#B91C1C">${overdue.length} overdue</strong>.`
+    : `${total} task${total === 1 ? '' : 's'} due today. Clear morning, clear list.`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Your tasks this morning</title></head>
+<body style="margin:0;padding:0;background:#F3F4F8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,sans-serif">
+  <div style="max-width:560px;margin:40px auto;background:#FFFFFF;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08)">
+    <div style="background:#2563EB;padding:24px 32px">
+      <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+        <td style="padding-right:10px">
+          <!-- the four-weeks mark, as bulletproof table cells -->
+          <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:2px">
+            <tr>
+              <td style="width:9px;height:9px;background:#FFFFFF;border-radius:2px;font-size:0;line-height:0">&nbsp;</td>
+              <td style="width:9px;height:9px;background:#FFFFFF;border-radius:2px;font-size:0;line-height:0">&nbsp;</td>
+            </tr>
+            <tr>
+              <td style="width:9px;height:9px;background:#FFFFFF;border-radius:2px;font-size:0;line-height:0">&nbsp;</td>
+              <td style="width:9px;height:9px;background:rgba(255,255,255,0.35);border-radius:2px;font-size:0;line-height:0">&nbsp;</td>
+            </tr>
+          </table>
+        </td>
+        <td style="font-size:22px;font-weight:800;color:#FFFFFF;letter-spacing:-0.02em">Macan</td>
+      </tr></table>
+    </div>
+    <div style="padding:28px 32px">
+      <p style="font-size:20px;font-weight:700;color:#111827;margin:0 0 6px">Good morning, ${firstName}</p>
+      <p style="font-size:14px;color:#6B7280;margin:0 0 24px;line-height:1.5">${summary}</p>
+      ${digestSection('Overdue', '#B91C1C', overdue, { overdue: true })}
+      ${digestSection('Due today', '#1E40AF', dueToday, { overdue: false })}
+      <div style="text-align:center;margin-top:26px">
+        <a href="${link}" style="display:inline-block;background:#2563EB;color:#FFFFFF !important;font-size:14px;font-weight:600;padding:13px 32px;border-radius:8px;text-decoration:none">Open My Work &rarr;</a>
+      </div>
+    </div>
+    <div style="background:#F9FAFB;border-top:1px solid #E5E7EB;padding:18px 32px">
+      <p style="font-size:12px;color:#9CA3AF;margin:0;line-height:1.5">
+        You get this each morning when tasks are due. Turn it off under
+        Settings &rarr; Notifications &rarr; Due dates.
+      </p>
+    </div>
+  </div>
+</body>
+</html>`;
+};
+
+/**
+ * The 9am digest: everything overdue, everything due today, one email.
+ * Sent by services/dueDigestRunner.js after the preference gate has already
+ * said yes — this function formats and sends, nothing more.
+ */
+const sendDueDigestEmail = async ({ to, name, overdue = [], dueToday = [] }) => {
+  const link = `${process.env.CLIENT_URL || 'http://localhost:5173'}/my-tasks`;
+  const total = overdue.length + dueToday.length;
+  const subject = overdue.length
+    ? `${total} task${total === 1 ? '' : 's'} today — ${overdue.length} overdue`
+    : `${total} task${total === 1 ? '' : 's'} due today`;
+  const html = buildDueDigestHtml({ name, overdue, dueToday, link });
+  await appTransporter().sendMail({ from: appFrom(), to, subject, html });
+};
+
+// Exported here rather than in the object above: that object is assigned
+// mid-file, before this const exists, and a name in it would be read out of
+// its temporal dead zone the moment anything requires this module.
+module.exports.sendDueDigestEmail = sendDueDigestEmail;
+// Exported for preview/test rendering; the sender above remains the one caller
+// in production code.
+module.exports.buildDueDigestHtml = buildDueDigestHtml;

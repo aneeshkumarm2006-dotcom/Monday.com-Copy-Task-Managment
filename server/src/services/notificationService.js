@@ -17,6 +17,9 @@ const TYPE_CATEGORY = {
   replied: 'updates',
   dueSoon: 'dueDates',
   dueDateChanged: 'dueDates',
+  // The 9am digest — one row per morning, so it shares the dueDates toggle:
+  // a person who muted due-date nags has muted this too, deliberately.
+  dueDigest: 'dueDates',
   taskMoved: 'taskMoves',
   invited: 'invites',
   memberJoined: 'invites',
