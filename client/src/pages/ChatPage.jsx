@@ -81,6 +81,24 @@ const timeShort = (input) => {
   return d.toLocaleDateString([], { day: 'numeric', month: 'short' });
 };
 
+/** 'YYYY-MM' for right now in the board's own calendar — what a task or goal
+ *  shared in chat today is ABOUT. en-CA formats as YYYY-MM-DD, so slicing is
+ *  timezone-correct without a date library. */
+const currentMonthKey = (timezone) => {
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone || undefined,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+      .format(new Date())
+      .slice(0, 7);
+  } catch {
+    return new Date().toISOString().slice(0, 7);
+  }
+};
+
 const monthLabel = (monthKey) => {
   if (!monthKey) return '';
   const [y, m] = monthKey.split('-').map(Number);
@@ -436,13 +454,21 @@ const SharePicker = ({ kind, channel, onPick, onClose }) => {
     let cancelled = false;
     const load = async () => {
       try {
+        // Tracker boards refuse an unscoped task read (rightly — every task
+        // lives in a month). "This month, in the board's timezone" is what a
+        // chat share means, so that's what we ask for.
+        const month =
+          channel.board.boardType === 'tracker'
+            ? currentMonthKey(channel.board.monthTimezone)
+            : undefined;
         if (kind === 'task') {
           const tasks = await taskService.getTasks(channel.board._id, {
             group: channel.group || undefined,
+            month,
           });
           if (!cancelled) setItems(tasks.filter((t) => !t.parent));
         } else {
-          const goals = await goalService.getGoals(channel.board._id);
+          const goals = await goalService.getGoals(channel.board._id, month);
           if (!cancelled) {
             const list = Array.isArray(goals) ? goals : [];
             setItems(
@@ -924,7 +950,7 @@ const ChatPage = () => {
   );
 
   return (
-    <PageWrapper padded={false} className="!pb-0" hideNavOnMobile>
+    <PageWrapper padded={false} className="!pb-0" hideNavOnMobile fullWidth>
       <div className="macan-chat-shell flex" style={{ minHeight: 0 }}>
         {/* Channel list — full-screen on phones until a channel is opened */}
         <div

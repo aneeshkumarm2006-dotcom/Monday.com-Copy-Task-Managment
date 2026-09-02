@@ -302,6 +302,10 @@ const PageWrapper = ({
   // Chat: on phones its own headers are the top chrome (per the mobile
   // design), so the global bar steps aside below `md`. Desktop unaffected.
   hideNavOnMobile = false,
+  // Chat again: an app pane wants every pixel to the sidebar's edge — the
+  // 1440px reading-width cap that suits document pages leaves a grey moat
+  // around a full-height pane on wide monitors.
+  fullWidth = false,
 }) => {
   const { pathname } = useLocation();
   const contentHeight = showNav ? 'calc(100vh - 56px)' : '100vh';
@@ -340,7 +344,7 @@ const PageWrapper = ({
               'mx-auto w-full macan-page-enter',
               padded ? 'macan-page-padded px-4 py-6 md:px-10 md:py-8' : '',
             ].join(' ')}
-            style={{ maxWidth: 1440 }}
+            style={{ maxWidth: fullWidth ? 'none' : 1440 }}
           >
             {children}
           </div>

@@ -176,7 +176,7 @@ const listChannels = async (req, res) => {
         { kind: 'dm', members: userId },
       ],
     })
-      .populate('board', 'name visibility publicDefaultLevel memberAccess createdBy organisation boardType')
+      .populate('board', 'name visibility publicDefaultLevel memberAccess createdBy organisation boardType monthTimezone')
       .populate('members', 'name profilePic email');
 
     // Visibility, board by board. Boards were populated above precisely so
@@ -276,7 +276,17 @@ const listChannels = async (req, res) => {
         otherUser: other
           ? { _id: other._id, name: other.name, profilePic: other.profilePic }
           : null,
-        board: ch.board ? { _id: ch.board._id, name: ch.board.name } : null,
+        board: ch.board
+          ? {
+              _id: ch.board._id,
+              name: ch.board.name,
+              // The share pickers need these: a tracker board's task and goal
+              // reads are month-scoped, and "now, in the board's timezone" is
+              // the month a chat share means.
+              boardType: ch.board.boardType || null,
+              monthTimezone: ch.board.monthTimezone || null,
+            }
+          : null,
         group: ch.group || null,
         archived: ch.archived,
         unread: counts[i],
