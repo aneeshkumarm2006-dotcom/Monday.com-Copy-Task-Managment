@@ -104,6 +104,44 @@ const handleBoardChanged = ({ userId, boardId } = {}) => {
 };
 
 /**
+ * Deliver a freshly-posted chat message to every recipient's open connections.
+ * The CONTROLLER computed `recipientIds` (everyone who may see the channel,
+ * minus the author) at send time — this handler only addresses envelopes, it
+ * never decides who may read one. Org-scoped on the wire like notifications:
+ * a connection viewing another workspace doesn't receive this one's chatter.
+ */
+const handleChatMessage = async ({ channelId, messageId, orgId, recipientIds } = {}) => {
+  try {
+    if (!channelId || !messageId || !Array.isArray(recipientIds) || !recipientIds.length) {
+      return;
+    }
+    // Load once, write to many — populated the same way the REST endpoints
+    // populate, so the client renders a live frame and a fetched page alike.
+    const Message = require('../models/Message');
+    const message = await Message.findById(messageId).populate([
+      { path: 'author', select: 'name profilePic email' },
+      { path: 'mentions', select: 'name' },
+      { path: 'task', select: 'name status board group monthKey parent' },
+      { path: 'goal', select: 'name board group monthKey type' },
+    ]);
+    if (!message) return;
+
+    const org = orgId ? String(orgId) : null;
+    for (const userId of recipientIds) {
+      const set = connections.get(String(userId));
+      if (!set || set.size === 0) continue;
+      for (const conn of set) {
+        if (org === null || conn.orgId === null || conn.orgId === org) {
+          writeEvent(conn.res, { type: 'chat.message', channelId: String(channelId), message });
+        }
+      }
+    }
+  } catch (err) {
+    console.error('notificationStream handleChatMessage error:', err);
+  }
+};
+
+/**
  * Subscribe to the event bus and start the heartbeat. Idempotent — safe to call
  * once on server boot next to the other mount() calls.
  */
@@ -112,6 +150,7 @@ const mount = () => {
   mounted = true;
   eventBus.on('notification.created', handleNotificationCreated);
   eventBus.on('board.changed', handleBoardChanged);
+  eventBus.on('chat.message', handleChatMessage);
   heartbeat = setInterval(() => {
     for (const set of connections.values()) {
       for (const conn of set) {

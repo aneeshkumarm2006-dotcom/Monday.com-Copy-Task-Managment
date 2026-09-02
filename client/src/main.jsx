@@ -1,6 +1,10 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles/globals.css'
+// Imported for its side effect ONLY: `beforeinstallprompt` fires once, early,
+// and must be caught before React is even mounted or the Install button in
+// Settings would have nothing to fire.
+import './utils/installPrompt'
 import App from './App.jsx'
 import ErrorBoundary from './components/ui/ErrorBoundary.jsx'
 

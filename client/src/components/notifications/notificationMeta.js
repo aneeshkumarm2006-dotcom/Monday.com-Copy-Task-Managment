@@ -41,6 +41,8 @@ export const NOTIF_TYPE_COLOR = {
   // a rank drop and a lost link are the same kind of news.
   seoRankDrop: 'var(--color-status-stuck)',
   seoLostBacklinks: 'var(--color-status-stuck)',
+  // A chat mention is a mention — same accent as its task-thread sibling.
+  chatMention: 'var(--color-accent)',
 };
 
 /**
@@ -53,6 +55,7 @@ export const NOTIF_TYPE_ICON = {
   commented: MessageSquare,
   replied: Reply,
   mentioned: AtSign,
+  chatMention: AtSign,
   statusChanged: CheckCircle2,
   dueSoon: Clock,
   dueDigest: Sunrise,
@@ -101,6 +104,14 @@ export const resolveNotifLink = (notif) => {
   // The morning digest is about the PERSON, not a board — it lands on My Work,
   // where every task it counted is already filtered to them.
   if (notif.type === 'dueDigest' || notif.tab === 'myWork') return '/my-tasks';
+
+  // A chat mention opens the channel it happened in. `channel` is its own
+  // field on the notification because a workspace channel has no board.
+  if (notif.type === 'chatMention') {
+    const channelId =
+      notif.channel?._id || (typeof notif.channel === 'string' ? notif.channel : null);
+    return channelId ? `/chat?channel=${channelId}` : '/chat';
+  }
 
   const boardId =
     notif.board?._id ||

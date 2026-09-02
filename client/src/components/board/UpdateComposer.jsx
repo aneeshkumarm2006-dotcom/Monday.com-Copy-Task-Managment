@@ -80,7 +80,24 @@ const ToolbarIconButton = ({ children, onClick, title }) => (
  * Ref: { startReply(update), focus() }
  */
 const UpdateComposer = forwardRef(
-  ({ taskId, visibility, isClientThread, draftKey, onPosted }, ref) => {
+  (
+    {
+      taskId,
+      visibility,
+      isClientThread,
+      draftKey,
+      onPosted,
+      // Chat reuses this whole composer — editor, drafts, attachments,
+      // mentions, reply strip — by swapping ONLY where the payload goes.
+      // When set, `submitMessage` receives the assembled payload instead of
+      // updateService.addUpdate, and `uploadFile` receives each File instead
+      // of updateService.uploadAttachment. Task callers pass neither.
+      submitMessage = null,
+      uploadFile = null,
+      placeholder = null,
+    },
+    ref
+  ) => {
     const toast = useToastStore.getState();
     const refreshNotifications = useNotificationStore((s) => s.fetchNotifications);
     const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
@@ -176,21 +193,24 @@ const UpdateComposer = forwardRef(
     }, [draftKey]);
 
     const handleSubmit = useCallback(async () => {
-      if (!taskId) return;
+      if (!taskId && !submitMessage) return;
       const hasContent = !bodyEmpty || attachments.length > 0;
       if (!hasContent || submitting) return;
       setSubmitting(true);
       setError('');
       try {
         const mentionIds = bodyMentions.map((m) => m._id);
-        const created = await updateService.addUpdate(taskId, {
+        const payload = {
           body: bodyJson,
           bodyText,
           mentions: mentionIds,
           attachments,
           replyTo: replyingTo?._id || null,
           visibility,
-        });
+        };
+        const created = submitMessage
+          ? await submitMessage(payload)
+          : await updateService.addUpdate(taskId, payload);
         onPosted?.(created);
         resetComposer();
         refreshNotifications(currentOrgId || undefined);
@@ -219,6 +239,7 @@ const UpdateComposer = forwardRef(
       visibility,
       onPosted,
       resetComposer,
+      submitMessage,
     ]);
 
     const handleDiscardDraft = useCallback(() => {
@@ -231,14 +252,16 @@ const UpdateComposer = forwardRef(
     const handleFilesSelected = useCallback(
       async (e) => {
         const files = Array.from(e.target.files || []);
-        if (!files.length || !taskId) return;
+        if (!files.length || (!taskId && !uploadFile)) return;
         for (const f of files) {
           if (f.size > MAX_FILE_SIZE) {
             toast.error(`${f.name} is too big. Please attach a file under 25MB.`);
             continue;
           }
           try {
-            const attachment = await updateService.uploadAttachment(taskId, f);
+            const attachment = uploadFile
+              ? await uploadFile(f)
+              : await updateService.uploadAttachment(taskId, f);
             setAttachments((prev) => [...prev, attachment]);
           } catch (err) {
             console.error('Upload failed:', err);
@@ -249,7 +272,7 @@ const UpdateComposer = forwardRef(
         }
         if (fileInputRef.current) fileInputRef.current.value = '';
       },
-      [taskId, toast]
+      [taskId, toast, uploadFile]
     );
 
     const insertEmoji = useCallback((emoji) => {
@@ -394,9 +417,10 @@ const UpdateComposer = forwardRef(
 
         <RichEditor
           placeholder={
-            isClientThread
+            placeholder ||
+            (isClientThread
               ? 'Write a message to the client…'
-              : 'Write an update and mention others with @'
+              : 'Write an update and mention others with @')
           }
           onChange={handleEditorChange}
           editorRef={editorRef}

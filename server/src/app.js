@@ -83,6 +83,7 @@ app.use('/api', require('./routes/notes'));
 app.use('/api', require('./routes/vault'));
 app.use('/api', require('./routes/activity'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/chat', require('./routes/chat'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/productivity', require('./routes/productivity'));
 app.use('/api/profile', require('./routes/profile'));

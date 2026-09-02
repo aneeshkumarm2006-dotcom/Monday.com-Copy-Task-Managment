@@ -66,6 +66,10 @@ const notificationSchema = new mongoose.Schema(
         // workspace's relationship with the bell.
         'seoRankDrop',
         'seoLostBacklinks',
+        // Chat — someone @mentioned this user in a channel. Carries `channel`
+        // below; clicking it opens that channel. Mapped to the 'mentions'
+        // preference category in notificationService.
+        'chatMention',
       ],
     },
     message: {
@@ -110,6 +114,14 @@ const notificationSchema = new mongoose.Schema(
         'myWork',
         null,
       ],
+      default: null,
+    },
+    // The chat channel this notification is about (chatMention only). Its own
+    // field rather than overloading `board`: a channel can be workspace-level
+    // with no board at all, and the deep link needs the channel id regardless.
+    channel: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Channel',
       default: null,
     },
     // Which month this notification is about ('YYYY-MM'), on tracker boards.

@@ -5,6 +5,7 @@ import {
   LayoutGrid,
   CheckSquare,
   Bell,
+  MessageCircle,
   MoreHorizontal,
   CalendarDays,
   BarChart3,
@@ -14,8 +15,11 @@ import {
   Check,
   ChevronRight,
 } from 'lucide-react';
+import { MonitorDown } from 'lucide-react';
 import useOrgStore from '../../store/orgStore';
+import useInstallApp from '../../hooks/useInstallApp';
 import useNotificationStore from '../../store/notificationStore';
+import useChatStore from '../../store/chatStore';
 import usePermissions from '../../hooks/usePermissions';
 
 /**
@@ -44,7 +48,7 @@ const getAvatarColor = (seed = '') => {
 
 // Everything reachable from the More sheet. A tap on any of these routes
 // lights the More tab, not nothing.
-const MORE_ROUTES = ['/calendar', '/analytics', '/productivity', '/members', '/settings'];
+const MORE_ROUTES = ['/dashboard', '/calendar', '/analytics', '/productivity', '/members', '/settings'];
 
 const TabButton = ({ label, icon: Icon, active, badge = 0, onClick }) => (
   <button
@@ -123,6 +127,7 @@ const MoreSheet = ({ onClose, closing }) => {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { can } = usePermissions();
+  const { canOffer: canOfferInstall, install } = useInstallApp();
   const currentOrg = useOrgStore((s) => s.currentOrg);
   const orgs = useOrgStore((s) => s.orgs);
   const setCurrentOrg = useOrgStore((s) => s.setCurrentOrg);
@@ -150,6 +155,9 @@ const MoreSheet = ({ onClose, closing }) => {
   };
 
   const rows = [
+    // Home lives here since Chat took its slot on the bar — the design's
+    // trade: the dashboard is a morning read, chat is an all-day one.
+    { to: '/dashboard', label: 'Home', icon: Home },
     { to: '/calendar', label: 'Calendar', icon: CalendarDays },
     ...(can('analytics.view') ? [{ to: '/analytics', label: 'Analytics', icon: BarChart3 }] : []),
     ...(can('productivity.view_others')
@@ -204,6 +212,18 @@ const MoreSheet = ({ onClose, closing }) => {
               onClick={() => go(row.to)}
             />
           ))}
+          {/* Hidden once the app IS the installed app — offering to install
+              what you're standing in reads as broken. */}
+          {canOfferInstall && (
+            <SheetRow
+              icon={MonitorDown}
+              label="Install app"
+              onClick={() => {
+                onClose();
+                install();
+              }}
+            />
+          )}
 
           {/* Workspace switcher */}
           <div
@@ -261,6 +281,9 @@ const TabBar = () => {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const unreadCount = useNotificationStore((s) => s.unreadCount);
+  const chatUnread = useChatStore((s) =>
+    s.channels.reduce((sum, c) => sum + (c.unread || 0), 0)
+  );
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetClosing, setSheetClosing] = useState(false);
   const closeTimer = useRef(null);
@@ -290,9 +313,9 @@ const TabBar = () => {
   const onMoreRoute = MORE_ROUTES.some((r) => pathname.startsWith(r));
 
   const tabs = [
-    { label: 'Home', icon: Home, to: '/dashboard' },
     { label: 'Boards', icon: LayoutGrid, to: '/boards' },
     { label: 'My Work', icon: CheckSquare, to: '/my-tasks' },
+    { label: 'Chat', icon: MessageCircle, to: '/chat', badge: chatUnread },
     { label: 'Alerts', icon: Bell, to: '/notifications', badge: unreadCount },
   ];
 

@@ -7,6 +7,7 @@ import {
   User as UserIcon,
   LogOut,
   RefreshCw,
+  MonitorDown,
   X as XIcon,
   ArrowLeft,
   Folder,
@@ -20,6 +21,7 @@ import api from '../../services/api';
 import Chip from '../ui/Chip';
 import Avatar from '../ui/Avatar';
 import NotificationFeed from '../notifications/NotificationFeed';
+import useInstallApp from '../../hooks/useInstallApp';
 import { resolveNotifLink } from '../notifications/notificationMeta';
 import macanMark from '../../assets/macan-mark.svg';
 
@@ -67,6 +69,7 @@ const NavLinks = ({ onNavigate }) => {
     { to: '/dashboard', label: 'Dashboard' },
     { to: '/boards', label: 'My Boards' },
     { to: '/my-tasks', label: 'My Work' },
+    { to: '/chat', label: 'Chat' },
     ...(can('org.view_members')
       ? [{ to: '/members', label: 'Members' }]
       : []),
@@ -697,6 +700,7 @@ const NotificationBell = () => {
 
 const AvatarDropdown = ({ user, onLogout }) => {
   const [open, setOpen] = useState(false);
+  const { canOffer: canOfferInstall, install } = useInstallApp();
   const [showOrgPicker, setShowOrgPicker] = useState(false);
   const wrapperRef = useRef(null);
   const navigate = useNavigate();
@@ -793,6 +797,16 @@ const AvatarDropdown = ({ user, onLogout }) => {
                   label="Switch Org"
                   rightIcon={ChevronDown}
                   onClick={() => setShowOrgPicker(true)}
+                />
+              )}
+              {canOfferInstall && (
+                <MenuItem
+                  icon={MonitorDown}
+                  label="Install app"
+                  onClick={() => {
+                    setOpen(false);
+                    install();
+                  }}
                 />
               )}
               <MenuItem icon={LogOut} label="Logout" onClick={handleLogout} danger />

@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import useNotificationStore from '../store/notificationStore';
 import useToastStore from '../store/toastStore';
 import useTaskStore from '../store/taskStore';
+import useChatStore from '../store/chatStore';
 
 /**
  * Real-time notification delivery over Server-Sent Events. Opens an EventSource
@@ -43,6 +44,10 @@ export default function useNotificationStream(token, orgId, enabled) {
           // An automation moved/created tasks out-of-band — let the board view
           // refetch if it's the one currently open.
           useTaskStore.getState().signalBoardRefresh(data.boardId);
+        } else if (data?.type === 'chat.message' && data.channelId && data.message) {
+          // A channel message from someone else. The chat store decides
+          // whether it lands in an open conversation or bumps a badge.
+          useChatStore.getState().receiveMessage(data.channelId, data.message);
         }
       } catch {
         // ignore heartbeats / malformed frames

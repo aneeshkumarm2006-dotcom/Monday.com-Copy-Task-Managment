@@ -64,3 +64,9 @@ require('./ConnectorFieldMapping');
 // Provenance lives here rather than wrapping the values themselves — see the
 // model header for the eight readers that shape change would have rippled into.
 require('./GoalConnectorLink');
+// Chat — channels sectioned by board, messages shaped like Updates, and a
+// lastReadAt row per (channel, user). Membership is derived from board access
+// on every read, never stored; see Channel.js.
+require('./Channel');
+require('./Message');
+require('./ChannelRead');

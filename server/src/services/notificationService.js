@@ -36,6 +36,9 @@ const TYPE_CATEGORY = {
    */
   seoRankDrop: 'seo',
   seoLostBacklinks: 'seo',
+  // A chat @mention is a mention. Same toggle as task-thread mentions — one
+  // switch for "people calling my name", wherever they do it.
+  chatMention: 'mentions',
 };
 
 const categoryForType = (type) => TYPE_CATEGORY[type] || null;
@@ -107,6 +110,7 @@ const createNotification = async ({
   actorId,
   boardId,
   month,
+  channelId,
   pref,
   boardAccessChecked = false,
 }) => {
@@ -135,6 +139,7 @@ const createNotification = async ({
       board: boardId || null,
       tab: tab || null,
       month: month || null,
+      channel: channelId || null,
       isRead: false,
     });
 
@@ -176,6 +181,7 @@ const createNotificationsForUsers = async ({
   actorId,
   boardId,
   month,
+  channelId,
 }) => {
   if (!Array.isArray(userIds) || userIds.length === 0) return [];
   const exclude = excludeUserId ? excludeUserId.toString() : null;
@@ -214,6 +220,7 @@ const createNotificationsForUsers = async ({
         actorId,
         boardId,
         month,
+        channelId,
         pref: prefMap.get(uid) || null,
         boardAccessChecked: true,
       })

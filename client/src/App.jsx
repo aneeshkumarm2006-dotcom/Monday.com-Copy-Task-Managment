@@ -10,6 +10,7 @@ import {
 import useAuthStore from './store/authStore';
 import useOrgStore from './store/orgStore';
 import useNotificationStore from './store/notificationStore';
+import useChatStore from './store/chatStore';
 import usePermissionStore from './store/permissionStore';
 import usePermissions from './hooks/usePermissions';
 import LoginPage from './pages/LoginPage';
@@ -28,6 +29,7 @@ import ProductivityPage from './pages/ProductivityPage';
 import MyTasksPage from './pages/MyTasksPage';
 import SettingsPage from './pages/SettingsPage';
 import NotificationsPage from './pages/NotificationsPage';
+import ChatPage from './pages/ChatPage';
 import MembersPage from './pages/MembersPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ToastContainer from './components/ui/Toast';
@@ -114,6 +116,8 @@ function App() {
   const ensureHolidays = useOrgStore((s) => s.ensureHolidays);
   const fetchNotifications = useNotificationStore((s) => s.fetchNotifications);
   const clearNotifications = useNotificationStore((s) => s.clear);
+  const fetchChannels = useChatStore((s) => s.fetchChannels);
+  const clearChat = useChatStore((s) => s.clear);
 
   // On mount (or token change), hydrate the user profile from the backend.
   useEffect(() => {
@@ -137,8 +141,12 @@ function App() {
   useEffect(() => {
     if (user) {
       fetchNotifications(currentOrgId || undefined);
+      // Channels too, so the Chat tab's unread badge is live from first paint
+      // (this is also what lazily creates the auto client channels).
+      if (currentOrgId) fetchChannels(currentOrgId);
     } else {
       clearNotifications();
+      clearChat();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?._id, currentOrgId]);
@@ -193,6 +201,7 @@ function App() {
             <Route path="/boards/:id" element={<BoardDetailPage />} />
             <Route path="/my-tasks" element={<MyTasksPage />} />
             <Route path="/notifications" element={<NotificationsPage />} />
+            <Route path="/chat" element={<ChatPage />} />
             <Route path="/calendar" element={<CalendarPage />} />
             {/* Analytics and Productivity were admin-only. They are now gated on
                 the capabilities that mean the same thing, so a custom role can be
