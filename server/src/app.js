@@ -66,6 +66,14 @@ app.use('/api/portal', require('./routes/portal'));
 // Inbound email webhooks (public, signature-verified) — before the blanket /api
 // routers so their auth middleware never sees it.
 app.use('/api/inbound', require('./routes/inbound'));
+// Notifications sit ABOVE every bare-/api router for the same reason the
+// connectors router does (see its comment below): the /stream endpoint is an
+// EventSource, which cannot send an Authorization header — it authenticates
+// via ?token= inside its own handler. Any bare-/api router's
+// `router.use(authMiddleware)` matches EVERY /api/* path that flows past it,
+// so with this mounted later, streams were 401'd before the route ever ran —
+// SSE silently never worked and the polling fallback hid it.
+app.use('/api/notifications', require('./routes/notifications'));
 // Connectors — mounted bare at /api, and for the same ordering reason as the two
 // above: it carries a PUBLIC OAuth callback (GET /api/connectors/callback) that
 // a third party redirects a browser to with no session and no Authorization
@@ -82,7 +90,6 @@ app.use('/api', require('./routes/updates'));
 app.use('/api', require('./routes/notes'));
 app.use('/api', require('./routes/vault'));
 app.use('/api', require('./routes/activity'));
-app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/productivity', require('./routes/productivity'));
