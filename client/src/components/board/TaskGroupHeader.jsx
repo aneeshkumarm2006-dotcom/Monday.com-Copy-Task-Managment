@@ -8,6 +8,7 @@ import {
   Link2,
   Tags,
   UserPlus,
+  MoreHorizontal,
 } from 'lucide-react';
 import { getColorPair } from '../../utils/priorityColors';
 import Avatar from '../ui/Avatar';
@@ -113,6 +114,33 @@ const TaskGroupHeader = ({
     setEditing(true);
   };
 
+  // --- Mobile ⋯ menu ------------------------------------------------------
+  // Phones get one overflow menu instead of the desktop icon strip. Same
+  // handlers, one calm header row — per the mobile design's group cards.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const close = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menuOpen]);
+
+  const mobileMenuItems = [
+    onRename && { label: 'Rename group', icon: Pencil, run: () => startRename() },
+    onOpenNotes && {
+      label: noteCount > 0 ? `Notes (${noteCount})` : 'Notes',
+      icon: StickyNote,
+      run: () => onOpenNotes(),
+    },
+    onOpenClientPortal && { label: 'Client link', icon: Link2, run: () => onOpenClientPortal() },
+    onOpenTags && { label: 'Tags', icon: Tags, run: (e) => onOpenTags(e) },
+    onOpenOwner && { label: 'Group owner', icon: UserPlus, run: (e) => onOpenOwner(e) },
+    onDeleteGroup && { label: 'Delete group', icon: Trash2, run: () => onDeleteGroup(), danger: true },
+  ].filter(Boolean);
+
   const commitRename = async () => {
     if (committingRef.current) return;
     const next = draft.trim();
@@ -137,8 +165,170 @@ const TaskGroupHeader = ({
   };
 
   return (
+    <>
+    {/* ---- Phone header: one calm row per the design's group cards ----
+        dot · name · ⋯ · owner · done-count · chevron, with a 3px progress
+        line while expanded. The whole row is the toggle; the ⋯ carries every
+        action the desktop icon strip holds. */}
+    <div className="md:hidden" style={{ background: 'var(--color-bg-surface, #FFFFFF)' }}>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={editing ? undefined : onToggle}
+        onKeyDown={(e) => {
+          if (editing) return;
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onToggle?.();
+          }
+        }}
+        aria-label={collapsed ? `Expand group ${name}` : `Collapse group ${name}`}
+        aria-expanded={!collapsed}
+        className="flex items-center gap-2.5"
+        style={{ padding: '13px 14px 11px', cursor: 'pointer' }}
+      >
+        <span
+          aria-hidden="true"
+          style={{ width: 9, height: 9, borderRadius: '50%', background: colorDot, flexShrink: 0 }}
+        />
+        {editing ? (
+          <input
+            ref={inputRef}
+            type="text"
+            value={draft}
+            autoFocus
+            disabled={saving}
+            maxLength={MAX_NAME_LENGTH}
+            aria-label="Group name"
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                e.stopPropagation();
+                commitRename();
+              }
+              if (e.key === 'Escape') {
+                e.stopPropagation();
+                setEditing(false);
+              }
+            }}
+            className="font-body flex-1 min-w-0"
+            style={{
+              fontSize: 13.5,
+              fontWeight: 700,
+              color: 'var(--color-text-primary)',
+              background: 'var(--color-surface, #FFFFFF)',
+              border: '1px solid var(--color-accent)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '2px 6px',
+              outline: 'none',
+              opacity: saving ? 0.6 : 1,
+            }}
+          />
+        ) : (
+          <span
+            className="font-body flex-1 min-w-0 truncate"
+            title={name}
+            style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--color-text-primary)' }}
+          >
+            {name}
+          </span>
+        )}
+
+        {mobileMenuItems.length > 0 && (
+          <span ref={menuRef} className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-label={`Actions for group ${name}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              className="flex items-center justify-center rounded-md hover:bg-[color:var(--color-bg-subtle)]"
+              style={{ width: 28, height: 28 }}
+            >
+              <MoreHorizontal size={16} color="var(--color-text-muted)" aria-hidden="true" />
+            </button>
+            {menuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 top-full mt-1 bg-white overflow-hidden z-30"
+                style={{
+                  width: 190,
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 'var(--radius-md)',
+                  boxShadow: 'var(--shadow-lg)',
+                }}
+              >
+                {mobileMenuItems.map((item) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    onClick={(e) => {
+                      setMenuOpen(false);
+                      item.run(e);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left font-body text-[13px] hover:bg-[color:var(--color-bg-subtle)]"
+                    style={{
+                      color: item.danger
+                        ? 'var(--color-status-stuck)'
+                        : 'var(--color-text-primary)',
+                    }}
+                  >
+                    <item.icon size={14} aria-hidden="true" />
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </span>
+        )}
+
+        {owner && (
+          <span className="shrink-0" aria-label={`Owner: ${owner.name}`}>
+            <Avatar user={owner} size={22} />
+          </span>
+        )}
+
+        <span
+          className="font-body shrink-0"
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            padding: '2px 9px',
+            borderRadius: 'var(--radius-full)',
+            background: 'var(--color-bg-subtle)',
+            color: 'var(--color-text-secondary)',
+            border: '1px solid var(--color-border)',
+          }}
+        >
+          {doneCount}/{totalCount}
+        </span>
+
+        <Chevron size={16} color="var(--color-text-muted)" aria-hidden="true" className="shrink-0" />
+      </div>
+
+      {!collapsed && (
+        <div
+          aria-hidden="true"
+          style={{ height: 3, background: 'var(--color-bg-subtle)', borderRadius: 2, margin: '0 14px 4px' }}
+        >
+          <div
+            style={{
+              width: `${progressPct}%`,
+              height: 3,
+              background: 'var(--color-status-done, #16A34A)',
+              borderRadius: 2,
+              transition: 'width 200ms ease-out',
+            }}
+          />
+        </div>
+      )}
+    </div>
+
     <div
-      className="group/group-header flex items-center gap-3"
+      className="group/group-header hidden md:flex items-center gap-3"
       style={{
         height: 48,
         padding: '0 16px',
@@ -541,6 +731,7 @@ const TaskGroupHeader = ({
       )}
       </div>
     </div>
+    </>
   );
 };
 

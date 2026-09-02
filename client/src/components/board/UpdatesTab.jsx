@@ -553,6 +553,11 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
         isClientThread={isClientThread}
         draftKey={draftKey}
         onPosted={handlePosted}
+        // The internal thread says so at the moment of typing, not just in the
+        // banner above the feed — per the internal-task design.
+        placeholder={
+          isInternal ? "Write a team update — the client can't see this" : null
+        }
       />
     </div>
   );

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MoreHorizontal, Calendar as CalendarIcon, Pin } from 'lucide-react';
+import { MoreHorizontal, Calendar as CalendarIcon, Pin, Plus } from 'lucide-react';
 
 const NAVBAR_HEIGHT = 56;
 import Chip from '../ui/Chip';
@@ -16,6 +16,115 @@ import { formatShortDate, isOverdue } from '../../utils/dateUtils';
  *
  * Props mirror TaskTable's display-only props.
  */
+/**
+ * The design's ghost add row: "＋ Add task" opens a single name field, Enter
+ * saves, Escape closes. Name is the one thing a phone create needs — status
+ * lands on the board default, priority on medium, everything else is a tap
+ * away in the task panel afterwards. The desktop table keeps its full row.
+ */
+const MobileAddRow = ({ board, onSaveNew }) => {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const defaultStatus = (() => {
+    const list = board?.statuses || [];
+    const def =
+      list.find((st) => st.isDefault) ||
+      list.find((st) => st.key === 'not_started') ||
+      list[0];
+    return def ? def._id : 'not_started';
+  })();
+
+  const save = async () => {
+    const trimmed = name.trim();
+    if (!trimmed || saving) return;
+    setSaving(true);
+    try {
+      await onSaveNew({
+        name: trimmed,
+        priority: 'medium',
+        status: defaultStatus,
+        assignedTo: [],
+        dueDate: null,
+        sendEmailNotification: true,
+      });
+      setName('');
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full flex items-center gap-2 font-body text-left"
+        style={{
+          padding: '11px 16px',
+          fontSize: 12.5,
+          fontWeight: 600,
+          color: 'var(--color-accent)',
+          borderTop: '1px solid var(--color-bg-subtle)',
+          background: 'var(--color-bg-surface, #FFFFFF)',
+        }}
+      >
+        <Plus size={13} aria-hidden="true" />
+        Add task
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className="flex items-center gap-2"
+      style={{
+        padding: '8px 12px',
+        borderTop: '1px solid var(--color-bg-subtle)',
+        background: 'var(--color-bg-surface, #FFFFFF)',
+      }}
+    >
+      <input
+        type="text"
+        value={name}
+        autoFocus
+        disabled={saving}
+        placeholder="Task name"
+        aria-label="New task name"
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') save();
+          if (e.key === 'Escape') {
+            setName('');
+            setOpen(false);
+          }
+        }}
+        className="flex-1 min-w-0 font-body focus:outline-none"
+        style={{
+          height: 34,
+          padding: '0 10px',
+          fontSize: 13,
+          color: 'var(--color-text-primary)',
+          border: '1.5px solid var(--color-accent)',
+          borderRadius: 'var(--radius-md)',
+          background: 'var(--color-bg-surface, #FFFFFF)',
+        }}
+      />
+      <button
+        type="button"
+        onClick={save}
+        disabled={saving || !name.trim()}
+        className="font-body font-semibold text-white bg-accent disabled:opacity-50 shrink-0"
+        style={{ height: 34, padding: '0 14px', fontSize: 12.5, borderRadius: 'var(--radius-md)' }}
+      >
+        {saving ? '…' : 'Add'}
+      </button>
+    </div>
+  );
+};
+
 const TaskCardList = ({
   tasks = [],
   // Set of task ids this user pinned privately; combined with `task.pinned`
@@ -31,23 +140,33 @@ const TaskCardList = ({
   emptyLabel = 'No tasks in this group yet',
   groupId = null,
   dndDisabled = false,
+  canCreate = false,
+  onSaveNew = null,
 }) => {
+  const addRow =
+    canCreate && onSaveNew ? <MobileAddRow board={board} onSaveNew={onSaveNew} /> : null;
+
   if (tasks.length === 0) {
     return (
-      <div
-        className="font-body text-center"
-        style={{
-          fontSize: 13,
-          color: 'var(--color-text-muted)',
-          padding: '20px 16px',
-        }}
-      >
-        {emptyLabel}
+      <div>
+        <div
+          className="font-body text-center"
+          style={{
+            fontSize: 13,
+            color: 'var(--color-text-muted)',
+            padding: '16px 16px 12px',
+            background: 'var(--color-bg-surface, #FFFFFF)',
+          }}
+        >
+          {emptyLabel}
+        </div>
+        {addRow}
       </div>
     );
   }
 
   return (
+    <>
     <ul
       style={{
         listStyle: 'none',
@@ -75,6 +194,8 @@ const TaskCardList = ({
         />
       ))}
     </ul>
+    {addRow}
+    </>
   );
 };
 

@@ -2757,7 +2757,7 @@ const BoardDetailPage = () => {
                         ref={ref}
                         // The People tab's drill-down scrolls to a group by id.
                         data-group-id={group._id}
-                        className={`bg-surface ${
+                        className={`bg-surface macan-group-card ${
                           needsOverflowVisible ? 'overflow-visible' : 'overflow-hidden'
                         }`}
                         style={{

@@ -15,6 +15,8 @@ import {
   Link2,
 } from 'lucide-react';
 import GoalLinksField from './goals/GoalLinksField';
+import useIsMobile from '../../hooks/useIsMobile';
+import useTaskStore from '../../store/taskStore';
 import Chip from '../ui/Chip';
 import DatePickerPopover from '../ui/DatePickerPopover';
 import { formatDate, dateInputToISO } from '../../utils/dateUtils';
@@ -67,6 +69,47 @@ const toDateInputValue = (d) => {
  *   isOpen   — whether the panel is rendered + in-position
  *   onClose  — callback to close the panel
  */
+/**
+ * Phone rendering of one sidebar section: a bordered counter card ("Checklist
+ * 2/3 ▸") that opens on tap. Desktop renders the children bare, exactly as
+ * before — this exists because the full checklist + subitems + goal links
+ * stack ate a third of a phone screen before the conversation began.
+ * Children render ONCE (the parent picks the layout via useIsMobile), so
+ * fetching components inside are never mounted twice.
+ */
+const MobileSection = ({ label, count, defaultOpen = false, children }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div
+      style={{
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-md)',
+        overflow: 'hidden',
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 text-left font-body"
+        style={{ padding: '10px 12px', fontSize: 12.5, fontWeight: 700, color: 'var(--color-text-primary)' }}
+      >
+        <span className="flex-1">{label}</span>
+        {count ? (
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--color-text-muted)' }}>{count}</span>
+        ) : null}
+        <ChevronDown
+          size={14}
+          color="var(--color-text-muted)"
+          aria-hidden="true"
+          style={{ transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform 150ms ease' }}
+        />
+      </button>
+      {open && <div style={{ padding: '0 12px 10px' }}>{children}</div>}
+    </div>
+  );
+};
+
 const CommentPanel = ({
   task,
   board = null,
@@ -389,6 +432,18 @@ const CommentPanel = ({
     },
     [task, onUpdateTask]
   );
+
+  // Phone layout: the sidebar sections become counter cards (see
+  // MobileSection above). Counts come from data already in hand — the task
+  // doc carries its checklist, and the subitems land in the task store the
+  // moment SubitemsList fetches them. Hooks, so they sit ABOVE the early
+  // return like every other hook in this component.
+  const isMobilePanel = useIsMobile();
+  const subitemCount = useTaskStore((s) =>
+    task?._id ? (s.subitemsByParent[task._id]?.length ?? null) : null
+  );
+  const checklistItems = Array.isArray(task?.checklist) ? task.checklist : [];
+  const checklistDone = checklistItems.filter((it) => it.done).length;
 
   if (!isOpen || !task) return null;
 
@@ -850,13 +905,36 @@ const CommentPanel = ({
           </div>
 
           <div className="macan-cp-right" role="complementary" aria-label="Task details sidebar">
-            <ChecklistEditor task={task} />
+            {isMobilePanel ? (
+              <MobileSection
+                label="Checklist"
+                count={checklistItems.length > 0 ? `${checklistDone}/${checklistItems.length}` : null}
+              >
+                <ChecklistEditor task={task} />
+              </MobileSection>
+            ) : (
+              <ChecklistEditor task={task} />
+            )}
+            {isMobilePanel ? (
+              <MobileSection
+                label="Subitems"
+                count={subitemCount === null ? null : String(subitemCount)}
+              >
+                <SubitemsList
+                  task={task}
+                  board={board}
+                  isAdmin={isAdmin}
+                  onOpenSubitem={onOpenSubitem}
+                />
+              </MobileSection>
+            ) : (
             <SubitemsList
               task={task}
               board={board}
               isAdmin={isAdmin}
               onOpenSubitem={onOpenSubitem}
             />
+            )}
             {/*
               Tracker boards: which of this month’s goals this task counted
               towards. Evidence only — it moves no number, and the server
@@ -874,11 +952,21 @@ const CommentPanel = ({
             */}
             {board?.boardType === 'tracker' && !task.parent && (
               <div ref={goalSectionRef}>
-                <GoalLinksField
-                  task={task}
-                  onTaskPatched={onTaskPatched}
-                  highlight={goalPulse}
-                />
+                {isMobilePanel ? (
+                  <MobileSection label="Goals this counted toward" defaultOpen={goalPulse}>
+                    <GoalLinksField
+                      task={task}
+                      onTaskPatched={onTaskPatched}
+                      highlight={goalPulse}
+                    />
+                  </MobileSection>
+                ) : (
+                  <GoalLinksField
+                    task={task}
+                    onTaskPatched={onTaskPatched}
+                    highlight={goalPulse}
+                  />
+                )}
               </div>
             )}
           </div>

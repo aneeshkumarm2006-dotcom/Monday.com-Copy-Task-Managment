@@ -241,18 +241,17 @@ const TaskTable = ({
     selectedIds != null &&
     sortedTasks.every((t) => selectedIds.has(t._id));
   const noRows = sortedTasks.length === 0 && !isCreating;
-  // When an edit row is active, dropdowns inside rows need to escape the
-  // table's horizontal scroll clipping.
-  const isInlineEditing = isCreating || editingTaskId !== null;
 
   const taskIds = useMemo(() => sortedTasks.map((t) => t._id), [sortedTasks]);
 
   return (
     <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
-      {/* Mobile stacked cards (<768px) — only for display. When inline editing
-          is active on mobile, the table view below takes over so users can
-          complete the form. See Design doc Section 8.2. */}
-      {!isInlineEditing && (
+      {/* Mobile stacked cards (<768px). Creation happens HERE, in the card
+          list's own ghost add row — `isCreating` (true for anyone who may
+          create) used to force the 1170px desktop table onto every phone,
+          which is exactly the "table furniture on mobile" the design killed.
+          Only an actual row edit still falls back to the table. */}
+      {editingTaskId === null && (
         <div className="md:hidden">
           <TaskCardList
             tasks={tasks}
@@ -268,6 +267,8 @@ const TaskTable = ({
             emptyLabel={emptyLabel}
             groupId={groupId}
             dndDisabled={dndDisabled}
+            canCreate={isCreating}
+            onSaveNew={onSaveNew}
           />
         </div>
       )}
@@ -283,7 +284,7 @@ const TaskTable = ({
           // ⋯ menu, and the edit row's save/cancel buttons) off-screen.
           // overflow-x-auto gives that scrollbar in every mode. Row dropdowns are
           // portaled to <body>, so the scroll container never clips them.
-          isInlineEditing ? 'overflow-x-auto' : 'overflow-x-auto hidden md:block',
+          editingTaskId !== null ? 'overflow-x-auto' : 'overflow-x-auto hidden md:block',
         ].join(' ')}
       >
       <table
