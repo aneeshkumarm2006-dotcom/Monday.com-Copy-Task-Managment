@@ -139,7 +139,12 @@ const BudgetOverviewCard = ({ totals, window: win, monthLabel, currency, platfor
             </div>
           </div>
 
-          <BudgetBar usedPct={totals.usedPct} state={totals.state} label={totals.label} />
+          <BudgetBar
+            usedPct={totals.usedPct}
+            state={totals.state}
+            label={totals.label}
+            marker={win?.elapsedPct}
+          />
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="font-body font-medium" style={{ fontSize: 13, color: meta.color }}>

@@ -92,14 +92,21 @@ const NotificationItem = ({ notif, onActivate }) => {
         }
       }}
       className="group w-full flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-[color:var(--color-bg-subtle)] focus:outline-none focus-visible:bg-[color:var(--color-bg-subtle)] cursor-pointer"
-      style={{
-        background: unread ? 'var(--color-accent-light)' : 'white',
-        borderLeft: unread
-          ? '3px solid var(--color-accent)'
-          : '3px solid transparent',
-        minHeight: 56,
-      }}
+      style={{ background: 'white', minHeight: 56 }}
     >
+      {/* Unread = the blue dot. Read rows keep a transparent dot so the text
+          column lines up down the whole list. */}
+      <span
+        aria-hidden="true"
+        className="shrink-0"
+        style={{
+          width: 7,
+          height: 7,
+          borderRadius: 9999,
+          marginTop: 14,
+          background: unread ? 'var(--color-accent)' : 'transparent',
+        }}
+      />
       <span className="mt-0.5">
         <NotifGlyph notif={notif} />
       </span>

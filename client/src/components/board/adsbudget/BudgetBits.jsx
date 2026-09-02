@@ -133,13 +133,23 @@ export const StatusText = ({ state, label, title }) => {
  * It fills to 100 and stops. A bar overflowing its track reads as a rendering
  * fault rather than as bad news, and the figures beside it carry the overage.
  */
-export const BudgetBar = ({ usedPct, state, label, height = 8 }) => {
+export const BudgetBar = ({ usedPct, state, label, height = 8, marker = null }) => {
   const meta = stateMeta(state, label);
   const filled = barPct(usedPct);
   const text =
     typeof usedPct === 'number' && Number.isFinite(usedPct)
       ? `${meta.label} — ${(usedPct * 100).toFixed(1)}% of budget used`
       : 'Nothing budgeted yet';
+
+  // Where "today" sits on the same track (elapsed fraction of the month,
+  // 0..1). Fill ahead of the tick = spending faster than the calendar; fill
+  // behind it = slower. The tick is what makes the bar a PACING bar rather
+  // than a spend bar. Hidden at the extreme ends, where it would just overlap
+  // the track's rounded caps and say nothing.
+  const markerPct =
+    typeof marker === 'number' && Number.isFinite(marker) && marker > 0.02 && marker < 0.98
+      ? marker * 100
+      : null;
 
   return (
     <div
@@ -148,8 +158,9 @@ export const BudgetBar = ({ usedPct, state, label, height = 8 }) => {
       aria-valuemin={0}
       aria-valuemax={100}
       aria-label={text}
-      title={text}
+      title={markerPct === null ? text : `${text} · ${markerPct.toFixed(0)}% of the month elapsed`}
       style={{
+        position: 'relative',
         height,
         width: '100%',
         minWidth: 48,
@@ -167,6 +178,22 @@ export const BudgetBar = ({ usedPct, state, label, height = 8 }) => {
           transition: 'width 200ms ease-out',
         }}
       />
+      {markerPct !== null && (
+        <span
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: `${markerPct}%`,
+            width: 2,
+            marginLeft: -1,
+            borderRadius: 1,
+            background: 'var(--color-text-primary)',
+            opacity: 0.55,
+          }}
+        />
+      )}
     </div>
   );
 };

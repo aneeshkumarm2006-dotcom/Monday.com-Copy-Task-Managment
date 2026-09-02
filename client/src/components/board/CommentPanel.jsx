@@ -917,12 +917,30 @@ const CommentPanel = ({
           overflow-y: auto;
         }
         @media (max-width: 900px) {
+          /* Phones and narrow tablets. The old stacked grid put the details
+             column BELOW the thread with nothing scrolling the stack, which
+             left the composer floating mid-screen and the checklist cut off
+             out of reach. Instead: details become a bounded strip between the
+             header and the thread (scrolling on its own when long), and the
+             thread keeps the rest of the height — which docks the composer
+             at the real bottom of the screen, like a chat app. */
           .macan-cp-body {
-            grid-template-columns: 1fr;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+          }
+          .macan-cp-right {
+            order: 1;
+            flex: 0 0 auto;
+            max-height: 32vh;
+            border-bottom: 1px solid var(--color-border);
+            padding: 12px 20px 16px 20px;
           }
           .macan-cp-left {
+            order: 2;
+            flex: 1;
+            min-height: 0;
             border-right: none;
-            border-bottom: 1px solid var(--color-border);
           }
         }
         @media (max-width: 767px) {

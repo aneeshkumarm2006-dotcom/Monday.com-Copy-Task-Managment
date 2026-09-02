@@ -3,7 +3,71 @@ import { ChevronRight, Wallet } from 'lucide-react';
 import { ScrollTable, Th, Td } from '../addons/connector/SectionShell';
 import { formatMoney } from '../../../utils/connectorFormat';
 import { formatPct } from '../../../utils/adsBudgetDisplay';
-import { BudgetStat, Section, SectionEmpty, StatusText } from './BudgetBits';
+import { BudgetBar, BudgetStat, Section, SectionEmpty, StatusText } from './BudgetBits';
+
+/**
+ * One client as a card — the phone rendering of the roster row. The table's
+ * eight columns collapse to the three facts a phone glance needs: who, the
+ * verdict, and the pacing bar (spend fill vs. the today tick). Everything
+ * else lives one tap away on the client screen.
+ */
+const ClientCard = ({ client, money, elapsedPct, onOpen }) => {
+  const blank = client.state === 'unset';
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="w-full text-left transition-colors duration-100 active:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+      style={{
+        background: 'var(--color-bg-surface)',
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-lg)',
+        padding: '14px 16px',
+        cursor: 'pointer',
+      }}
+    >
+      <span className="flex items-center gap-2">
+        <span
+          className="font-body font-semibold flex-1 min-w-0 truncate"
+          style={{ fontSize: 14.5, color: 'var(--color-text-primary)' }}
+        >
+          {client.name}
+        </span>
+        <StatusText state={client.state} label={client.label} title={client.verdict} />
+        <ChevronRight size={15} color="var(--color-text-muted)" aria-hidden="true" />
+      </span>
+
+      {blank ? (
+        <span
+          className="font-body block mt-1"
+          style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}
+        >
+          {client.platformCount === 0
+            ? 'No platforms yet — open to add the first budget.'
+            : `${client.platformCount} platform${client.platformCount === 1 ? '' : 's'}, nothing budgeted.`}
+        </span>
+      ) : (
+        <>
+          <span
+            className="font-body block mt-1 tabular-nums"
+            style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}
+          >
+            {money(client.spent)} of {money(client.allocated)} · {formatPct(client.usedPct)} used
+          </span>
+          <span className="block mt-2.5">
+            <BudgetBar
+              usedPct={client.usedPct}
+              state={client.state}
+              label={client.label}
+              height={6}
+              marker={elapsedPct}
+            />
+          </span>
+        </>
+      )}
+    </button>
+  );
+};
 
 /**
  * The roster — every client on this board, one row each, for the selected month.
@@ -34,7 +98,7 @@ const ClientRosterScreen = ({ data, onOpenClient }) => {
 
   return (
     <div className="flex flex-col gap-7">
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
         <BudgetStat
           label="Monthly Budget"
           value={money(totals.allocated)}
@@ -74,6 +138,23 @@ const ClientRosterScreen = ({ data, onOpenClient }) => {
             This board has no groups yet, so there is nobody to budget for.
           </SectionEmpty>
         ) : (
+          <>
+          {/* Phones: cards. The eight-column table can only offer a phone a
+              sideways scroll, and a roster you have to pan across is a roster
+              nobody reads in the morning. */}
+          <div className="md:hidden flex flex-col gap-2.5 p-3">
+            {data.clients.map((client) => (
+              <ClientCard
+                key={client._id}
+                client={client}
+                money={money}
+                elapsedPct={win?.elapsedPct}
+                onOpen={() => onOpenClient(client)}
+              />
+            ))}
+          </div>
+
+          <div className="hidden md:block">
           <ScrollTable maxHeight={600}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
@@ -178,6 +259,8 @@ const ClientRosterScreen = ({ data, onOpenClient }) => {
               </tbody>
             </table>
           </ScrollTable>
+          </div>
+          </>
         )}
       </Section>
     </div>

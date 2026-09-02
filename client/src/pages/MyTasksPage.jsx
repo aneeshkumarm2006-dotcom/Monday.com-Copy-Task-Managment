@@ -73,6 +73,118 @@ const formatDate = (dateStr) => {
 };
 
 /* ------------------------------------------------------------------ */
+/* Due-date bucketing — the same reading of "overdue" and "today" the  */
+/* 9am digest email uses, so the page and the inbox never disagree.    */
+/* ------------------------------------------------------------------ */
+
+const PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+
+const startOfToday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+
+const daysLate = (dueDate) => {
+  const due = new Date(dueDate);
+  due.setHours(0, 0, 0, 0);
+  return Math.round((startOfToday() - due) / 86400000);
+};
+
+/**
+ * Split the open assigned tasks into the four sections the page renders.
+ * Overdue is oldest-first (the longest-neglected thing at the top), today is
+ * by priority, upcoming by date. Order inside a bucket is stable beyond that.
+ */
+const bucketWorkTasks = (tasks) => {
+  const overdue = [];
+  const today = [];
+  const upcoming = [];
+  const noDate = [];
+  const todayStart = startOfToday();
+  const tomorrowStart = new Date(todayStart.getTime() + 86400000);
+
+  tasks.forEach((t) => {
+    if (!t.dueDate) {
+      noDate.push(t);
+      return;
+    }
+    const due = new Date(t.dueDate);
+    if (due < todayStart) overdue.push(t);
+    else if (due < tomorrowStart) today.push(t);
+    else upcoming.push(t);
+  });
+
+  overdue.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  today.sort(
+    (a, b) => (PRIORITY_RANK[a.priority] ?? 4) - (PRIORITY_RANK[b.priority] ?? 4)
+  );
+  upcoming.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+
+  return { overdue, today, upcoming, noDate };
+};
+
+/** The pill on the card's right edge: "3d late" / "Today" / a short date. */
+const DuePill = ({ task }) => {
+  if (!task.dueDate) return null;
+  const late = daysLate(task.dueDate);
+  let label;
+  let colors;
+  if (late > 0) {
+    label = late === 1 ? '1 day late' : `${late}d late`;
+    colors = { color: '#B91C1C', background: '#FEF2F2', border: '1px solid #FECACA' };
+  } else if (late === 0) {
+    label = 'Today';
+    colors = { color: '#1E40AF', background: '#EFF6FF', border: '1px solid #BFDBFE' };
+  } else {
+    label = new Date(task.dueDate).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+    });
+    colors = {
+      color: 'var(--color-text-secondary)',
+      background: 'var(--color-bg-subtle)',
+      border: '1px solid var(--color-border)',
+    };
+  }
+  return (
+    <span
+      className="font-body font-semibold shrink-0 whitespace-nowrap"
+      style={{
+        fontSize: 11,
+        lineHeight: '16px',
+        padding: '2px 10px',
+        borderRadius: 999,
+        ...colors,
+      }}
+    >
+      {label}
+    </span>
+  );
+};
+
+const SECTION_STYLES = {
+  overdue: { color: '#B91C1C' },
+  today: { color: '#1E40AF' },
+  muted: { color: 'var(--color-text-muted)' },
+};
+
+const SectionLabel = ({ tone, children }) => (
+  <div
+    className="font-body font-bold uppercase"
+    style={{
+      fontSize: 11,
+      letterSpacing: '0.08em',
+      marginTop: 24,
+      marginBottom: 10,
+      ...SECTION_STYLES[tone],
+    }}
+  >
+    {children}
+  </div>
+);
+
+/* ------------------------------------------------------------------ */
 /* Sub-tab navigation                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -146,7 +258,7 @@ const SubTabs = ({ active, onChange, counts }) => (
 /* My Work tab — board tasks (not done) assigned to the user           */
 /* ------------------------------------------------------------------ */
 
-const WorkTaskCard = ({ task, onSelect }) => {
+const WorkTaskCard = ({ task, onSelect, overdue = false }) => {
   const navigate = useNavigate();
   const boardId = task.board?._id || task.board;
 
@@ -170,8 +282,11 @@ const WorkTaskCard = ({ task, onSelect }) => {
       borderRadius: 'var(--radius-lg)',
       boxShadow: 'var(--shadow-card)',
       padding: '16px 20px',
-      border: 'none',
       cursor: 'pointer',
+      // Overdue reads as a red-washed card, not a red stripe — the whole
+      // surface says "late" at a glance without shouting.
+      border: overdue ? '1px solid #F3C6C0' : '1px solid transparent',
+      background: overdue ? '#FFFBFA' : undefined,
     }}
   >
     <div className="flex items-start justify-between gap-3">
@@ -222,18 +337,8 @@ const WorkTaskCard = ({ task, onSelect }) => {
             </span>
           </div>
         )}
-        {task.dueDate && (
-          <div className="flex items-center gap-1.5 mt-1.5">
-            <CalendarIcon size={13} color="var(--color-text-muted)" />
-            <span
-              className="font-body"
-              style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
-            >
-              {formatDate(task.dueDate)}
-            </span>
-          </div>
-        )}
       </div>
+      <DuePill task={task} />
     </div>
 
     <div className="flex items-center gap-2 mt-3 flex-wrap">
@@ -345,11 +450,47 @@ const WorkTab = ({ tasks, loading, onSelect, hasFilters, onClearFilters }) => {
     );
   }
 
-  return (
-    <div className="flex flex-col gap-3 mt-6">
-      {tasks.map((task) => (
-        <WorkTaskCard key={task._id} task={task} onSelect={onSelect} />
+  const { overdue, today, upcoming, noDate } = bucketWorkTasks(tasks);
+
+  const section = (list, isOverdue = false) => (
+    <div className="flex flex-col gap-3">
+      {list.map((task) => (
+        <WorkTaskCard
+          key={task._id}
+          task={task}
+          onSelect={onSelect}
+          overdue={isOverdue}
+        />
       ))}
+    </div>
+  );
+
+  return (
+    <div>
+      {overdue.length > 0 && (
+        <>
+          <SectionLabel tone="overdue">Overdue · {overdue.length}</SectionLabel>
+          {section(overdue, true)}
+        </>
+      )}
+      {today.length > 0 && (
+        <>
+          <SectionLabel tone="today">Due today · {today.length}</SectionLabel>
+          {section(today)}
+        </>
+      )}
+      {upcoming.length > 0 && (
+        <>
+          <SectionLabel tone="muted">Upcoming · {upcoming.length}</SectionLabel>
+          {section(upcoming)}
+        </>
+      )}
+      {noDate.length > 0 && (
+        <>
+          <SectionLabel tone="muted">No due date · {noDate.length}</SectionLabel>
+          {section(noDate)}
+        </>
+      )}
     </div>
   );
 };

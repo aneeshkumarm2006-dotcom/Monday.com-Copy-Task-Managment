@@ -106,8 +106,9 @@ const DashboardPage = () => {
         />
       )}
 
-      {/* Stat cards — 4 cols desktop, 2 cols tablet, 1 col mobile */}
-      <div className="grid gap-4 mt-6 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+      {/* Stat cards — 4 cols desktop, 2×2 on phones (a 1-col stack of four
+          pushed the boards list a full screen down). */}
+      <div className="grid gap-3 sm:gap-4 mt-6 grid-cols-2 lg:grid-cols-4">
         {statsLoading && stats === INITIAL_STATS
           ? [0, 1, 2, 3].map((i) => <SkeletonStatCard key={i} index={i} />)
           : statCards.map((card) => (

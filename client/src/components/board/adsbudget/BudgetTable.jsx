@@ -176,6 +176,97 @@ const RowActions = ({ row, onEdit, onDelete }) => (
   </span>
 );
 
+/** Tiny uppercase label over a money figure, for the card grid. */
+const CardStat = ({ label, children }) => (
+  <span className="min-w-0">
+    <span
+      className="font-body block uppercase"
+      style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', color: 'var(--color-text-muted)' }}
+    >
+      {label}
+    </span>
+    <span
+      className="font-body block tabular-nums truncate"
+      style={{ fontSize: 13.5, fontWeight: 600, color: 'var(--color-text-primary)', marginTop: 2 }}
+    >
+      {children}
+    </span>
+  </span>
+);
+
+/**
+ * The phone rendering of a budget row. Same facts, same split as the table:
+ * spend is the one figure editable in place (the `contribute` rung's weekly
+ * job), everything else goes through the modal via the edit action.
+ */
+const BudgetCard = ({
+  row, isCampaign, currency, money, canTrack, canManage, onCommitSpend, onEdit, onDelete,
+}) => (
+  <div
+    style={{
+      background: 'var(--color-bg-surface)',
+      border: '1px solid var(--color-border)',
+      borderRadius: 'var(--radius-lg)',
+      padding: '12px 14px',
+    }}
+  >
+    <div className="flex items-center gap-2.5 min-w-0">
+      {!isCampaign ? <PlatformMark name={row.platform} /> : null}
+      <span className="flex-1 min-w-0">
+        <span
+          className="font-body font-semibold block truncate"
+          style={{ fontSize: 14, color: 'var(--color-text-primary)' }}
+          title={row.name || row.platform}
+        >
+          {isCampaign ? row.name || 'Untitled campaign' : row.platform}
+        </span>
+        {isCampaign && (row.platform || row.objective) ? (
+          <span
+            className="font-body block truncate"
+            style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
+          >
+            {[row.platform, row.objective].filter(Boolean).join(' · ')}
+          </span>
+        ) : null}
+      </span>
+      <StatusText state={row.state} label={row.label} title={row.verdict} />
+      {canManage ? <RowActions row={row} onEdit={onEdit} onDelete={onDelete} /> : null}
+    </div>
+
+    <div className="grid grid-cols-3 gap-2 mt-3">
+      <CardStat label="Budget">{money(row.allocated)}</CardStat>
+      <CardStat label={isCampaign ? 'Spent' : 'Spend'}>
+        <SpendCell
+          key={`${row._id}:${row.spent}`}
+          row={row}
+          canTrack={canTrack}
+          currency={currency}
+          onCommit={onCommitSpend}
+        />
+      </CardStat>
+      <CardStat label="Remaining">
+        <span
+          style={{
+            color: row.remaining < 0 ? 'var(--color-status-stuck)' : 'var(--color-text-primary)',
+          }}
+        >
+          {money(row.remaining)}
+        </span>
+      </CardStat>
+    </div>
+
+    <div
+      className="font-body mt-2 tabular-nums"
+      style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
+    >
+      {formatPct(row.usedPct)} used
+      {!isCampaign && row.dailyAverage !== null
+        ? ` · ${money(Math.round(row.dailyAverage))}/day`
+        : ''}
+    </div>
+  </div>
+);
+
 const BudgetTable = ({
   rows,
   level, // 'platform' | 'campaign'
@@ -205,6 +296,25 @@ const BudgetTable = ({
   }
 
   return (
+    <>
+    <div className="md:hidden flex flex-col gap-2.5 p-3">
+      {rows.map((row) => (
+        <BudgetCard
+          key={row._id}
+          row={row}
+          isCampaign={isCampaign}
+          currency={currency}
+          money={money}
+          canTrack={canTrack}
+          canManage={canManage}
+          onCommitSpend={onCommitSpend}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
+      ))}
+    </div>
+
+    <div className="hidden md:block">
     <ScrollTable maxHeight={520}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
@@ -295,6 +405,8 @@ const BudgetTable = ({
         </tbody>
       </table>
     </ScrollTable>
+    </div>
+    </>
   );
 };
 
