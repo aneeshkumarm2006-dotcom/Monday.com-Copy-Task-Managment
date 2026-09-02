@@ -29,6 +29,10 @@ const useChatStore = create((set, get) => ({
   thread: null,
   threadLoading: false,
 
+  // How many unread the channel had at the moment it was opened — the anchor
+  // for the red NEW divider. Frozen for the visit; live arrivals don't move it.
+  unreadAtOpen: 0,
+
   totalUnread: () => get().channels.reduce((sum, c) => sum + (c.unread || 0), 0),
 
   fetchChannels: async (orgId) => {
@@ -45,12 +49,14 @@ const useChatStore = create((set, get) => ({
   },
 
   openChannel: async (channelId) => {
+    const known = get().channels.find((c) => String(c._id) === String(channelId));
     set({
       activeChannelId: channelId,
       messages: [],
       messagesLoading: true,
       nextBefore: null,
       thread: null,
+      unreadAtOpen: known?.unread || 0,
     });
     try {
       const { messages, nextBefore, canPost, canManage } =
@@ -163,6 +169,46 @@ const useChatStore = create((set, get) => ({
               }
             : null,
     }));
+  },
+
+  /** Swap one message for its fresh copy (make-a-task returns the message
+   *  re-populated with its new chip). Feed and thread both checked. */
+  replaceMessage: (message) => {
+    const id = String(message._id);
+    set((s) => ({
+      messages: s.messages.map((m) => (String(m._id) === id ? { ...m, ...message, replyCount: m.replyCount } : m)),
+      thread: s.thread
+        ? {
+            parent:
+              String(s.thread.parent?._id) === id
+                ? { ...s.thread.parent, ...message }
+                : s.thread.parent,
+            replies: s.thread.replies.map((r) =>
+              String(r._id) === id ? { ...r, ...message } : r
+            ),
+          }
+        : null,
+    }));
+  },
+
+  makeTask: async (messageId, payload = {}) => {
+    const { activeChannelId } = get();
+    if (!activeChannelId) throw new Error('No channel open');
+    const { task, message } = await chatService.makeTaskFromMessage(
+      activeChannelId,
+      messageId,
+      payload
+    );
+    get().replaceMessage(message);
+    return task;
+  },
+
+  /** Find-or-create the DM with one person, refresh the sidebar, and hand
+   *  back the channel so the caller can navigate into it. */
+  openDm: async (orgId, userId) => {
+    const channel = await chatService.openDm(orgId, userId);
+    await get().fetchChannels(orgId);
+    return channel;
   },
 
   markRead: async (channelId) => {

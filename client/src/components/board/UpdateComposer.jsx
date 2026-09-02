@@ -95,6 +95,13 @@ const UpdateComposer = forwardRef(
       submitMessage = null,
       uploadFile = null,
       placeholder = null,
+      // Chat again: the button says "Send" there, and the Task/Goal share
+      // chips render inside the action row (mock: "@ 📎 Task Goal … Send").
+      submitLabel = null,
+      actionsExtra = null,
+      // Chat: the page provides the bordered container, so the form drops its
+      // own outer padding down to a snug fit.
+      compact = false,
     },
     ref
   ) => {
@@ -308,8 +315,8 @@ const UpdateComposer = forwardRef(
           handleSubmit();
         }}
         style={{
-          padding: '8px 16px 16px 16px',
-          background: '#FFFFFF',
+          padding: compact ? '4px 10px 8px 10px' : '8px 16px 16px 16px',
+          background: compact ? 'transparent' : '#FFFFFF',
           borderTop: '1px solid transparent',
         }}
       >
@@ -544,6 +551,8 @@ const UpdateComposer = forwardRef(
             )}
           </div>
 
+          {actionsExtra}
+
           <button
             type="submit"
             disabled={(bodyEmpty && attachments.length === 0) || submitting}
@@ -563,12 +572,13 @@ const UpdateComposer = forwardRef(
           >
             <Send size={13} aria-hidden="true" />
             {submitting
-              ? isClientThread
+              ? submitLabel
                 ? 'Sending…'
-                : 'Posting…'
-              : isClientThread
-                ? 'Send to client'
-                : 'Update'}
+                : isClientThread
+                  ? 'Sending…'
+                  : 'Posting…'
+              : submitLabel ||
+                (isClientThread ? 'Send to client' : 'Update')}
           </button>
         </div>
       </form>

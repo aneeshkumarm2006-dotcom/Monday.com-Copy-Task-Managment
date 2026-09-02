@@ -71,12 +71,37 @@ test('one auto channel per (board, group) is enforced by a partial unique index'
   );
 });
 
-test('membership is derived, not stored — Channel has no members field', () => {
+test('room membership is derived — members is the DM-only exception', () => {
+  // Rooms derive membership from board access on every read. `members` exists
+  // ONLY because a DM's membership IS its identity (not a cached copy of any
+  // other rule). The tripwire now guards the refined rule: the field may not
+  // grow a role/level shape that would turn it back into stored access.
+  const members = Channel.schema.path('members');
+  assert.ok(members, 'Channel.members missing — DMs have nowhere to keep their pair');
+  const def = Channel.schema.obj.members;
+  assert.ok(Array.isArray(def), 'members must be an array');
   assert.strictEqual(
-    Channel.schema.path('members'),
-    undefined,
-    'a stored member list would be a second copy of board access that drifts'
+    def[0].ref,
+    'User',
+    'members must stay a plain list of Users, never {user, level} rows'
   );
+  assert.strictEqual(
+    def[0].type,
+    mongoose.Schema.Types.ObjectId,
+    'members entries must be bare User ids'
+  );
+  assert.ok(Channel.schema.path('kind'), 'Channel.kind missing');
+  assert.deepStrictEqual(
+    Channel.schema.path('kind').enumValues.sort(),
+    ['channel', 'dm']
+  );
+});
+
+test('one DM per pair is enforced by the partial unique dmKey index', () => {
+  const idx = Channel.schema.indexes().find(([fields]) => fields.dmKey === 1);
+  assert.ok(idx, 'no dmKey index — racing "message this person" taps would mint duplicate DMs');
+  assert.strictEqual(idx[1].unique, true);
+  assert.ok(idx[1].partialFilterExpression, 'must be partial — rooms all carry dmKey null');
 });
 
 // ---------------------------------------------------------------------------

@@ -419,6 +419,17 @@ const TaskGroupHeader = ({
       {/* Spacer pushes the add button to the right */}
       <div className="flex-1" />
 
+      {/* The action icons. On phones a COLLAPSED group hides them — five 28px
+          targets per row turned the group list into an icon wall (and none of
+          them are what a collapsed row is for). Expanding the group brings
+          them back; desktop always shows them. */}
+      <div
+        className={[
+          collapsed ? 'hidden md:flex' : 'flex',
+          'items-center gap-0.5 shrink-0',
+        ].join(' ')}
+      >
+
       {/* Group tags — opens the tag picker. Present only for editors who have
           the extra feature switched on; the server re-checks both. */}
       {onOpenTags && (
@@ -528,6 +539,7 @@ const TaskGroupHeader = ({
           <Trash2 size={14} color="var(--color-status-stuck)" aria-hidden="true" />
         </button>
       )}
+      </div>
     </div>
   );
 };

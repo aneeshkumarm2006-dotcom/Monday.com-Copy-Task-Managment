@@ -7,11 +7,17 @@ const mongoose = require('mongoose');
  * write in one editor everywhere.
  *
  * What it does NOT share with Update: visibility. Chat has no client-facing
- * side in Phase 1 — every author is a team member (a required User), and
- * ClientContacts never see a channel. If client rooms ever happen they arrive
- * as their own channel kind, not as a visibility flag threaded through every
- * read like Update's — that flag exists there because one task thread serves
- * two audiences, which is exactly the situation chat doesn't have.
+ * side — every human author is a team member, and ClientContacts never see a
+ * channel. If client rooms ever happen they arrive as their own channel kind,
+ * not as a visibility flag threaded through every read like Update's — that
+ * flag exists there because one task thread serves two audiences, which is
+ * exactly the situation chat doesn't have.
+ *
+ * `authorType: 'system'` (Phase 2) is the ONLY authorless message: what an
+ * automation or an alert posts. It is not a person and is never rendered as
+ * one — the client shows the Macan mark. Everything a system message may do,
+ * a user message may do; the split exists so nobody can impersonate the
+ * product and the product never impersonates a person.
  *
  * `task` / `goal` are SHARE CHIPS: a message may point at a task or a goal on
  * the channel's board so the room can talk about it. Evidence and reference
@@ -38,10 +44,20 @@ const messageSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // 'user' — a team member posted (author required).
+    // 'system' — an automation or alert posted (author null). Never a client.
+    authorType: {
+      type: String,
+      enum: ['user', 'system'],
+      default: 'user',
+    },
     author: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      required: function requireAuthorForUserMessages() {
+        return this.authorType === 'user';
+      },
+      default: null,
     },
     // TipTap JSON document, stored as-is (same contract as Update.body).
     body: {

@@ -485,3 +485,22 @@ li.macan-task-highlight {
     animation-duration: 1ms;
   }
 }
+
+/* ==========================================================
+   MOBILE SCROLL ROW — one line, thumb-scrollable
+   Board tabs and header buttons wrap into a wall on phones;
+   the design draws them as a single scrolling line instead.
+   Desktop keeps whatever the row already did.
+   ========================================================== */
+
+@media (max-width: 767px) {
+  .macan-mobile-scroll-row {
+    flex-wrap: nowrap !important;
+    justify-content: flex-start !important;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .macan-mobile-scroll-row::-webkit-scrollbar { display: none; }
+  .macan-mobile-scroll-row > * { flex-shrink: 0; }
+}

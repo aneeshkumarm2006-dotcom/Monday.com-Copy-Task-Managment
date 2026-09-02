@@ -32,6 +32,30 @@ const channelSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // 'channel' — a room (board or workspace scoped, derived membership).
+    // 'dm' — a private line between exactly the two users in `members`.
+    kind: {
+      type: String,
+      enum: ['channel', 'dm'],
+      default: 'channel',
+    },
+    // DMs ONLY: the two participants. This is the one deliberate exception to
+    // "membership is never stored" — a DM's membership IS its identity, not a
+    // cached copy of some other access rule, so there is nothing for it to
+    // drift from. Rooms keep this empty and keep deriving.
+    members: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
+    // DMs ONLY: '<orgId>:<lowUserId>:<highUserId>' — ids sorted, so the same
+    // pair always lands on the same row and two racing "message this person"
+    // taps converge on one DM instead of minting two.
+    dmKey: {
+      type: String,
+      default: null,
+    },
     // The board this channel is sectioned under; null = workspace-level.
     board: {
       type: mongoose.Schema.Types.ObjectId,
@@ -77,5 +101,14 @@ channelSchema.index(
   { board: 1, group: 1 },
   { unique: true, partialFilterExpression: { group: { $type: 'objectId' } } }
 );
+
+// One DM per pair per workspace — same upsert-under-unique-index race guard.
+channelSchema.index(
+  { dmKey: 1 },
+  { unique: true, partialFilterExpression: { dmKey: { $type: 'string' } } }
+);
+
+// The sidebar's DM read: every DM this user is in, per workspace.
+channelSchema.index({ organisation: 1, members: 1 });
 
 module.exports = mongoose.model('Channel', channelSchema);

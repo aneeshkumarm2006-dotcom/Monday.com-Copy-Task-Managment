@@ -183,6 +183,12 @@ const actionConfigSchema = new mongoose.Schema(
       type: String,
       enum: ['top', 'dueDate', 'priority', 'assignee'],
     },
+    // POST_TO_CHANNEL only: the text posted into the client's channel.
+    // `{task}` is replaced with the relevant task's name at run time. The
+    // channel itself is never configured — it is derived from the group
+    // (config.group, or the triggering task's) so the message always lands in
+    // the room of the client the work is about.
+    message: { type: String },
   },
   { _id: false }
 );
@@ -191,7 +197,7 @@ const actionSchema = new mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ['CREATE_TASK', 'CREATE_SUBITEM', 'POSITION_ITEM'],
+      enum: ['CREATE_TASK', 'CREATE_SUBITEM', 'POSITION_ITEM', 'POST_TO_CHANNEL'],
       required: true,
     },
     config: { type: actionConfigSchema, required: true },

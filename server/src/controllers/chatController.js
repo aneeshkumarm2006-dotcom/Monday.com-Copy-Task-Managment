@@ -6,9 +6,11 @@ const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
 const Goal = require('../models/Goal');
 const eventBus = require('../services/eventBus');
-const { loadBoardContext, loadOrgContext } = require('../utils/boardContext');
-const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
+const { loadBoardContext, loadOrgContext, requireCapability } = require('../utils/boardContext');
+const { resolveAccess } = require('../utils/permissions');
+const { channelAudience } = require('../services/chatAudience');
 const { createNotificationsForUsers } = require('../services/notificationService');
+const { monthKeyOf } = require('../utils/monthKey');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 
 /**
@@ -65,6 +67,15 @@ const MAX_MESSAGE_LIMIT = 50;
  * Fails closed: a channel whose board has vanished admits nobody.
  */
 const resolveChannelAccess = async (channel, userId) => {
+  // A DM admits exactly its two participants. No manage rung — a private
+  // conversation has no administrator.
+  if (channel.kind === 'dm') {
+    const isMember = (channel.members || []).some(
+      (m) => String(m?._id || m) === String(userId)
+    );
+    if (!isMember) return { ok: false, status: 403, error: 'Access denied' };
+    return { ok: true, view: true, post: true, manage: false };
+  }
   if (channel.board) {
     const ctx = await loadBoardContext(channel.board, userId);
     if (ctx.error) return { ok: false, status: ctx.status, error: ctx.error };
@@ -89,24 +100,6 @@ const resolveChannelAccess = async (channel, userId) => {
     manage: ctx.can('org.manage_settings'),
     orgCtx: ctx,
   };
-};
-
-/**
- * Everyone who may currently SEE `channel` — the fan-out list for SSE frames
- * and mention notifications. Derived fresh each time, so a revoked board
- * share stops the stream the moment it stops the board.
- */
-const channelAudience = async (channel, org) => {
-  const memberIds = (org.members || []).map((m) => String(m?._id || m));
-  if (!channel.board) {
-    return memberIds.filter((id) =>
-      // Same "internal member" test as resolveChannelAccess.
-      resolveOrgAccess(org, id).can('board.view_public')
-    );
-  }
-  const board = await Board.findById(channel.board);
-  if (!board) return [];
-  return memberIds.filter((id) => resolveAccess(board, org, id).canRead);
 };
 
 /* ------------------------------------------------------------------ */
@@ -176,12 +169,17 @@ const listChannels = async (req, res) => {
     const channels = await Channel.find({
       organisation: orgId,
       archived: false,
-    }).populate('board', 'name visibility publicDefaultLevel memberAccess createdBy organisation boardType');
+    })
+      .populate('board', 'name visibility publicDefaultLevel memberAccess createdBy organisation boardType')
+      .populate('members', 'name profilePic email');
 
     // Visibility, board by board. Boards were populated above precisely so
     // resolveAccess can run without a second query per channel.
     const internal = ctx.can('board.view_public');
     const visible = channels.filter((ch) => {
+      if (ch.kind === 'dm') {
+        return (ch.members || []).some((m) => String(m?._id || m) === String(userId));
+      }
       if (!ch.board) return internal;
       return resolveAccess(ch.board, ctx.org, userId).canRead;
     });
@@ -200,6 +198,7 @@ const listChannels = async (req, res) => {
           lastAt: { $first: '$createdAt' },
           lastText: { $first: '$bodyText' },
           lastAuthor: { $first: '$author' },
+          lastAuthorType: { $first: '$authorType' },
         },
       },
     ]);
@@ -235,9 +234,18 @@ const listChannels = async (req, res) => {
 
     const payload = visible.map((ch, i) => {
       const last = latestByChannel.get(String(ch._id));
+      // A DM presents as the OTHER person — its stored name is incidental.
+      const other =
+        ch.kind === 'dm'
+          ? (ch.members || []).find((m) => String(m?._id || m) !== String(userId)) || null
+          : null;
       return {
         _id: ch._id,
-        name: ch.name,
+        kind: ch.kind || 'channel',
+        name: other?.name || ch.name,
+        otherUser: other
+          ? { _id: other._id, name: other.name, profilePic: other.profilePic }
+          : null,
         board: ch.board ? { _id: ch.board._id, name: ch.board.name } : null,
         group: ch.group || null,
         archived: ch.archived,
@@ -246,7 +254,10 @@ const listChannels = async (req, res) => {
           ? {
               at: last.lastAt,
               text: (last.lastText || '').slice(0, 140),
-              authorName: authorName.get(String(last.lastAuthor)) || '',
+              authorName:
+                last.lastAuthorType === 'system'
+                  ? 'Macan'
+                  : authorName.get(String(last.lastAuthor)) || '',
             }
           : null,
       };
@@ -255,6 +266,7 @@ const listChannels = async (req, res) => {
     // Sections sort: workspace channels first, then boards A→Z, channels A→Z
     // inside each; the client renders in the order given.
     payload.sort((a, b) => {
+      if ((a.kind === 'dm') !== (b.kind === 'dm')) return a.kind === 'dm' ? 1 : -1;
       const ab = a.board?.name || '';
       const bb = b.board?.name || '';
       if (ab !== bb) return ab.localeCompare(bb);
@@ -312,6 +324,70 @@ const createChannel = async (req, res) => {
     return res.status(201).json({ channel });
   } catch (err) {
     console.error('createChannel error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * POST /api/chat/dms — { org, userId }
+ *
+ * Find-or-create the DM between the caller and one other member of the
+ * workspace. Idempotent under the partial unique index on `dmKey`, so two
+ * racing taps land on the same conversation. Internal members only, both
+ * sides: a DM is workspace chat, and guests don't get workspace chat.
+ */
+const openDm = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { org: orgId, userId: otherId } = req.body || {};
+    if (!orgId || !otherId) {
+      return res.status(400).json({ error: 'org and userId are required' });
+    }
+    if (String(otherId) === String(userId)) {
+      return res.status(400).json({ error: 'That would be a diary, not a DM' });
+    }
+
+    const ctx = await loadOrgContext(orgId, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    if (!ctx.can('board.view_public')) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const otherIsMember = (ctx.org.members || []).some(
+      (m) => String(m?._id || m) === String(otherId)
+    );
+    if (!otherIsMember) {
+      return res.status(404).json({ error: 'That person is not in this workspace' });
+    }
+    const { resolveOrgAccess } = require('../utils/permissions');
+    if (!resolveOrgAccess(ctx.org, otherId).can('board.view_public')) {
+      return res.status(403).json({ error: 'That person cannot use workspace chat' });
+    }
+
+    const [low, high] = [String(userId), String(otherId)].sort();
+    const dmKey = `${orgId}:${low}:${high}`;
+
+    const channel = await Channel.findOneAndUpdate(
+      { dmKey },
+      {
+        $setOnInsert: {
+          organisation: orgId,
+          kind: 'dm',
+          members: [low, high],
+          board: null,
+          group: null,
+          name: 'Direct message',
+          archived: false,
+          createdBy: userId,
+          dmKey,
+        },
+      },
+      { upsert: true, new: true }
+    );
+
+    return res.status(201).json({ channel });
+  } catch (err) {
+    console.error('openDm error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -729,15 +805,131 @@ const uploadChatAttachment = async (req, res) => {
   }
 };
 
+
+/**
+ * POST /api/chat/channels/:channelId/messages/:messageId/task
+ *
+ * "Make this a task" — the conversation produced a piece of work, so the
+ * work gets a row on the channel's board without anyone retyping it.
+ *
+ * The task is a perfectly ordinary task: default status, the board's current
+ * month on tracker boards, the caller as creator, the message's text carried
+ * in the note with its provenance. The message then gets the new task as its
+ * share chip, so the room can see the conversation became work — and the
+ * chip still moves no score; the rule survives Phase 2 intact.
+ *
+ * Gate: `task.create` on the channel's board — making a task from a message
+ * IS making a task, so it costs exactly what the board's own New Task button
+ * costs. Board channels only; a workspace room has no board to put a row on.
+ */
+const makeTaskFromMessage = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const channel = await Channel.findById(req.params.channelId);
+    if (!channel) return res.status(404).json({ error: 'Channel not found' });
+    if (!channel.board) {
+      return res.status(400).json({ error: 'Workspace channels have no board to create the task on' });
+    }
+
+    const message = await Message.findOne({
+      _id: req.params.messageId,
+      channel: channel._id,
+    }).populate('author', 'name');
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+    if (message.task) {
+      return res.status(400).json({ error: 'This message already has a task' });
+    }
+
+    const ctx = await loadBoardContext(channel.board, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const denied = requireCapability(
+      ctx,
+      'task.create',
+      'You do not have permission to create tasks on this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    // The group: a client channel's own client; a manual board channel takes
+    // an explicit groupId (validated against the board) since it has none.
+    const groupId = channel.group || req.body?.groupId || null;
+    if (!groupId) {
+      return res.status(400).json({ error: 'Pick a group for the task — this channel is not tied to one' });
+    }
+    const group = await TaskGroup.findOne({ _id: groupId, board: channel.board });
+    if (!group) return res.status(400).json({ error: 'That group is not on this board' });
+
+    // Name: the caller's override, else the message's first line.
+    const firstLine = (message.bodyText || '').split('\n')[0].trim();
+    const name = ((req.body?.name || '').trim() || firstLine || 'Task from chat').slice(0, 200);
+
+    const authorName =
+      message.authorType === 'system' ? 'Macan' : message.author?.name || 'someone';
+    const note = [
+      `From #${channel.name} — posted by ${authorName}:`,
+      '',
+      (message.bodyText || '').slice(0, 4000),
+    ].join('\n');
+
+    // Lazy require: automationController itself requires nothing of chat, but
+    // keeping the require local mirrors taskController's cycle-avoidance.
+    const { resolveDefaultStatusId } = require('./automationController');
+
+    const task = await Task.create({
+      name,
+      board: channel.board,
+      group: group._id,
+      parent: null,
+      // Tracker boards file every task under a month; "now, in the board's
+      // timezone" is the only honest month for a task born in a chat.
+      monthKey:
+        ctx.board.boardType === 'tracker'
+          ? monthKeyOf(new Date(), ctx.board.monthTimezone || 'UTC')
+          : null,
+      priority: 'medium',
+      status: resolveDefaultStatusId(ctx.board),
+      assignedTo: [],
+      note,
+      isPersonal: false,
+      createdBy: userId,
+    });
+
+    // A chat-born task is a normal manual create, so ITEM_CREATED automations
+    // hear about it like any other.
+    try {
+      eventBus.emit('item.created', {
+        taskId: task._id,
+        boardId: String(channel.board),
+        groupId: String(group._id),
+        statusId: task.status,
+        createdByUserId: userId,
+      });
+    } catch (emitErr) {
+      // best-effort
+    }
+
+    // The message now points at the work it produced.
+    message.task = task._id;
+    await message.save();
+
+    const populated = await Message.findById(message._id).populate(MESSAGE_POPULATE);
+    return res.status(201).json({ task, message: populated });
+  } catch (err) {
+    console.error('makeTaskFromMessage error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   listChannels,
   createChannel,
+  openDm,
   updateChannel,
   markChannelRead,
   getMessages,
   sendMessage,
   editMessage,
   deleteMessage,
+  makeTaskFromMessage,
   uploadChatAttachment,
   // exported for tests
   resolveChannelAccess,

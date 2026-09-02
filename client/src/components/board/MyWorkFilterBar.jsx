@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   SlidersHorizontal,
+  ChevronDown,
   Search,
   X,
   Calendar,
@@ -46,6 +47,8 @@ const MyWorkFilterBar = ({
   matchedCount = 0,
   totalCount = 0,
 }) => {
+  // Mobile-only: whether the filter row is expanded below the toggle.
+  const [mobileExpanded, setMobileExpanded] = useState(false);
   const activeCount = countActiveWorkFilters(filters);
   const set = (patch) => onChange?.({ ...filters, ...patch });
 
@@ -83,12 +86,63 @@ const MyWorkFilterBar = ({
 
   return (
     <div
-      className="mt-6 flex items-center gap-2 flex-wrap"
+      className="mt-6"
       role="region"
       aria-label="Filter my work"
     >
+      {/* Phones: the pills live behind this one toggle — a four-row wall of
+          filter buttons was half the screen before anyone saw a task. */}
+      <button
+        type="button"
+        onClick={() => setMobileExpanded((v) => !v)}
+        aria-expanded={mobileExpanded}
+        className="md:hidden inline-flex items-center gap-1.5 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
+        style={{
+          height: 34,
+          padding: '0 12px',
+          fontSize: 13,
+          fontWeight: 600,
+          color: activeCount > 0 ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+          border: '1.5px solid var(--color-border-strong)',
+          borderRadius: 'var(--radius-md)',
+          background: 'var(--color-bg-surface, #FFFFFF)',
+        }}
+      >
+        <SlidersHorizontal size={15} aria-hidden="true" />
+        Filter
+        {activeCount > 0 && (
+          <span
+            className="inline-flex items-center justify-center font-body font-bold text-white"
+            style={{
+              minWidth: 17,
+              height: 17,
+              padding: '0 5px',
+              borderRadius: 999,
+              fontSize: 10.5,
+              background: 'var(--color-accent)',
+            }}
+          >
+            {activeCount}
+          </span>
+        )}
+        <ChevronDown
+          size={14}
+          aria-hidden="true"
+          style={{
+            transform: mobileExpanded ? 'rotate(180deg)' : 'none',
+            transition: 'transform 150ms ease',
+          }}
+        />
+      </button>
+
+      <div
+        className={[
+          mobileExpanded ? 'flex' : 'hidden',
+          'md:flex items-center gap-2 flex-wrap mt-2 md:mt-0',
+        ].join(' ')}
+      >
       <span
-        className="inline-flex items-center gap-1.5 font-body shrink-0"
+        className="hidden md:inline-flex items-center gap-1.5 font-body shrink-0"
         style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}
       >
         <SlidersHorizontal size={15} aria-hidden="true" />
@@ -240,6 +294,7 @@ const MyWorkFilterBar = ({
           </button>
         </div>
       )}
+      </div>
     </div>
   );
 };

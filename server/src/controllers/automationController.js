@@ -117,7 +117,7 @@ const populateAutomation = (query) =>
 
 const VALID_TRIGGER_TYPES = ['SCHEDULE', 'ITEM_CREATED', 'GROUP_CREATED'];
 const VALID_CONDITION_TYPES = ['ITEM_IN_GROUP', 'ITEM_IN_STATUS', 'GROUP_NAME_MATCHES'];
-const VALID_ACTION_TYPES = ['CREATE_TASK', 'CREATE_SUBITEM', 'POSITION_ITEM'];
+const VALID_ACTION_TYPES = ['CREATE_TASK', 'CREATE_SUBITEM', 'POSITION_ITEM', 'POST_TO_CHANNEL'];
 
 // POSITION_ITEM strategies: how an automation (re)orders the triggering task's
 // group when a task is created. `top` floats the new task first; the rest
@@ -266,6 +266,30 @@ const sanitizeActionConfig = async (actionType, rawConfig, board, boardId, org) 
       return { error: 'POSITION_ITEM action requires a valid strategy' };
     }
     return { config: { strategy: cfg.strategy } };
+  }
+
+  // POST_TO_CHANNEL posts a message instead of creating a task. It carries
+  // `message` (with an optional {task} placeholder) and, for SCHEDULE
+  // automations that have no triggering task, a `group` naming which client's
+  // channel to post into. ITEM_CREATED automations may omit the group — the
+  // triggering task supplies it at run time.
+  if (actionType === 'POST_TO_CHANNEL') {
+    const text = String(cfg.message || '').trim();
+    if (!text) {
+      return { error: 'POST_TO_CHANNEL action requires a message' };
+    }
+    const out = { message: text.slice(0, 2000) };
+    if (cfg.group) {
+      if (!mongoose.Types.ObjectId.isValid(cfg.group)) {
+        return { error: 'Invalid action group' };
+      }
+      const group = await TaskGroup.findById(cfg.group);
+      if (!group || group.board.toString() !== boardId.toString()) {
+        return { error: 'Action group does not belong to board' };
+      }
+      out.group = cfg.group;
+    }
+    return { config: out };
   }
 
   if (!cfg.name || !String(cfg.name).trim()) {
@@ -798,6 +822,53 @@ const runLegacyTemplateOnce = async (automation, board) => {
  * recipient against board READ access then — because an automation outlives the
  * access that created it.
  */
+/**
+ * Run one POST_TO_CHANNEL action: a system message in the client's channel.
+ *
+ * The channel is DERIVED, never configured: config.group when the automation
+ * names a client, else the relevant task's group. That is what keeps an
+ * automation cloned across clients posting to each client's own room instead
+ * of all of them posting to one. `ensureGroupChannel` upserts the room, so
+ * this works before anyone has ever opened chat in the workspace.
+ *
+ * Best-effort throughout — a failed chat post never fails the run that the
+ * automation exists to do.
+ */
+const runPostToChannelOnce = async (action, automation, relevantTask) => {
+  try {
+    const cfg = action?.config || {};
+    const groupId = cfg.group || relevantTask?.group || null;
+    if (!groupId) {
+      console.warn(
+        '[automation] POST_TO_CHANNEL skipped — no group to derive a channel from',
+        automation?._id?.toString()
+      );
+      return;
+    }
+
+    // Lazy require, same cycle-avoidance as the dispatcher's.
+    const { postSystemMessage, ensureGroupChannel } = require('../services/chatSystemPost');
+    const channel = await ensureGroupChannel(
+      automation.organisation,
+      automation.board,
+      groupId
+    );
+    if (!channel) return;
+
+    const text = String(cfg.message || '').replace(
+      /\{task\}/g,
+      relevantTask?.name || 'this task'
+    );
+
+    await postSystemMessage(channel, {
+      bodyText: text,
+      taskId: relevantTask?._id || null,
+    });
+  } catch (err) {
+    console.error('runPostToChannelOnce error:', err);
+  }
+};
+
 const runAutomationOnce = async (automation, ctx = {}) => {
   // `boardType` and `monthTimezone` are as load-bearing as `statuses`:
   // without them every task an automation spawns on a tracker board is filed
@@ -825,6 +896,18 @@ const runAutomationOnce = async (automation, ctx = {}) => {
       // creating anything, so it runs on its own path and yields no task.
       if (action.type === 'POSITION_ITEM') {
         await runPositionActionOnce(action, automation, ctx.triggeringTask);
+        continue;
+      }
+      // POST_TO_CHANNEL writes into chat instead of onto the board. It runs
+      // AFTER any CREATE_TASK earlier in the list, so the chip points at the
+      // task this very automation just made when there is one — otherwise at
+      // the task that triggered the run.
+      if (action.type === 'POST_TO_CHANNEL') {
+        await runPostToChannelOnce(
+          action,
+          automation,
+          lastTask || ctx.triggeringTask
+        );
         continue;
       }
       const created = await runActionOnce(
@@ -1242,4 +1325,7 @@ module.exports = {
   // Exported for unit testing the POSITION_ITEM sort + validation logic.
   computePositionedOrder,
   sanitizeActionConfig,
+  // Shared with chatController's make-a-task-from-a-message, so a task born
+  // in chat lands on the same default status as one born anywhere else.
+  resolveDefaultStatusId,
 };

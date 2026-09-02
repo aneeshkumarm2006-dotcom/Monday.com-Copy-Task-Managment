@@ -2272,7 +2272,7 @@ const BoardDetailPage = () => {
             to wrap. At desktop widths it still fits on one line, unchanged. */}
         {(canEdit || isBoardCreator || canExportActivity || canManageTrackers
           || canConvertToTracker) && (
-          <div className="flex items-center gap-2 flex-wrap justify-end">
+          <div className="flex items-center gap-2 flex-wrap justify-end macan-mobile-scroll-row">
             {/* A public board needs no sharing — everyone is already in it — so
                 the button stays hidden there for everyone EXCEPT its owner, who
                 reaches Transfer ownership through this modal and would otherwise
@@ -2359,10 +2359,10 @@ const BoardDetailPage = () => {
           renders exactly as it did before this board type existed. */}
       {visibleTabs.length > 1 && (
         <div
-          // Wraps rather than scrolls: a scroll container here hides tabs behind
-          // a gesture nobody knows to make, and on touch it steals the swipe.
-          // With four short tabs a second row is the honest fallback.
-          className="mt-5 flex flex-wrap items-center gap-1"
+          // Desktop wraps; phones scroll one line. The old "wrap is honest"
+          // reasoning held at four tabs — a tracker board now has seven, and
+          // two stacked rows of tabs cost more than the swipe they avoid.
+          className="mt-5 flex flex-wrap items-center gap-1 macan-mobile-scroll-row"
           role="tablist"
           aria-label="Board views"
           style={{ borderBottom: '1px solid var(--color-border)' }}

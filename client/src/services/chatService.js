@@ -26,6 +26,12 @@ export const createChannel = async (orgId, { name, boardId = null }) => {
   return data.channel;
 };
 
+/** POST /api/chat/dms — find-or-create the DM with one other member. */
+export const openDm = async (orgId, userId) => {
+  const { data } = await api.post('/api/chat/dms', { org: orgId, userId });
+  return data.channel;
+};
+
 /** PATCH /api/chat/channels/:id — rename and/or archive. */
 export const updateChannel = async (channelId, patch) => {
   const { data } = await api.patch(`/api/chat/channels/${channelId}`, patch);
@@ -74,6 +80,16 @@ export const editMessage = async (channelId, messageId, payload) => {
 export const deleteMessage = async (channelId, messageId) => {
   const { data } = await api.delete(
     `/api/chat/channels/${channelId}/messages/${messageId}`
+  );
+  return data;
+};
+
+/** POST make-this-a-task — the message becomes a row on the channel's board.
+ *  Returns { task, message } (the message now carries the task chip). */
+export const makeTaskFromMessage = async (channelId, messageId, payload = {}) => {
+  const { data } = await api.post(
+    `/api/chat/channels/${channelId}/messages/${messageId}/task`,
+    payload
   );
   return data;
 };
