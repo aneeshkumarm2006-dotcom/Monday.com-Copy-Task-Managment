@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { UploadCloud, Download, Trash2 } from 'lucide-react';
+import { UploadCloud, Download, Eye, Trash2 } from 'lucide-react';
 import * as taskAttachmentService from '../../services/taskAttachmentService';
-import { downloadFile, formatBytes, isImageAttachment } from '../../utils/fileUrl';
-import { FileTypeIcon } from './AttachmentList';
+import {
+  downloadFile,
+  formatBytes,
+  isImageAttachment,
+  isPreviewable,
+} from '../../utils/fileUrl';
+import { FileTypeIcon } from './FileTypeIcon';
+import FilePreviewModal from './FilePreviewModal';
 import useToastStore from '../../store/toastStore';
 import useAuthStore from '../../store/authStore';
 import { timeAgo } from '../../utils/dateUtils';
@@ -34,6 +40,8 @@ const FilesTab = ({ task, onCountChange }) => {
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  // Index into `attachments` of the file open in the viewer, or null.
+  const [previewIndex, setPreviewIndex] = useState(null);
 
   const fileInputRef = useRef(null);
 
@@ -235,10 +243,11 @@ const FilesTab = ({ task, onCountChange }) => {
             className="flex flex-col"
             style={{ listStyle: 'none', padding: 0, margin: 0, gap: 8 }}
           >
-            {attachments.map((a) => (
+            {attachments.map((a, i) => (
               <li key={a._id || a.url}>
                 <AttachmentRow
                   attachment={a}
+                  onPreview={() => setPreviewIndex(i)}
                   canDelete={
                     !a.uploadedBy ||
                     a.uploadedBy._id === currentUser?._id ||
@@ -251,11 +260,20 @@ const FilesTab = ({ task, onCountChange }) => {
           </ul>
         )}
       </div>
+
+      {previewIndex !== null && attachments[previewIndex] && (
+        <FilePreviewModal
+          attachments={attachments}
+          index={previewIndex}
+          onIndexChange={setPreviewIndex}
+          onClose={() => setPreviewIndex(null)}
+        />
+      )}
     </div>
   );
 };
 
-const AttachmentRow = ({ attachment, canDelete, onDelete }) => {
+const AttachmentRow = ({ attachment, canDelete, onDelete, onPreview }) => {
   const uploader = attachment.uploadedBy;
   const uploaderName =
     (uploader && typeof uploader === 'object' && uploader.name) || '';
@@ -263,8 +281,13 @@ const AttachmentRow = ({ attachment, canDelete, onDelete }) => {
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const isImage = isImageAttachment(attachment);
+  const label = attachment.name || 'attachment';
+  const previewable = isPreviewable(attachment);
   const handleDownload = () =>
-    downloadFile(attachment.url, attachment.mime || '', attachment.name || 'file');
+    downloadFile(attachment.url, attachment.mime || '', label);
+  // Preview when the browser can render it, download when it can't — the same
+  // single-click contract the thread's AttachmentList uses.
+  const handleOpen = previewable ? onPreview : handleDownload;
 
   return (
     <div
@@ -283,16 +306,24 @@ const AttachmentRow = ({ attachment, canDelete, onDelete }) => {
       }}
     >
       {/* Thumbnail / icon */}
-      {isImage ? (
-        <a
-          href={attachment.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{ flexShrink: 0, lineHeight: 0 }}
-        >
+      <button
+        type="button"
+        onClick={handleOpen}
+        aria-label={previewable ? `Preview ${label}` : `Download ${label}`}
+        title={previewable ? `Preview ${label}` : `Download ${label}`}
+        style={{
+          flexShrink: 0,
+          lineHeight: 0,
+          padding: 0,
+          border: 'none',
+          background: 'none',
+          cursor: 'pointer',
+        }}
+      >
+        {isImage ? (
           <img
             src={attachment.url}
-            alt={attachment.name || 'attachment'}
+            alt={label}
             style={{
               width: 40,
               height: 40,
@@ -302,72 +333,49 @@ const AttachmentRow = ({ attachment, canDelete, onDelete }) => {
               display: 'block',
             }}
           />
-        </a>
-      ) : (
-        <span
-          aria-hidden="true"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 40,
-            height: 40,
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--color-bg-subtle, #F3F4F6)',
-            color: 'var(--color-text-secondary)',
-            flexShrink: 0,
-          }}
-        >
-          <FileTypeIcon mime={attachment.mime || ''} size={18} />
-        </span>
-      )}
+        ) : (
+          <span
+            aria-hidden="true"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 40,
+              height: 40,
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--color-bg-subtle, #F3F4F6)',
+              color: 'var(--color-text-secondary)',
+            }}
+          >
+            <FileTypeIcon mime={attachment.mime || ''} size={18} />
+          </span>
+        )}
+      </button>
 
       {/* Name + meta */}
       <div className="min-w-0 flex-1">
-        {isImage ? (
-          <a
-            href={attachment.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-body transition-colors hover:text-[color:var(--color-accent)]"
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: 'var(--color-text-primary)',
-              textDecoration: 'none',
-              display: 'block',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-            title={attachment.name || 'attachment'}
-          >
-            {attachment.name || 'attachment'}
-          </a>
-        ) : (
-          <button
-            type="button"
-            onClick={handleDownload}
-            className="font-body transition-colors hover:text-[color:var(--color-accent)] text-left"
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: 'var(--color-text-primary)',
-              background: 'none',
-              border: 'none',
-              padding: 0,
-              cursor: 'pointer',
-              display: 'block',
-              width: '100%',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-            title={attachment.name || 'attachment'}
-          >
-            {attachment.name || 'attachment'}
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={handleOpen}
+          className="font-body transition-colors hover:text-[color:var(--color-accent)] text-left"
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: 'var(--color-text-primary)',
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            cursor: 'pointer',
+            display: 'block',
+            width: '100%',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+          title={label}
+        >
+          {label}
+        </button>
         <div
           className="font-body flex items-center gap-2 flex-wrap"
           style={{ fontSize: 11, color: 'var(--color-text-muted)', marginTop: 2 }}
@@ -390,6 +398,25 @@ const AttachmentRow = ({ attachment, canDelete, onDelete }) => {
 
       {/* Actions */}
       <div className="flex items-center gap-1" style={{ flexShrink: 0 }}>
+        {previewable && (
+          <button
+            type="button"
+            onClick={onPreview}
+            aria-label={`Preview ${label}`}
+            title="Preview"
+            className="inline-flex items-center justify-center rounded transition-colors hover:bg-[color:var(--color-bg-subtle)]"
+            style={{
+              width: 28,
+              height: 28,
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--color-text-secondary)',
+              cursor: 'pointer',
+            }}
+          >
+            <Eye size={14} aria-hidden="true" />
+          </button>
+        )}
         <button
           type="button"
           onClick={handleDownload}

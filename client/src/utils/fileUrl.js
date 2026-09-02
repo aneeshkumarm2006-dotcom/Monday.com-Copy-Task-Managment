@@ -18,10 +18,48 @@ export const formatBytes = (bytes) => {
 
 /**
  * Does this attachment get a thumbnail? Images are the only kind we can show
- * inline — and the only kind `downloadFile` opens directly rather than proxying.
+ * inline in a list row — everything else gets a type icon.
  */
 export const isImageAttachment = (attachment) =>
   (attachment?.mime || '').startsWith('image/');
+
+/** Lowercased extension without the dot, or '' when the name carries none. */
+const extensionOf = (name = '') => {
+  const lower = String(name).toLowerCase();
+  const dot = lower.lastIndexOf('.');
+  return dot > 0 ? lower.slice(dot + 1) : '';
+};
+
+// Plain-text-ish files we render in a <pre>. Kept as an explicit list because
+// a browser's idea of "text" is broader than what is pleasant to read raw.
+const TEXT_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'log',
+  'xml', 'yml', 'yaml', 'html', 'css', 'js', 'jsx', 'ts', 'tsx', 'sql',
+]);
+
+/**
+ * Which preview surface can show this file *inside the app*, or null when the
+ * browser has nothing native to render it with (Word, Excel, PowerPoint, zips).
+ *
+ * Extension is consulted as well as MIME because legacy attachment rows were
+ * stored without a `mime` at all, and some browsers hand us a bare
+ * `application/octet-stream` for a perfectly ordinary PDF.
+ */
+export const previewKindFor = (attachment) => {
+  const mime = (attachment?.mime || '').toLowerCase();
+  const ext = extensionOf(attachment?.name || '');
+
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
+  if (mime.startsWith('text/') || mime === 'application/json') return 'text';
+  if (!mime && TEXT_EXTENSIONS.has(ext)) return 'text';
+  return null;
+};
+
+/** True when clicking the row should open the viewer rather than download. */
+export const isPreviewable = (attachment) => previewKindFor(attachment) !== null;
 
 /**
  * Hand a Blob to the browser as a download.
@@ -43,34 +81,48 @@ export const saveBlob = (blob, name = 'download') => {
 };
 
 /**
+ * Pull an attachment's bytes down through the server proxy.
+ *
+ * Everything non-image goes this way rather than straight at the Cloudinary
+ * URL: `raw` uploads (PDFs, docs, audio) sit behind delivery restrictions the
+ * browser can't satisfy, and the proxy signs the URL server-side. It also
+ * carries the JWT, so this is app-plane only — the client portal has its own
+ * token scope and must not call it.
+ *
+ * The blob is re-tagged with the attachment's own MIME when Cloudinary's
+ * Content-Type disagrees: a PDF served as `application/octet-stream` makes an
+ * <iframe> offer a download instead of rendering the document.
+ */
+export const fetchAttachmentBlob = async (url, mime = '', name = 'file') => {
+  const token = localStorage.getItem('macan_token');
+  // URLSearchParams encodes values automatically — don't pre-encode or it double-encodes
+  const params = new URLSearchParams({ url, name });
+
+  const res = await fetch(`${API_BASE}/api/proxy/download?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Server returned ${res.status}`);
+
+  const blob = await res.blob();
+  if (mime && blob.type !== mime) return blob.slice(0, blob.size, mime);
+  return blob;
+};
+
+/**
  * Programmatically download a file attachment.
  *
- * Images open in a new tab directly (no auth needed, Cloudinary serves them).
- * All other files (PDFs, docs, zips…) are fetched via the server proxy with
- * the JWT token in the Authorization header, then triggered as a blob download
- * so the browser never tries to navigate to the URL itself.
+ * Fetched through the proxy so the saved file keeps its real name — a plain
+ * link to a cross-origin Cloudinary URL ignores the `download` attribute and
+ * saves whatever public_id the upload was given. Opening the raw URL is the
+ * last-resort fallback if the proxy itself fails.
  */
 export const downloadFile = async (url, mime = '', name = 'file') => {
   if (!url) return;
 
-  if (mime.startsWith('image/')) {
-    window.open(url, '_blank', 'noopener,noreferrer');
-    return;
-  }
-
-  const token = localStorage.getItem('macan_token');
-  // URLSearchParams encodes values automatically — don't pre-encode or it double-encodes
-  const params = new URLSearchParams({ url, name });
-  const proxyUrl = `${API_BASE}/api/proxy/download?${params}`;
-
   try {
-    const res = await fetch(proxyUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
-
-    saveBlob(await res.blob(), name);
+    saveBlob(await fetchAttachmentBlob(url, mime, name), name);
   } catch (err) {
     console.error('File download failed:', err);
+    window.open(url, '_blank', 'noopener,noreferrer');
   }
 };
