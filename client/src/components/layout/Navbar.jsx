@@ -22,7 +22,7 @@ import Chip from '../ui/Chip';
 import Avatar from '../ui/Avatar';
 import NotificationFeed from '../notifications/NotificationFeed';
 import { resolveNotifLink } from '../notifications/notificationMeta';
-import macanMark from '../../assets/macan-mark.png';
+import macanMark from '../../assets/macan-mark.svg';
 
 /**
  * Top navigation bar. Sticky, 56px tall, white, with:
@@ -35,9 +35,9 @@ import macanMark from '../../assets/macan-mark.png';
  *
  * The mark is `aria-hidden` with an empty `alt` and the wordmark beside it is
  * real text, so the pair announces once as "Macan" rather than twice. That was
- * true of the letter tile this replaced and is the reason the supplied artwork
- * is the SYMBOL ONLY — the version with the wordmark baked in would have put
- * "Macan" on the screen twice, once as pixels no screen reader can read.
+ * true of the letter tile this replaced, and is why the mark is the SYMBOL
+ * ONLY: artwork carrying the word would put "Macan" on screen twice, once as
+ * pixels no screen reader can read.
  *
  * `width`/`height` are set on the element as well as in CSS so the row reserves
  * its 32px before the image decodes and the nav does not shift on first paint.

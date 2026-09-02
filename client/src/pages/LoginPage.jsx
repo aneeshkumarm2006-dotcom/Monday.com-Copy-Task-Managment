@@ -1,5 +1,5 @@
 import { useSearchParams } from 'react-router-dom';
-import macanMark from '../assets/macan-mark.png';
+import macanMark from '../assets/macan-mark.svg';
 
 const GoogleIcon = () => (
   <svg
