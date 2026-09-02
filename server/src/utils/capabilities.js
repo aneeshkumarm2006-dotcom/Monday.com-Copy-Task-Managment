@@ -127,16 +127,28 @@ const CAPABILITY_GROUPS = [
   {
     key: 'goals',
     name: 'Monthly goals',
-    // Three rungs rather than the usual view/manage pair, because filling in a
-    // number and changing what was promised are genuinely different acts. The
-    // person who types "we reached rank 4" at month end is usually an executive
-    // sitting on `contribute`; folding that into `goal.manage` would mean
-    // over-permissioning them — handing them the power to edit targets — purely
-    // so they could report a result.
+    // FOUR rungs rather than the usual view/manage pair, because three
+    // genuinely different acts hide inside "edit a goal": filling in a number,
+    // writing down a goal for the client you run, and rewriting what somebody
+    // else promised. The person who types "we reached rank 4" at month end is
+    // usually an executive sitting on `contribute`; folding that into
+    // `goal.manage` would mean over-permissioning them — handing them the power
+    // to edit anyone's targets — purely so they could report a result.
+    //
+    // `goal.create` is the rung that was missing, and its absence was not
+    // theoretical: on a board left at the default `contribute`, an executive who
+    // owns a client could report results but could not write down what they were
+    // aiming for, because the only capability that could create a goal also
+    // carried delete-anyone's. The split mirrors `task.edit_assigned` vs
+    // `task.edit_any` exactly — "your own work" is a lower rung than "anything
+    // on this board" — and it is deliberately the same shape rather than a new
+    // idea, because a permission model people cannot predict is one they route
+    // around.
     capabilities: [
       ['goal.view', "See a board's Monthly Goals and their scores"],
       ['goal.track', 'Fill in the final numbers on existing goals'],
-      ['goal.manage', 'Create, edit and delete goals, and set targets'],
+      ['goal.create', 'Add goals, and edit or delete the ones they added'],
+      ['goal.manage', "Edit and delete anyone's goals, and set targets"],
     ],
   },
   {
@@ -263,6 +275,7 @@ const BOARD_SCOPED = new Set([
   // rung below, which is what makes board-scoping them safe.
   'goal.view',
   'goal.track',
+  'goal.create',
   'goal.manage',
   // Same obligation again, and note the two are conferred by DIFFERENT rungs in
   // LEVEL_ADDS — `vault.view` by `view`, `vault.manage` by `edit`. Both are
@@ -328,6 +341,12 @@ const LEVEL_ADDS = {
     'task.edit_assigned',
     'task.change_status',
     'goal.track',
+    // Writing down what you are aiming for on the client you run is doing your
+    // own work, the same act as `task.create` two lines up. Editing and deleting
+    // are limited to goals this person created — the controller checks
+    // `createdBy` — so nobody at this rung can rewrite a target somebody else
+    // agreed with a client, which is the part that stays on `edit`.
+    'goal.create',
     // Typing in what a channel actually spent is reporting a result you are
     // responsible for, the same act as `goal.track` beside it. Deciding what
     // the allocation should be is not, and stays on `edit`.
@@ -525,6 +544,7 @@ const SYSTEM_ROLES = [
       'tracker.manage',
       'goal.view',
       'goal.track',
+      'goal.create',
       'goal.manage',
       'adsBudget.view',
       'adsBudget.track',
@@ -590,6 +610,7 @@ const SYSTEM_ROLES = [
       'tracker.manage',
       'goal.view',
       'goal.track',
+      'goal.create',
       'goal.manage',
       'adsBudget.view',
       'adsBudget.track',

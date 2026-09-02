@@ -109,3 +109,55 @@ test('every module loads — no dangling imports or cycles', () => {
   }
   assert.deepEqual(failed, [], `Modules failed to load:\n  ${failed.join('\n  ')}`);
 });
+
+// ---------------------------------------------------------------------------
+// goal.create — the rung between reporting a result and rewriting a target
+// ---------------------------------------------------------------------------
+
+const capsFor = (level) => new Set(require('./capabilities').capabilitiesForLevel(level));
+
+test('goal.create is conferred by contribute, so the default board rung can add goals', () => {
+  const caps = require('./capabilities');
+  assert.ok(
+    capsFor('contribute').has('goal.create'),
+    'contribute must confer goal.create — it is the default publicDefaultLevel, '
+    + 'and without it an executive can report a result but not write down a target'
+  );
+  assert.ok(capsFor('edit').has('goal.create'), 'edit must confer it too');
+  assert.ok(!capsFor('view').has('goal.create'), 'view must not');
+  assert.ok(!capsFor('comment').has('goal.create'), 'comment must not');
+  // The point of the split: adding is NOT rewriting anyone's.
+  assert.ok(
+    !capsFor('contribute').has('goal.manage'),
+    'contribute must NOT confer goal.manage — reshaping anyone\'s goal stays on edit'
+  );
+  assert.ok(capsFor('edit').has('goal.manage'));
+  assert.ok(caps.BOARD_SCOPED.has('goal.create'), 'must be board-scoped like its siblings');
+});
+
+/**
+ * Board-scoping a capability no rung confers strips it from everyone but the
+ * board's creator — the trap capabilities.js warns about beside BOARD_SCOPED.
+ */
+test('every board-scoped goal capability is conferred by some rung', () => {
+  const caps = require('./capabilities');
+  const conferred = new Set();
+  for (const level of caps.BOARD_LEVELS) {
+    for (const c of caps.capabilitiesForLevel(level)) conferred.add(c);
+  }
+  for (const c of [...caps.BOARD_SCOPED].filter((k) => k.startsWith('goal.'))) {
+    assert.ok(conferred.has(c), `${c} is board-scoped but no rung confers it`);
+  }
+});
+
+test('the roles that could track goals can now also add them', () => {
+  const caps = require('./capabilities');
+  for (const role of caps.SYSTEM_ROLES) {
+    const p = role.permissions || [];
+    if (!p.includes('goal.track')) continue;
+    assert.ok(
+      p.includes('goal.create'),
+      `${role.name} can fill in a goal's result but cannot add one — the two travel together`
+    );
+  }
+});

@@ -55,6 +55,10 @@ const GoalsTab = ({
   months = [],
   canTrack = false,
   canManage = false,
+  // `goal.create` — add a goal, and reshape the ones you added. See
+  // GoalGroupSection for how the two combine per row.
+  canCreate = false,
+  currentUserId = null,
   canManageColumns = false,
   // `connector.manage` on this board. Only decides whether the link control is
   // offered — pointing a goal at a keyword is connector wiring and writes
@@ -499,6 +503,8 @@ const GoalsTab = ({
               onToggleCollapse={() => toggleCollapse(group._id)}
               canTrack={canTrack}
               canManage={canManage}
+              canCreate={canCreate}
+              currentUserId={currentUserId}
               // The rows only paint their blanks red once the month is over and
               // genuinely owes numbers — the same flag the banner above runs on.
               monthClosable={!!unclosed}

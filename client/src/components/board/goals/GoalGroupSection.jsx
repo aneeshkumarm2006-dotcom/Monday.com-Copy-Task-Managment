@@ -116,6 +116,19 @@ const GoalGroupSection = ({
   onToggleCollapse,
   canTrack,
   canManage,
+  /**
+   * `goal.create` — may add goals, and reshape the ones they added.
+   *
+   * The per-row rule below is `canManage || (canCreate && I wrote this one)`,
+   * mirroring `task.edit_assigned` vs `task.edit_any`. `currentUserId` is what
+   * makes the second half answerable on the client; `createdBy` is populated on
+   * every goal row, so no extra request is needed.
+   *
+   * This only decides what is OFFERED. The server re-checks `createdBy` on every
+   * write — hiding a button is a courtesy, never a control.
+   */
+  canCreate = false,
+  currentUserId = null,
   monthClosable = false,
   // ---- Connector, all optional --------------------------------------------
   // `linksByGoal` is a Map rather than an array so a row's own link is a lookup
@@ -139,9 +152,31 @@ const GoalGroupSection = ({
 }) => {
   const { summary = {}, goals = [], owner = null } = group;
 
+  /**
+   * May this person reshape THIS goal — its name, target, weight, columns?
+   *
+   * `goal.manage` says yes to every row. `goal.create` says yes only to the rows
+   * they wrote, which is the same shape as `task.edit_assigned`. `createdBy`
+   * arrives populated, so it is either a user document or a raw id depending on
+   * the response — both are handled rather than assumed, because the day one
+   * path stops populating is the day every row silently becomes read-only.
+   */
+  const canEditGoal = useCallback(
+    (goal) => {
+      if (canManage) return true;
+      if (!canCreate || !currentUserId) return false;
+      const author = goal?.createdBy;
+      const authorId = author && author._id !== undefined ? author._id : author;
+      return !!authorId && String(authorId) === String(currentUserId);
+    },
+    [canManage, canCreate, currentUserId]
+  );
+
   // Gutter, name, …extras, start, target, actual, result, actions — see goalGrid.
   // The actions column is narrower for someone with no row buttons to put in it.
-  const gridTemplate = buildGoalGrid(columns, canManage, canLink);
+  // `canCreate` widens it too: a contributor has buttons on their OWN rows, and
+  // sizing the column off `canManage` alone would leave them nowhere to render.
+  const gridTemplate = buildGoalGrid(columns, canManage || canCreate, canLink);
   const hasRequired = columns.some((c) => c.required);
 
   // Per group, exactly like the board's per-group task table: sorting one
@@ -333,7 +368,7 @@ const GoalGroupSection = ({
           </button>
         )}
 
-        {canManage && (
+        {(canManage || canCreate) && (
           <button
             type="button"
             onClick={() => onAdd(group)}
@@ -363,7 +398,7 @@ const GoalGroupSection = ({
             <p className="font-body" style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}>
               No goals for {group.name} this month.
             </p>
-            {canManage && (
+            {(canManage || canCreate) && (
               <button
                 type="button"
                 onClick={() => onAdd(group)}
@@ -378,7 +413,7 @@ const GoalGroupSection = ({
           <>
             {/* Desktop grid */}
             <div className="hidden md:block" style={{ overflowX: 'auto' }}>
-              <div role="table" style={{ minWidth: goalGridMinWidth(columns, canManage, canLink) }}>
+              <div role="table" style={{ minWidth: goalGridMinWidth(columns, canManage || canCreate, canLink) }}>
                 <div
                   role="row"
                   className="bg-[color:var(--color-bg-surface)]"
@@ -465,7 +500,7 @@ const GoalGroupSection = ({
                     typeSpec={typesByKey[goal.type]}
                     gridTemplate={gridTemplate}
                     canTrack={canTrack}
-                    canManage={canManage}
+                    canManage={canEditGoal(goal)}
                     monthClosable={monthClosable}
                     index={i}
                     rowCount={sortedGoals.length}
@@ -512,7 +547,7 @@ const GoalGroupSection = ({
                   columns={columns}
                   typeSpec={typesByKey[goal.type]}
                   canTrack={canTrack}
-                  canManage={canManage}
+                  canManage={canEditGoal(goal)}
                   monthClosable={monthClosable}
                   index={i}
                   rowCount={sortedGoals.length}

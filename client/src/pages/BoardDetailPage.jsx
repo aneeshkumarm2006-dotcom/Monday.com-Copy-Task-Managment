@@ -526,6 +526,11 @@ const BoardDetailPage = () => {
 
   const canViewGoals = isTrackerBoard && canOnBoard('goal.view');
   const canTrackGoals = canViewGoals && canOnBoard('goal.track');
+  // Add a goal, and reshape the ones you added. Conferred by `contribute`, so
+  // most of the team holds it — which is the point. Reshaping ANYONE's stays on
+  // `goal.manage` below, and the server checks `createdBy` regardless of what
+  // this enables on screen.
+  const canCreateGoals = canViewGoals && canOnBoard('goal.create');
   const canManageGoals = canViewGoals && canOnBoard('goal.manage');
   // Deliberately the SAME gate as setting a target, not a coincidence to be
   // tidied apart later: the columns are part of the goals schema. They used to
@@ -2411,6 +2416,8 @@ const BoardDetailPage = () => {
             months={months}
             canTrack={canTrackGoals}
             canManage={canManageGoals}
+            canCreate={canCreateGoals}
+            currentUserId={currentUser?._id || null}
             canManageColumns={canManageGoalColumns}
             // Only offers the link control on each row. Pointing a goal at a
             // tracked keyword is connector wiring — the same act as saying which

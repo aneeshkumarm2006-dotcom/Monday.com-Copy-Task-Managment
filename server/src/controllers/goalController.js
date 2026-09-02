@@ -127,6 +127,67 @@ const gateByGoal = async (req, res, capability) => {
   return { ctx, goal };
 };
 
+/**
+ * Reshaping a goal: `goal.manage` for anyone's, or `goal.create` for your own.
+ *
+ * The two-tier rule mirrors `task.edit_assigned` vs `task.edit_any`, and it is
+ * what makes `goal.create` usable rather than a trap. Create-only would let an
+ * executive write a goal and then be unable to fix a typo in it — so the rung
+ * that can add a goal can also correct and remove the goals it added, and
+ * nothing else.
+ *
+ * BOTH CAPABILITIES ARE TESTED IN MEMORY, against one loaded context, rather
+ * than by calling `gate` twice. `gate` ANSWERS on refusal — it writes the 403
+ * itself — so a first failed check would both send a response and make the
+ * second check unreachable. Asking `ctx.can` twice has neither problem and costs
+ * one board load instead of two.
+ *
+ * `goal.manage` is checked FIRST and, when held, skips the ownership test
+ * entirely: a board editor must never be refused a goal because somebody else
+ * wrote it. Only then does ownership decide, and that refusal gets a sentence of
+ * its own rather than the generic capability message, because "you may add
+ * goals, just not change THIS one" is the genuinely confusing case.
+ */
+const gateGoalWrite = async (req, res) => {
+  const { id } = req.params;
+  if (!isValidId(id)) {
+    res.status(400).json({ error: 'Invalid goal id' });
+    return null;
+  }
+  const goal = await Goal.findById(id);
+  if (!goal) {
+    res.status(404).json({ error: 'Goal not found' });
+    return null;
+  }
+  const ctx = await loadBoardContext(String(goal.board), req.user.userId);
+  if (ctx.error) {
+    res.status(ctx.status).json({ error: ctx.error });
+    return null;
+  }
+  if (ctx.board?.boardType !== 'tracker') {
+    res.status(404).json({ error: NOT_TRACKER, code: 'NOT_TRACKER_BOARD' });
+    return null;
+  }
+
+  if (ctx.can('goal.manage')) return { ctx, goal };
+
+  if (!ctx.can('goal.create')) {
+    const denied = requireCapability(ctx, 'goal.manage');
+    res.status(denied?.status || 403).json({
+      error: denied?.error || 'You do not have permission to change goals.',
+    });
+    return null;
+  }
+  if (String(goal.createdBy || '') !== String(req.user.userId)) {
+    res.status(403).json({
+      error: 'You can change goals you added yourself. This one was added by '
+        + 'someone else — ask a board editor to change it.',
+    });
+    return null;
+  }
+  return { ctx, goal };
+};
+
 /** Non-archived columns, in order. The shape the client renders. */
 const liveColumns = (board) =>
   (board.goalColumns || [])
@@ -425,7 +486,11 @@ const mergedColumnValues = (existing, incoming) => {
 /** POST /api/boards/:boardId/goals */
 const createGoal = async (req, res) => {
   try {
-    const ctx = await gate(req, res, 'goal.manage');
+    // `goal.create`, not `goal.manage` — writing down what you are aiming for on
+    // the client you run is your own work. `contribute` confers it, so an
+    // executive on a board left at the default rung can finally add a goal
+    // instead of only reporting against one somebody else wrote.
+    const ctx = await gate(req, res, 'goal.create');
     if (!ctx) return undefined;
     const { board } = ctx;
     const body = req.body || {};
@@ -757,7 +822,12 @@ const updateGoal = async (req, res) => {
     const touched = Object.keys(body);
     const resultOnly = touched.length > 0 && touched.every((k) => RESULT_ONLY_FIELDS.has(k));
 
-    const loaded = await gateByGoal(req, res, resultOnly ? 'goal.track' : 'goal.manage');
+    // Reporting a result is `goal.track` on ANY goal — that is the whole point
+    // of the rung, and it is unchanged. Reshaping one (its name, target, weight,
+    // columns) is `goal.manage` for anyone's, or `goal.create` for your own.
+    const loaded = resultOnly
+      ? await gateByGoal(req, res, 'goal.track')
+      : await gateGoalWrite(req, res);
     if (!loaded) return undefined;
     const { ctx, goal } = loaded;
     const { board } = ctx;
@@ -838,7 +908,7 @@ const updateGoal = async (req, res) => {
 /** DELETE /api/goals/:id */
 const deleteGoal = async (req, res) => {
   try {
-    const loaded = await gateByGoal(req, res, 'goal.manage');
+    const loaded = await gateGoalWrite(req, res);
     if (!loaded) return undefined;
 
     // Logged BEFORE the delete, while there is still a goal to describe. The
