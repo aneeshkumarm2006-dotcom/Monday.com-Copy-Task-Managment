@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Hash,
   ChevronLeft,
+  Search as SearchIcon,
   MessageSquare,
   MessageCircle,
   Plus,
@@ -186,11 +187,22 @@ const SectionLabel = ({ children }) => (
 );
 
 const ChannelSidebar = ({ channels, activeChannelId, onOpen, onCreate, loading }) => {
+  // The mock's header search: tap the icon, an input slides in, the list
+  // filters as you type — clients, rooms and people alike.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  const matches = (c) =>
+    !q ||
+    (c.name || '').toLowerCase().includes(q) ||
+    (c.board?.name || '').toLowerCase().includes(q) ||
+    (c.lastMessage?.text || '').toLowerCase().includes(q);
+  const filtered = q ? channels.filter(matches) : channels;
   const sections = useMemo(() => {
-    const dms = channels.filter((c) => c.kind === 'dm');
-    const workspace = channels.filter((c) => !c.board && c.kind !== 'dm');
+    const dms = filtered.filter((c) => c.kind === 'dm');
+    const workspace = filtered.filter((c) => !c.board && c.kind !== 'dm');
     const byBoard = new Map();
-    channels
+    filtered
       .filter((c) => c.board)
       .forEach((c) => {
         const key = c.board._id;
@@ -198,7 +210,8 @@ const ChannelSidebar = ({ channels, activeChannelId, onOpen, onCreate, loading }
         byBoard.get(key).channels.push(c);
       });
     return { workspace, boards: [...byBoard.values()], dms };
-  }, [channels]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channels, q]);
 
   return (
     <div className="flex flex-col h-full overflow-y-auto" style={{ background: '#FFFFFF' }}>
@@ -210,6 +223,27 @@ const ChannelSidebar = ({ channels, activeChannelId, onOpen, onCreate, loading }
         <span className="font-display font-bold flex-1 text-[17px] text-[color:var(--color-text-primary)]">
           Chat
         </span>
+        <button
+          type="button"
+          onClick={() => {
+            setSearchOpen((v) => {
+              if (v) setQuery('');
+              return !v;
+            });
+          }}
+          aria-label={searchOpen ? 'Close search' : 'Search chat'}
+          aria-expanded={searchOpen}
+          className="flex items-center justify-center transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--color-border)',
+            color: searchOpen ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+          }}
+        >
+          <SearchIcon size={14} aria-hidden="true" />
+        </button>
         {(
           <button
             type="button"
@@ -230,6 +264,47 @@ const ChannelSidebar = ({ channels, activeChannelId, onOpen, onCreate, loading }
         )}
       </div>
 
+      {searchOpen && (
+        <div
+          className="px-3 py-2 shrink-0 sticky z-[1]"
+          style={{ top: 49, background: '#FFFFFF', borderBottom: '1px solid var(--color-bg-subtle)' }}
+        >
+          <div
+            className="flex items-center gap-2"
+            style={{
+              height: 34,
+              padding: '0 10px',
+              border: '1.5px solid var(--color-border-strong)',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--color-bg-surface, #FFFFFF)',
+            }}
+          >
+            <SearchIcon size={14} color="var(--color-text-muted)" aria-hidden="true" className="shrink-0" />
+            <input
+              type="text"
+              value={query}
+              autoFocus
+              placeholder="Search clients, rooms, people…"
+              aria-label="Search chat"
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setQuery('');
+                  setSearchOpen(false);
+                }
+              }}
+              className="flex-1 min-w-0 font-body focus:outline-none"
+              style={{ fontSize: 13, color: 'var(--color-text-primary)', background: 'transparent', border: 'none' }}
+            />
+            {query && (
+              <button type="button" onClick={() => setQuery('')} aria-label="Clear search" className="shrink-0">
+                <X size={13} color="var(--color-text-muted)" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {loading && channels.length === 0 ? (
         <p className="font-body px-4 py-6 text-[13px] text-[color:var(--color-text-muted)]">
           Loading channels…
@@ -238,6 +313,10 @@ const ChannelSidebar = ({ channels, activeChannelId, onOpen, onCreate, loading }
         <p className="font-body px-4 py-6 text-[13px] text-[color:var(--color-text-muted)]">
           No channels yet. Client channels appear automatically when a tracker
           board has groups.
+        </p>
+      ) : q && filtered.length === 0 ? (
+        <p className="font-body px-4 py-6 text-[13px] text-[color:var(--color-text-muted)]">
+          Nothing matches “{query.trim()}”.
         </p>
       ) : (
         <div className="pb-3">
@@ -833,6 +912,13 @@ const ChatPage = () => {
         submitLabel="Send"
         compact
         actionsExtra={key.startsWith('chat:') ? shareActions : null}
+        // In a DM, @ offers only the person you're talking to — nobody a
+        // private conversation can't reach.
+        mentionUsers={
+          activeChannel?.kind === 'dm' && activeChannel?.otherUser
+            ? [activeChannel.otherUser]
+            : null
+        }
       />
     </div>
   );

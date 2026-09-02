@@ -191,14 +191,25 @@ const PortalAnchor = ({ rect, children }) => {
  *                     { json, text, mentions: [{_id, name}], isEmpty }
  *   editorRef — optional ref that receives the editor instance (for `.commands` access)
  */
-const RichEditor = ({ placeholder = 'Write an update…', onChange, editorRef, initialContent = '' }) => {
+const RichEditor = ({
+  placeholder = 'Write an update…',
+  onChange,
+  editorRef,
+  initialContent = '',
+  // Who @ may offer. Defaults to the workspace roster; a DM passes just the
+  // other participant, because offering people who can never see the message
+  // is a promise the composer can't keep (the server already drops such
+  // mentions — this makes the UI stop suggesting them in the first place).
+  mentionUsers = null,
+}) => {
   const members = useOrgStore((s) => s.members);
-  // Keep the members list in a ref so the mention extension reads fresh data
+  const pool = mentionUsers ?? members;
+  // Keep the pool in a ref so the mention extension reads fresh data
   // without recreating the editor on every member-fetch.
-  const membersRef = useRef(members);
+  const membersRef = useRef(pool);
   useEffect(() => {
-    membersRef.current = members;
-  }, [members]);
+    membersRef.current = pool;
+  }, [pool]);
 
   const [mentionState, setMentionState] = useState(null); // { items, command, rect } | null
   // Imperative handle of the (single, visible) mention dropdown so the TipTap

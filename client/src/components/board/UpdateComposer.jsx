@@ -99,6 +99,7 @@ const UpdateComposer = forwardRef(
       // chips render inside the action row (mock: "@ 📎 Task Goal … Send").
       submitLabel = null,
       actionsExtra = null,
+      mentionUsers = null,
       // Chat: the page provides the bordered container, so the form drops its
       // own outer padding down to a snug fit.
       compact = false,
@@ -424,6 +425,7 @@ const UpdateComposer = forwardRef(
         )}
 
         <RichEditor
+          mentionUsers={mentionUsers}
           placeholder={
             placeholder ||
             (isClientThread
