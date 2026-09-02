@@ -5,8 +5,14 @@
     <!-- The brand mark, as SVG: 642 bytes, sharp at every size, one file for the
          tab, the navbar and the splash below. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- `viewport-fit=cover` lets the installed app paint under the iPhone
+         notch and home bar; anything that must clear them uses the
+         env(safe-area-inset-*) values this unlocks. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#FFFFFF" />
+    <!-- iOS ignores manifest icons; this is what Add to Home Screen uses. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="Macan" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
