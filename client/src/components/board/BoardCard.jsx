@@ -21,6 +21,9 @@ import BoardTypePill from './BoardTypePill';
  *   onEdit, onDelete — options menu handlers
  *   showProgress — if true (default), render the completion-percentage bar
  */
+/** Height of the card's top accent stripe, in px. */
+const ACCENT_HEIGHT = 4;
+
 const BoardCard = ({
   board,
   accentColor = 'var(--color-card-blue)',
@@ -81,6 +84,12 @@ const BoardCard = ({
       style={{
         borderRadius: 'var(--radius-lg)',
         boxShadow: 'var(--shadow-card)',
+        // Accent stripe is painted as a background layer rather than a 4px
+        // child: a child that short can't carry the card's 14px corner radius
+        // (CSS scales it down to the box height), so its square corners poked
+        // out past the card's curve. As a background it's clipped by the
+        // card's own radius, and the ⋯ menu stays unclipped (no overflow:hidden).
+        background: `linear-gradient(${accentColor}, ${accentColor}) top / 100% ${ACCENT_HEIGHT}px no-repeat, var(--color-bg-surface)`,
         transition: 'box-shadow 150ms ease, transform 150ms ease',
         zIndex: menuOpen ? 30 : 'auto',
       }}
@@ -93,13 +102,10 @@ const BoardCard = ({
         e.currentTarget.style.transform = 'translateY(0)';
       }}
     >
-      {/* Top accent bar */}
       <div
-        aria-hidden="true"
-        style={{ height: 4, background: accentColor, width: '100%', borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0' }}
-      />
-
-      <div className="p-4 flex flex-col flex-1">
+        className="px-4 pb-4 flex flex-col flex-1"
+        style={{ paddingTop: 16 + ACCENT_HEIGHT }}
+      >
         {/* Folder icon + privacy badge */}
         <div className="flex items-start justify-between">
           <div
