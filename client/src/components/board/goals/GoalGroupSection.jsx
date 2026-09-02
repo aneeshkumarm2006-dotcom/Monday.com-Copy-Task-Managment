@@ -262,7 +262,15 @@ const GoalGroupSection = ({
         overflow: 'hidden',
       }}
     >
-      <header className="flex items-center gap-3 px-3 py-3">
+      <header
+        className={[
+          'flex items-center gap-3 px-3',
+          // 20+ clients where most have no goals yet turned this tab into a
+          // 3,600px wall of tall empty headers on a phone. An empty group is
+          // one slim line; it grows back the moment it has a goal.
+          goals.length === 0 ? 'py-1.5 md:py-3' : 'py-3',
+        ].join(' ')}
+      >
         <button
           type="button"
           onClick={onToggleCollapse}
@@ -282,7 +290,13 @@ const GoalGroupSection = ({
           >
             {group.name}
           </h3>
-          <p className="font-body" style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+          <p
+            className={[
+              'font-body',
+              goals.length === 0 ? 'hidden md:block' : '',
+            ].join(' ')}
+            style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+          >
             {goals.length === 0
               ? 'No goals set'
               : `${goals.length} goal${goals.length === 1 ? '' : 's'}`
@@ -340,11 +354,15 @@ const GoalGroupSection = ({
           </div>
         )}
 
-        <ScoreRing
-          pct={summary.pct}
-          size={44}
-          label={`${group.name} scored ${summary.pct ?? 'nothing yet'}`}
-        />
+        {/* A "—" ring on an empty group says nothing a phone needs; desktop
+            keeps it so the column of rings still reads down the page. */}
+        <span className={goals.length === 0 ? 'hidden md:inline-flex' : 'inline-flex'}>
+          <ScoreRing
+            pct={summary.pct}
+            size={44}
+            label={`${group.name} scored ${summary.pct ?? 'nothing yet'}`}
+          />
+        </span>
 
         {/* Only while a sort is on — otherwise what is on screen already IS the
             saved order, and the button would promise a change it cannot make. */}

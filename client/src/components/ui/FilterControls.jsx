@@ -35,11 +35,21 @@ export const FilterPopover = ({ label, icon: Icon, activeCount = 0, children }) 
     };
   }, [open]);
 
+  // Anchor the menu to whichever edge keeps it ON SCREEN. `left: 0` alone let
+  // a trigger sitting in the right half of a phone push its 220px menu past
+  // the viewport edge — the sideways-scroll bug on every filter bar.
+  const [alignRight, setAlignRight] = useState(false);
+  const toggleOpen = () => {
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (r) setAlignRight(r.left + 220 > window.innerWidth - 12);
+    setOpen((o) => !o);
+  };
+
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggleOpen}
         aria-haspopup="listbox"
         aria-expanded={open}
         className="inline-flex items-center gap-1.5 font-body transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
@@ -88,7 +98,7 @@ export const FilterPopover = ({ label, icon: Icon, activeCount = 0, children }) 
           style={{
             position: 'absolute',
             top: 'calc(100% + 6px)',
-            left: 0,
+            ...(alignRight ? { right: 0 } : { left: 0 }),
             zIndex: 50,
             minWidth: 220,
             maxWidth: 'min(280px, calc(100vw - 24px))',

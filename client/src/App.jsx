@@ -144,7 +144,11 @@ function App() {
       // Channels too, so the Chat tab's unread badge is live from first paint
       // (this is also what lazily creates the auto client channels).
       if (currentOrgId) fetchChannels(currentOrgId);
-    } else {
+    } else if (!token) {
+      // Actually logged out — not merely still hydrating. On a cold load
+      // `user` is null for a beat while the profile fetch runs, and clearing
+      // here wiped the conversation a /chat?channel= deep link had just
+      // opened. No token is the real logout signal.
       clearNotifications();
       clearChat();
     }

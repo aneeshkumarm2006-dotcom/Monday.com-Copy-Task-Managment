@@ -277,9 +277,11 @@ select:focus-visible {
   }
 }
 
-/* Responsive page padding — narrower on mobile/tablet */
+/* Responsive page padding — narrower on mobile/tablet. Scoped to pages that
+   ASKED for padding: the old selector hit `.macan-page-enter` itself, which
+   force-padded even `padded={false}` pages — chat's phantom gutter. */
 @media (max-width: 767px) {
-  .macan-page-enter {
+  .macan-page-padded {
     padding-left: 16px !important;
     padding-right: 16px !important;
     padding-top: 20px !important;
@@ -516,4 +518,19 @@ li.macan-task-highlight {
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
     background: var(--color-bg-surface, #FFFFFF);
   }
+}
+
+/* ==========================================================
+   COMPACT CHAT COMPOSER — one box, not a box in a box
+   The chat page draws the single bordered container; inside
+   it the editor sheds its own border, ground and focus ring,
+   and starts one line tall. (The mock's composer.)
+   ========================================================== */
+
+.macan-composer-compact .macan-rich-content {
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  min-height: 24px;
+  padding: 8px 4px 4px;
 }

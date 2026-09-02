@@ -314,6 +314,7 @@ const UpdateComposer = forwardRef(
           e.preventDefault();
           handleSubmit();
         }}
+        className={compact ? 'macan-composer-compact' : ''}
         style={{
           padding: compact ? '4px 10px 8px 10px' : '8px 16px 16px 16px',
           background: compact ? 'transparent' : '#FFFFFF',

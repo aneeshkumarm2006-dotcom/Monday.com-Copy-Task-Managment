@@ -659,8 +659,12 @@ const ChatPage = () => {
     if (!channelParam && activeChannelId) {
       closeChannel();
     }
+    // `activeChannelId` is a dep on purpose: if anything clears the store out
+    // from under an open deep link (a login-hydration race did exactly that),
+    // this re-opens the channel the URL still names instead of stranding the
+    // user on the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channelParam]);
+  }, [channelParam, activeChannelId]);
 
   useEffect(() => () => closeChannel(), [closeChannel]);
 
@@ -834,7 +838,7 @@ const ChatPage = () => {
   );
 
   return (
-    <PageWrapper padded={false} className="!pb-0">
+    <PageWrapper padded={false} className="!pb-0" hideNavOnMobile>
       <div className="macan-chat-shell flex" style={{ minHeight: 0 }}>
         {/* Channel list — full-screen on phones until a channel is opened */}
         <div
@@ -1053,7 +1057,9 @@ const ChatPage = () => {
                   {composerFor(
                     `chat:${activeChannelId}`,
                     submitTopLevel,
-                    `Message #${activeChannel?.name || 'channel'}`
+                    activeChannel?.kind === 'dm'
+                      ? `Message ${activeChannel?.name || ''}`.trim()
+                      : `Message #${activeChannel?.name || 'channel'}`
                   )}
                 </div>
               )}
@@ -1239,8 +1245,11 @@ const ChatPage = () => {
           .macan-chat-thread { width: 100%; }
         }
         @media (max-width: 767px) {
+          /* Full-bleed: the global bar is hidden here (chat's own headers are
+             the top chrome), so the shell spans from the very top down to the
+             tab bar. dvh tracks the browser UI so the composer never hides. */
           .macan-chat-shell {
-            height: calc(100vh - 56px - 56px - env(safe-area-inset-bottom));
+            height: calc(100dvh - 56px - env(safe-area-inset-bottom));
           }
           .macan-chat-sidebar { width: 100%; border-right: none; }
         }

@@ -778,7 +778,12 @@ const BoardDetailPage = () => {
   // On a tracker board this waits for the month to resolve — the task read is
   // month-scoped and the server refuses an unscoped one, so firing before the
   // month list has loaded would just 400.
-  const monthReady = !isTrackerBoard || !!monthKey;
+  //
+  // `board` itself must be loaded first: before it arrives, `isTrackerBoard`
+  // is false FOR EVERY BOARD, which made this guard wave the fetch through
+  // and 400 on every tracker board open. Waiting for the doc costs one
+  // round-trip of serialization and buys a guard that actually guards.
+  const monthReady = !!board && (!isTrackerBoard || !!monthKey);
 
   useEffect(() => {
     if (!boardId || !monthReady) return undefined;
@@ -2229,11 +2234,16 @@ const BoardDetailPage = () => {
                 rather than in the "Created <date> · N tasks" line below it: that
                 line is board STATS and changes as tasks come and go, while who
                 made this is fixed. It also renders nothing when the owner is not
-                hydrated, which would leave a dangling "·" mid-sentence there. */}
-            <CreatedByChip user={board?.createdBy} at={board?.createdAt} />
+                hydrated, which would leave a dangling "·" mid-sentence there.
+                Desktop only — on a phone the header is a ~430px tower before
+                the first client appears, so the byline and the stats line step
+                back per the mobile design. */}
+            <span className="hidden md:inline-flex">
+              <CreatedByChip user={board?.createdBy} at={board?.createdAt} />
+            </span>
           </div>
           <p
-            className="mt-1 font-body"
+            className="mt-1 font-body hidden md:block"
             style={{ fontSize: 13, color: 'var(--color-text-muted)' }}
           >
             {board
@@ -2603,7 +2613,7 @@ const BoardDetailPage = () => {
 
       {/* Filter bar + group sort toggle */}
       {view === 'board' && hasGroups && board && (
-        <div className="flex flex-col md:flex-row md:items-start gap-2">
+        <div className="flex flex-row items-start gap-2">
           <div className="flex-1 min-w-0">
             <BoardFilterBar
               board={board}
@@ -2622,7 +2632,7 @@ const BoardDetailPage = () => {
             onClick={toggleGroupSort}
             aria-pressed={sortCompletedLast}
             title="Move completed groups to the bottom"
-            className="mt-2 md:mt-5 self-start shrink-0 inline-flex items-center gap-1.5 font-body transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+            className="mt-5 self-start shrink-0 inline-flex items-center gap-1.5 font-body transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
             style={{
               height: 34,
               padding: '0 12px',

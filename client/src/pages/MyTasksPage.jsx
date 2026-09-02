@@ -979,6 +979,12 @@ const CalendarTab = ({ events, onSelect }) => {
     setHideDone(false);
   };
 
+  // Phones: the chips fold behind one Filter toggle, same treatment as the
+  // My Work and board filter bars.
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const activeFilterCount =
+    priorityFilter.length + typeFilter.length + (hideDone ? 1 : 0);
+
   // Apply filters to the events' underlying tasks (event.resource). Each
   // category is an OR set; categories AND together. (React Compiler memoizes
   // this automatically — no manual useMemo needed.)
@@ -1001,9 +1007,34 @@ const CalendarTab = ({ events, onSelect }) => {
     <div className="mt-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/* Filters */}
-        <div className="flex flex-wrap items-center gap-1.5" role="region" aria-label="Calendar filters">
+        <div role="region" aria-label="Calendar filters" className="w-full md:w-auto">
+        <button
+          type="button"
+          onClick={() => setMobileFiltersOpen((v) => !v)}
+          aria-expanded={mobileFiltersOpen}
+          className="md:hidden inline-flex items-center gap-1.5 font-body font-medium"
+          style={{
+            height: 32,
+            padding: '0 12px',
+            fontSize: 12.5,
+            color: activeFilterCount > 0 ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+            border: '1.5px solid var(--color-border-strong)',
+            borderRadius: 'var(--radius-md)',
+            background: 'var(--color-bg-surface, #FFFFFF)',
+          }}
+        >
+          <Filter size={13} aria-hidden="true" />
+          Filter
+          {activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+        </button>
+        <div
+          className={[
+            mobileFiltersOpen ? 'flex' : 'hidden',
+            'md:flex flex-wrap items-center gap-1.5 mt-2 md:mt-0',
+          ].join(' ')}
+        >
           <span
-            className="inline-flex items-center gap-1.5 font-body font-medium"
+            className="hidden md:inline-flex items-center gap-1.5 font-body font-medium"
             style={{
               fontSize: 12,
               color: 'var(--color-text-secondary)',
@@ -1070,6 +1101,7 @@ const CalendarTab = ({ events, onSelect }) => {
               Clear
             </button>
           )}
+        </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -1369,9 +1401,15 @@ const MyWorkPage = () => {
         </div>
 
         {activeTab === 'personal' && (
-          <Button variant="primary" icon={Plus} onClick={() => setModalOpen(true)}>
-            Add Task
-          </Button>
+          // On a phone, an EMPTY personal tab already offers Add Task in its
+          // empty state — two identical primary buttons on one screen read as
+          // a mistake. The header button returns once there are tasks (the
+          // empty state is gone) and always shows on desktop.
+          <div className={personalTasks.length === 0 ? 'hidden md:block' : ''}>
+            <Button variant="primary" icon={Plus} onClick={() => setModalOpen(true)}>
+              Add Task
+            </Button>
+          </div>
         )}
       </div>
 

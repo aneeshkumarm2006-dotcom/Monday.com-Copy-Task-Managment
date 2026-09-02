@@ -166,9 +166,15 @@ const listChannels = async (req, res) => {
 
     await ensureAutoChannels(orgId);
 
+    // Rooms belong to the workspace; DMs belong to their two PEOPLE and show
+    // up in every workspace's sidebar — a conversation with a person is one
+    // conversation, wherever you happen to be standing.
     const channels = await Channel.find({
-      organisation: orgId,
       archived: false,
+      $or: [
+        { organisation: orgId, kind: { $ne: 'dm' } },
+        { kind: 'dm', members: userId },
+      ],
     })
       .populate('board', 'name visibility publicDefaultLevel memberAccess createdBy organisation boardType')
       .populate('members', 'name profilePic email');
@@ -184,9 +190,33 @@ const listChannels = async (req, res) => {
       return resolveAccess(ch.board, ctx.org, userId).canRead;
     });
 
-    if (!visible.length) return res.json({ channels: [] });
+    // Legacy per-workspace DM rows: the same pair may exist twice from before
+    // DMs were unified. Show ONE per pair — the row that has ever carried a
+    // message wins, else the oldest. openDm() merges them for real on the
+    // next open; this keeps the sidebar honest in the meantime.
+    const byPair = new Map();
+    const rooms = [];
+    for (const ch of visible) {
+      if (ch.kind !== 'dm') {
+        rooms.push(ch);
+        continue;
+      }
+      const pairKey = (ch.members || [])
+        .map((m) => String(m?._id || m))
+        .sort()
+        .join(':');
+      const existing = byPair.get(pairKey);
+      // Keep the OLDEST row — the same one openDm's real merge keeps, so the
+      // sidebar and the merge always agree on which conversation survives.
+      if (!existing || new Date(ch.createdAt) < new Date(existing.createdAt)) {
+        byPair.set(pairKey, ch);
+      }
+    }
+    const visibleChannels = [...rooms, ...byPair.values()];
 
-    const channelIds = visible.map((c) => c._id);
+    if (!visibleChannels.length) return res.json({ channels: [] });
+
+    const channelIds = visibleChannels.map((c) => c._id);
 
     // Latest top-level-or-reply message per channel, for the preview line.
     const latest = await Message.aggregate([
@@ -214,7 +244,7 @@ const listChannels = async (req, res) => {
     // sidebar is a few dozen channels; a per-channel threshold cannot ride a
     // single aggregation without a $switch the next reader would curse.
     const counts = await Promise.all(
-      visible.map(async (ch) => {
+      visibleChannels.map(async (ch) => {
         const last = latestByChannel.get(String(ch._id));
         if (!last) return 0; // empty channel — nothing to be unread
         const readAt = readByChannel.get(String(ch._id));
@@ -232,7 +262,7 @@ const listChannels = async (req, res) => {
     const authors = await User.find({ _id: { $in: authorIds } }).select('name');
     const authorName = new Map(authors.map((u) => [String(u._id), u.name]));
 
-    const payload = visible.map((ch, i) => {
+    const payload = visibleChannels.map((ch, i) => {
       const last = latestByChannel.get(String(ch._id));
       // A DM presents as the OTHER person — its stored name is incidental.
       const other =
@@ -365,7 +395,47 @@ const openDm = async (req, res) => {
     }
 
     const [low, high] = [String(userId), String(otherId)].sort();
-    const dmKey = `${orgId}:${low}:${high}`;
+    // GLOBAL key — one conversation per pair of people, whatever workspace
+    // either of them is standing in. (`organisation` still records where the
+    // DM was first opened, for bookkeeping only.)
+    const dmKey = `${low}:${high}`;
+
+    // Legacy rows: DMs used to be keyed per workspace, so this pair may own
+    // several channels. Merge them into the OLDEST row (same choice the
+    // sidebar dedupe makes): messages and read markers move over, duplicates
+    // go away, and the survivor takes the canonical key.
+    const existing = await Channel.find({
+      kind: 'dm',
+      members: { $all: [low, high] },
+    }).sort({ createdAt: 1 });
+
+    if (existing.length > 0) {
+      const keep = existing[0];
+      const dupIds = existing.slice(1).map((c) => c._id);
+      if (dupIds.length) {
+        await Message.updateMany(
+          { channel: { $in: dupIds } },
+          { $set: { channel: keep._id } }
+        );
+        const dupReads = await ChannelRead.find({ channel: { $in: dupIds } });
+        for (const r of dupReads) {
+          // $max: the merged marker never moves anyone's read line backwards.
+          // eslint-disable-next-line no-await-in-loop
+          await ChannelRead.findOneAndUpdate(
+            { channel: keep._id, user: r.user },
+            { $max: { lastReadAt: r.lastReadAt } },
+            { upsert: true }
+          );
+        }
+        await ChannelRead.deleteMany({ channel: { $in: dupIds } });
+        await Channel.deleteMany({ _id: { $in: dupIds } });
+      }
+      if (keep.dmKey !== dmKey) {
+        keep.dmKey = dmKey;
+        await keep.save();
+      }
+      return res.status(200).json({ channel: keep });
+    }
 
     const channel = await Channel.findOneAndUpdate(
       { dmKey },
@@ -605,12 +675,20 @@ const sendMessage = async (req, res) => {
       }
     }
 
-    const orgCtx = await loadOrgContext(channel.organisation, userId);
-    if (orgCtx.error) return res.status(orgCtx.status).json({ error: orgCtx.error });
-
-    // Mentions must be people who can actually see the channel — a mention
-    // that notifies someone into a room they cannot open is a leak.
-    const audience = await channelAudience(channel, orgCtx.org);
+    // DMs are cross-workspace: the sender may not belong to the workspace
+    // the DM was first opened in, and it doesn't matter — access was already
+    // settled by resolveChannelAccess (membership of the pair). Rooms still
+    // load their org for the audience derivation.
+    let audience;
+    if (channel.kind === 'dm') {
+      audience = await channelAudience(channel);
+    } else {
+      const orgCtx = await loadOrgContext(channel.organisation, userId);
+      if (orgCtx.error) return res.status(orgCtx.status).json({ error: orgCtx.error });
+      // Mentions must be people who can actually see the channel — a mention
+      // that notifies someone into a room they cannot open is a leak.
+      audience = await channelAudience(channel, orgCtx.org);
+    }
     const audienceSet = new Set(audience);
     const validMentions = [
       ...new Set((Array.isArray(mentions) ? mentions : []).map(String)),
@@ -644,8 +722,13 @@ const sendMessage = async (req, res) => {
         userIds: mentioned,
         excludeUserId: userId,
         type: 'chatMention',
-        message: `mentioned you in #${channel.name}`,
-        orgId: String(channel.organisation),
+        message:
+          channel.kind === 'dm'
+            ? 'mentioned you in a direct message'
+            : `mentioned you in #${channel.name}`,
+        // A DM mention is org-less (like personal-task notifications): it
+        // shows in the bell whichever workspace the recipient is viewing.
+        orgId: channel.kind === 'dm' ? null : String(channel.organisation),
         actorId: userId,
         channelId: String(channel._id),
       });

@@ -93,14 +93,14 @@ const MonthSelector = ({
             type="button"
             onClick={onEditTimezone}
             title="Change which calendar defines this board's months"
-            className="font-body shrink-0 underline decoration-dotted underline-offset-2 hover:text-[color:var(--color-accent)] transition-colors duration-100"
+            className="font-body shrink-0 underline decoration-dotted underline-offset-2 hover:text-[color:var(--color-accent)] transition-colors duration-100 hidden md:inline"
             style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
           >
             {timezone}
           </button>
         ) : (
           <span
-            className="font-body shrink-0"
+            className="font-body shrink-0 hidden md:inline"
             style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
             title="The calendar this board's months are measured in"
           >

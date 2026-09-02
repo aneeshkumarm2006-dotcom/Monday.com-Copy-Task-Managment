@@ -23,10 +23,12 @@ const channelAudience = async (channel, org = null) => {
 
   const memberIds = (orgDoc.members || []).map((m) => String(m?._id || m));
 
-  // A DM's audience is its two participants — nobody else, ever.
+  // A DM's audience is its two participants — nobody else, ever. NOT
+  // filtered by workspace membership: a DM is a conversation between two
+  // PEOPLE and follows them across workspaces (channel.organisation only
+  // records where it was first opened).
   if (channel.kind === 'dm') {
-    const pair = (channel.members || []).map((m) => String(m?._id || m));
-    return pair.filter((id) => memberIds.includes(id));
+    return (channel.members || []).map((m) => String(m?._id || m));
   }
 
   if (!channel.board) {

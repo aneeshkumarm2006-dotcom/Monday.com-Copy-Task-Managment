@@ -299,13 +299,20 @@ const PageWrapper = ({
   padded = true,
   children,
   className = '',
+  // Chat: on phones its own headers are the top chrome (per the mobile
+  // design), so the global bar steps aside below `md`. Desktop unaffected.
+  hideNavOnMobile = false,
 }) => {
   const { pathname } = useLocation();
   const contentHeight = showNav ? 'calc(100vh - 56px)' : '100vh';
 
   return (
     <div className="min-h-screen bg-base">
-      {showNav && <Navbar />}
+      {showNav && (
+        <div className={hideNavOnMobile ? 'hidden md:block' : ''}>
+          <Navbar />
+        </div>
+      )}
 
       <div
         className="flex"
@@ -331,7 +338,7 @@ const PageWrapper = ({
             key={pathname}
             className={[
               'mx-auto w-full macan-page-enter',
-              padded ? 'px-4 py-6 md:px-10 md:py-8' : '',
+              padded ? 'macan-page-padded px-4 py-6 md:px-10 md:py-8' : '',
             ].join(' ')}
             style={{ maxWidth: 1440 }}
           >
