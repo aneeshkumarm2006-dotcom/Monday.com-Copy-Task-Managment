@@ -7,6 +7,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import Navbar from './Navbar';
+import TabBar from './TabBar';
 import useOrgStore from '../../store/orgStore';
 import useAuthStore from '../../store/authStore';
 
@@ -315,7 +316,17 @@ const PageWrapper = ({
       >
         {showNav && <OrgSidebar />}
 
-        <div className={['flex-1 min-w-0', className].join(' ')}>
+        {/* Below `md` the fixed TabBar covers the bottom 56px of the viewport
+            (plus the iPhone home-bar inset), so the content column reserves
+            that much space — otherwise the last row of every page hides
+            behind the bar. Desktop keeps its zero. */}
+        <div
+          className={[
+            'flex-1 min-w-0',
+            showNav ? 'pb-[calc(64px_+_env(safe-area-inset-bottom))] md:pb-0' : '',
+            className,
+          ].join(' ')}
+        >
           <div
             key={pathname}
             className={[
@@ -328,6 +339,8 @@ const PageWrapper = ({
           </div>
         </div>
       </div>
+
+      {showNav && <TabBar />}
     </div>
   );
 };

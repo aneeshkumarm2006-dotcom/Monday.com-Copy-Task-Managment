@@ -461,3 +461,27 @@ li.macan-task-highlight {
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* ==========================================================
+   MOBILE TAB BAR — bottom sheet motion
+   ========================================================== */
+
+@keyframes macan-sheet-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+.macan-sheet-up {
+  animation: macan-sheet-up 240ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+.macan-sheet-down {
+  animation: macan-sheet-up 200ms ease-in reverse both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .macan-sheet-up,
+  .macan-sheet-down {
+    animation-duration: 1ms;
+  }
+}

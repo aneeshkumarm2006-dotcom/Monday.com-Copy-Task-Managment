@@ -7,7 +7,6 @@ import {
   User as UserIcon,
   LogOut,
   RefreshCw,
-  Menu as MenuIcon,
   X as XIcon,
   ArrowLeft,
   Folder,
@@ -879,7 +878,6 @@ const MenuItem = ({ icon: Icon, rightIcon: RightIcon, label, onClick, danger }) 
 const Navbar = () => {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
 
   return (
@@ -895,21 +893,6 @@ const Navbar = () => {
         <MobileSearchOverlay onClose={() => setMobileSearchOpen(false)} />
       ) : (
         <div className="h-full flex items-center gap-4">
-          {/* Mobile menu toggle */}
-          <button
-            type="button"
-            onClick={() => setMobileOpen((v) => !v)}
-            aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
-            className="md:hidden flex items-center justify-center rounded-md transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
-            style={{ width: 36, height: 36 }}
-          >
-            {mobileOpen ? (
-              <XIcon size={20} color="var(--color-text-secondary)" aria-hidden="true" />
-            ) : (
-              <MenuIcon size={20} color="var(--color-text-secondary)" aria-hidden="true" />
-            )}
-          </button>
-
           {/* Logo + nav links (links hidden on mobile).
               min-w-0 lets the link strip shrink instead of forcing the whole
               bar wider than the viewport — with every admin link visible the
@@ -941,26 +924,14 @@ const Navbar = () => {
             >
               <Search size={20} color="var(--color-text-secondary)" aria-hidden="true" />
             </button>
-            <NotificationBell />
+            {/* Desktop only: on mobile the Alerts tab in the bottom bar is
+                the one entry point to notifications. */}
+            <div className="hidden md:block">
+              <NotificationBell />
+            </div>
             <div className="ml-2">
               <AvatarDropdown user={user} onLogout={logout} />
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* Mobile nav drawer (links only — search is accessed via the search icon) */}
-      {!mobileSearchOpen && mobileOpen && (
-        <div
-          className="md:hidden absolute top-full left-0 right-0 bg-surface z-40"
-          style={{
-            borderBottom: '1px solid var(--color-border)',
-            boxShadow: 'var(--shadow-md)',
-            padding: '16px',
-          }}
-        >
-          <div className="flex flex-col gap-1">
-            <NavLinks onNavigate={() => setMobileOpen(false)} />
           </div>
         </div>
       )}
