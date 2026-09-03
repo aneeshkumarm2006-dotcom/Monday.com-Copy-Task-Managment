@@ -427,11 +427,10 @@ const PageWrapper = ({
 
   return (
     <div className="min-h-screen bg-base">
-      {showNav && (
-        <div className={hideNavOnMobile ? 'hidden md:block' : ''}>
-          <Navbar />
-        </div>
-      )}
+      {/* No wrapper element here: the bar is sticky, and a wrapper exactly its
+          own height would cap how far it can travel — it would unstick the
+          moment you scrolled. The responsive class goes on the <nav>. */}
+      {showNav && <Navbar className={hideNavOnMobile ? 'hidden md:block' : ''} />}
 
       <div
         className="flex"

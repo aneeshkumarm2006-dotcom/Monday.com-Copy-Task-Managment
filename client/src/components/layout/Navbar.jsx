@@ -889,14 +889,20 @@ const MenuItem = ({ icon: Icon, rightIcon: RightIcon, label, onClick, danger }) 
   </button>
 );
 
-const Navbar = () => {
+/**
+ * `className` lands on the <nav> ITSELF rather than on a wrapper, because the
+ * bar is `sticky` — a sticky element can only travel inside its parent's box,
+ * so wrapping it in a nav-height <div> pins it for exactly zero pixels and it
+ * scrolls away with the page.
+ */
+const Navbar = ({ className = '' }) => {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
 
   return (
     <nav
-      className="sticky top-0 z-40 bg-surface w-full px-4 md:px-8"
+      className={`sticky top-0 z-40 bg-surface w-full px-4 md:px-8 ${className}`}
       style={{
         height: 56,
         borderBottom: '1px solid var(--color-border)',
