@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Folder, CheckCircle, Clock, TrendingUp } from 'lucide-react';
 import PageWrapper from '../components/layout/PageWrapper';
 import StatCard from '../components/ui/StatCard';
@@ -14,6 +15,7 @@ import QuickActions from '../components/dashboard/QuickActions';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
+import usePermissions from '../hooks/usePermissions';
 import { getDashboardStats } from '../services/boardService';
 
 const INITIAL_STATS = {
@@ -21,10 +23,12 @@ const INITIAL_STATS = {
   completedTasks: 0,
   pendingTasks: 0,
   myPendingTasks: 0,
+  myOverdueTasks: 0,
   completionRate: 0,
 };
 
 const DashboardPage = () => {
+  const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const currentOrg = useOrgStore((s) => s.currentOrg);
   const boards = useBoardStore((s) => s.boards);
@@ -34,6 +38,11 @@ const DashboardPage = () => {
   const [stats, setStats] = useState(INITIAL_STATS);
   const [statsLoading, setStatsLoading] = useState(true);
   const orgId = currentOrg?._id || null;
+  const { can } = usePermissions();
+  // Analytics is capability-gated, so a card that opens it must only offer to
+  // when the caller can actually get in — a drill-down that bounces you back
+  // to where you started is worse than one that doesn't click.
+  const canSeeAnalytics = can('analytics.view');
 
   // Fetch boards + stats whenever the current org changes
   useEffect(() => {
@@ -63,6 +72,15 @@ const DashboardPage = () => {
     };
   }, [orgId, fetchBoards]);
 
+  /**
+   * The four cards. Each one carries a line of context under the number and a
+   * destination that SHOWS that number — a card opening a page where the
+   * figure doesn't appear is worse than a card that doesn't click.
+   *
+   *   Boards          → the board list, which is the count
+   *   Completed / Rate→ Analytics, where both are broken down (gated)
+   *   Pending         → My Work, filtered to the caller's own open tasks
+   */
   const statCards = useMemo(
     () => [
       {
@@ -70,18 +88,29 @@ const DashboardPage = () => {
         label: 'Total Boards',
         value: stats.totalBoards,
         color: 'blue',
+        subLabel:
+          stats.totalBoards === 1 ? 'in this workspace' : 'you can open',
+        onClick: () => navigate('/boards'),
       },
       {
         icon: CheckCircle,
         label: 'Completed Tasks',
         value: stats.completedTasks,
         color: 'green',
+        subLabel: 'across every board you can see',
+        onClick: canSeeAnalytics ? () => navigate('/analytics') : undefined,
       },
       {
         icon: Clock,
         label: 'Pending Tasks',
         value: stats.pendingTasks,
         color: 'orange',
+        subHighlight: `${stats.myPendingTasks} yours`,
+        subLabel:
+          stats.myOverdueTasks > 0
+            ? `${stats.myOverdueTasks} overdue`
+            : 'none overdue',
+        onClick: () => navigate('/my-tasks'),
       },
       {
         icon: TrendingUp,
@@ -89,9 +118,11 @@ const DashboardPage = () => {
         value: stats.completionRate,
         suffix: '%',
         color: 'purple',
+        subLabel: 'of all tasks, all time',
+        onClick: canSeeAnalytics ? () => navigate('/analytics') : undefined,
       },
     ],
-    [stats]
+    [stats, navigate, canSeeAnalytics]
   );
 
   return (
@@ -103,6 +134,7 @@ const DashboardPage = () => {
         <GreetingBanner
           name={user?.name}
           pendingCount={stats.myPendingTasks}
+          overdueCount={stats.myOverdueTasks}
         />
       )}
 
@@ -119,6 +151,9 @@ const DashboardPage = () => {
                 value={card.value}
                 color={card.color}
                 suffix={card.suffix}
+                subHighlight={card.subHighlight}
+                subLabel={card.subLabel}
+                onClick={card.onClick}
               />
             ))}
       </div>

@@ -72,7 +72,9 @@ const BoardRow = ({ board, onClick, isLast }) => (
       <Folder size={16} color="var(--color-accent)" />
     </div>
 
-    {/* Middle — name + updated */}
+    {/* Middle — name, then when it moved and how far along it is. The
+        timestamp alone says a board was touched; the count says whether it
+        needs you. Same two numbers the board card already shows. */}
     <div className="min-w-0 flex-1">
       <p
         className="font-body font-semibold truncate"
@@ -81,15 +83,22 @@ const BoardRow = ({ board, onClick, isLast }) => (
         {board.name}
       </p>
       <p
-        className="font-body"
+        className="font-body truncate"
         style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
       >
         Updated {timeAgo(board.updatedAt || board.createdAt)}
+        {(board.taskCount ?? 0) > 0
+          ? ` · ${board.doneCount ?? 0} / ${board.taskCount} done`
+          : ''}
       </p>
     </div>
 
-    {/* Right — privacy badge + arrow */}
-    <div className="flex items-center gap-2 shrink-0">
+    {/* Right — progress, privacy badge, arrow */}
+    <div className="flex items-center gap-2.5 shrink-0">
+      <BoardProgress
+        done={board.doneCount ?? 0}
+        total={board.taskCount ?? 0}
+      />
       <PrivacyBadge visibility={board.visibility} />
       <ArrowRight
         size={16}
@@ -99,6 +108,54 @@ const BoardRow = ({ board, onClick, isLast }) => (
     </div>
   </button>
 );
+
+/**
+ * A board's month at a glance: a slim bar plus the percentage. Green once the
+ * board is mostly clear, amber while it isn't — the same reading the board
+ * cards use, so a board looks the same wherever you meet it. Renders nothing
+ * for a board with no tasks: 0/0 is not 0%, it is "nothing to say yet".
+ */
+const BoardProgress = ({ done, total }) => {
+  if (!total) return null;
+  const pct = Math.round((done / total) * 100);
+  const healthy = pct >= 75;
+  return (
+    <div className="hidden sm:block shrink-0" style={{ width: 86 }} aria-hidden="true">
+      <div
+        style={{
+          height: 5,
+          borderRadius: 3,
+          background: 'var(--color-bg-subtle)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            width: `${pct}%`,
+            height: 5,
+            borderRadius: 3,
+            background: healthy
+              ? 'var(--color-status-done)'
+              : 'var(--color-status-working)',
+            transition: 'width 240ms ease-out',
+          }}
+        />
+      </div>
+      <p
+        className="font-body tabular-nums"
+        style={{
+          fontSize: 10.5,
+          fontWeight: 700,
+          color: 'var(--color-text-secondary)',
+          textAlign: 'right',
+          marginTop: 4,
+        }}
+      >
+        {pct}%
+      </p>
+    </div>
+  );
+};
 
 const EmptyBoards = () => (
   <div

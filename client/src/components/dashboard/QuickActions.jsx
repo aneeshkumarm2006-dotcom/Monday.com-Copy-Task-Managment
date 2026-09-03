@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { Plus, UserPlus, Calendar, BarChart2, Zap } from 'lucide-react';
+import usePermissions from '../../hooks/usePermissions';
 
 /**
  * QuickActions — colored shortcut buttons stacked in the dashboard sidebar.
@@ -41,6 +42,9 @@ const ACTIONS = [
     subtitle: 'View workspace insights',
     color: '#7C3AED',
     to: '/analytics',
+    // Analytics is capability-gated. Offering it to someone the router will
+    // bounce is a dead end dressed as a shortcut.
+    capability: 'analytics.view',
   },
 ];
 
@@ -76,6 +80,7 @@ const ActionButton = ({ icon: Icon, title, subtitle, color, onClick }) => (
 );
 
 const QuickActions = ({ onCreateBoard }) => {
+  const { can } = usePermissions();
   const navigate = useNavigate();
 
   const handleAction = (action) => {
@@ -109,7 +114,7 @@ const QuickActions = ({ onCreateBoard }) => {
       </div>
 
       <div className="mt-4 flex flex-col gap-3">
-        {ACTIONS.map((action) => (
+        {ACTIONS.filter((a) => !a.capability || can(a.capability)).map((action) => (
           <ActionButton
             key={action.id}
             icon={action.icon}

@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import Button from '../ui/Button';
+import macanMark from '../../assets/macan-mark.svg';
 
 /**
  * GreetingBanner — full-width greeting card with CTA buttons at the top of
@@ -18,31 +19,43 @@ const timeOfDayGreeting = () => {
   return 'Good evening';
 };
 
+/**
+ * The brand mark, not an "M" tile. Home is the first screen of the day and
+ * the one place the logo earns its keep — an initial in a blue square could
+ * belong to any app.
+ */
 const MacanIcon = () => (
   <div
-    className="flex items-center justify-center bg-accent shrink-0"
+    className="flex items-center justify-center shrink-0"
     style={{
-      width: 40,
-      height: 40,
+      width: 44,
+      height: 44,
       borderRadius: 'var(--radius-md)',
+      background: 'var(--color-accent-light)',
     }}
     aria-hidden="true"
   >
-    <span className="font-display font-bold text-white text-[20px] leading-none">
-      M
-    </span>
+    <img src={macanMark} alt="" width={22} height={22} />
   </div>
 );
 
-const GreetingBanner = ({ name = 'there', pendingCount = 0 }) => {
+const GreetingBanner = ({ name = 'there', pendingCount = 0, overdueCount = 0 }) => {
   const navigate = useNavigate();
   const greeting = timeOfDayGreeting();
   const firstName = (name || '').split(' ')[0] || 'there';
 
+  // "20 tasks waiting" is a shelf; "10 of them are overdue" is a reason to
+  // start. When nothing is late the sentence stays as it was.
   const tasksLabel =
     pendingCount === 1
-      ? 'You have 1 task waiting.'
-      : `You have ${pendingCount} tasks waiting.`;
+      ? 'You have 1 task waiting'
+      : `You have ${pendingCount} tasks waiting`;
+  const overdueLabel =
+    overdueCount > 0
+      ? overdueCount === 1
+        ? '1 is overdue'
+        : `${overdueCount} are overdue`
+      : null;
 
   return (
     <div
@@ -72,6 +85,16 @@ const GreetingBanner = ({ name = 'there', pendingCount = 0 }) => {
             }}
           >
             {tasksLabel}
+            {overdueLabel ? (
+              <>
+                {' — '}
+                <strong style={{ color: 'var(--color-status-stuck)', fontWeight: 700 }}>
+                  {overdueLabel}
+                </strong>
+              </>
+            ) : (
+              '.'
+            )}
           </p>
         </div>
       </div>

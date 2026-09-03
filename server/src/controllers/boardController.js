@@ -336,7 +336,8 @@ const findDoneStatusIdsForOrg = async (orgId) => {
 /**
  * GET /api/dashboard/stats?org=:orgId
  *
- * Returns: { totalBoards, completedTasks, pendingTasks, myPendingTasks, completionRate }
+ * Returns: { totalBoards, completedTasks, pendingTasks, myPendingTasks,
+ *            myOverdueTasks, completionRate }
  *
  * This is the HOME dashboard, not the analytics page: it was open to every
  * member before the capability model existed and stays that way, so it carries
@@ -378,7 +379,15 @@ const getDashboardStats = async (req, res) => {
       $nin: doneStatusIds.length ? doneStatusIds : ['done'],
     };
 
-    const [completedTasks, pendingTasks, myPendingTasks] = await Promise.all([
+    // "Overdue" is scoped to the CALLER, not the workspace: a number you can
+    // act on beats a number you can only read, and it is the one the Pending
+    // card's sub-line and the greeting both quote. Midnight is taken in the
+    // server's zone — the same approximation the dueSoon poller has always
+    // used, and a few hours' drift on a "how late am I" figure is invisible.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const [completedTasks, pendingTasks, myPendingTasks, myOverdueTasks] = await Promise.all([
       Task.countDocuments({
         ...taskFilter,
         status: { $in: doneStatusIds.length ? doneStatusIds : ['done'] },
@@ -395,6 +404,12 @@ const getDashboardStats = async (req, res) => {
         assignedTo: new mongoose.Types.ObjectId(userId),
         status: notDoneStatus,
       }),
+      Task.countDocuments({
+        ...taskFilter,
+        assignedTo: new mongoose.Types.ObjectId(userId),
+        status: notDoneStatus,
+        dueDate: { $ne: null, $lt: startOfToday },
+      }),
     ]);
     const totalBoards = readableBoardIds.length;
 
@@ -406,6 +421,7 @@ const getDashboardStats = async (req, res) => {
       totalBoards,
       completedTasks,
       pendingTasks,
+      myOverdueTasks,
       myPendingTasks,
       completionRate,
     });

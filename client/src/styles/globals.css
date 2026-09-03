@@ -59,6 +59,15 @@
   --color-card-green:   #16A34A;
   --color-card-orange:  #EA580C;
   --color-card-purple:  #7C3AED;
+
+  /* Stat-card grounds. Two-stop gradients a shade deeper than the flat
+     values above, and closer to each other in weight, so the four cards read
+     as one set rather than four unrelated buttons. The flat tokens stay —
+     goal chips, skeletons and connector text still key off them. */
+  --color-card-blue-grad:   linear-gradient(150deg, #3B60D8 0%, #2A48B4 100%);
+  --color-card-green-grad:  linear-gradient(150deg, #17936A 0%, #0E7350 100%);
+  --color-card-orange-grad: linear-gradient(150deg, #C4711F 0%, #9E5511 100%);
+  --color-card-purple-grad: linear-gradient(150deg, #6D4BC9 0%, #5334A6 100%);
   /* Tints, for chips and pills drawn in a card colour. The status colours have
      always had a `-bg` companion; these did not, and "Exceeded" on the goals
      table needs one — purple rather than green precisely so beating a target

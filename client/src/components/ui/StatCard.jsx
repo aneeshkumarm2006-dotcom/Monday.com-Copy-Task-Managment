@@ -10,6 +10,14 @@ import { ChevronRight } from 'lucide-react';
  */
 
 const COLOR_VARS = {
+  blue: 'var(--color-card-blue-grad)',
+  green: 'var(--color-card-green-grad)',
+  orange: 'var(--color-card-orange-grad)',
+  purple: 'var(--color-card-purple-grad)',
+};
+
+/** The flat fallbacks, for a caller passing a raw colour rather than a key. */
+const FLAT_VARS = {
   blue: 'var(--color-card-blue)',
   green: 'var(--color-card-green)',
   orange: 'var(--color-card-orange)',
@@ -58,13 +66,17 @@ const StatCard = ({
   icon: Icon,
   label,
   value,
+  // One line of context under the number. `subHighlight` renders first, in a
+  // translucent pill — the delta or the part that changes ("+34", "20 yours").
+  // A bare total is a trophy; a total with a delta is news.
+  subHighlight,
   subLabel,
   color = 'blue',
   suffix,
   className = '',
   onClick,
 }) => {
-  const background = COLOR_VARS[color] || color;
+  const background = COLOR_VARS[color] || FLAT_VARS[color] || color;
   const numeric = typeof value === 'number' ? value : Number(value);
   const isNumeric = Number.isFinite(numeric);
   const animated = useCountUp(isNumeric ? numeric : 0);
@@ -117,50 +129,70 @@ const StatCard = ({
       />
 
       <div className="relative z-10 flex items-start justify-between">
+        {/* The icon sits in a soft translucent tile rather than floating, so
+            all four cards start their content on the same baseline. */}
         {Icon && (
-          <Icon
-            size={22}
-            color="#FFFFFF"
-            strokeWidth={2}
-            aria-hidden="true"
-          />
+          <span
+            className="inline-flex items-center justify-center shrink-0"
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 10,
+              background: 'rgba(255, 255, 255, 0.18)',
+            }}
+          >
+            <Icon size={17} color="#FFFFFF" strokeWidth={2.2} aria-hidden="true" />
+          </span>
         )}
         {clickable && (
-          <span
-            className="font-body font-medium inline-flex items-center gap-1"
-            style={{ fontSize: 11, color: 'rgba(255,255,255,0.85)' }}
+          <ChevronRight
+            size={16}
+            strokeWidth={2.5}
             aria-hidden="true"
-          >
-            View
-            <ChevronRight size={13} strokeWidth={2.5} />
-          </span>
+            style={{ color: 'rgba(255,255,255,0.6)' }}
+          />
         )}
       </div>
 
       <div className="relative z-10 mt-1">
         <p
-          className="font-body font-medium uppercase"
+          className="font-body font-semibold uppercase truncate"
           style={{
-            fontSize: 12,
-            letterSpacing: '0.04em',
-            color: 'rgba(255,255,255,0.8)',
+            fontSize: 11,
+            letterSpacing: '0.07em',
+            color: 'rgba(255,255,255,0.78)',
           }}
         >
           {label}
         </p>
         <p
-          className="font-display font-extrabold leading-none mt-2 text-[28px] sm:text-[36px]"
-          style={{ color: '#FFFFFF' }}
+          className="font-display font-extrabold leading-none mt-1 text-[28px] sm:text-[34px] tabular-nums"
+          style={{ color: '#FFFFFF', letterSpacing: '-0.03em' }}
         >
-          {isNumeric ? animated : value}
-          {suffix ? <span className="ml-0.5">{suffix}</span> : null}
+          {isNumeric ? animated.toLocaleString() : value}
+          {suffix ? (
+            <span className="ml-0.5 text-[20px] font-bold">{suffix}</span>
+          ) : null}
         </p>
-        {subLabel && (
+        {(subHighlight || subLabel) && (
           <p
-            className="font-body mt-1.5"
-            style={{ fontSize: 12, color: 'rgba(255,255,255,0.7)' }}
+            className="font-body mt-1.5 flex items-center gap-1.5 truncate"
+            style={{ fontSize: 11.5, color: 'rgba(255,255,255,0.72)' }}
           >
-            {subLabel}
+            {subHighlight && (
+              <span
+                className="font-semibold shrink-0"
+                style={{
+                  fontSize: 10.5,
+                  background: 'rgba(255,255,255,0.2)',
+                  borderRadius: 5,
+                  padding: '1px 6px',
+                }}
+              >
+                {subHighlight}
+              </span>
+            )}
+            {subLabel && <span className="truncate">{subLabel}</span>}
           </p>
         )}
       </div>
