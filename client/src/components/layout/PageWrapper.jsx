@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -18,9 +18,8 @@ const AVATAR_COLORS = ['#2563EB', '#16A34A', '#EA580C', '#7C3AED', '#D97706', '#
 const SIDEBAR_WIDTH = 240;
 /** Navbar height — the drawer hangs below it rather than covering it. */
 const NAV_HEIGHT = 56;
-/** Width of the invisible left-edge strip that opens the drawer on hover. */
-const HOVER_ZONE = 12;
-const PIN_KEY = 'macan:orgSidebarPinned';
+/** Remembers a COLLAPSE, so the default (absent value) is open. */
+const COLLAPSE_KEY = 'macan:orgSidebarCollapsed';
 
 const getAvatarColor = (seed = '') => {
   let hash = 0;
@@ -292,153 +291,110 @@ const OrgSidebar = () => {
 /* -------------------------- Org Sidebar Drawer -------------------------- */
 
 /**
- * OrgSidebarDrawer — the workspace bar as an OVERLAY that is closed by default.
+ * OrgSidebarColumn — the workspaces column, always on screen.
  *
- * It used to be a 240px column in the page flow, which meant every page's
- * content was centred inside the *remaining* width and so sat visibly
- * off-centre in the window. It is now `fixed` and slides in over the page, so
- * the content column is centred in the viewport at all times, whether the
- * drawer is showing or not.
+ * It was briefly a hover-out overlay, which kept the content column centred on
+ * the window but cost more than it bought: a switcher nobody can see is a
+ * switcher nobody uses, and the workspace you are standing in — the thing that
+ * scopes every board, task and number on the page — was named nowhere.
  *
- * Two ways in, because hover alone is undiscoverable:
- *   - park the pointer on the left edge (the invisible HOVER_ZONE strip) and it
- *     peeks open, closing again when the pointer leaves;
- *   - click the `>` handle to PIN it open, so it stays put while you switch
- *     workspaces or fill in the create/join form. The pin survives reloads.
+ * So it is back in the page flow, `sticky` under the navbar, and the content
+ * beside it is centred in the space that is left. That is what every app with
+ * a sidebar does, and being able to READ which workspace you are in beats a
+ * perfectly centred column.
  *
- * Desktop only (`md`+): below that the bottom TabBar is the navigation, and an
- * edge-hover gesture means nothing on touch.
+ * The collapse handle stays for the rare screen that needs the width back. It
+ * defaults to OPEN and remembers a collapse across reloads.
+ *
+ * Desktop only (`md`+): below that the bottom TabBar is the navigation and the
+ * More sheet carries the same workspace list.
  */
-const OrgSidebarDrawer = () => {
-  const [pinned, setPinned] = useState(() => {
+const OrgSidebarColumn = () => {
+  const [collapsed, setCollapsed] = useState(() => {
     try {
-      return localStorage.getItem(PIN_KEY) === '1';
+      return localStorage.getItem(COLLAPSE_KEY) === '1';
     } catch {
       return false;
     }
   });
-  const [peeking, setPeeking] = useState(false);
 
-  const open = pinned || peeking;
-
-  const writePin = (next) => {
-    try {
-      localStorage.setItem(PIN_KEY, next ? '1' : '0');
-    } catch {
-      /* private mode — the drawer still works, it just won't be remembered */
-    }
-  };
-
-  const togglePin = useCallback(() => {
-    setPinned((prev) => {
-      writePin(!prev);
-      return !prev;
+  const toggle = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(COLLAPSE_KEY, next ? '1' : '0');
+      } catch {
+        /* private mode — it still collapses, it just won't be remembered */
+      }
+      return next;
     });
   }, []);
 
-  // Escape unpins. Without it a pinned drawer can only be dismissed by finding
-  // the handle again, which is a long mouse trip on a wide monitor.
-  useEffect(() => {
-    if (!pinned) return undefined;
-    const onKey = (e) => {
-      if (e.key === 'Escape') {
-        setPinned(false);
-        writePin(false);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [pinned]);
-
   return (
-    <div
-      className="hidden md:block"
-      onMouseEnter={() => setPeeking(true)}
-      onMouseLeave={() => setPeeking(false)}
+    <aside
+      aria-label="Workspaces"
+      className="hidden md:block shrink-0 relative"
+      style={{
+        width: collapsed ? 0 : SIDEBAR_WIDTH,
+        transition: 'width 180ms ease',
+      }}
     >
-      {/* Edge trigger — an invisible strip down the left of the content area.
-          Kept separate from the drawer so there is something to hover *before*
-          anything is on screen. */}
       <div
-        aria-hidden="true"
-        className="fixed left-0"
-        style={{
-          top: NAV_HEIGHT,
-          bottom: 0,
-          width: HOVER_ZONE,
-          zIndex: 34,
-        }}
-      />
-
-      {/* The drawer. z-35 clears sticky page chrome (z-20 at most) while
-          staying under the z-40 Navbar, whose menus open at z-60. */}
-      <aside
         id="org-sidebar"
-        aria-label="Workspaces"
-        // Closed it is merely translated off-screen, so without `inert` its
-        // buttons stay in the tab order and a keyboard user lands inside a
-        // panel they cannot see. React 19 passes this through natively.
-        inert={!open}
-        className="fixed left-0 flex flex-col"
+        // Collapsed it has no width, so its buttons must leave the tab order
+        // too — otherwise focus lands inside a panel nobody can see.
+        inert={collapsed || undefined}
+        className="sticky flex flex-col overflow-hidden"
         style={{
           top: NAV_HEIGHT,
-          bottom: 0,
+          height: `calc(100vh - ${NAV_HEIGHT}px)`,
           width: SIDEBAR_WIDTH,
-          zIndex: 35,
           background: 'var(--color-bg-surface)',
-          borderRight: '1px solid var(--color-border)',
-          transform: open ? 'translateX(0)' : `translateX(-${SIDEBAR_WIDTH}px)`,
-          // Off-screen it must not swallow clicks meant for the page beneath.
-          pointerEvents: open ? 'auto' : 'none',
-          boxShadow: open ? '4px 0 16px rgba(0, 0, 0, 0.08)' : 'none',
-          transition: 'transform 200ms ease, box-shadow 200ms ease',
-          willChange: 'transform',
+          borderRight: collapsed ? 'none' : '1px solid var(--color-border)',
+          opacity: collapsed ? 0 : 1,
+          pointerEvents: collapsed ? 'none' : 'auto',
+          transition: 'opacity 150ms ease',
         }}
       >
         <OrgSidebar />
-      </aside>
+      </div>
 
-      {/* Click handle — rides the drawer's edge so it always reads as the thing
-          that opens and closes it. */}
+      {/* Collapse handle, riding the column's outer edge. */}
       <button
         type="button"
-        onClick={togglePin}
-        aria-expanded={open}
+        onClick={toggle}
+        aria-expanded={!collapsed}
         aria-controls="org-sidebar"
-        aria-label={pinned ? 'Hide workspaces' : 'Show workspaces'}
-        title={pinned ? 'Hide workspaces (Esc)' : 'Show workspaces'}
+        aria-label={collapsed ? 'Show workspaces' : 'Hide workspaces'}
+        title={collapsed ? 'Show workspaces' : 'Hide workspaces'}
         className="fixed flex items-center justify-center hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
         style={{
-          left: open ? SIDEBAR_WIDTH : 0,
-          // Centre it in the area BELOW the navbar, not in the viewport.
+          left: collapsed ? 0 : SIDEBAR_WIDTH,
           top: '50%',
           marginTop: NAV_HEIGHT / 2,
           transform: 'translateY(-50%)',
-          width: 20,
-          height: 56,
+          width: 18,
+          height: 52,
           zIndex: 36,
           background: 'var(--color-bg-surface)',
           border: '1px solid var(--color-border)',
           borderLeft: 'none',
           borderRadius: '0 var(--radius-md) var(--radius-md) 0',
-          boxShadow: '2px 0 8px rgba(0, 0, 0, 0.06)',
-          // Dimmed while closed so it stays discoverable without competing
-          // with the page it floats over on full-bleed layouts like Chat.
-          opacity: open ? 1 : 0.65,
-          transition: 'left 200ms ease, opacity 150ms ease, background-color 120ms ease',
+          opacity: collapsed ? 0.7 : 1,
+          transition: 'left 180ms ease, opacity 150ms ease',
         }}
       >
         <ChevronRight
-          size={15}
+          size={14}
           color="var(--color-text-secondary)"
           aria-hidden="true"
           style={{
-            transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
-            transition: 'transform 200ms ease',
+            transform: collapsed ? 'rotate(0deg)' : 'rotate(180deg)',
+            transition: 'transform 180ms ease',
           }}
         />
       </button>
-    </div>
+    </aside>
   );
 };
 
@@ -446,14 +402,10 @@ const OrgSidebarDrawer = () => {
 
 /**
  * PageWrapper — standard shell used by all authenticated in-app pages.
- * Renders the Navbar + the hover/click workspace drawer + page content.
- *
- * The drawer is an overlay (see OrgSidebarDrawer), so the content column here
- * spans the full viewport width and its `mx-auto` cap is centred on the window
- * rather than on whatever was left over beside a sidebar.
+ * Renders the Navbar + the always-on workspace column + page content.
  *
  * Props:
- *   showNav (bool, default true) — render the Navbar + workspace drawer
+ *   showNav (bool, default true) — render the Navbar + workspace column
  *   padded  (bool, default true) — apply page padding to the content area
  *   children
  */
@@ -481,8 +433,6 @@ const PageWrapper = ({
         </div>
       )}
 
-      {showNav && <OrgSidebarDrawer />}
-
       <div
         className="flex"
         style={{
@@ -490,15 +440,17 @@ const PageWrapper = ({
           background: 'var(--color-bg-base)',
         }}
       >
+        {showNav && <OrgSidebarColumn />}
+
         {/* Below `md` the fixed TabBar covers the bottom 56px of the viewport
             (plus the iPhone home-bar inset), so the content column reserves
             that much space — otherwise the last row of every page hides
             behind the bar. Desktop keeps its zero.
 
-            No left gutter is reserved for the drawer handle: padded pages
-            already carry 40px of side padding, which clears the 20px tab, and
-            adding one would push this column off the centre the drawer was
-            made an overlay to protect. */}
+            The workspace column sits beside this one rather than over it, so
+            the content is centred in the space that is left — the ordinary
+            arrangement for a sidebar, and the price of being able to see
+            which workspace you are in. */}
         <div
           className={[
             'flex-1 min-w-0',
