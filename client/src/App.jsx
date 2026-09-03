@@ -35,6 +35,7 @@ import NotFoundPage from './pages/NotFoundPage';
 import ToastContainer from './components/ui/Toast';
 import useNotificationPoll from './hooks/useNotificationPoll';
 import useNotificationStream from './hooks/useNotificationStream';
+import { syncSubscription } from './services/pushService';
 
 /**
  * ProtectedRoute — redirects to /login when not authenticated.
@@ -154,6 +155,19 @@ function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?._id, currentOrgId]);
+
+  // Re-register this browser's push subscription on sign-in.
+  //
+  // A REPAIR, not a feature: it never prompts and never subscribes, it only
+  // re-posts a subscription the browser already holds. It covers the drift case
+  // where the browser is still subscribed but the server is not — a row pruned
+  // after a run of delivery failures, or a different account signing in on this
+  // browser — which otherwise leaves someone looking at a settings page that
+  // says notifications are on while none ever arrive.
+  useEffect(() => {
+    if (user) syncSubscription();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?._id]);
 
   // Load the workspace holiday calendar once per org, up here rather than per
   // page, because the surfaces that need it are not just the calendars: every

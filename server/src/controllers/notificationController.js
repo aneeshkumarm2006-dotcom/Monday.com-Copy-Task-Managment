@@ -4,7 +4,9 @@ const Notification = require('../models/Notification');
 const NotificationPreference = require('../models/NotificationPreference');
 const Task = require('../models/Task');
 const Board = require('../models/Board');
+const PushSubscription = require('../models/PushSubscription');
 const notificationStream = require('../services/notificationStream');
+const pushService = require('../services/pushService');
 
 const PREFERENCE_CATEGORIES = [
   'assignments',
@@ -490,6 +492,12 @@ const updatePreferences = async (req, res) => {
           if (typeof c.email === 'boolean') {
             update[`categories.${cat}.email`] = c.email;
           }
+          // `null` is meaningful for push — it means "never chosen", which
+          // hands the decision back to PUSH_DEFAULT_ON. So unlike the other
+          // two, this accepts a null as well as a boolean.
+          if (typeof c.push === 'boolean' || c.push === null) {
+            update[`categories.${cat}.push`] = c.push;
+          }
         }
       }
     }
@@ -535,7 +543,90 @@ const updatePreferences = async (req, res) => {
   }
 };
 
+/* --------------------------- Web Push subscriptions --------------------------- */
+
+/**
+ * GET /api/notifications/push/key
+ *
+ * The VAPID public key the browser needs in order to subscribe, plus whether
+ * push is configured at all. The client asks BEFORE showing any "turn on
+ * notifications" affordance — offering a button that cannot work, and burning
+ * the one permission prompt the browser will ever grant us, is worse than
+ * showing nothing.
+ */
+const getPushKey = async (req, res) => {
+  return res.json({
+    enabled: pushService.isConfigured,
+    publicKey: pushService.getPublicKey(),
+  });
+};
+
+/**
+ * POST /api/notifications/push/subscribe
+ *
+ * Upserts on `endpoint`, not on user: one browser is one row, and the row's
+ * `user` is overwritten so a shared machine (or a sign-out and back in as
+ * somebody else) stops delivering the previous person's notifications to it.
+ */
+const subscribePush = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { endpoint, keys, deviceLabel } = req.body || {};
+
+    if (
+      typeof endpoint !== 'string' ||
+      !endpoint.startsWith('https://') ||
+      !keys ||
+      typeof keys.p256dh !== 'string' ||
+      typeof keys.auth !== 'string'
+    ) {
+      return res.status(400).json({ error: 'Invalid subscription' });
+    }
+
+    const sub = await PushSubscription.findOneAndUpdate(
+      { endpoint },
+      {
+        user: userId,
+        endpoint,
+        keys: { p256dh: keys.p256dh, auth: keys.auth },
+        deviceLabel: typeof deviceLabel === 'string' ? deviceLabel.slice(0, 120) : '',
+        lastUsedAt: new Date(),
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    return res.status(201).json({ subscription: { _id: sub._id } });
+  } catch (err) {
+    console.error('subscribePush error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * DELETE /api/notifications/push/subscribe
+ *
+ * Scoped to the caller: you can only delete a subscription that is currently
+ * yours, so knowing somebody else's endpoint is not enough to silence them.
+ */
+const unsubscribePush = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const endpoint = req.body?.endpoint;
+    if (typeof endpoint !== 'string') {
+      return res.status(400).json({ error: 'Endpoint required' });
+    }
+    await PushSubscription.deleteOne({ endpoint, user: userId });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('unsubscribePush error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
+  getPushKey,
+  subscribePush,
+  unsubscribePush,
   getNotifications,
   getUnreadCount,
   streamNotifications,

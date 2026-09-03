@@ -56,6 +56,11 @@ export default defineConfig({
         // Never let a navigation to the API (OAuth redirects land there) be
         // answered with the app shell.
         navigateFallbackDenylist: [/^\/api\//],
+        // Web Push handlers. `generateSW` writes the worker, so there is no
+        // source file to add a `push` listener to — this pulls one in. See
+        // public/push-sw.js; it registers listeners only and leaves the
+        // caching contract above untouched.
+        importScripts: ['/push-sw.js'],
       },
     }),
   ],

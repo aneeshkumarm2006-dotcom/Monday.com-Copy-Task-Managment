@@ -12,6 +12,9 @@ const {
   clearRead,
   getPreferences,
   updatePreferences,
+  getPushKey,
+  subscribePush,
+  unsubscribePush,
 } = require('../controllers/notificationController');
 
 const router = express.Router();
@@ -37,6 +40,11 @@ router.get('/', getNotifications);
 router.get('/unread-count', getUnreadCount);
 router.get('/preferences', getPreferences);
 router.put('/preferences', updatePreferences);
+
+// Web Push. Static paths, so above the `/:id` routes below.
+router.get('/push/key', getPushKey);
+router.post('/push/subscribe', subscribePush);
+router.delete('/push/subscribe', unsubscribePush);
 router.put('/read-all', markAllAsRead);
 router.delete('/clear-read', clearRead);
 router.put('/:id/read', markAsRead);

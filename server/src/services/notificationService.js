@@ -2,6 +2,8 @@ const Notification = require('../models/Notification');
 const NotificationPreference = require('../models/NotificationPreference');
 const ItemFollow = require('../models/ItemFollow');
 const eventBus = require('./eventBus');
+const pushService = require('./pushService');
+const { resolveNotifLink } = require('../utils/notificationLink');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 
 /**
@@ -54,6 +56,38 @@ const isChannelEnabled = (pref, type, channel) => {
 
 const isInAppEnabled = (pref, type) => isChannelEnabled(pref, type, 'inApp');
 const isEmailEnabled = (pref, type) => isChannelEnabled(pref, type, 'email');
+
+/**
+ * Categories that push by default, for a user who has granted permission but
+ * never opened the per-category switches.
+ *
+ * The line is "is this ABOUT ME, and does it need me": being assigned work,
+ * being called by name, being invited somewhere, something of mine being due,
+ * a month closing with numbers missing. Everything else — a status moving, a
+ * comment on a board I follow, a card being dragged between groups, a rank
+ * shifting — is real information that belongs in the bell and does not belong
+ * on a lock screen at 9pm.
+ *
+ * `isChannelEnabled`'s "missing means yes" is deliberately not reused here:
+ * for a channel that interrupts, silence should mean silence.
+ */
+const PUSH_DEFAULT_ON = new Set([
+  'assignments',
+  'mentions',
+  'invites',
+  'dueDates',
+  'goals',
+]);
+
+const isPushEnabled = (pref, type) => {
+  const cat = categoryForType(type);
+  // An unmapped type is one of the rare, important ones (ownership changing
+  // hands). Those push — same reasoning that has them bypass the other gates.
+  if (!cat) return true;
+  const chosen = pref?.categories?.[cat]?.push;
+  if (typeof chosen === 'boolean') return chosen;
+  return PUSH_DEFAULT_ON.has(cat);
+};
 
 /**
  * Is `now` inside the user's Do-Not-Disturb window? DND is stored as minutes
@@ -143,8 +177,12 @@ const createNotification = async ({
       isRead: false,
     });
 
-    // Best-effort real-time push (suppressed during DND). The SSE stream service
-    // loads + populates the doc and delivers it to the recipient's connections.
+    // Best-effort real-time delivery, both channels suppressed during DND.
+    //
+    // The SSE stream reaches a tab that is already open; Web Push reaches a
+    // browser that is not. They are deliberately gated together — quiet hours
+    // that silence the toast on your desktop but light up your phone would be
+    // worse than having no quiet hours at all.
     if (!isInDnd(preference)) {
       try {
         eventBus.emit('notification.created', {
@@ -153,6 +191,22 @@ const createNotification = async ({
         });
       } catch (emitErr) {
         // never let a delivery failure break notification creation
+      }
+
+      if (isPushEnabled(preference, type)) {
+        // Not awaited: a push round-trip to Apple or Google must not sit in
+        // front of the request that triggered it. sendToUser never throws.
+        pushService
+          .sendToUser(userId, {
+            title: 'Macan',
+            body: message,
+            url: resolveNotifLink(doc),
+            // Collapse repeats about the same task into one entry rather than
+            // stacking five lock-screen rows for five edits of one row.
+            tag: doc.task ? `task:${doc.task}` : `notif:${doc._id}`,
+            notificationId: String(doc._id),
+          })
+          .catch(() => {});
       }
     }
     return doc;
@@ -318,4 +372,8 @@ module.exports = {
   createNotificationsForUsers,
   notifyTaskAudience,
   filterByEmailPreference,
+  // Exported for tests: the push defaults are the one piece of this file that
+  // is duplicated on the client, so they need a tripwire.
+  isPushEnabled,
+  PUSH_DEFAULT_ON,
 };

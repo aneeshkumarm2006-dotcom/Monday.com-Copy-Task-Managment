@@ -3,6 +3,7 @@ import Switch from '../ui/Switch';
 import useToastStore from '../../store/toastStore';
 import useOrgStore from '../../store/orgStore';
 import useAuthStore from '../../store/authStore';
+import usePushNotifications from '../../hooks/usePushNotifications';
 import { getBoards } from '../../services/boardService';
 import {
   getPreferences,
@@ -24,6 +25,25 @@ const CATEGORIES = [
   // keyword every day — the loudest possible thing in the bell.
   { key: 'seo', label: 'SEO alerts', hint: 'Rank drops and lost backlinks on connected sites' },
 ];
+
+/**
+ * Which categories push by default. MIRRORS `PUSH_DEFAULT_ON` in
+ * server/src/services/notificationService.js — if you change one, change both,
+ * or the switch will show a state the server does not act on.
+ *
+ * Push is the only channel where "never chosen" (`null`) does not mean on: it
+ * interrupts, so the ambient categories stay quiet until asked for.
+ */
+const PUSH_DEFAULT_ON = new Set([
+  'assignments',
+  'mentions',
+  'invites',
+  'dueDates',
+  'goals',
+]);
+
+const pushChecked = (category, key) =>
+  typeof category.push === 'boolean' ? category.push : PUSH_DEFAULT_ON.has(key);
 
 const minutesToTime = (mins) => {
   const m = ((mins % 1440) + 1440) % 1440;
@@ -174,6 +194,7 @@ const NotificationPreferences = () => {
   const [loading, setLoading] = useState(true);
   const [boards, setBoards] = useState([]);
   const toastError = useToastStore((s) => s.error);
+  const push = usePushNotifications();
 
   const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
   const orgMembers = useOrgStore((s) => s.members);
@@ -316,6 +337,55 @@ const NotificationPreferences = () => {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* ---- Push notifications, THIS device ----
+          Per-browser, not per-account: the subscription belongs to the browser
+          that made it, so this card is about the thing you are reading it on
+          and says so. Hidden entirely when the server has no VAPID keys —
+          there is nothing the reader could do about that. */}
+      {push.serverReady !== false && (
+        <section
+          className="flex items-center justify-between gap-4 px-4 py-3.5"
+          style={{
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-md)',
+            background: push.enabled
+              ? 'color-mix(in srgb, var(--color-accent) 8%, transparent)'
+              : 'transparent',
+          }}
+        >
+          <div className="min-w-0">
+            <p
+              className="font-display font-bold text-[color:var(--color-text-primary)]"
+              style={{ fontSize: 14 }}
+            >
+              Push notifications on this device
+            </p>
+            <p className="font-body text-[13px] text-[color:var(--color-text-secondary)] mt-0.5">
+              {push.blocked
+                ? 'Your browser is blocking notifications for Macan. Turn them back on in this page’s site settings, then come back.'
+                : push.needsInstall
+                  ? 'On iPhone and iPad, add Macan to your Home Screen first — Safari tabs can’t show notifications.'
+                  : !push.supported
+                    ? 'This browser can’t show notifications.'
+                    : push.enabled
+                      ? 'Alerts reach you here even when Macan is closed. Quiet hours still apply.'
+                      : 'Get alerts even when Macan is closed. You choose which ones below.'}
+            </p>
+            {push.error && (
+              <p className="font-body text-[12px] mt-1 text-[color:var(--color-status-stuck)]">
+                {push.error}
+              </p>
+            )}
+          </div>
+          <Switch
+            checked={push.enabled}
+            onChange={(v) => (v ? push.enable() : push.disable())}
+            disabled={!push.supported || push.blocked || push.busy}
+            label="Push notifications on this device"
+          />
+        </section>
+      )}
+
       {/* ---- Master email switch ---- */}
       <section
         className="flex items-center justify-between gap-4 px-4 py-3.5"
@@ -351,13 +421,16 @@ const NotificationPreferences = () => {
         </p>
 
         {/* Column headers */}
-        <div className="flex items-center gap-4 px-1 pb-2">
+        <div className="flex items-center gap-2 sm:gap-4 px-1 pb-2">
           <div className="flex-1" />
-          <div className="w-16 text-center font-body text-[11px] uppercase tracking-wide text-[color:var(--color-text-muted)]">
+          <div className="w-12 sm:w-16 text-center font-body text-[11px] uppercase tracking-wide text-[color:var(--color-text-muted)]">
             In-app
           </div>
-          <div className="w-16 text-center font-body text-[11px] uppercase tracking-wide text-[color:var(--color-text-muted)]">
+          <div className="w-12 sm:w-16 text-center font-body text-[11px] uppercase tracking-wide text-[color:var(--color-text-muted)]">
             Email
+          </div>
+          <div className="w-12 sm:w-16 text-center font-body text-[11px] uppercase tracking-wide text-[color:var(--color-text-muted)]">
+            Push
           </div>
         </div>
 
@@ -373,7 +446,7 @@ const NotificationPreferences = () => {
             return (
               <div
                 key={cat.key}
-                className="flex items-center gap-4 px-3 py-3"
+                className="flex items-center gap-2 sm:gap-4 px-3 py-3"
                 style={{
                   borderTop:
                     i === 0 ? 'none' : '1px solid var(--color-border)',
@@ -387,19 +460,30 @@ const NotificationPreferences = () => {
                     {cat.hint}
                   </p>
                 </div>
-                <div className="w-16 flex justify-center">
+                <div className="w-12 sm:w-16 flex justify-center">
                   <Switch
                     checked={c.inApp !== false}
                     onChange={(v) => setCategory(cat.key, 'inApp', v)}
                     label={`${cat.label} in-app`}
                   />
                 </div>
-                <div className="w-16 flex justify-center" style={{ opacity: masterOff ? 0.4 : 1 }}>
+                <div className="w-12 sm:w-16 flex justify-center" style={{ opacity: masterOff ? 0.4 : 1 }}>
                   <Switch
                     checked={c.email !== false}
                     onChange={(v) => setCategory(cat.key, 'email', v)}
                     disabled={masterOff}
                     label={`${cat.label} email`}
+                  />
+                </div>
+                <div
+                  className="w-12 sm:w-16 flex justify-center"
+                  style={{ opacity: push.enabled ? 1 : 0.4 }}
+                >
+                  <Switch
+                    checked={pushChecked(c, cat.key)}
+                    onChange={(v) => setCategory(cat.key, 'push', v)}
+                    disabled={!push.enabled}
+                    label={`${cat.label} push`}
                   />
                 </div>
               </div>

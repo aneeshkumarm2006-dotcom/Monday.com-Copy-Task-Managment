@@ -8,6 +8,21 @@ const channelSchema = new mongoose.Schema(
   {
     inApp: { type: Boolean, default: true },
     email: { type: Boolean, default: true },
+    /**
+     * Web Push. Deliberately NOT defaulted to true like the other two.
+     *
+     * A missing in-app or email setting means "on", which is right for channels
+     * you have to go looking at. Push interrupts you, and defaulting every
+     * category to on would mean the first thing that happens after granting
+     * permission is a phone buzzing on every status change on every board —
+     * which is how a person turns the whole thing off and never comes back.
+     *
+     * `null` means "not chosen", and notificationService's PUSH_DEFAULT_ON
+     * decides those: the categories that are about YOU (assigned, mentioned,
+     * invited, due, month-end goals) push; the ambient ones do not, until the
+     * person asks for them.
+     */
+    push: { type: Boolean, default: null },
   },
   { _id: false }
 );

@@ -9,6 +9,7 @@ require('./Update');
 require('./Note');
 require('./Notification');
 require('./NotificationPreference');
+require('./PushSubscription');
 require('./ItemFollow');
 require('./Automation');
 require('./Tracker');
