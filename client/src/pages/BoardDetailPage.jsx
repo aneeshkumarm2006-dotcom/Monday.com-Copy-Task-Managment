@@ -228,6 +228,7 @@ const BoardDetailPage = () => {
   const currentUser = useAuthStore((s) => s.user);
 
   const currentOrg = useOrgStore((s) => s.currentOrg);
+  const setCurrentOrg = useOrgStore((s) => s.setCurrentOrg);
   const fetchMembers = useOrgStore((s) => s.fetchMembers);
   // THE roster every picker on this page renders: the people who can actually
   // read THIS board, resolved server-side. Not `useOrgStore.members` — that is
@@ -236,6 +237,8 @@ const BoardDetailPage = () => {
   const members = useBoardMembers(boardId);
   const boards = useBoardStore((s) => s.boards);
   const fetchBoards = useBoardStore((s) => s.fetchBoards);
+  const fetchBoard = useBoardStore((s) => s.fetchBoard);
+  const loadingBoards = useBoardStore((s) => s.loading);
   const getBoardById = useBoardStore((s) => s.getBoardById);
   const updateBoardLocal = useBoardStore((s) => s.updateBoardLocal);
 
@@ -757,6 +760,59 @@ const BoardDetailPage = () => {
       );
     }
   }, [board, orgId, boards.length, fetchBoards]);
+
+  // Deep link into a board that is NOT in the current workspace.
+  //
+  // `getBoardById` only searches the list for whichever workspace happens to be
+  // selected, so a link out of an email — where the reader's selected workspace
+  // is whatever they last used, not the board's — found nothing, waited for a
+  // document that could never arrive, and left the page on "Loading…" behind an
+  // empty board. Ask the server for the board itself.
+  //
+  // A recorded refusal is what stops the retry: without it a 403 would be
+  // re-requested on every render, forever. `inFlight` collapses the duplicate
+  // asks in between. Both are cleared when the board id changes, and NEITHER
+  // is cleared otherwise — so if a later `fetchBoards` for the newly-selected
+  // workspace replaces the list and drops this board again, the effect simply
+  // asks once more and converges.
+  const [boardError, setBoardError] = useState(null);
+  const inFlightBoard = useRef(null);
+
+  useEffect(() => {
+    setBoardError(null);
+    inFlightBoard.current = null;
+  }, [boardId]);
+
+  useEffect(() => {
+    if (board || !boardId || boardError) return;
+    // Let the list settle first — if the board IS in this workspace it will
+    // arrive on its own, and asking twice for it is wasted.
+    if (loadingBoards || inFlightBoard.current === boardId) return;
+    inFlightBoard.current = boardId;
+    fetchBoard(boardId)
+      .catch((err) => {
+        const status = err.response?.status;
+        setBoardError(
+          status === 403
+            ? 'You do not have access to this board.'
+            : status === 404
+              ? 'This board no longer exists.'
+              : 'Could not load this board.'
+        );
+      })
+      .finally(() => {
+        inFlightBoard.current = null;
+      });
+  }, [board, boardId, boardError, loadingBoards, fetchBoard]);
+
+  // The board may live in another workspace. Follow it, so the sidebar, the
+  // member roster and every "back to boards" link agree with what is on screen.
+  const boardOrgId = board?.organisation;
+  useEffect(() => {
+    if (boardOrgId && orgId && boardOrgId !== orgId) {
+      setCurrentOrg(boardOrgId);
+    }
+  }, [boardOrgId, orgId, setCurrentOrg]);
 
   // Log the visit for the dashboard's "Recent Boards" card.
   //
@@ -2185,6 +2241,58 @@ const BoardDetailPage = () => {
       });
     }
   };
+
+  // A board we were refused, or that is gone. Say so — the page used to render
+  // its whole chrome around a board it never had, so a link you could not open
+  // looked exactly like a board with nothing on it.
+  if (boardError) {
+    return (
+      <PageWrapper>
+        <nav
+          aria-label="Breadcrumb"
+          className="flex items-center gap-1.5 font-body"
+          style={{ fontSize: 13 }}
+        >
+          <Link
+            to="/boards"
+            className="transition-colors duration-150 hover:text-[color:var(--color-accent)]"
+            style={{ color: 'var(--color-text-muted)' }}
+          >
+            My Boards
+          </Link>
+        </nav>
+        <div
+          className="mt-6 flex flex-col items-center justify-center text-center px-6 py-14"
+          style={{
+            background: 'var(--color-bg-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-lg)',
+          }}
+        >
+          <Lock size={22} color="var(--color-text-muted)" aria-hidden="true" />
+          <h1
+            className="font-display mt-3 text-[17px]"
+            style={{ fontWeight: 700, color: 'var(--color-text-primary)' }}
+          >
+            Can&rsquo;t open this board
+          </h1>
+          <p
+            className="font-body mt-1.5 text-[13px]"
+            style={{ color: 'var(--color-text-secondary)' }}
+          >
+            {boardError}
+          </p>
+          <Link
+            to="/boards"
+            className="font-body mt-5 inline-flex items-center h-9 px-4 text-[13px] font-semibold text-white bg-accent hover:bg-accent-hover transition-colors"
+            style={{ borderRadius: 'var(--radius-md)' }}
+          >
+            Back to My Boards
+          </Link>
+        </div>
+      </PageWrapper>
+    );
+  }
 
   return (
     <PageWrapper>

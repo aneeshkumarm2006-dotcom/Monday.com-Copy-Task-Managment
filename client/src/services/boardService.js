@@ -9,6 +9,18 @@ export const getBoards = async (orgId) => {
 };
 
 /**
+ * GET /api/boards/:id — one board by id, without knowing its workspace.
+ *
+ * What deep links need: a board opened from an email or a notification may
+ * live in a workspace other than the one currently selected, and the list
+ * above can only ever return boards from one workspace at a time.
+ */
+export const getBoard = async (boardId) => {
+  const { data } = await api.get(`/api/boards/${boardId}`);
+  return data.board;
+};
+
+/**
  * GET /api/dashboard/stats?org=:orgId — aggregated workspace stats.
  */
 export const getDashboardStats = async (orgId) => {

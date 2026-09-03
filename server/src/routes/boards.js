@@ -1,6 +1,7 @@
 const express = require('express');
 const authMiddleware = require('../middleware/auth');
 const {
+  getBoard,
   getBoards,
   createBoard,
   updateBoard,
@@ -46,6 +47,11 @@ router.use(authMiddleware);
 
 // GET /api/boards?org=:orgId — list boards for an organisation
 router.get('/', getBoards);
+
+// GET /api/boards/:id — one board by id, for deep links that land on a board
+// in a workspace other than the one currently selected. Safe above the other
+// `/:id/*` routes: those carry a second segment, so nothing is shadowed.
+router.get('/:id', getBoard);
 
 // POST /api/boards — create a board (admin-only, enforced in controller)
 router.post('/', createBoard);

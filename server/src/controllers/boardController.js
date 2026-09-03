@@ -251,6 +251,74 @@ const computeBoardProgress = async (boards) => {
  * The boards this member's ROLE reaches — see `boardVisibilityFilter`. Sorted by
  * order, then updatedAt desc.
  */
+/**
+ * GET /api/boards/:id — one board, by id alone.
+ *
+ * The list endpoint above is scoped to an organisation, which meant a board
+ * could only ever be resolved by first knowing which workspace it lived in.
+ * Deep links do not know that: a link out of an email lands on /boards/:id
+ * with whatever workspace the reader happened to have selected, and if the
+ * board belongs to a different one it was never in the list, the page waited
+ * for a document that could not arrive, and it sat on "Loading…" forever.
+ *
+ * Access is resolved from the BOARD's own organisation rather than from a
+ * caller-supplied `org`, so the two-layer AND still applies exactly as it does
+ * in the list: you must be a member of the owning workspace, and the board
+ * must survive the same visibility filter. A board you may not see returns
+ * 403, not a silent empty page.
+ */
+const getBoard = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const boardId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(boardId)) {
+      return res.status(404).json({ error: 'Board not found' });
+    }
+
+    const board = await Board.findById(boardId).populate('createdBy', CREATOR_FIELDS);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+
+    const { org, isMember } = await loadOrgForMember(board.organisation, userId);
+    if (!org) return res.status(404).json({ error: 'Board not found' });
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this workspace' });
+    }
+
+    // Same rule as the list, applied to this one board: re-querying with the
+    // visibility filter keeps the two in step rather than restating it here.
+    const orgAccess = resolveOrgAccess(org, userId);
+    const visible = await Board.exists({
+      _id: board._id,
+      ...boardVisibilityFilter(orgAccess, userId),
+    });
+    if (!visible) {
+      return res.status(403).json({ error: 'You do not have access to this board' });
+    }
+
+    // Same lazy heal the list does for pre-migration boards.
+    if (!Array.isArray(board.statuses) || board.statuses.length === 0) {
+      board.statuses = DEFAULT_STATUSES.map((s) => ({ ...s }));
+      if (!Array.isArray(board.labels)) board.labels = [];
+      await board.save();
+    }
+
+    const progressByBoard = await computeBoardProgress([board]);
+    return res.json({
+      board: {
+        ...withPermissions(board, org, userId),
+        ...(progressByBoard.get(board._id.toString()) || {
+          taskCount: 0,
+          doneCount: 0,
+          progress: 0,
+        }),
+      },
+    });
+  } catch (err) {
+    console.error('getBoard error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 const getBoards = async (req, res) => {
   try {
     const orgId = req.query.org;
@@ -1667,6 +1735,7 @@ const transferBoardOwnership = async (req, res) => {
 };
 
 module.exports = {
+  getBoard,
   getBoards,
   getDashboardStats,
   createBoard,

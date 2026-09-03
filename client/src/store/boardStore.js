@@ -61,6 +61,25 @@ const useBoardStore = create((set, get) => ({
     }
   },
 
+  /**
+   * Fetch ONE board by id and fold it into `boards`.
+   *
+   * For deep links: the list is per-workspace, so a board in any other
+   * workspace is simply absent from it and `getBoardById` returns null
+   * forever. This asks for the board itself. It merges rather than replaces,
+   * because the list for the current workspace is still wanted — the board
+   * being viewed is an addition to it, not a substitute.
+   */
+  fetchBoard: async (boardId) => {
+    const board = await boardService.getBoard(boardId);
+    set((s) => ({
+      boards: s.boards.some((b) => b._id === board._id)
+        ? s.boards.map((b) => (b._id === board._id ? board : b))
+        : [...s.boards, board],
+    }));
+    return board;
+  },
+
   createBoard: async (payload) => {
     const board = await boardService.createBoard(payload);
     set((s) => ({ boards: [board, ...s.boards] }));
