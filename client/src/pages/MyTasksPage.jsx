@@ -17,7 +17,7 @@ import {
   Filter,
   X,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import PageWrapper from '../components/layout/PageWrapper';
 import PersonalTaskModal from '../components/board/PersonalTaskModal';
 import CommentPanel from '../components/board/CommentPanel';
@@ -39,6 +39,9 @@ import {
   EMPTY_WORK_FILTERS,
   workTaskMatchesFilters,
   countActiveWorkFilters,
+  hasWorkFilterParams,
+  workFiltersFromParams,
+  stripWorkFilterParams,
 } from '../utils/myWorkFilters';
 
 const localizer = momentLocalizer(moment);
@@ -1242,6 +1245,7 @@ const CalendarTab = ({ events, onSelect }) => {
 const MyWorkPage = () => {
   const currentOrg = useOrgStore((s) => s.currentOrg);
   const orgId = currentOrg?._id || null;
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [allTasks, setAllTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1249,8 +1253,31 @@ const MyWorkPage = () => {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingTask, setEditingTask] = useState(null);
   const [filter, setFilter] = useState('all');
-  const [workFilters, setWorkFilters] = useState(EMPTY_WORK_FILTERS);
+  // A deep link may arrive with the filter bar already set — see
+  // utils/myWorkFilters.js. Seeded here so the first paint is already filtered
+  // rather than flashing the whole list and then cutting it down.
+  const [workFilters, setWorkFilters] = useState(() =>
+    workFiltersFromParams(searchParams)
+  );
   const [selectedTask, setSelectedTask] = useState(null);
+
+  /**
+   * Adopt a deep link's filters, then take them off the URL.
+   *
+   * Consumed ONCE rather than kept as the source of truth: the filter bar is
+   * ordinary state the user edits, and a URL that kept saying `due=overdue`
+   * would either fight "Clear all" or have to be rewritten on every tick of a
+   * checkbox. Stripping the params leaves whatever else is on the query string
+   * alone, and covers the case where the link is followed while this page is
+   * already open (no remount, so the initial state above never re-runs).
+   */
+  useEffect(() => {
+    if (!hasWorkFilterParams(searchParams)) return;
+    setWorkFilters(workFiltersFromParams(searchParams));
+    // Filters describe assigned board work, so the link implies that tab.
+    setActiveTab('work');
+    setSearchParams(stripWorkFilterParams(searchParams), { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const fetchTasks = useCallback(async () => {
     try {

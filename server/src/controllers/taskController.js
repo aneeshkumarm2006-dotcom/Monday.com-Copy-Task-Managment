@@ -74,17 +74,17 @@ const portalRefLabel = (task) =>
     : `REQ-${String(task._id).slice(-5).toUpperCase()}`;
 
 /**
- * Client Portal: email the group's client contacts when the team PUBLISHES a
+ * Client Portal: email the board's client contacts when the team PUBLISHES a
  * task to their portal. A shared item is the team asking something of the
  * client, so it can't wait to be discovered on a page nobody was told to open.
  *
- * Every contact on the group is mailed, not one submitter, because a shared task
+ * Every contact on the board is mailed, not one submitter, because a shared task
  * belongs to the whole client company — the same audience that can already read
  * it in the portal, so this discloses nothing new.
  *
  * Only for team-shared items: a client-raised ticket (`portalSubmitter`) is
  * already theirs, and a subitem never reaches the portal at all. Silent when the
- * group's portal is off — mailing a link that refuses them is worse than nothing.
+ * board's portal is off — mailing a link that refuses them is worse than nothing.
  *
  * Fire-and-forget: swallows its own errors so sharing never fails on the mail.
  */
@@ -93,29 +93,33 @@ const emailClientsOnPortalShare = async (task, board) => {
     if (!task || !board || board.boardType !== 'client') return;
     if (!task.portalShared || task.parent || task.portalSubmitter) return;
 
-    const group = await TaskGroup.findById(task.group).select(
-      'name portalClientName portalEnabled portalToken'
+    // Re-read the board WITH the token: `board` arrives from loadBoardContext,
+    // which does not select it (`Board.portalToken` is `select: false` — it is a
+    // credential). One extra read on a fire-and-forget path, and explicit beats
+    // a silently empty link.
+    const portalBoard = await Board.findById(board._id).select(
+      '+portalToken name portalClientName portalEnabled'
     );
-    if (!group?.portalEnabled || !group.portalToken) return;
+    if (!portalBoard?.portalEnabled || !portalBoard.portalToken) return;
 
-    const contacts = await ClientContact.find({ group: group._id })
+    const contacts = await ClientContact.find({ board: portalBoard._id })
       .select('email')
       .lean();
     const recipients = contacts.map((c) => c.email).filter(Boolean);
     if (recipients.length === 0) return;
 
     const org = await Organisation.findById(board.organisation).select('name');
-    // The group's own portal URL rather than the bare /portal dashboard: an
+    // The client's own portal URL rather than the bare /portal dashboard: an
     // invited contact who has never signed in on this device needs the landing
     // page, and one who has is a click from the same list either way.
-    const link = portalLink(group);
+    const link = portalLink(portalBoard);
 
     const results = await Promise.allSettled(
       recipients.map((to) =>
         sendPortalSharedTaskEmail({
           to,
           orgName: org?.name || '',
-          clientName: clientLabel(group),
+          clientName: clientLabel(portalBoard),
           taskName: task.name,
           ref: portalRefLabel(task),
           dueDate: task.dueDate || null,
@@ -183,7 +187,7 @@ const denyPortalShare = (ctx, task) => {
   }
   if (task.portalSubmitter) {
     // A client-raised ticket already reaches the person who raised it. Sharing
-    // is group-wide, so flipping it here would hand one contact's ticket to
+    // is board-wide, so flipping it here would hand one contact's ticket to
     // everyone else at their company — a disclosure, not a convenience.
     return {
       status: 400,

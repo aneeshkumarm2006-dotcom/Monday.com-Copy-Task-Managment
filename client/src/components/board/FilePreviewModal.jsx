@@ -185,9 +185,14 @@ const FilePreviewModal = ({ attachments, index, onIndexChange, onClose }) => {
       role="dialog"
       aria-modal="true"
       aria-label={'Preview: ' + label}
-      className="fixed inset-0 z-50 flex items-center justify-center px-4 py-4"
+      className="fixed inset-0 flex items-center justify-center px-4 py-4"
       onMouseDown={handleOverlayMouseDown}
       style={{
+        // Above everything: the task panel is 100, and the body-portaled
+        // pickers that have to escape it (assignee, status, date) are 200. A
+        // full-screen viewer with a status dropdown floating over it is worse
+        // than no viewer, so this sits clear of the whole stack.
+        zIndex: 300,
         background: 'rgba(15, 23, 42, 0.78)',
         animation: 'macan-modal-fade 200ms ease-out',
       }}

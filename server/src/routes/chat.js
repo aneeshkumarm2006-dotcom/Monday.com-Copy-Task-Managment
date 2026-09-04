@@ -13,6 +13,11 @@ const {
   deleteMessage,
   makeTaskFromMessage,
   uploadChatAttachment,
+  listBoardChannels,
+  createGroupSurfaces,
+  listThreads,
+  createThread,
+  markThreadRead,
 } = require('../controllers/chatController');
 
 const router = express.Router();
@@ -25,6 +30,17 @@ router.use(authMiddleware);
 // POST   /api/chat/channels/:channelId/read    — move the caller's read marker
 router.get('/channels', listChannels);
 router.post('/channels', createChannel);
+
+// GET  /api/chat/boards/:boardId/channels — every surface on one board, grouped
+//      by workstream. The board Chat tab. Client-board rooms appear ONLY here;
+//      the sidebar above excludes them deliberately (see listChannels).
+// POST /api/chat/boards/:boardId/groups/:groupId/surfaces — the setup picker's
+//      write. Requires `group.manage`.
+//
+// Registered before `/channels/:channelId` below purely for readability — Express
+// matches on the literal first segment, so `boards` and `channels` cannot collide.
+router.get('/boards/:boardId/channels', listBoardChannels);
+router.post('/boards/:boardId/groups/:groupId/surfaces', createGroupSurfaces);
 // POST /api/chat/dms — find-or-create the DM with one other member
 router.post('/dms', openDm);
 router.patch('/channels/:channelId', updateChannel);
@@ -40,6 +56,15 @@ router.patch('/channels/:channelId/messages/:messageId', editMessage);
 router.delete('/channels/:channelId/messages/:messageId', deleteMessage);
 // POST /api/chat/channels/:channelId/messages/:messageId/task — make-this-a-task
 router.post('/channels/:channelId/messages/:messageId/task', makeTaskFromMessage);
+
+// Mail surfaces. A thread IS a top-level message with a subject plus its
+// existing one level of replies, so reading a thread still goes through
+// `GET .../messages?thread=<id>`; these three add what a mailbox needs on top:
+// a list sorted by last activity, a way to start a thread, and a PER-THREAD
+// read marker (opening one thread must not mark the rest read).
+router.get('/channels/:channelId/threads', listThreads);
+router.post('/channels/:channelId/threads', createThread);
+router.post('/channels/:channelId/threads/:threadId/read', markThreadRead);
 
 // POST /api/chat/channels/:channelId/attachments — file → Cloudinary. Same
 // multer pipeline as update attachments; the controller tears the asset back

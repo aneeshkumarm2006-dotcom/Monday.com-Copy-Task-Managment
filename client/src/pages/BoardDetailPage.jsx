@@ -19,6 +19,7 @@ import {
   GripVertical,
   LayoutList,
   Lock,
+  MessageCircle,
   Plus,
   SearchX,
   Settings as SettingsIcon,
@@ -29,6 +30,7 @@ import {
   Users,
   Wallet,
   Zap,
+  Link2,
 } from 'lucide-react';
 import {
   DndContext,
@@ -62,7 +64,7 @@ import TaskActionsMenu from '../components/board/TaskActionsMenu';
 import CommentPanel from '../components/board/CommentPanel';
 import GroupNotesPanel from '../components/board/GroupNotesPanel';
 import ClientPortalModal from '../components/board/ClientPortalModal';
-import ClientSignInMethodField from '../components/board/ClientSignInMethodField';
+import BoardChatTab from '../components/board/BoardChatTab';
 import AutomationsModal from '../components/board/AutomationsModal';
 import ExportActivityModal from '../components/board/ExportActivityModal';
 import LabelPicker from '../components/board/LabelPicker';
@@ -155,6 +157,15 @@ const GROUP_SORT_KEY = 'board:groupSortCompletedLast:';
  */
 const VIEW_TABS = [
   { value: 'board', label: 'Board', icon: LayoutList, visible: () => true },
+  // Chat is the client board's second surface, and the ONLY place this
+  // client's rooms appear: `utils/chatChannels.js` keeps them out of the global
+  // /chat sidebar on purpose, because a conversation with an outside company
+  // does not belong in the same list as internal team chat.
+  //
+  // Advanced tier only. On a basic client board there is nothing to show and
+  // nothing that could be created — client-facing rooms need the tier, and the
+  // server refuses them independently — so the tab is absent rather than empty.
+  { value: 'chat', label: 'Chat', icon: MessageCircle, visible: (g) => g.canViewBoardChat },
   {
     value: 'delivery',
     label: 'Delivery',
@@ -357,12 +368,6 @@ const BoardDetailPage = () => {
   // New-group modal state
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
-  // Client-board only: the invited client's email, collected in the same step so
-  // the link is minted and emailed the moment the group exists.
-  const [newGroupClientEmail, setNewGroupClientEmail] = useState('');
-  // How the invited client signs in: 'google' or 'password'. Only sent when an
-  // email was entered.
-  const [newGroupClientAuth, setNewGroupClientAuth] = useState('google');
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [groupModalError, setGroupModalError] = useState(null);
   // Delete-group confirmation state
@@ -560,6 +565,23 @@ const BoardDetailPage = () => {
   // server's answer rather than this flag.
   const canViewVault = canOnBoard('vault.view');
 
+  /**
+   * The board Chat tab: board TYPE and TIER, with no capability of its own.
+   *
+   * No third condition on purpose. Whether this person may read a given room,
+   * post in it, or run the setup picker is answered per channel by the server —
+   * `GET /api/chat/boards/:id/channels` returns only what they may see and says
+   * whether they may manage it. Adding a client-side capability guess here
+   * would be a second, drifting implementation of a confidentiality boundary,
+   * which is exactly what the two-layer permission model exists to remove.
+   *
+   * The tier half mirrors `server/src/utils/clientBoard.js`'s
+   * `isAdvancedClientBoard`, and fails closed the same way: a board loaded
+   * without `portalTier`, and every non-client board, answer false.
+   */
+  const canViewBoardChat =
+    board?.boardType === 'client' && board?.portalTier === 'advanced';
+
   // Add-ons: board type AND capability, the same shape as Delivery and Goals.
   //
   // `connector.view` sits on the bottom rung of the board ladder because nothing
@@ -678,6 +700,7 @@ const BoardDetailPage = () => {
    * the property asserted against synthetic tables rather than against this one.
    */
   const gate = {
+    canViewBoardChat,
     canViewDelivery,
     canViewGoals,
     canViewScoreboard,
@@ -746,10 +769,10 @@ const BoardDetailPage = () => {
     [groupTagsById]
   );
 
-  // Client Portal boards expose a per-group shareable client link, managed only
-  // by board managers. `clientPortalGroup` holds the group whose link modal is open.
+  // A Client Portal BOARD is one client company, with one shareable link,
+  // managed only by board managers. Its groups are that client's workstreams.
   const isClientBoard = board?.boardType === 'client';
-  const [clientPortalGroup, setClientPortalGroup] = useState(null);
+  const [portalModalOpen, setPortalModalOpen] = useState(false);
 
   // If we navigated directly and the boards list is empty, fetch it so the
   // header can resolve the board metadata.
@@ -1948,8 +1971,6 @@ const BoardDetailPage = () => {
 
   const handleOpenGroupModal = () => {
     setNewGroupName('');
-    setNewGroupClientEmail('');
-    setNewGroupClientAuth('google');
     setGroupModalError(null);
     setCreatingGroup(false);
     setGroupModalOpen(true);
@@ -1967,41 +1988,20 @@ const BoardDetailPage = () => {
       setGroupModalError('Group name is required');
       return;
     }
-    // On a client board, validate the email if one was entered (it's optional —
-    // you can create the link now and share it later).
-    const clientEmail = newGroupClientEmail.trim();
-    if (isClientBoard && clientEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail)) {
-      setGroupModalError('Enter a valid client email, or leave it blank to share the link yourself.');
-      return;
-    }
     try {
       setCreatingGroup(true);
       setGroupModalError(null);
-      const payload = { name: trimmed };
-      if (isClientBoard && clientEmail) {
-        payload.clientEmail = clientEmail;
-        payload.clientAuthMethod = newGroupClientAuth;
-      }
-      const { group: created, inviteSent } = await taskService.createGroup(boardId, payload);
+      // A group on a client board is a WORKSTREAM (SEO, Ads, Web Development).
+      // The portal link and the contact roster belong to the BOARD, so creating
+      // one here is exactly what it is on any other board type.
+      const { group: created } = await taskService.createGroup(boardId, {
+        name: trimmed,
+      });
       addGroupLocal(created);
       setGroupModalOpen(false);
       setNewGroupName('');
-      setNewGroupClientEmail('');
       if (isClientBoard) {
-        // Confirm the invite (createGroup returns whether the email went out) and
-        // open the link manager so the link is right there to copy or resend.
-        if (inviteSent) {
-          toastSuccess(
-            newGroupClientAuth === 'password'
-              ? `Client group created — password set-up link sent to ${clientEmail}.`
-              : `Client group created — invitation sent to ${clientEmail}.`
-          );
-        } else if (clientEmail) {
-          toastError('Group created, but the invitation email could not be sent. Copy the link to share it manually.');
-        } else {
-          toastSuccess('Client group created — copy the link to share it.');
-        }
-        setClientPortalGroup(created);
+        toastSuccess(`Workstream “${created.name}” added — your client will see it in their portal.`);
       }
     } catch (err) {
       console.error('Failed to create group:', err);
@@ -2389,7 +2389,7 @@ const BoardDetailPage = () => {
             phones and iPad portrait. Letting it shrink is what allows the buttons
             to wrap. At desktop widths it still fits on one line, unchanged. */}
         {(canEdit || isBoardCreator || canExportActivity || canManageTrackers
-          || canConvertToTracker) && (
+          || canConvertToTracker || (isClientBoard && canManageAccess)) && (
           <div className="flex items-center gap-2 flex-wrap justify-end macan-mobile-scroll-row">
             {/* A public board needs no sharing — everyone is already in it — so
                 the button stays hidden there for everyone EXCEPT its owner, who
@@ -2402,6 +2402,18 @@ const BoardDetailPage = () => {
                 onClick={() => setAccessModalOpen(true)}
               >
                 Share
+              </Button>
+            )}
+            {/* A client board IS one client, so its portal link is a
+                board-level thing. This used to live on each group's row, back
+                when a group was the client. */}
+            {isClientBoard && canManageAccess && (
+              <Button
+                variant="secondary"
+                icon={Link2}
+                onClick={() => setPortalModalOpen(true)}
+              >
+                Client portal
               </Button>
             )}
             {canOnBoard('automation.view') && (
@@ -2569,6 +2581,15 @@ const BoardDetailPage = () => {
             // so going there is a normal navigation and stays pasteable.
             onGoToMonth={setMonth}
           />
+        </ErrorBoundary>
+      )}
+
+      {view === 'chat' && (
+        <ErrorBoundary label="Chat" resetKey={view}>
+          {/* Its own component state rather than `chatStore`: the store exists
+              because the unread badge and live delivery are needed on every
+              page, and a tab you have to navigate to needs neither. */}
+          <BoardChatTab boardId={boardId} />
         </ErrorBoundary>
       )}
 
@@ -2898,11 +2919,6 @@ const BoardDetailPage = () => {
                           }
                           onDeleteGroup={canEdit ? () => handleDeleteGroup(group) : undefined}
                           onOpenNotes={() => handleOpenNotes(group)}
-                          onOpenClientPortal={
-                            isClientBoard && canManageAccess
-                              ? () => setClientPortalGroup(group)
-                              : undefined
-                          }
                           tags={resolveGroupTags(group)}
                           onOpenTags={
                             canTagGroups
@@ -3307,7 +3323,7 @@ const BoardDetailPage = () => {
               {creatingGroup
                 ? 'Creating…'
                 : isClientBoard
-                ? 'Create & invite'
+                ? 'Add workstream'
                 : 'Create Group'}
             </Button>
           </>
@@ -3315,38 +3331,22 @@ const BoardDetailPage = () => {
       >
         <form onSubmit={handleSubmitNewGroup} className="flex flex-col gap-3">
           <Input
-            label={isClientBoard ? 'Client / group name' : 'Group Name'}
+            label={isClientBoard ? 'Workstream name' : 'Group Name'}
             required
-            placeholder={isClientBoard ? 'e.g. Acme Corp' : 'e.g. To Do'}
+            placeholder={isClientBoard ? 'e.g. SEO, Ads, Web Development' : 'e.g. To Do'}
             value={newGroupName}
             onChange={(e) => setNewGroupName(e.target.value)}
             autoFocus
           />
           {isClientBoard && (
-            <>
-              <Input
-                label="Client email (we'll send the invitation)"
-                type="email"
-                placeholder="client@company.com"
-                value={newGroupClientEmail}
-                onChange={(e) => setNewGroupClientEmail(e.target.value)}
-              />
-              {/* Only asked once there's someone to ask about. */}
-              {newGroupClientEmail.trim() && (
-                <ClientSignInMethodField
-                  value={newGroupClientAuth}
-                  onChange={setNewGroupClientAuth}
-                  disabled={creatingGroup}
-                />
-              )}
-              <p
-                className="font-body text-xs"
-                style={{ color: 'var(--color-text-muted)', marginTop: -4 }}
-              >
-                A private portal link is created automatically. Leave the email
-                blank to share the link yourself instead.
-              </p>
-            </>
+            <p
+              className="font-body text-xs"
+              style={{ color: 'var(--color-text-muted)', marginTop: -4 }}
+            >
+              A workstream is one of the services you deliver for this client.
+              They see all of them in their portal, and can raise a request
+              against any one. The portal link is managed from “Client portal”.
+            </p>
           )}
           {groupModalError && (
             <p
@@ -3571,11 +3571,11 @@ const BoardDetailPage = () => {
       )}
 
       {/* Client Portal link management (client boards, managers only) */}
-      {clientPortalGroup && (
+      {portalModalOpen && (
         <ClientPortalModal
-          groupId={clientPortalGroup._id}
-          groupName={clientPortalGroup.name}
-          onClose={() => setClientPortalGroup(null)}
+          boardId={boardId}
+          boardName={board?.name || ''}
+          onClose={() => setPortalModalOpen(false)}
         />
       )}
     </PageWrapper>

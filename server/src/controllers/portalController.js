@@ -18,7 +18,7 @@ const { createNotificationsForUsers } = require('../services/notificationService
 const { logActivity } = require('../services/activityService');
 const { sendPortalReplyEmail } = require('../services/emailService');
 const {
-  sendGroupInvite,
+  sendInviteEmail,
   inviteContact,
   issueSetupToken,
 } = require('../services/portalInviteService');
@@ -27,6 +27,9 @@ const {
   isClientVisibleAttachment,
 } = require('../utils/portalAttachments');
 const { portalTaskFilter, isTeamAuthoredIssue } = require('../utils/portalVisibility');
+const { isClientBoard } = require('../utils/clientBoard');
+const { checkUpgrade, describeEffects } = require('../utils/clientTierUpgrade');
+const portalStream = require('../services/portalStream');
 
 const CLIENT_URL = () => process.env.CLIENT_URL || 'http://localhost:5173';
 const PORTAL_JWT_TTL = '7d';
@@ -44,37 +47,45 @@ const PASSWORD_MAX = 200;
 const MAX_FAILED_LOGINS = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
 
-const clientLabel = (group) =>
-  (group.portalClientName && group.portalClientName.trim()) || group.name;
+const clientLabel = (board) =>
+  (board.portalClientName && board.portalClientName.trim()) || board.name;
 
 /**
- * Resolve a public portal token to its live group + board, or null.
+ * Resolve a public portal token to its live client board, or null.
  *
- * Every public endpoint needs the same three facts — the group exists, its link
- * is enabled, and it really is on a client board — so they all go through here.
+ * Every public endpoint needs the same three facts — the board exists, its link
+ * is enabled, and it really is a client board — so they all go through here.
  * A disabled link and a nonexistent one are indistinguishable to the caller by
  * design.
+ *
+ * `+portalToken` because the field is `select: false`: callers mint session
+ * JWTs from it (the `ptk` claim), which is the whole reason to load it.
  */
-const loadPortalGroup = async (portalToken) => {
+const loadPortalBoard = async (portalToken) => {
   if (!portalToken) return null;
-  const group = await TaskGroup.findOne({ portalToken, portalEnabled: true });
-  if (!group) return null;
-  const board = await Board.findById(group.board).select('boardType organisation');
-  if (!board || board.boardType !== 'client') return null;
-  return { group, board };
+  const board = await Board.findOne({ portalToken, portalEnabled: true }).select(
+    '+portalToken name portalClientName portalTier boardType organisation statuses portalCategories'
+  );
+  if (!board || !isClientBoard(board)) return null;
+  return { board };
 };
 
-/** Mint the scoped portal session JWT for a signed-in client contact. */
-const signPortalToken = (contact, group) =>
+/**
+ * Mint the scoped portal session JWT for a signed-in client contact.
+ *
+ * No `groupId` claim: the portal is board-scoped, a contact sees every
+ * workstream, and there is nothing left for a group id to narrow. Tokens minted
+ * before the move still carry one and stay valid — `verifyPortalToken` ignores it.
+ */
+const signPortalToken = (contact, board) =>
   jwt.sign(
     {
       scope: 'portal',
       contactId: String(contact._id),
-      groupId: String(group._id),
-      boardId: String(group.board),
+      boardId: String(board._id),
       orgId: contact.organisation ? String(contact.organisation) : null,
       email: contact.email,
-      ptk: group.portalToken,
+      ptk: board.portalToken,
     },
     process.env.JWT_SECRET,
     { expiresIn: PORTAL_JWT_TTL }
@@ -140,11 +151,21 @@ const earliestAllowedDueDate = () => {
 const issueRef = (task) =>
   task.portalRef ? `REQ-${task.portalRef}` : `REQ-${String(task._id).slice(-5).toUpperCase()}`;
 
-const serializeIssue = (task, board) => {
+/**
+ * @param {Object} task
+ * @param {Object} board
+ * @param {Map<string, {id, name}>} [workstreams] — group id → workstream, so a
+ *   card can say which service line it belongs to. A task whose group was
+ *   deleted still renders; it just has no workstream.
+ */
+const serializeIssue = (task, board, workstreams = null) => {
   const { state, label, color } = classifyIssue(board, task.status);
   return {
     id: String(task._id),
     ref: issueRef(task),
+    // Which of this client's workstreams (SEO, Ads, Web Development) the
+    // request belongs to. The portal groups and filters its list by this.
+    workstream: (workstreams && workstreams.get(String(task.group))) || null,
     // Who put this on the client's list. A team-shared item is the team asking
     // something OF the client, which is the opposite of a support ticket — the
     // portal has to say so or the client reads their own to-do list as a log of
@@ -195,14 +216,14 @@ const cleanAttachments = (attachments) =>
  */
 const getPortalMeta = async (req, res) => {
   try {
-    const ctx = await loadPortalGroup(req.params.portalToken);
+    const ctx = await loadPortalBoard(req.params.portalToken);
     if (!ctx) return res.status(404).json({ error: 'Portal not found' });
 
     const org = await Organisation.findById(ctx.board.organisation).select('name');
 
     return res.json({
       orgName: org?.name || '',
-      clientName: clientLabel(ctx.group),
+      clientName: clientLabel(ctx.board),
     });
   } catch (err) {
     console.error('getPortalMeta error:', err);
@@ -214,8 +235,8 @@ const getPortalMeta = async (req, res) => {
  * GET /api/portal/auth/google/callback
  * The client returns here after "Accept invitation" → Google sign-in. Passport
  * (`google-portal`) has verified the Google account and attached the raw
- * identity to `req.user`; the group being joined rode along in `req.query.state`
- * as its portalToken. We upsert the ClientContact for (group, email), mint the
+ * identity to `req.user`; the board being joined rode along in `req.query.state`
+ * as its portalToken. We upsert the ClientContact for (board, email), mint the
  * scoped portal JWT, and hand it to the frontend via a redirect. NEVER creates
  * an app User. On any failure we bounce to the portal verify page with an error.
  */
@@ -226,16 +247,15 @@ const portalGoogleCallback = async (req, res) => {
     const portalToken = (req.query?.state || '').toString();
     if (!profile?.email || !portalToken) return fail();
 
-    const ctx = await loadPortalGroup(portalToken);
+    const ctx = await loadPortalBoard(portalToken);
     if (!ctx) return fail();
-    const { group, board } = ctx;
+    const { board } = ctx;
 
     const email = String(profile.email).toLowerCase();
     const contact = await ClientContact.findOneAndUpdate(
-      { group: group._id, email },
+      { board: board._id, email },
       {
         $setOnInsert: {
-          group: group._id,
           board: board._id,
           organisation: board.organisation,
           email,
@@ -254,7 +274,7 @@ const portalGoogleCallback = async (req, res) => {
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
-    const token = signPortalToken(contact, group);
+    const token = signPortalToken(contact, board);
     return res.redirect(
       `${CLIENT_URL()}/portal/verify?ptoken=${encodeURIComponent(token)}`
     );
@@ -275,10 +295,10 @@ const portalGoogleCallback = async (req, res) => {
  * Find the contact a one-time token belongs to, or null if it is unknown,
  * expired, or already spent (consuming clears the hash).
  */
-const loadContactBySetupToken = async (group, rawToken) => {
+const loadContactBySetupToken = async (board, rawToken) => {
   if (!rawToken) return null;
   const contact = await ClientContact.findOne({
-    group: group._id,
+    board: board._id,
     setupTokenHash: hashSetupToken(rawToken),
   }).select('+setupTokenHash +passwordHash');
   if (!contact) return null;
@@ -312,7 +332,7 @@ const portalPasswordLogin = async (req, res) => {
   // discover which addresses have portal access.
   const DENIED = 'Incorrect email or password.';
   try {
-    const ctx = await loadPortalGroup(req.params.portalToken);
+    const ctx = await loadPortalBoard(req.params.portalToken);
     if (!ctx) return res.status(404).json({ error: 'Portal not found' });
 
     const email = (req.body?.email || '').toString().trim().toLowerCase();
@@ -321,7 +341,7 @@ const portalPasswordLogin = async (req, res) => {
       return res.status(400).json({ error: 'Enter your email address and password.' });
     }
 
-    const contact = await ClientContact.findOne({ group: ctx.group._id, email }).select(
+    const contact = await ClientContact.findOne({ board: ctx.board._id, email }).select(
       '+passwordHash'
     );
 
@@ -367,7 +387,7 @@ const portalPasswordLogin = async (req, res) => {
     contact.lastSeenAt = new Date();
     await contact.save();
 
-    return res.json({ token: signPortalToken(contact, ctx.group) });
+    return res.json({ token: signPortalToken(contact, ctx.board) });
   } catch (err) {
     console.error('portalPasswordLogin error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -387,7 +407,7 @@ const portalRequestPasswordLink = async (req, res) => {
     message: "If that email has portal access, we've sent it a link. Check your inbox.",
   };
   try {
-    const ctx = await loadPortalGroup(req.params.portalToken);
+    const ctx = await loadPortalBoard(req.params.portalToken);
     if (!ctx) return res.status(404).json({ error: 'Portal not found' });
 
     const email = (req.body?.email || '').toString().trim().toLowerCase();
@@ -395,15 +415,14 @@ const portalRequestPasswordLink = async (req, res) => {
       return res.status(400).json({ error: 'Please enter a valid email address.' });
     }
 
-    const contact = await ClientContact.findOne({ group: ctx.group._id, email }).select(
+    const contact = await ClientContact.findOne({ board: ctx.board._id, email }).select(
       '+passwordHash'
     );
     if (!contact || contact.authMethod !== 'password') return res.json(QUIET);
 
     const purpose = contact.passwordHash ? 'reset' : 'setup';
     const raw = await issueSetupToken(contact, purpose);
-    await sendGroupInvite({
-      group: ctx.group,
+    await sendInviteEmail({
       board: ctx.board,
       email,
       authMethod: 'password',
@@ -427,10 +446,10 @@ const EXPIRED_TOKEN = 'This link has expired or has already been used. Ask for a
  */
 const portalCheckSetupToken = async (req, res) => {
   try {
-    const ctx = await loadPortalGroup(req.params.portalToken);
+    const ctx = await loadPortalBoard(req.params.portalToken);
     if (!ctx) return res.status(404).json({ error: 'Portal not found' });
 
-    const contact = await loadContactBySetupToken(ctx.group, req.params.token);
+    const contact = await loadContactBySetupToken(ctx.board, req.params.token);
     if (!contact) return res.status(400).json({ error: EXPIRED_TOKEN });
 
     const org = await Organisation.findById(ctx.board.organisation).select('name');
@@ -438,7 +457,7 @@ const portalCheckSetupToken = async (req, res) => {
       email: contact.email,
       purpose: contact.setupTokenPurpose || 'setup',
       orgName: org?.name || '',
-      clientName: clientLabel(ctx.group),
+      clientName: clientLabel(ctx.board),
     });
   } catch (err) {
     console.error('portalCheckSetupToken error:', err);
@@ -454,10 +473,10 @@ const portalCheckSetupToken = async (req, res) => {
  */
 const portalCompletePasswordSetup = async (req, res) => {
   try {
-    const ctx = await loadPortalGroup(req.params.portalToken);
+    const ctx = await loadPortalBoard(req.params.portalToken);
     if (!ctx) return res.status(404).json({ error: 'Portal not found' });
 
-    const contact = await loadContactBySetupToken(ctx.group, req.params.token);
+    const contact = await loadContactBySetupToken(ctx.board, req.params.token);
     if (!contact) return res.status(400).json({ error: EXPIRED_TOKEN });
 
     const password = (req.body?.password || '').toString();
@@ -481,7 +500,7 @@ const portalCompletePasswordSetup = async (req, res) => {
 
     await contact.save();
 
-    return res.json({ token: signPortalToken(contact, ctx.group) });
+    return res.json({ token: signPortalToken(contact, ctx.board) });
   } catch (err) {
     console.error('portalCompletePasswordSetup error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -498,17 +517,29 @@ const portalCompletePasswordSetup = async (req, res) => {
  */
 const getMyIssues = async (req, res) => {
   try {
-    const { contactId, groupId, boardId } = req.portal;
+    const { contactId, boardId } = req.portal;
     const board = await Board.findById(boardId)
-      .select('statuses portalCategories organisation portalAnnouncement portalFaqs');
+      .select('statuses portalCategories organisation portalAnnouncement portalFaqs name portalClientName');
     if (!board) return res.status(404).json({ error: 'Board not found' });
 
-    const tasks = await Task.find(portalTaskFilter({ groupId, contactId }))
+    // Board-scoped: this board IS the client, and its groups are that client's
+    // workstreams — they see all of them. Served by Task's existing
+    // { board, createdAt } index, which the old group filter had none of.
+    const tasks = await Task.find(portalTaskFilter({ boardId, contactId }))
       .sort({ createdAt: -1 });
 
     const org = await Organisation.findById(board.organisation).select('name');
 
-    const company = clientLabel(req.portal.group);
+    // The client's workstreams, in the team's own group order — this drives
+    // both the list's grouping and the new-request form's picker.
+    const groups = await TaskGroup.find({ board: boardId })
+      .select('name order')
+      .sort({ order: 1, createdAt: 1 })
+      .lean();
+    const workstreams = groups.map((g) => ({ id: String(g._id), name: g.name }));
+    const workstreamById = new Map(workstreams.map((w) => [w.id, w]));
+
+    const company = req.portal.clientName;
     const contactName = req.portal.contact?.name || '';
 
     // Per-issue last activity — the newest thread message and who sent it. Lets
@@ -529,7 +560,7 @@ const getMyIssues = async (req, res) => {
     }
 
     const issues = tasks.map((t) => {
-      const base = serializeIssue(t, board);
+      const base = serializeIssue(t, board, workstreamById);
       const last = lastByTask.get(base.id);
       return {
         ...base,
@@ -548,6 +579,12 @@ const getMyIssues = async (req, res) => {
         contactName, // the client's Google display name
         clientName: company, // kept for backward compat
         categories: Array.isArray(board.portalCategories) ? board.portalCategories : [],
+        // The client's service lines. Empty means the board has no groups yet,
+        // and the portal must say so rather than offer an unusable form.
+        workstreams,
+        // Whether this portal has chat. A courtesy for the UI only — every
+        // chat route enforces the tier itself. See utils/clientBoard.js.
+        tier: req.portal.tier,
         announcement: board.portalAnnouncement || '',
         faqs: (Array.isArray(board.portalFaqs) ? board.portalFaqs : [])
           .filter((f) => f && (f.q || f.a))
@@ -561,18 +598,52 @@ const getMyIssues = async (req, res) => {
 };
 
 /**
- * POST /api/portal/me/issues   Body: { name, note?, category? }
- * Create a client issue as a real board Task. Board/group come from the JWT,
- * never from input. Does NOT fire item.created automations (internal workflow).
+ * POST /api/portal/me/issues
+ *   Body: { name, workstream (group id), note?, category?, type?, priority?, dueDate? }
+ *
+ * Create a client issue as a real board Task. The BOARD comes from the JWT and
+ * never from input. The WORKSTREAM does come from input — the client picks
+ * which service line their request is for — so it is validated against that
+ * board below. That validation is the whole security property here: a group id
+ * accepted on trust would let a client file a task onto any board in any
+ * workspace.
+ *
+ * Does NOT fire item.created automations (internal workflow).
  */
 const createMyIssue = async (req, res) => {
   try {
-    const { contactId, groupId, boardId } = req.portal;
+    const { contactId, boardId } = req.portal;
     const name = (req.body?.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Please describe your issue.' });
 
     const board = await Board.findById(boardId).select('statuses portalCategories organisation');
     if (!board) return res.status(404).json({ error: 'Board not found' });
+
+    // Which workstream this request belongs to. Scoped by `board: boardId` from
+    // the token — never a board id from the body.
+    const requestedGroup = (req.body?.workstream || req.body?.groupId || '').toString().trim();
+    let groupId = null;
+    if (requestedGroup) {
+      const group = await TaskGroup.findOne({ _id: requestedGroup, board: boardId }).select('_id');
+      if (!group) {
+        return res.status(400).json({ error: 'That workstream is not available.' });
+      }
+      groupId = group._id;
+    } else {
+      // A client with one workstream should not be made to choose it, and the
+      // UI hides the picker in that case — so accept the omission only when
+      // there is exactly one thing it could have meant.
+      const groups = await TaskGroup.find({ board: boardId }).select('_id').limit(2).lean();
+      if (groups.length === 1) {
+        groupId = groups[0]._id;
+      } else if (groups.length === 0) {
+        return res
+          .status(400)
+          .json({ error: 'This portal is not set up yet. Please contact your account manager.' });
+      } else {
+        return res.status(400).json({ error: 'Please choose which workstream this is for.' });
+      }
+    }
 
     // Default status _id (the board's isDefault status), same rule as createTask.
     let status = 'not_started';
@@ -664,7 +735,7 @@ const createMyIssue = async (req, res) => {
         await createNotificationsForUsers({
           userIds: memberIds,
           type: 'clientIssueCreated',
-          message: `New client issue from ${clientLabel(req.portal.group)}: "${name}"`,
+          message: `New client issue from ${req.portal.clientName}: "${name}"`,
           taskId: task._id,
           orgId: board.organisation,
           actorId: null,
@@ -886,7 +957,7 @@ const postIssueThreadMessage = async (req, res) => {
         await createNotificationsForUsers({
           userIds: memberIds,
           type: 'clientReplied',
-          message: `${clientLabel(req.portal.group)} replied on "${task.name}"`,
+          message: `${req.portal.clientName} replied on "${task.name}"`,
           taskId: task._id,
           orgId: req.portal.orgId,
           actorId: null,
@@ -972,7 +1043,7 @@ const reopenIssue = async (req, res) => {
     await notifyTeam({
       orgId: req.portal.orgId,
       type: 'clientReplied',
-      message: `${clientLabel(req.portal.group)} reopened "${task.name}"`,
+      message: `${req.portal.clientName} reopened "${task.name}"`,
       taskId: task._id,
       boardId: task.board,
       tab: 'client',
@@ -1005,7 +1076,7 @@ const rateIssue = async (req, res) => {
     await notifyTeam({
       orgId: req.portal.orgId,
       type: 'clientReplied',
-      message: `${clientLabel(req.portal.group)} rated "${task.name}" ${rating}/5`,
+      message: `${req.portal.clientName} rated "${task.name}" ${rating}/5`,
       taskId: task._id,
       boardId: task.board,
     });
@@ -1023,31 +1094,36 @@ const rateIssue = async (req, res) => {
 // ============================================================================
 
 /**
- * Shared loader for the admin endpoints: verify the group is on a client board
- * the caller may MANAGE. Returns { group, board, org } or an { status, error }.
+ * Shared loader for the admin endpoints: verify this is a client board the
+ * caller may MANAGE. Returns { board, org } or an { status, error }.
+ *
+ * Loads `+portalToken` because every caller either shows the link or mints one.
+ * That projection is REQUIRED, not an optimisation: without it
+ * `if (!board.portalToken)` is true on a board that HAS one, and the lazy-mint
+ * branches below would rotate a live client link on every save.
  */
-const loadManageContext = async (groupId, userId) => {
-  const group = await TaskGroup.findById(groupId);
-  if (!group) return { status: 404, error: 'Group not found' };
-  const ctx = await loadBoardContext(group.board, userId);
+const loadManageContext = async (boardId, userId) => {
+  const ctx = await loadBoardContext(boardId, userId, { select: '+portalToken' });
   if (ctx.error) return { status: ctx.status, error: ctx.error };
-  if (ctx.board.boardType !== 'client') {
+  if (!isClientBoard(ctx.board)) {
     return { status: 400, error: 'This board is not a client portal board' };
   }
   if (!ctx.access.canManageAccess) {
     return { status: 403, error: 'Only board managers can manage client links' };
   }
-  return { group, board: ctx.board, org: ctx.org };
+  return { board: ctx.board, org: ctx.org };
 };
 
-const adminPortalPayload = (group, board = null) => ({
-  groupId: String(group._id),
-  portalEnabled: !!group.portalEnabled,
-  clientName: group.portalClientName || '',
-  link: group.portalToken ? `${CLIENT_URL()}/portal/${group.portalToken}` : null,
-  // Board-level portal content (shared by every group on the client board).
-  announcement: board?.portalAnnouncement || '',
-  faqs: (Array.isArray(board?.portalFaqs) ? board.portalFaqs : []).map((f) => ({
+const adminPortalPayload = (board) => ({
+  boardId: String(board._id),
+  portalEnabled: !!board.portalEnabled,
+  clientName: board.portalClientName || '',
+  link: board.portalToken ? `${CLIENT_URL()}/portal/${board.portalToken}` : null,
+  // 'basic' | 'advanced'. One-way — see utils/clientBoard.js and Board's hooks.
+  tier: board.portalTier || 'basic',
+  tierUpgradedAt: board.portalTierUpgradedAt || null,
+  announcement: board.portalAnnouncement || '',
+  faqs: (Array.isArray(board.portalFaqs) ? board.portalFaqs : []).map((f) => ({
     q: f.q || '',
     a: f.a || '',
   })),
@@ -1061,13 +1137,13 @@ const cleanFaqs = (faqs) =>
     .slice(0, 30);
 
 /**
- * GET /api/portal/groups/:groupId/config  — current portal state for the modal.
+ * GET /api/portal/boards/:boardId/config  — current portal state for the modal.
  */
 const getPortalConfig = async (req, res) => {
   try {
-    const ctx = await loadManageContext(req.params.groupId, req.user.userId);
+    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    return res.json({ portal: adminPortalPayload(ctx.group, ctx.board) });
+    return res.json({ portal: adminPortalPayload(ctx.board) });
   } catch (err) {
     console.error('getPortalConfig error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -1075,49 +1151,70 @@ const getPortalConfig = async (req, res) => {
 };
 
 /**
- * PUT /api/portal/groups/:groupId/config
+ * PUT /api/portal/boards/:boardId/config
  * Body: { enabled?, clientName?, regenerateLink?, announcement?, faqs? }
- * Set the client label, enable/disable, rotate the link, or edit the board's
- * portal announcement + FAQ. The link itself is minted at group creation; this
- * only mints one lazily for legacy groups.
+ * Set the client label, enable/disable, rotate the link, or edit the portal
+ * announcement + FAQ. The link is minted when the client board is created; this
+ * only mints one lazily for a board that somehow has none.
  */
 const savePortalConfig = async (req, res) => {
   try {
-    const ctx = await loadManageContext(req.params.groupId, req.user.userId);
+    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    const { group, board } = ctx;
+    const { board } = ctx;
     const { enabled, clientName, regenerateLink, announcement, faqs } = req.body || {};
 
     if (typeof clientName === 'string') {
-      group.portalClientName = clientName.trim();
+      board.portalClientName = clientName.trim();
     }
 
-    // Mint a token the first time (legacy groups from before auto-mint), or on
-    // explicit rotate. Rotating invalidates the old link and, via portalAuth's
-    // ptk check, kills every live client session on this group.
-    const needsToken = !group.portalToken;
+    // Mint a token the first time, or on explicit rotate. Rotating invalidates
+    // the old link and, via portalAuth's ptk check, kills every live client
+    // session on this board.
+    //
+    // `loadManageContext` selected `+portalToken`, which is what makes
+    // `!board.portalToken` mean what it says. Loaded without it this branch
+    // would fire on EVERY save and silently rotate a working client link.
+    const needsToken = !board.portalToken;
+    const rotated = Boolean(regenerateLink) && !needsToken;
     if (regenerateLink || needsToken) {
-      group.portalToken = generatePortalToken();
+      board.portalToken = generatePortalToken();
     }
 
+    const wasEnabled = board.portalEnabled;
     if (typeof enabled === 'boolean') {
-      group.portalEnabled = enabled;
+      board.portalEnabled = enabled;
     }
+    const disabled = wasEnabled && board.portalEnabled === false;
 
-    // Board-level portal content (announcement banner + FAQ / knowledge base).
-    let boardDirty = false;
     if (typeof announcement === 'string') {
       board.portalAnnouncement = announcement.trim().slice(0, 1000);
-      boardDirty = true;
     }
     if (Array.isArray(faqs)) {
       board.portalFaqs = cleanFaqs(faqs);
-      boardDirty = true;
     }
 
-    await group.save();
-    if (boardDirty) await board.save();
-    return res.json({ portal: adminPortalPayload(group, board) });
+    await board.save();
+
+    // Close any live SSE stream on this board when the link is rotated or the
+    // portal switched off.
+    //
+    // The `ptk` check in portalAuth already kills a client's session on their
+    // next REQUEST — but a stream makes no requests. It is one socket opened
+    // once, and without this a client whose access was just revoked keeps
+    // receiving every message posted in their rooms for as long as they leave
+    // the tab open. "Disable" has to mean now, not next time they click.
+    if (rotated || disabled) {
+      try {
+        portalStream.dropBoard(board._id);
+      } catch (streamErr) {
+        // Best-effort: the credential change has already landed, which is the
+        // part that matters. A socket we failed to close still dies on its own
+        // heartbeat or on the client's next navigation.
+      }
+    }
+
+    return res.json({ portal: adminPortalPayload(board) });
   } catch (err) {
     console.error('savePortalConfig error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -1136,15 +1233,15 @@ const serializeContact = (contact) => ({
   lastSeenAt: contact.lastSeenAt || null,
 });
 
-const listGroupContacts = (groupId) =>
-  ClientContact.find({ group: groupId })
+const listBoardContacts = (boardId) =>
+  ClientContact.find({ board: boardId })
     .select('+passwordHash')
     .sort({ createdAt: 1 })
     .then((rows) => rows.map(serializeContact));
 
 /**
- * POST /api/portal/groups/:groupId/invite   Body: { email, authMethod? }
- * Email (or re-email) the invitation to a client. Ensures the group has a live
+ * POST /api/portal/boards/:boardId/invite   Body: { email, authMethod? }
+ * Email (or re-email) the invitation to a client. Ensures the board has a live
  * link first, so this doubles as "turn the portal on and invite".
  *
  * `authMethod` is how this client signs in: 'google' (default) sends the shared
@@ -1153,9 +1250,9 @@ const listGroupContacts = (groupId) =>
  */
 const sendPortalInvite = async (req, res) => {
   try {
-    const ctx = await loadManageContext(req.params.groupId, req.user.userId);
+    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    const { group, board } = ctx;
+    const { board } = ctx;
 
     const email = (req.body?.email || '').trim().toLowerCase();
     if (!EMAIL_RE.test(email)) {
@@ -1163,11 +1260,11 @@ const sendPortalInvite = async (req, res) => {
     }
     const authMethod = req.body?.authMethod === 'password' ? 'password' : 'google';
 
-    if (!group.portalToken) group.portalToken = generatePortalToken();
-    if (!group.portalEnabled) group.portalEnabled = true;
-    await group.save();
+    if (!board.portalToken) board.portalToken = generatePortalToken();
+    if (!board.portalEnabled) board.portalEnabled = true;
+    await board.save();
 
-    const { ok } = await inviteContact({ group, board, email, authMethod });
+    const { ok } = await inviteContact({ board, email, authMethod });
     if (!ok) {
       return res
         .status(502)
@@ -1178,8 +1275,8 @@ const sendPortalInvite = async (req, res) => {
         authMethod === 'password'
           ? `Password set-up link sent to ${email}.`
           : `Invitation sent to ${email}.`,
-      portal: adminPortalPayload(group, board),
-      contacts: await listGroupContacts(group._id),
+      portal: adminPortalPayload(board),
+      contacts: await listBoardContacts(board._id),
     });
   } catch (err) {
     console.error('sendPortalInvite error:', err);
@@ -1188,14 +1285,14 @@ const sendPortalInvite = async (req, res) => {
 };
 
 /**
- * GET /api/portal/groups/:groupId/contacts
- * Who has been invited to this group's portal and how far they've got.
+ * GET /api/portal/boards/:boardId/contacts
+ * Who has been invited to this client's portal and how far they've got.
  */
 const listPortalContacts = async (req, res) => {
   try {
-    const ctx = await loadManageContext(req.params.groupId, req.user.userId);
+    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    return res.json({ contacts: await listGroupContacts(ctx.group._id) });
+    return res.json({ contacts: await listBoardContacts(ctx.board._id) });
   } catch (err) {
     console.error('listPortalContacts error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -1203,30 +1300,29 @@ const listPortalContacts = async (req, res) => {
 };
 
 /**
- * POST /api/portal/groups/:groupId/contacts/:contactId/resend
+ * POST /api/portal/boards/:boardId/contacts/:contactId/resend
  * Re-send whatever this contact needs: the Google invite, a first set-password
  * link, or a reset link if they already have a password. One button, three
  * outcomes, so the team doesn't have to know which case they're in.
  */
 const resendPortalInvite = async (req, res) => {
   try {
-    const ctx = await loadManageContext(req.params.groupId, req.user.userId);
+    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    const { group, board } = ctx;
+    const { board } = ctx;
 
     const existing = await ClientContact.findOne({
       _id: req.params.contactId,
-      group: group._id,
+      board: board._id,
     }).select('+passwordHash');
     if (!existing) return res.status(404).json({ error: 'Contact not found' });
 
-    if (!group.portalToken) group.portalToken = generatePortalToken();
-    if (!group.portalEnabled) group.portalEnabled = true;
-    await group.save();
+    if (!board.portalToken) board.portalToken = generatePortalToken();
+    if (!board.portalEnabled) board.portalEnabled = true;
+    await board.save();
 
     const wasSet = !!existing.passwordHash;
     const { ok } = await inviteContact({
-      group,
       board,
       email: existing.email,
       authMethod: existing.authMethod,
@@ -1245,10 +1341,116 @@ const resendPortalInvite = async (req, res) => {
         : 'Invitation re-sent to';
     return res.json({
       message: `${what} ${existing.email}.`,
-      contacts: await listGroupContacts(group._id),
+      contacts: await listBoardContacts(board._id),
     });
   } catch (err) {
     console.error('resendPortalInvite error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/portal/boards/:boardId/tier
+ * What upgrading would do, for the confirmation dialog. Runs the SAME pure
+ * checker the write path runs, which is the point: the dialog cannot promise
+ * something the endpoint would refuse.
+ */
+const getPortalTierPreview = async (req, res) => {
+  try {
+    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+
+    const [groupCount, contactCount] = await Promise.all([
+      TaskGroup.countDocuments({ board: ctx.board._id }),
+      ClientContact.countDocuments({ board: ctx.board._id }),
+    ]);
+    const check = checkUpgrade({ board: ctx.board, groupCount, contactCount });
+
+    return res.json({
+      tier: ctx.board.portalTier || 'basic',
+      ...check,
+      effects: describeEffects(),
+      groupCount,
+      contactCount,
+      // Typing this back is what confirms the upgrade — the same bar a
+      // destructive action gets, because the irreversibility is the same.
+      confirmPhrase: (ctx.board.portalClientName || '').trim() || ctx.board.name,
+    });
+  } catch (err) {
+    console.error('getPortalTierPreview error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * POST /api/portal/boards/:boardId/tier/upgrade
+ *
+ * Move a client board from `basic` to `advanced`. There is deliberately NO
+ * endpoint that sets the tier to an arbitrary value: upgrading is an ACTION,
+ * not a settable property, so a downgrade is not expressible on the wire.
+ *
+ * The write is a conditional `updateOne` matching `portalTier: 'basic'`, which
+ * makes it atomic and idempotent — two racing confirmations produce one write,
+ * and the second reports `alreadyUpgraded` rather than failing.
+ */
+const upgradePortalTier = async (req, res) => {
+  try {
+    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const { board } = ctx;
+
+    const [groupCount, contactCount] = await Promise.all([
+      TaskGroup.countDocuments({ board: board._id }),
+      ClientContact.countDocuments({ board: board._id }),
+    ]);
+    const check = checkUpgrade({ board, groupCount, contactCount });
+    if (!check.ok) {
+      return res.status(400).json({ error: check.refusals[0], refusals: check.refusals });
+    }
+    if (check.noop) {
+      return res.json({
+        tier: 'advanced',
+        alreadyUpgraded: true,
+        portal: adminPortalPayload(board),
+      });
+    }
+
+    // Confirmation: the caller must echo the client's name back. Checked here
+    // and not only in the dialog, because "irreversible" has to mean it on the
+    // wire too.
+    const typed = (req.body?.confirm || '').toString().trim().toLowerCase();
+    const expected = ((board.portalClientName || '').trim() || board.name)
+      .trim()
+      .toLowerCase();
+    if (typed !== expected) {
+      return res.status(400).json({
+        error: 'Type the client name exactly to confirm this permanent change.',
+      });
+    }
+
+    const result = await Board.updateOne(
+      { _id: board._id, boardType: 'client', portalTier: 'basic' },
+      {
+        $set: {
+          portalTier: 'advanced',
+          portalTierUpgradedAt: new Date(),
+          portalTierUpgradedBy: req.user.userId,
+        },
+      }
+    );
+    if (!result.matchedCount) {
+      // Someone upgraded it between our read and our write. Not an error.
+      return res.json({ tier: 'advanced', alreadyUpgraded: true });
+    }
+
+    const fresh = await Board.findById(board._id).select('+portalToken');
+    return res.json({
+      tier: 'advanced',
+      alreadyUpgraded: false,
+      portal: adminPortalPayload(fresh),
+    });
+  } catch (err) {
+    console.error('upgradePortalTier error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -1275,6 +1477,8 @@ module.exports = {
   sendPortalInvite,
   listPortalContacts,
   resendPortalInvite,
+  getPortalTierPreview,
+  upgradePortalTier,
   // reused by updateController for the "team replied on a client task" email hook
   sendPortalReplyEmailForTask: async (task, snippet = '') => {
     try {

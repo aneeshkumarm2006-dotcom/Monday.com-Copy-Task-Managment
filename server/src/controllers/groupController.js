@@ -5,7 +5,6 @@ const Update = require('../models/Update');
 const Note = require('../models/Note');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
-const ClientContact = require('../models/ClientContact');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
 const Goal = require('../models/Goal');
@@ -13,20 +12,17 @@ const AdsBudget = require('../models/AdsBudget');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
 const ConnectorProject = require('../models/ConnectorProject');
 const eventBus = require('../services/eventBus');
+const { deleteSurfacesForGroup } = require('../services/workstreamSurfaces');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { requireFeature } = require('../utils/userFeatures');
 const { setOwnerForMonth } = require('../utils/groupOwner');
 const { resolveOwnerDisplay, EMPTY_OWNER_DISPLAY } = require('../services/groupOwnerDisplay');
 const { isMonthKey, monthKeyOf, addMonths, compareMonthKeys } = require('../utils/monthKey');
-const { generatePortalToken } = require('../utils/portalCrypto');
-const { inviteContact } = require('../services/portalInviteService');
 const {
   logGroupCreated,
   logGroupRenamed,
   logGroupDeleted,
 } = require('../services/groupActivity');
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Longest a group name may be. Matches the clamp already used for board labels
 // and statuses (boardController `sanitizeName`) so every user-authored label on
@@ -192,7 +188,7 @@ const createGroup = async (req, res) => {
   try {
     const userId = req.user.userId;
     const { boardId } = req.params;
-    const { name, order, clientEmail, clientName, clientAuthMethod } = req.body;
+    const { name, order } = req.body;
 
     if (typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'Group name is required' });
@@ -219,46 +215,16 @@ const createGroup = async (req, res) => {
       resolvedOrder = await TaskGroup.countDocuments({ board: boardId });
     }
 
-    // Client Portal boards mint the shareable link AT CREATION and turn the
-    // portal on immediately — the link exists the moment the group does, so it
-    // can be shared or emailed straight away. A trimmed client email, if given,
-    // gets the invitation. Standard boards are untouched.
-    const isClientBoard = ctx.board.boardType === 'client';
-    const inviteEmail = (clientEmail || '').trim().toLowerCase();
-    const portalFields = isClientBoard
-      ? {
-          portalToken: generatePortalToken(),
-          portalEnabled: true,
-          portalClientName: (clientName || '').trim() || groupName,
-        }
-      : {};
-
+    // A group on a client board is a WORKSTREAM (SEO, Ads, Web Development),
+    // not a client. The portal link belongs to the board, is minted when the
+    // board is created, and is not this function's business — creating a group
+    // here is exactly what it is on every other board type.
     const group = await TaskGroup.create({
       name: groupName,
       board: boardId,
       order: resolvedOrder,
       createdBy: userId,
-      ...portalFields,
     });
-
-    // Send the invitation email (best-effort — never fails the create).
-    // `clientAuthMethod` says how this client signs in: 'google' (the shared
-    // link) or 'password' (register the address and mail a one-time set-password
-    // link). inviteContact writes the ClientContact row and picks the email.
-    let inviteSent = false;
-    if (isClientBoard && EMAIL_RE.test(inviteEmail)) {
-      try {
-        const { ok } = await inviteContact({
-          group,
-          board: ctx.board,
-          email: inviteEmail,
-          authMethod: clientAuthMethod === 'password' ? 'password' : 'google',
-        });
-        inviteSent = ok;
-      } catch (inviteErr) {
-        console.error('createGroup invite error:', inviteErr);
-      }
-    }
 
     // Record the creation. `createdBy` above already carries the byline, but
     // that dies with the group — this row is what still answers "who set this
@@ -294,7 +260,7 @@ const createGroup = async (req, res) => {
       org: ctx.org,
       monthKey: resolveGroupMonth(ctx.board, null),
     });
-    return res.status(201).json({ group: serialized, inviteSent });
+    return res.status(201).json({ group: serialized });
   } catch (err) {
     console.error('createGroup error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -521,9 +487,10 @@ const deleteGroup = async (req, res) => {
     }
     await Note.deleteMany({ group: id });
     await Task.deleteMany({ group: id });
-    // Client Portal cleanup: a group can be a client's portal, so drop its
-    // external contacts with it.
-    await ClientContact.deleteMany({ group: id });
+    // NOTE: deliberately NO ClientContact cleanup here any more. A contact
+    // belongs to the BOARD (one client company), not to a workstream — deleting
+    // the Ads group must not sign that client out of their portal. Contacts are
+    // cascaded in boardController.deleteBoard and services/orgCascade.js.
     // Tracker cleanup: drop this group's confirmations/waivers, and take it out
     // of any tracker that named it explicitly.
     //
@@ -578,6 +545,17 @@ const deleteGroup = async (req, res) => {
         { $set: { enabled: false } }
       );
     }
+    // Conversations. Every surface on this workstream, plus its messages and
+    // both kinds of read marker.
+    //
+    // This is not tidiness. The contact-side audience gate keys on
+    // `contact.board === channel.board`, and the BOARD outlives the group — so
+    // an orphaned `audience:'client'` room stays readable and postable by the
+    // client after the team deleted the workstream, while being invisible to
+    // the team, who have no group left to reach it through. That is the worst
+    // possible way round for a conversation to survive.
+    await deleteSurfacesForGroup(id);
+
     await TaskGroup.deleteOne({ _id: id });
 
     // Logged AFTER the group is actually gone, so a cascade that threw halfway

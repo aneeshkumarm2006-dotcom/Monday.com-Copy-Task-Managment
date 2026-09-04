@@ -281,9 +281,17 @@ const TabBar = () => {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const unreadCount = useNotificationStore((s) => s.unreadCount);
-  const chatUnread = useChatStore((s) =>
-    s.channels.reduce((sum, c) => sum + (c.unread || 0), 0)
-  );
+  // The Chat badge. This used to re-implement the sum inline, and that was a
+  // bug waiting on a feature: a client board's rooms live only on that board's
+  // Chat tab, so an inline sum counts unread messages this tab cannot reach and
+  // the badge never clears. `chatStore.totalUnread()` applies the exclusion, and
+  // is now the only place the number is worked out.
+  //
+  // Calling it inside the selector is safe because it returns a NUMBER — the
+  // `Object.is` check zustand runs settles it. The loop this shape can cause
+  // needs a selector that builds a fresh object or array each call; that is why
+  // the filtered LIST is not what comes back here.
+  const chatUnread = useChatStore((s) => s.totalUnread());
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetClosing, setSheetClosing] = useState(false);
   const closeTimer = useRef(null);

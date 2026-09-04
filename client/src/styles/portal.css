@@ -1308,3 +1308,567 @@ textarea.mcp-field {
     animation: mcp-spin 0.9s linear infinite !important;
   }
 }
+
+/* =============================================================================
+ * Client chat & mail
+ * -----------------------------------------------------------------------------
+ * The two surfaces a client can talk to the team on, in the portal's own
+ * language rather than the app's. Additive only — nothing above is restyled.
+ * ========================================================================== */
+
+/* ---- top-level Tasks | Chat | Mail switch --------------------------------- */
+.mcp-tabs {
+  margin-bottom: 18px;
+}
+.mcp-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 3px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  background: var(--p-primary);
+  box-shadow: 0 3px 8px -2px rgba(37, 99, 235, 0.55);
+}
+.mcp-seg-btn[data-on='true'] .mcp-tab-count {
+  background: var(--p-primary-press);
+}
+
+/* ---- chat shell ----------------------------------------------------------- */
+.mcp-chat {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+}
+.mcp-chat-main,
+.mcp-chat-thread {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: min(72vh, 700px);
+  background: var(--p-card);
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-r-lg);
+  box-shadow: var(--p-shadow);
+  overflow: hidden;
+}
+.mcp-chat-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.mcp-chat-thread {
+  flex: 0 0 356px;
+  max-width: 356px;
+}
+@media (max-width: 900px) {
+  .mcp-chat {
+    flex-direction: column;
+  }
+  .mcp-chat-thread {
+    flex: 1 1 auto;
+    max-width: none;
+    height: min(54vh, 440px);
+  }
+}
+
+.mcp-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex-shrink: 0;
+  padding: 13px 17px;
+  border-bottom: 1px solid var(--p-border);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+}
+.mcp-chat-head-ico {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--p-primary-soft);
+  color: var(--p-primary);
+}
+.mcp-chat-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mcp-chat-sub {
+  font-size: 12px;
+  color: var(--p-muted);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-chat-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.mcp-chat-center {
+  margin: auto;
+  text-align: center;
+  padding: 18px 12px;
+}
+.mcp-chat-empty-ico {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  margin: 0 auto 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--p-primary-soft);
+  color: var(--p-primary);
+}
+.mcp-chat-empty-text {
+  font-size: 13.5px;
+  color: var(--p-ink-2);
+  line-height: 1.5;
+  margin: 0;
+}
+.mcp-chat-older {
+  display: flex;
+  justify-content: center;
+}
+
+/* date separator */
+.mcp-chat-day {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--p-muted);
+}
+.mcp-chat-day::before,
+.mcp-chat-day::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--p-border);
+}
+
+/* time + reply affordance under a bubble */
+.mcp-msg-foot {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 3px 4px 0;
+}
+.mcp-msg-row.mine .mcp-msg-foot {
+  flex-direction: row-reverse;
+}
+.mcp-msg-foot .mcp-msg-time {
+  margin: 0;
+}
+.mcp-msg-reply {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--p-muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.14s ease;
+}
+.mcp-msg-reply:hover,
+.mcp-msg-reply:focus-visible {
+  color: var(--p-primary);
+}
+
+.mcp-chat-jump {
+  position: sticky;
+  bottom: 4px;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--p-primary);
+  border: none;
+  border-radius: 9999px;
+  padding: 7px 14px;
+  cursor: pointer;
+  box-shadow: 0 8px 18px -6px rgba(37, 99, 235, 0.7);
+}
+.mcp-chat-jump:hover {
+  background: var(--p-primary-press);
+}
+
+.mcp-chat-foot {
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--p-border);
+  background: #fbfcff;
+}
+.mcp-chat-readonly {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--p-muted);
+  margin: 0;
+  padding: 4px 2px;
+}
+
+.mcp-thread-parent {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed var(--p-border);
+}
+
+/* ---- composer ------------------------------------------------------------- */
+.mcp-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mcp-composer-subject {
+  position: relative;
+}
+.mcp-composer-subject .mcp-field {
+  padding-right: 74px;
+}
+.mcp-composer-count {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--p-muted);
+  pointer-events: none;
+}
+.mcp-composer-count[data-near] {
+  color: var(--p-warn);
+}
+.mcp-composer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.mcp-composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.mcp-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.mcp-composer-hint {
+  font-size: 12px;
+  color: var(--p-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 620px) {
+  .mcp-composer-hint--wide {
+    display: none;
+  }
+}
+
+/* ---- rich bodies ----------------------------------------------------------
+ * ReadOnlyRichBody paints itself with the APP's tokens (--color-text-primary,
+ * --color-accent), which do not exist under `.mcp`. Rather than leave the text
+ * to fall back to whatever it inherits, pin it to the portal's own palette —
+ * and to `inherit` inside a bubble, so the client's own blue bubbles stay
+ * legible white-on-blue.
+ * -------------------------------------------------------------------------- */
+.mcp-bubble--rich {
+  white-space: normal;
+}
+.mcp .macan-rich-readonly .ProseMirror {
+  font-size: 14px;
+  line-height: 1.55;
+  color: inherit;
+}
+.mcp .macan-rich-readonly .ProseMirror .macan-mention {
+  color: inherit;
+  background: rgba(37, 99, 235, 0.12);
+  border-radius: 5px;
+  padding: 1px 4px;
+  font-weight: 600;
+}
+.mcp .mcp-bubble.them .macan-rich-readonly .ProseMirror .macan-mention,
+.mcp .mcp-mail-msg-body .macan-rich-readonly .ProseMirror .macan-mention {
+  color: var(--p-primary);
+  background: var(--p-primary-soft);
+}
+.mcp .mcp-bubble.mine .macan-rich-readonly .ProseMirror .macan-mention {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* ---- mail ----------------------------------------------------------------- */
+.mcp-mail {
+  overflow: hidden;
+}
+.mcp-mail-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--p-border);
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+}
+.mcp-mail-list {
+  display: flex;
+  flex-direction: column;
+}
+.mcp-mail-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: none;
+  border: none;
+  border-bottom: 1px solid #f1f5fb;
+  padding: 13px 18px;
+  cursor: pointer;
+  transition: background 0.13s ease;
+}
+.mcp-mail-row:hover {
+  background: #f8fbff;
+}
+.mcp-mail-row:last-child {
+  border-bottom: none;
+}
+.mcp-mail-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: transparent;
+}
+.mcp-mail-row[data-unread] .mcp-mail-dot {
+  background: var(--p-primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+}
+.mcp-mail-people {
+  flex: 0 0 150px;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--p-ink-2);
+}
+.mcp-mail-row[data-unread] .mcp-mail-people {
+  color: var(--p-ink);
+  font-weight: 800;
+}
+.mcp-mail-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  color: var(--p-muted);
+}
+.mcp-mail-subject {
+  color: var(--p-ink-2);
+  font-weight: 600;
+}
+.mcp-mail-row[data-unread] .mcp-mail-subject {
+  color: var(--p-ink);
+  font-weight: 800;
+}
+.mcp-mail-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.mcp-mail-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--p-ink-2);
+  background: var(--p-field);
+  border: 1px solid var(--p-border);
+  border-radius: 9999px;
+  padding: 1px 7px;
+}
+.mcp-mail-time {
+  font-size: 12px;
+  color: var(--p-muted);
+  white-space: nowrap;
+  min-width: 66px;
+  text-align: right;
+}
+.mcp-mail-row[data-unread] .mcp-mail-time {
+  color: var(--p-ink-2);
+  font-weight: 700;
+}
+.mcp-mail-more {
+  display: flex;
+  justify-content: center;
+  padding: 14px;
+}
+@media (max-width: 640px) {
+  .mcp-mail-people {
+    flex-basis: 92px;
+    max-width: 92px;
+  }
+  .mcp-mail-time {
+    min-width: 0;
+  }
+}
+
+/* mail: one thread */
+.mcp-mail-head {
+  margin-bottom: 12px;
+}
+.mcp-mail-subject-lg {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  margin: 0 0 16px;
+}
+.mcp-mail-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.mcp-mail-msg {
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-r);
+  background: var(--p-card);
+  box-shadow: var(--p-shadow-sm);
+  overflow: hidden;
+}
+.mcp-mail-msg--collapsed {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: 10px 14px;
+  cursor: pointer;
+  background: var(--p-field);
+  transition: background 0.13s ease;
+}
+.mcp-mail-msg--collapsed:hover {
+  background: var(--p-primary-soft);
+}
+.mcp-mail-msg-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--p-border);
+  padding: 11px 14px;
+  cursor: pointer;
+}
+.mcp-mail-msg-who {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--p-ink);
+  flex-shrink: 0;
+}
+.mcp-mail-msg-peek {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--p-muted);
+}
+.mcp-mail-msg-when {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--p-muted);
+  white-space: nowrap;
+}
+.mcp-mail-msg-body {
+  padding: 14px;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--p-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mcp-mail-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--p-ink-2);
+  background: var(--p-field);
+  border: 1px solid var(--p-border);
+  border-radius: 9999px;
+  padding: 6px 13px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: background 0.13s ease, border-color 0.13s ease;
+}
+.mcp-mail-expand:hover {
+  background: var(--p-primary-soft);
+  border-color: var(--p-border-strong);
+}
+.mcp-mail-reply {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--p-border);
+}
+.mcp-mail-compose-title {
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-bottom: 4px;
+}
+.mcp-mail-compose-sub {
+  font-size: 13px;
+  color: var(--p-ink-2);
+  line-height: 1.5;
+  margin: 0 0 16px;
+}

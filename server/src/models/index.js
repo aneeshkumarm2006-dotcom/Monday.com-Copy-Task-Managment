@@ -65,9 +65,22 @@ require('./ConnectorFieldMapping');
 // Provenance lives here rather than wrapping the values themselves — see the
 // model header for the eight readers that shape change would have rippled into.
 require('./GoalConnectorLink');
-// Chat — channels sectioned by board, messages shaped like Updates, and a
-// lastReadAt row per (channel, user). Membership is derived from board access
-// on every read, never stored; see Channel.js.
+// Chat — conversation SURFACES sectioned by board, messages shaped like
+// Updates, and read markers. Membership is derived from board access on every
+// read, never stored; see Channel.js.
+//
+// Two read models on purpose: chat reads a CHANNEL, mail reads a THREAD. They
+// are different units, and MailThreadRead.js explains why the tidier-looking
+// single collection is the one to avoid.
 require('./Channel');
 require('./Message');
 require('./ChannelRead');
+require('./MailThreadRead');
+require('./ChannelContactRead');
+
+// The Client Portal roster. It was missing from this barrel, which meant
+// `mongoose.model('ClientContact')` only resolved once some controller had
+// happened to require the file by path — so a script or test that loaded the
+// models on their own hit MissingSchemaError, and `Message.portalAuthor`
+// populate depended on load order rather than on registration.
+require('./ClientContact');

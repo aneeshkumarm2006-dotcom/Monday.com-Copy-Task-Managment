@@ -94,43 +94,28 @@ const taskGroupSchema = new mongoose.Schema({
   // No migration: a group written before this field existed reads back without
   // the key, and the resolver's empty path answers "nobody".
   ownerTimeline: [ownerEntrySchema],
-  // ---- Client Portal fields (only meaningful when the parent board is a
-  // 'client' board — the controller gates every write on board.boardType). A
-  // group in a client board represents one client company; the link is minted
-  // the moment the group is created and the invite goes out by email. ----
+  // ---- Client Portal ------------------------------------------------------
   //
-  // Whether the shareable client link is currently live. Disabling instantly
-  // closes the portal without discarding the token.
-  portalEnabled: {
-    type: Boolean,
-    default: false,
-  },
-  // The public link id (crypto.randomBytes hex). Present in the URL the client
-  // opens: `${CLIENT_URL}/portal/${portalToken}`. Regenerating rotates it and
-  // invalidates the old link.
+  // A group on a client board used to BE the client: it carried portalToken,
+  // portalEnabled and portalClientName, and the shareable link was minted here
+  // at group creation.
   //
-  // NO `default` on purpose: the field must be ABSENT (not null) on groups
-  // without a portal. A sparse index skips absent fields but DOES index null
-  // values, so a `default: null` would put every group's null into the unique
-  // index and the second such group would collide (E11000). Absent → not indexed.
-  portalToken: {
-    type: String,
-  },
-  // Friendly client/company label shown on the client's dashboard header.
-  // Falls back to the group `name` when empty.
-  portalClientName: {
-    type: String,
-    default: '',
-    trim: true,
-  },
+  // Those three fields now live on `Board`. A client board IS one client
+  // company, and its groups are that client's WORKSTREAMS (SEO, Ads, Web
+  // Development) — so the link, the contact roster and the portal task filter
+  // are all board-scoped. See utils/clientBoard.js and, for how the existing
+  // tokens were carried upward without breaking a single live client link,
+  // scripts/migratePortalToBoard.js.
+  //
+  // The values may still be present in MongoDB on pre-migration documents: the
+  // `$unset` is the last phase and waits for the rollback window to close. The
+  // surviving `portalToken_1` index there is inert, because nothing writes the
+  // field any more.
   createdAt: {
     type: Date,
     default: Date.now,
   },
 });
-
-// Unique only among groups that actually carry a token; null tokens are exempt.
-taskGroupSchema.index({ portalToken: 1 }, { unique: true, sparse: true });
 
 // Every "the groups on this board" read — board load, analytics' live-group
 // filter, the tracker grid — was scanning the whole collection without this.

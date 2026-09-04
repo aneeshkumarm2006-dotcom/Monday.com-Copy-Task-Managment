@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import * as chatService from '../services/chatService';
+import { workspaceChannels } from '../utils/chatChannels';
 
 /**
  * Chat state. One store because chat is cross-page state: the tab-bar badge
@@ -25,6 +26,10 @@ const useChatStore = create((set, get) => ({
   canPost: false,
   canManage: false,
 
+  // The most recent SSE frame, for surfaces that keep their own state — see
+  // `receiveMessage`. `{ channelId, message, seq }` or null.
+  liveMessage: null,
+
   // One open thread at a time: { parent, replies } or null.
   thread: null,
   threadLoading: false,
@@ -33,7 +38,20 @@ const useChatStore = create((set, get) => ({
   // for the red NEW divider. Frozen for the visit; live arrivals don't move it.
   unreadAtOpen: 0,
 
-  totalUnread: () => get().channels.reduce((sum, c) => sum + (c.unread || 0), 0),
+  /**
+   * The badge number, and the ONE place it is computed.
+   *
+   * Client-board rooms are excluded (see `utils/chatChannels.js`): they are
+   * reachable only from that board's Chat tab, so counting them here would
+   * advertise unread messages the Chat tab cannot open — a badge that never
+   * clears no matter what the user reads.
+   *
+   * Anything drawing that number calls THIS rather than summing `channels`
+   * itself. The mobile TabBar used to re-implement the reduce inline, which is
+   * exactly how one of the two would have kept counting client rooms.
+   */
+  totalUnread: () =>
+    workspaceChannels(get().channels).reduce((sum, c) => sum + (c.unread || 0), 0),
 
   fetchChannels: async (orgId) => {
     if (!orgId) return;
@@ -232,6 +250,26 @@ const useChatStore = create((set, get) => ({
     set((s) => {
       const isActive = String(s.activeChannelId) === String(channelId);
       const next = {};
+
+      // The live beacon. Everything below this line updates `channels` and
+      // `messages`, which only describe the GLOBAL chat page — and the global
+      // sidebar deliberately excludes client boards, so a message in a client
+      // room updates nothing and reaches nobody.
+      //
+      // A board's Chat tab keeps its own component state (the board-tab
+      // doctrine this store's own header states), so it cannot read those
+      // fields either. Rather than pull a whole second surface into this store
+      // to fix that, every frame is published here as a beacon any self-stated
+      // surface can subscribe to.
+      //
+      // `seq` is what makes it observable. The same message can legitimately
+      // arrive twice, and two identical objects would not re-fire an effect
+      // keyed on the value — a monotonic counter always does.
+      next.liveMessage = {
+        channelId: String(channelId),
+        message,
+        seq: (s.liveMessage?.seq || 0) + 1,
+      };
 
       if (isActive) {
         if (message.replyTo) {

@@ -128,33 +128,39 @@ export const transferBoardOwnership = async (boardId, userId) => {
   return data;
 };
 
-// --- Client Portal (per-group link management; client boards only) ----------
+// --- Client Portal (per-BOARD link management; client boards only) ----------
+//
+// A client board IS one client company, so the portal link, the contact roster
+// and the tier all hang off the board. These were per-GROUP until the board
+// became the client; a group is now that client's workstream (SEO, Ads, Web
+// Development) and has no portal of its own.
 
 /**
- * GET /api/portal/groups/:groupId/config — the group's portal link state for the
+ * GET /api/portal/boards/:boardId/config — the board's portal state for the
  * management modal. Board-manager only (enforced server-side).
- * Returns { groupId, portalEnabled, clientName, link }.
+ * Returns { boardId, portalEnabled, clientName, link, tier, announcement, faqs }.
  */
-export const getGroupPortalConfig = async (groupId) => {
-  const { data } = await api.get(`/api/portal/groups/${groupId}/config`, {
+export const getBoardPortalConfig = async (boardId) => {
+  const { data } = await api.get(`/api/portal/boards/${boardId}/config`, {
     timeout: 20000,
   });
   return data.portal;
 };
 
 /**
- * PUT /api/portal/groups/:groupId/config — set the client label, enable/disable,
- * or rotate the link. Body: { enabled?, clientName?, regenerateLink? }.
+ * PUT /api/portal/boards/:boardId/config — set the client label, enable/disable,
+ * rotate the link, or edit the announcement + FAQ.
+ * Body: { enabled?, clientName?, regenerateLink?, announcement?, faqs? }.
  */
-export const saveGroupPortalConfig = async (groupId, payload) => {
-  const { data } = await api.put(`/api/portal/groups/${groupId}/config`, payload, {
+export const saveBoardPortalConfig = async (boardId, payload) => {
+  const { data } = await api.put(`/api/portal/boards/${boardId}/config`, payload, {
     timeout: 20000,
   });
   return data.portal;
 };
 
 /**
- * POST /api/portal/groups/:groupId/invite — invite a client (ensures the link is
+ * POST /api/portal/boards/:boardId/invite — invite a client (ensures the link is
  * live first). Body: { email, authMethod }.
  *
  * `authMethod` decides which email goes out AND how this person may sign in:
@@ -163,9 +169,9 @@ export const saveGroupPortalConfig = async (groupId, payload) => {
  *
  * Returns { message, portal, contacts }.
  */
-export const sendGroupInvite = async (groupId, email, authMethod = 'google') => {
+export const sendBoardPortalInvite = async (boardId, email, authMethod = 'google') => {
   const { data } = await api.post(
-    `/api/portal/groups/${groupId}/invite`,
+    `/api/portal/boards/${boardId}/invite`,
     { email, authMethod },
     { timeout: 20000 }
   );
@@ -173,25 +179,56 @@ export const sendGroupInvite = async (groupId, email, authMethod = 'google') => 
 };
 
 /**
- * GET /api/portal/groups/:groupId/contacts — who has been invited to this
- * group's portal and how far they've got. Returns { contacts }.
+ * GET /api/portal/boards/:boardId/contacts — who has been invited to this
+ * client's portal and how far they've got. Returns { contacts }.
  */
-export const getGroupPortalContacts = async (groupId) => {
-  const { data } = await api.get(`/api/portal/groups/${groupId}/contacts`, {
+export const getBoardPortalContacts = async (boardId) => {
+  const { data } = await api.get(`/api/portal/boards/${boardId}/contacts`, {
     timeout: 20000,
   });
   return data.contacts;
 };
 
 /**
- * POST /api/portal/groups/:groupId/contacts/:contactId/resend — re-send whatever
+ * POST /api/portal/boards/:boardId/contacts/:contactId/resend — re-send whatever
  * this contact needs (Google invite, first set-password link, or a reset link).
  * Returns { message, contacts }.
  */
-export const resendPortalInvite = async (groupId, contactId) => {
+export const resendPortalInvite = async (boardId, contactId) => {
   const { data } = await api.post(
-    `/api/portal/groups/${groupId}/contacts/${contactId}/resend`,
+    `/api/portal/boards/${boardId}/contacts/${contactId}/resend`,
     {},
+    { timeout: 20000 }
+  );
+  return data;
+};
+
+/**
+ * GET /api/portal/boards/:boardId/tier — what upgrading to Advanced would do.
+ * Returns { tier, ok, noop, refusals, warnings, effects, groupCount,
+ * contactCount, confirmPhrase }. Runs the same pure checker the write path
+ * runs, so the dialog cannot promise something the endpoint would refuse.
+ */
+export const getBoardPortalTier = async (boardId) => {
+  const { data } = await api.get(`/api/portal/boards/${boardId}/tier`, {
+    timeout: 20000,
+  });
+  return data;
+};
+
+/**
+ * POST /api/portal/boards/:boardId/tier/upgrade — Basic → Advanced. ONE-WAY.
+ *
+ * `confirm` must echo the client's name back; the server checks it too, because
+ * "irreversible" has to mean it on the wire and not only in the dialog. There is
+ * deliberately no downgrade endpoint.
+ *
+ * Returns { tier, alreadyUpgraded, portal? }.
+ */
+export const upgradeBoardPortalTier = async (boardId, confirm) => {
+  const { data } = await api.post(
+    `/api/portal/boards/${boardId}/tier/upgrade`,
+    { confirm },
     { timeout: 20000 }
   );
   return data;

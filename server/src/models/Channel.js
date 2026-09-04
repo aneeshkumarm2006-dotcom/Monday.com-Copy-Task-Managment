@@ -1,16 +1,27 @@
 const mongoose = require('mongoose');
 
 /**
- * Channel — one chat room.
+ * Channel — one conversation SURFACE.
  *
- * Chat is scoped to the WORKSPACE, with channels sectioned by board:
+ * A surface is a `(mode, audience)` pair, and that pairing is the whole model:
  *
- *   - A board channel (`board` set) belongs to one board. The auto-created
- *     client channels are these: one per (board, group), because a "client"
- *     in this product IS a group on a tracker board. There is no Client
- *     entity, so the same client on two boards is two channels — a unified
- *     per-client room needs that entity first, and pretending otherwise here
- *     would invent an identity the data model cannot back.
+ *                  audience:'team'          audience:'client'
+ *   mode:'chat'    the private team room    a room the client is in
+ *   mode:'mail'    (possible, unused)       a mailbox the client is in
+ *
+ * Two orthogonal axes rather than one overloaded one. `kind` already answers
+ * "room or DM"; piling "who is in it" onto the same field would have left
+ * nowhere to put "how it renders" when Mail arrived. Each field answers one
+ * question, so adding a third mode later is a new enum value and nothing else.
+ *
+ * Channels are scoped to the WORKSPACE, sectioned by board:
+ *
+ *   - A board channel (`board` set) belongs to one board. On a TRACKER board
+ *     the auto-created rooms are one per (board, group), because a "client"
+ *     there IS a group. On a CLIENT board the board itself is the client and a
+ *     group is one of its workstreams, so a workstream may carry up to four
+ *     surfaces — though the team picks which ones exist rather than getting
+ *     them all automatically.
  *
  *   - A workspace channel (`board` null) belongs to the org as a whole —
  *     "General" and anything an admin creates beside it.
@@ -34,10 +45,45 @@ const channelSchema = new mongoose.Schema(
     },
     // 'channel' — a room (board or workspace scoped, derived membership).
     // 'dm' — a private line between exactly the two users in `members`.
+    //
+    // Deliberately NOT extended with a 'client' value. Who can see a surface is
+    // `audience`; how it renders is `mode`. Conflating either into `kind` is
+    // what makes the third one impossible to add.
     kind: {
       type: String,
       enum: ['channel', 'dm'],
       default: 'channel',
+    },
+    /**
+     * How this surface reads and writes.
+     *
+     *   'chat' — one running stream, newest at the bottom, no subjects.
+     *   'mail' — a Gmail-shaped mailbox: many threads, each a TOP-LEVEL Message
+     *            carrying a `subject`, with that message's one-level replies as
+     *            the thread body. No new model; see Message.subject.
+     *
+     * This is a UI and structure choice, NOT email. Nothing here is ever sent
+     * or received over SMTP, and no Message-ID exists anywhere in the product.
+     */
+    mode: {
+      type: String,
+      enum: ['chat', 'mail'],
+      default: 'chat',
+    },
+    /**
+     * Who `services/chatAudience.js` admits.
+     *
+     *   'team'   — org members with board read access. Nothing else, ever.
+     *   'client' — the same team members PLUS the ClientContacts of the board,
+     *              and only on a live advanced client board.
+     *
+     * Defaulting to 'team' is what keeps every room that predates this field
+     * private: a surface fails closed unless someone deliberately opened it.
+     */
+    audience: {
+      type: String,
+      enum: ['team', 'client'],
+      default: 'team',
     },
     // DMs ONLY: the two participants. This is the one deliberate exception to
     // "membership is never stored" — a DM's membership IS its identity, not a
@@ -94,11 +140,23 @@ const channelSchema = new mongoose.Schema(
 // The sidebar read: every channel in a workspace, sectioned by board.
 channelSchema.index({ organisation: 1, board: 1, archived: 1 });
 
-// One auto channel per (board, group) — what makes the lazy backfill an
-// idempotent upsert rather than a race. Partial: manual channels (group null)
+// One auto surface per (board, group, mode, audience) — what makes the lazy
+// upsert idempotent rather than a race. Partial: manual channels (group null)
 // are unlimited.
+//
+// MIGRATION NOTE, and it is the dangerous one. A Mongoose `default` applies on
+// WRITE, never to documents already stored. Every channel written before `mode`
+// and `audience` existed carries neither, and a unique index reads a missing
+// field as null — so `(board, group, null, null)` and `(board, group, 'chat',
+// 'team')` are DIFFERENT index entries, and the next upsert would mint a
+// duplicate room for every existing tracker group.
+//
+// Order is therefore: $set both fields on every existing channel → build this
+// index → verify → drop the old `{board, group}` one. Never drop the old index
+// first; while it exists it is the only thing preventing that same race.
+// See scripts/migrateChatSurfaces.js.
 channelSchema.index(
-  { board: 1, group: 1 },
+  { board: 1, group: 1, mode: 1, audience: 1 },
   { unique: true, partialFilterExpression: { group: { $type: 'objectId' } } }
 );
 

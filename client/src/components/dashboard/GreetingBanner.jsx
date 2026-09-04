@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import Button from '../ui/Button';
+import { buildMyWorkLink } from '../../utils/myWorkFilters';
 import macanMark from '../../assets/macan-mark.svg';
 
 /**
@@ -10,6 +11,7 @@ import macanMark from '../../assets/macan-mark.svg';
  * Props:
  *   name            — user's display name
  *   pendingCount    — number of pending tasks for the user
+ *   overdueCount    — how many of those are past their due date
  */
 
 const timeOfDayGreeting = () => {
@@ -88,9 +90,29 @@ const GreetingBanner = ({ name = 'there', pendingCount = 0, overdueCount = 0 }) 
             {overdueLabel ? (
               <>
                 {' — '}
-                <strong style={{ color: 'var(--color-status-stuck)', fontWeight: 700 }}>
+                {/* The count is the way in, not a statistic: it opens My Work
+                    already filtered to those tasks, so the next click is the
+                    work itself. */}
+                <button
+                  type="button"
+                  onClick={() => navigate(buildMyWorkLink({ due: ['overdue'] }))}
+                  className="font-body underline underline-offset-2 decoration-1 hover:decoration-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-status-stuck)]"
+                  style={{
+                    color: 'var(--color-status-stuck)',
+                    fontWeight: 700,
+                    fontSize: 'inherit',
+                    background: 'none',
+                    border: 0,
+                    padding: 0,
+                    borderRadius: 3,
+                    cursor: 'pointer',
+                  }}
+                  aria-label={`Show my ${overdueCount} overdue ${
+                    overdueCount === 1 ? 'task' : 'tasks'
+                  } in My Work`}
+                >
                   {overdueLabel}
-                </strong>
+                </button>
               </>
             ) : (
               '.'

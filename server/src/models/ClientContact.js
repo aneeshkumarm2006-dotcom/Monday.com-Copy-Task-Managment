@@ -1,15 +1,20 @@
 const mongoose = require('mongoose');
 
 /**
- * ClientContact — an external client person who accesses a Client Portal group
+ * ClientContact — an external client person who accesses a Client Portal BOARD
  * via its shared link. This is deliberately NOT a `User`: clients never enter
  * the org-membership / permission graph. A contact is scoped to exactly one
- * group (one client company), and "their issues" are the Tasks whose
+ * board (one client company), and "their issues" are the Tasks whose
  * `portalSubmitter` points here.
  *
- * Identity is (group, email): the same person opening two different groups'
- * links is two separate contacts, and re-using a group's link with the same
- * email resolves back to the same contact (upsert on request-link).
+ * Identity is (board, email): the same person opening two different clients'
+ * links is two separate contacts, and re-using a board's link with the same
+ * email resolves back to the same contact (upsert on sign-in).
+ *
+ * It used to be (group, email), back when a GROUP was the client company. A
+ * board's groups are now that one client's WORKSTREAMS (SEO, Ads, Web
+ * Development), and a contact sees ALL of them — which is exactly why identity
+ * had to move up with the link. See `utils/clientBoard.js`.
  *
  * A contact signs in one of two ways, recorded in `authMethod`:
  *   'google'   — the default. Clicks "Continue with Google" on the landing page.
@@ -37,12 +42,29 @@ const clientContactSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    /**
+     * VESTIGIAL. The workstream this contact was first invited on, back when a
+     * group was the client. Written by nothing, read by nothing, and dropped
+     * once the migration's soak window closes.
+     *
+     * `required` had to go in the same change that stopped writing it, or every
+     * new contact would throw a ValidationError. It is kept as a path at all
+     * only so the pre-migration value survives a rollback.
+     */
     group: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'TaskGroup',
-      required: true,
-      index: true,
+      default: undefined,
     },
+    /**
+     * The client board this person has access to — half of their identity, and
+     * the only scope any portal read is allowed to use. Already present and
+     * required on every row that predates the move, so nothing to backfill.
+     *
+     * Deliberately NOT `index: true`: the unique `{board:1, email:1}` below
+     * already serves every board-only query through its leading prefix, and a
+     * second index on the same prefix would be pure write cost.
+     */
     board: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Board',
@@ -126,8 +148,15 @@ const clientContactSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// One contact per (group, email). The upsert in the request-link flow relies on
-// this to reconcile repeat visitors instead of creating duplicates.
-clientContactSchema.index({ group: 1, email: 1 }, { unique: true });
+// One contact per (board, email). Every sign-in path upserts on this pair, so
+// it is what reconciles a repeat visitor instead of minting a second row.
+//
+// MIGRATION NOTE: the old `{group:1, email:1}` unique index must be DROPPED in
+// the same maintenance window this index is created — not later. New contacts
+// are written with `group` absent, and a compound unique index that is not
+// partial treats a missing field as null, so two new contacts sharing an email
+// on DIFFERENT boards would both key as {group:null, email:x} and collide.
+// See scripts/migratePortalToBoard.js.
+clientContactSchema.index({ board: 1, email: 1 }, { unique: true });
 
 module.exports = mongoose.model('ClientContact', clientContactSchema);

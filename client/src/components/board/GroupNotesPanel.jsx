@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { ChevronLeft, Plus, StickyNote, Trash2, X } from 'lucide-react';
 import RichEditor from './RichEditor';
 import CreatedByChip from './CreatedByChip';
-import { ReadOnlyRichBody } from './UpdatesTab';
+import ReadOnlyRichBody from './ReadOnlyRichBody';
 import useTaskStore from '../../store/taskStore';
 import useToastStore from '../../store/toastStore';
 import * as noteService from '../../services/noteService';

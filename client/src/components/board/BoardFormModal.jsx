@@ -20,12 +20,20 @@ import { previewBoardConversion } from '../../services/monthService';
  *                   Ignored on create (choosing the visibility of a board that
  *                   does not exist yet is `board.create`, not a change).
  */
+import ClientSignInMethodField from './ClientSignInMethodField';
+
 const DEFAULTS = {
   name: '',
   visibility: 'private',
   description: '',
   boardType: 'standard',
   portalCategoriesText: '',
+  // Client boards only. The portal link belongs to the BOARD now, so the client
+  // company's name and first contact are collected here — they used to be asked
+  // for when creating a group, back when a group was the client.
+  clientName: '',
+  clientEmail: '',
+  clientAuthMethod: 'google',
 };
 
 const BoardFormModal = ({
@@ -124,6 +132,18 @@ const BoardFormModal = ({
       setError('Board name is required');
       return;
     }
+    // The invitation address is optional — you can create the portal now and
+    // share the link yourself — but a typo in one is worth catching here.
+    const clientEmail = values.clientEmail.trim();
+    if (
+      mode === 'create' &&
+      isClient &&
+      clientEmail &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail)
+    ) {
+      setError('Enter a valid client email, or leave it blank to share the link yourself.');
+      return;
+    }
     try {
       setSubmitting(true);
       setError(null);
@@ -150,6 +170,15 @@ const BoardFormModal = ({
               .map((c) => c.trim())
               .filter(Boolean)
           : [],
+        // The board mints its portal link on create; these decide what the
+        // client sees it called and who gets the first invitation.
+        ...(mode === 'create' && isClient
+          ? {
+              clientName: values.clientName.trim(),
+              clientEmail: values.clientEmail.trim(),
+              clientAuthMethod: values.clientAuthMethod,
+            }
+          : {}),
       });
     } catch (err) {
       const msg =
@@ -509,17 +538,50 @@ const BoardFormModal = ({
           </div>
         )}
 
-        {/* Client categories — optional, client boards only */}
+        {/* The client themselves — client boards only, at create time. This
+            board IS one company: it gets one portal link, and its groups become
+            that company's workstreams (SEO, Ads, Web Development). */}
         {mode === 'create' && isClient && (
-          <Input
-            label="Client issue categories (optional)"
-            placeholder="e.g. Bug, Concern, Request"
-            value={values.portalCategoriesText}
-            onChange={(e) =>
-              setValues((v) => ({ ...v, portalCategoriesText: e.target.value }))
-            }
-            helperText="Comma-separated. Clients can optionally tag an issue with one."
-          />
+          <>
+            <Input
+              label="Client company name (optional)"
+              placeholder={values.name.trim() || 'e.g. Acme Corp'}
+              value={values.clientName}
+              onChange={(e) =>
+                setValues((v) => ({ ...v, clientName: e.target.value }))
+              }
+              helperText="What the client sees at the top of their portal. Defaults to the board name."
+            />
+            <Input
+              label="Client email (we'll send the invitation)"
+              type="email"
+              placeholder="client@company.com"
+              value={values.clientEmail}
+              onChange={(e) =>
+                setValues((v) => ({ ...v, clientEmail: e.target.value }))
+              }
+              helperText="Optional — leave blank to copy the link and share it yourself."
+            />
+            {/* Only asked once there is someone to ask about. */}
+            {values.clientEmail.trim() && (
+              <ClientSignInMethodField
+                value={values.clientAuthMethod}
+                onChange={(next) =>
+                  setValues((v) => ({ ...v, clientAuthMethod: next }))
+                }
+                disabled={submitting}
+              />
+            )}
+            <Input
+              label="Client issue categories (optional)"
+              placeholder="e.g. Bug, Concern, Request"
+              value={values.portalCategoriesText}
+              onChange={(e) =>
+                setValues((v) => ({ ...v, portalCategoriesText: e.target.value }))
+              }
+              helperText="Comma-separated. Clients can optionally tag a request with one."
+            />
+          </>
         )}
 
         <Input

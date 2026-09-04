@@ -155,4 +155,94 @@ export const rateIssue = (issueId, rating) =>
     .post(`/api/portal/me/issues/${issueId}/rating`, { rating })
     .then((r) => r.data);
 
+/* ---- Client chat & mail (portal-authenticated) ----------------------------
+ * The CLIENT plane of the messaging feature. Every one of these lives under
+ * `/api/portal/me/chat` and is answered with the portal's own message shape —
+ * deliberately not the team's, which carries colleagues' email addresses. They
+ * all 403 unless the board is a client board on the `advanced` tier, so a basic
+ * portal simply never renders the tabs.
+ * -------------------------------------------------------------------------- */
+const CHAT = '/api/portal/me/chat';
+
+/** Every client surface this contact can see, grouped by workstream. */
+export const getPortalChannels = () =>
+  portalApi.get(`${CHAT}/channels`).then((r) => r.data);
+
+/**
+ * A page of messages. Default: NEWEST FIRST plus a `nextBefore` cursor — pass
+ * it back as `{ before }` for the previous page. `{ thread: id }` switches the
+ * response to a single thread (`{ parent, replies }`, replies oldest-first).
+ */
+export const getPortalMessages = (channelId, params) =>
+  portalApi
+    .get(`${CHAT}/channels/${channelId}/messages`, { params })
+    .then((r) => r.data);
+
+export const sendPortalMessage = (channelId, payload) =>
+  portalApi
+    .post(`${CHAT}/channels/${channelId}/messages`, payload)
+    .then((r) => r.data);
+
+/**
+ * Upload one attachment for a chat/mail message. Same deal as
+ * `uploadIssueAttachment`: its own long timeout (the 20s default cannot carry a
+ * 25MB file) and real 0-100 progress, because a client on hotel wifi otherwise
+ * stares at a spinner with no idea whether their file is moving.
+ */
+export const uploadPortalChatFile = (channelId, file, onProgress) => {
+  const form = new FormData();
+  form.append('file', file);
+  return portalApi
+    .post(`${CHAT}/channels/${channelId}/attachments`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000,
+      onUploadProgress: (e) => {
+        if (!onProgress) return;
+        // Capped at 99 until the response lands — 100% must mean "stored".
+        const pct = e.total ? Math.min(99, Math.round((e.loaded * 100) / e.total)) : 0;
+        onProgress(pct);
+      },
+    })
+    .then((r) => r.data);
+};
+
+/** `at` is optional — omit it and the server reads up to "now". */
+export const markPortalChannelRead = (channelId, at) =>
+  portalApi
+    .post(`${CHAT}/channels/${channelId}/read`, at ? { at } : {})
+    .then((r) => r.data);
+
+/** Mail thread list, already sorted by last activity. Never re-sort it. */
+export const getPortalThreads = (channelId, params) =>
+  portalApi
+    .get(`${CHAT}/channels/${channelId}/threads`, { params })
+    .then((r) => r.data);
+
+/** Starting a mail thread is the one thing a client may create here. */
+export const createPortalThread = (channelId, payload) =>
+  portalApi
+    .post(`${CHAT}/channels/${channelId}/threads`, payload)
+    .then((r) => r.data);
+
+/** Reading ONE thread. Deliberately not channel-wide — the rest stay unread. */
+export const markPortalThreadRead = (threadId) =>
+  portalApi.post(`${CHAT}/threads/${threadId}/read`).then((r) => r.data);
+
+/** Team members this contact may @mention — names only, no addresses. */
+export const getPortalMentions = () =>
+  portalApi.get(`${CHAT}/mentions`).then((r) => r.data);
+
+/**
+ * The SSE endpoint, as an absolute URL with the portal token in the query
+ * string — `EventSource` cannot send an Authorization header, so the token has
+ * to travel this way. Built off the same base as `portalGoogleSignInUrl`.
+ * Returns '' when there is no session, so callers can skip connecting.
+ */
+export const portalStreamUrl = () => {
+  const token = getPortalToken();
+  if (!token) return '';
+  const base = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+  return `${base}/api/portal/me/stream?token=${encodeURIComponent(token)}`;
+};
+
 export default portalApi;

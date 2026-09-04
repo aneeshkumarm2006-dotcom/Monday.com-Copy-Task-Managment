@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test": "node --test src/utils/vaultCrypto.test.mjs src/utils/boardViewTabs.test.mjs src/utils/rankRows.test.mjs src/utils/labsRows.test.mjs src/utils/backlinkRows.test.mjs src/utils/auditRows.test.mjs src/utils/goalDisplay.test.mjs src/utils/adsBudgetDisplay.test.mjs src/utils/extraRows.test.mjs src/utils/tableControls.test.mjs src/utils/dateRange.test.mjs src/utils/connectorScreens.test.mjs",
+    "test": "node --test src/utils/vaultCrypto.test.mjs src/utils/boardViewTabs.test.mjs src/utils/rankRows.test.mjs src/utils/labsRows.test.mjs src/utils/backlinkRows.test.mjs src/utils/auditRows.test.mjs src/utils/goalDisplay.test.mjs src/utils/adsBudgetDisplay.test.mjs src/utils/extraRows.test.mjs src/utils/tableControls.test.mjs src/utils/dateRange.test.mjs src/utils/connectorScreens.test.mjs src/utils/chatSurfaces.test.mjs src/utils/portalChatRows.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

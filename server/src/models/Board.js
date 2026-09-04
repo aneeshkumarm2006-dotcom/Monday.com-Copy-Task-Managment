@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { PORTAL_TIERS } = require('../utils/clientBoard');
 
 /**
  * Per-board label. Tasks reference labels by `_id` so renames/recolors
@@ -246,6 +247,87 @@ const boardSchema = new mongoose.Schema(
       default: null,
     },
     /**
+     * ---- The client portal itself. Client boards only. --------------------
+     *
+     * A client board IS one client company, and these three fields are what the
+     * outside world reaches it through. They used to live on `TaskGroup`, back
+     * when a GROUP was the client; a board's groups are now that one client's
+     * WORKSTREAMS (SEO, Ads, Web Development) and the link belongs to the board.
+     *
+     * Whether the shareable client link is currently live. Disabling instantly
+     * closes the portal without discarding the token — and, because
+     * `middleware/portalAuth.js` re-reads this on every request, it also ends
+     * every signed-in client's session on their next call.
+     */
+    portalEnabled: {
+      type: Boolean,
+      default: false,
+    },
+    /**
+     * The public link id (crypto.randomBytes hex), in the URL the client opens:
+     * `${CLIENT_URL}/portal/${portalToken}`. Regenerating rotates it and kills
+     * every live session, by the same mechanism as disabling.
+     *
+     * NO `default`, ON PURPOSE — the field must be ABSENT, not null. A sparse
+     * index skips absent fields but DOES index null values, so `default: null`
+     * would put every portal-less board's null into the unique index and the
+     * second one would collide (E11000). This is the exact trap `TaskGroup`
+     * documented before the field moved up here; it did not stop being true.
+     *
+     * `select: false` because this is a CREDENTIAL. `boardController`'s
+     * `withPermissions` spreads `...board.toObject()` into the response of
+     * every board read, so an ordinarily-selected token would ship a live
+     * portal link to every member who can see the board. Failing closed here
+     * means a new endpoint cannot leak it by accident — but it also means every
+     * WRITE path that touches the token must load it explicitly with
+     * `.select('+portalToken')`, or `if (!board.portalToken)` reads true on a
+     * board that has one and silently rotates a live link.
+     */
+    portalToken: {
+      type: String,
+      select: false,
+    },
+    /**
+     * Friendly client/company label shown on the client's own dashboard header.
+     * Falls back to the board `name` when empty.
+     */
+    portalClientName: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    /**
+     * How much portal this client gets. See `utils/clientBoard.js`, which owns
+     * the predicates — nothing should re-spell the tier test inline.
+     *
+     *   'basic'    — the task list and the per-task Client thread.
+     *   'advanced' — plus chat: a team-only and a client-facing room per
+     *                workstream, with the client's contacts in the latter.
+     *
+     * ONE-WAY. `advanced` is a deliberate statement that this board holds
+     * exactly one company, which is what makes it safe for every contact on it
+     * to read every workstream and share one set of rooms. The pre-save hook
+     * below refuses the reverse, and there is no route that can express it.
+     *
+     * Every board that predates the field reads back as `basic`, which is
+     * exactly what they already were — no migration.
+     */
+    portalTier: {
+      type: String,
+      enum: PORTAL_TIERS,
+      default: 'basic',
+    },
+    /** When and by whom the one-way upgrade was made. Audit only. */
+    portalTierUpgradedAt: {
+      type: Date,
+      default: null,
+    },
+    portalTierUpgradedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    /**
      * Optional categories a client may tag an issue with when submitting from the
      * portal (e.g. "Bug", "Concern", "Request"). Configured per client board by
      * the team; empty means the portal submit form omits the category field.
@@ -408,6 +490,62 @@ boardSchema.pre('save', function enforceMonthTimezone() {
   if (this.boardType !== 'tracker') return;
   if (!this.monthTimezone) {
     throw new Error('Board.monthTimezone is required when boardType is "tracker"');
+  }
+});
+
+/**
+ * Unique only among boards that actually carry a portal token; absent tokens
+ * are exempt. See the `portalToken` field comment for why it must be ABSENT
+ * rather than null — a `default: null` collides here on the second board.
+ */
+boardSchema.index({ portalToken: 1 }, { unique: true, sparse: true });
+
+/**
+ * Model-level invariant: `portalTier` is one-way.
+ *
+ * The route layer already makes a downgrade inexpressible — upgrading is an
+ * ACTION (`POST .../tier/upgrade`), not a settable property, and the write is a
+ * conditional `updateOne` matching `portalTier: 'basic'`. This hook is the
+ * third layer, and it catches the case the other two cannot: some future code
+ * path doing `board.portalTier = 'basic'; await board.save()` by accident.
+ *
+ * `isModified` only fires when the value actually CHANGES, so re-saving a board
+ * that is already basic is not caught — which is correct. Only a real
+ * advanced → basic transition throws.
+ *
+ * Why refuse at all: advancing a board is the statement that it holds exactly
+ * one client company, and every contact on it can then read every workstream
+ * and post in its rooms. Reverting the flag would not un-send those messages,
+ * so a "downgrade" would leave the board in a state the UI describes wrongly.
+ */
+boardSchema.pre('save', function enforceOneWayPortalTier() {
+  if (this.isNew) return;
+  if (this.isModified('portalTier') && this.portalTier === 'basic') {
+    throw new Error(
+      'Board.portalTier is one-way: an advanced client board cannot be downgraded to basic'
+    );
+  }
+});
+
+/**
+ * The same refusal on the query path, which does not run `pre('save')`.
+ *
+ * The migration script deliberately writes through the raw driver collection
+ * (`mongoose.connection.collection('boards')`), which bypasses hooks entirely —
+ * the same escape hatch `scripts/renameMonthlyBoardType.js` already uses, and
+ * for the same reason: a migration is the one caller allowed to set a field to
+ * whatever the data actually requires.
+ */
+boardSchema.pre(['updateOne', 'updateMany', 'findOneAndUpdate'], function refuseTierDowngrade() {
+  const update = this.getUpdate() || {};
+  const set = update.$set || {};
+  if (set.portalTier === 'basic' || update.portalTier === 'basic') {
+    // A filter that already pins basic is a no-op upgrade guard, not a downgrade.
+    const filter = this.getFilter() || {};
+    if (filter.portalTier === 'basic') return;
+    throw new Error(
+      'Board.portalTier is one-way: an advanced client board cannot be downgraded to basic'
+    );
   }
 });
 

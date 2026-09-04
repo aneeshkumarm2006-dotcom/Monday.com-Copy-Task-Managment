@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Plus, Paperclip, Send, ArrowLeft, LogOut, Loader2, CheckCircle2,
   CircleDot, MessageSquare, X, Inbox, Timer, Building2, ChevronRight,
@@ -10,10 +10,15 @@ import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
   getIssueThread, postThreadMessage, reopenIssue, rateIssue,
   getPortalToken, clearPortalToken, getLastPortalLink,
+  getPortalChannels,
 } from '../services/portalService';
+import usePortalStream from '../hooks/usePortalStream';
+import PortalChat from '../components/portal/PortalChat';
+import PortalMail from '../components/portal/PortalMail';
 import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
 import { dateInputToISO } from '../utils/dateUtils';
 import '../styles/portal.css';
+import { streamsOfMode } from '../utils/portalChatRows';
 
 /* ---- shared config -------------------------------------------------------- */
 const BUCKETS = {
@@ -101,6 +106,11 @@ const LIST_POLL = 20000;
 const THREAD_POLL = 9000;
 const SEEN_KEY = 'macan_portal_seen';
 const WELCOME_KEY = 'macan_portal_welcomed';
+// Which of Tasks / Chat / Mail this contact was last on, so a client who lives
+// in the mailbox doesn't land on the task list every single visit. Keyed per
+// contact because one browser can be shared (an office machine, a shared login
+// on a laptop) and the tabs a person has are not the tabs the next person has.
+const TAB_KEY = 'macan_portal_tab';
 
 /* ---- helpers -------------------------------------------------------------- */
 const formatShortDate = (iso) => {
@@ -140,6 +150,19 @@ const markSeen = (id) => {
 const isUnread = (issue, seen) =>
   issue.lastReplyFromTeam &&
   (!seen[issue.id] || new Date(issue.lastActivityAt) > new Date(seen[issue.id]));
+
+const readTabPref = (who) => {
+  try { return JSON.parse(localStorage.getItem(TAB_KEY) || '{}')[who] || ''; }
+  catch { return ''; }
+};
+const writeTabPref = (who, tab) => {
+  try {
+    const all = JSON.parse(localStorage.getItem(TAB_KEY) || '{}');
+    all[who] = tab;
+    localStorage.setItem(TAB_KEY, JSON.stringify(all));
+  } catch { /* ignore quota/private-mode */ }
+};
+
 
 /* ---- small presentational bits -------------------------------------------- */
 const StatusChip = ({ label, color }) => (
@@ -401,8 +424,26 @@ const PortalDashboardPage = () => {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('newest'); // newest | oldest | priority
   const [typeFilter, setTypeFilter] = useState('all');
+  // Which of this client's workstreams (SEO, Ads, Web Development) to show.
+  // The board IS the client and its groups are the service lines, so this is
+  // the primary axis — the state counts below recount within it.
+  const [workstream, setWorkstream] = useState('all');
   const [showHelp, setShowHelp] = useState(false);
   const [annDismissed, setAnnDismissed] = useState(false);
+
+  /* ---- chat & mail ------------------------------------------------------ */
+  // null until asked for; `{ workstreams: [] }` once we know there is nothing.
+  const [channels, setChannels] = useState(null);
+  const [tab, setTab] = useState('tasks');
+  const [unread, setUnread] = useState({}); // channelId -> count
+  const [chatWs, setChatWs] = useState('');
+  const [mailWs, setMailWs] = useState('');
+  // The newest SSE frame, stamped so an identical message re-delivered still
+  // re-fires the child effects. One connection for the whole page: two panes
+  // each opening their own EventSource would burn two of the browser's six
+  // per-origin sockets for no gain.
+  const [live, setLive] = useState(null);
+  const liveSeq = useRef(0);
 
   const loadIssues = useCallback(async () => {
     try {
@@ -436,19 +477,126 @@ const PortalDashboardPage = () => {
     return () => clearTimeout(t);
   }, [flash]);
 
+  /* ---- chat & mail surfaces --------------------------------------------
+   * Only ever asked for on an `advanced` portal. `context.tier` is shipped by
+   * getMyIssues precisely so a basic board never makes this call at all — the
+   * endpoint would 403 anyway, but a guaranteed-403 request on every load is
+   * just noise in the client's network tab and ours.
+   * ---------------------------------------------------------------------- */
+  const loadChannels = useCallback(async () => {
+    try {
+      const data = await getPortalChannels();
+      const fresh = {};
+      (data?.workstreams || []).forEach((w) => {
+        (w.surfaces || []).forEach((s) => { fresh[s.id] = s.unread || 0; });
+      });
+      setChannels(data || { workstreams: [] });
+      setUnread(fresh);
+    } catch {
+      // 403 (basic tier / chat off) or a blip — either way, no tabs.
+      setChannels({ workstreams: [] });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (expired || context.tier !== 'advanced') return undefined;
+    loadChannels();
+    const tick = () => document.visibilityState === 'visible' && loadChannels();
+    const id = setInterval(tick, LIST_POLL);
+    return () => clearInterval(id);
+  }, [expired, context.tier, loadChannels]);
+
+  const chatStreams = useMemo(() => streamsOfMode(channels, 'chat'), [channels]);
+  const mailStreams = useMemo(() => streamsOfMode(channels, 'mail'), [channels]);
+  const hasChat = chatStreams.length > 0;
+  const hasMail = mailStreams.length > 0;
+
+  // Keep each picker on a workstream that still exists.
+  useEffect(() => {
+    setChatWs((cur) => (chatStreams.some((w) => w.id === cur) ? cur : chatStreams[0]?.id || ''));
+  }, [chatStreams]);
+  useEffect(() => {
+    setMailWs((cur) => (mailStreams.some((w) => w.id === cur) ? cur : mailStreams[0]?.id || ''));
+  }, [mailStreams]);
+
+  // One identity per contact per company — there is no contact id in the
+  // dashboard payload, and this pair is what distinguishes two people sharing
+  // a browser.
+  const contactKey = `${context.companyName || ''}|${context.contactName || ''}`;
+
+  // Restore the remembered tab once we know which tabs actually exist. Only
+  // ever moves off Tasks — never overrides a tab the client just picked.
+  useEffect(() => {
+    if (!channels) return;
+    const modes = new Set();
+    (channels.workstreams || []).forEach((w) => (w.surfaces || []).forEach((s) => modes.add(s.mode)));
+    const pref = readTabPref(contactKey);
+    if (pref !== 'chat' && pref !== 'mail') return;
+    if (!modes.has(pref)) return;
+    setTab((cur) => (cur === 'tasks' ? pref : cur));
+  }, [channels, contactKey]);
+
+  const selectTab = (next) => { setTab(next); writeTabPref(contactKey, next); };
+
+  const onLiveMessage = useCallback(({ channelId, message }) => {
+    liveSeq.current += 1;
+    setLive({ seq: liveSeq.current, channelId, message });
+    // The open room clears its own badge the moment it marks read; everything
+    // else gets a count immediately rather than waiting for the next poll.
+    if (!message?.mine) {
+      setUnread((u) => ({ ...u, [channelId]: (u[channelId] || 0) + 1 }));
+    }
+  }, []);
+
+  usePortalStream(!expired && (hasChat || hasMail), onLiveMessage);
+
+  const chatUnread = chatStreams.reduce((n, w) => n + (unread[w.surface.id] || 0), 0);
+  const mailUnread = mailStreams.reduce((n, w) => n + (unread[w.surface.id] || 0), 0);
+
+  // A tab can vanish between renders (the team turns a surface off), so what
+  // actually renders is always re-checked against what exists.
+  const activeTab = (tab === 'chat' && hasChat) || (tab === 'mail' && hasMail) ? tab : 'tasks';
+  const activeChat = chatStreams.find((w) => w.id === chatWs) || chatStreams[0] || null;
+  const activeMail = mailStreams.find((w) => w.id === mailWs) || mailStreams[0] || null;
+
+  const setChannelUnread = useCallback((channelId, count) => {
+    setUnread((u) => (u[channelId] === count ? u : { ...u, [channelId]: count }));
+  }, []);
+  const onChatUnread = useCallback(
+    (count) => activeChat && setChannelUnread(activeChat.surface.id, count),
+    [activeChat, setChannelUnread]
+  );
+  const onMailUnread = useCallback(
+    (count) => activeMail && setChannelUnread(activeMail.surface.id, count),
+    [activeMail, setChannelUnread]
+  );
+
   const openIssue = (id) => { markSeen(id); setSeen(getSeen()); setSelectedId(id); };
   const dismissWelcome = () => { localStorage.setItem(WELCOME_KEY, '1'); setShowWelcome(false); };
   const logout = () => { clearPortalToken(); setExpired(true); };
 
   const selected = issues.find((i) => i.id === selectedId) || null;
+
+  // The client's service lines, from the server. Empty (or one) means there is
+  // nothing to choose between, and the picker/grouping stay hidden.
+  const workstreams = Array.isArray(context.workstreams) ? context.workstreams : [];
+  const manyWorkstreams = workstreams.length > 1;
+
+  // Workstream is applied BEFORE the state counts, so "3 open" means three open
+  // in the workstream you are looking at rather than across the whole account.
+  const inWorkstream =
+    workstream === 'all'
+      ? issues
+      : issues.filter((i) => i.workstream?.id === workstream);
+
   const counts = {
-    open: issues.filter((i) => i.state === 'open').length,
-    ongoing: issues.filter((i) => i.state === 'ongoing').length,
-    resolved: issues.filter((i) => i.state === 'resolved').length,
+    open: inWorkstream.filter((i) => i.state === 'open').length,
+    ongoing: inWorkstream.filter((i) => i.state === 'ongoing').length,
+    resolved: inWorkstream.filter((i) => i.state === 'resolved').length,
   };
   const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
   const q = query.trim().toLowerCase();
-  let visible = filter === 'all' ? issues : issues.filter((i) => i.state === filter);
+  let visible = filter === 'all' ? inWorkstream : inWorkstream.filter((i) => i.state === filter);
   if (typeFilter !== 'all') visible = visible.filter((i) => i.type === typeFilter);
   if (q) visible = visible.filter((i) => `${i.name} ${i.note} ${i.ref}`.toLowerCase().includes(q));
   visible = [...visible].sort((a, b) => {
@@ -516,6 +664,75 @@ const PortalDashboardPage = () => {
             />
           </div>
         ) : (
+          <>
+            {/* Tasks | Chat | Mail. Rendered only when the team has actually
+                opened a client surface — a portal without chat looks exactly
+                as it always has, down to the pixel. */}
+            {(hasChat || hasMail) && (
+              <div className="mcp-seg mcp-tabs">
+                {[
+                  { key: 'tasks', label: 'Tasks', Icon: ClipboardList, count: 0, on: true },
+                  { key: 'chat', label: 'Chat', Icon: MessageSquare, count: chatUnread, on: hasChat },
+                  { key: 'mail', label: 'Mail', Icon: Mail, count: mailUnread, on: hasMail },
+                ].filter((t) => t.on).map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    className="mcp-seg-btn"
+                    data-on={activeTab === t.key}
+                    aria-pressed={activeTab === t.key}
+                    onClick={() => selectTab(t.key)}
+                  >
+                    <t.Icon size={15} /> {t.label}
+                    {t.count > 0 && <span className="mcp-tab-count">{t.count > 99 ? '99+' : t.count}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* A client who buys more than one service line gets one room per
+                line, so which room you are in has to be a visible choice. */}
+            {activeTab !== 'tasks' && (activeTab === 'chat' ? chatStreams : mailStreams).length > 1 && (
+              <div className="mcp-seg" style={{ marginBottom: 14 }}>
+                {(activeTab === 'chat' ? chatStreams : mailStreams).map((w) => {
+                  const on = (activeTab === 'chat' ? chatWs : mailWs) === w.id;
+                  const n = unread[w.surface.id] || 0;
+                  return (
+                    <button
+                      key={w.id}
+                      type="button"
+                      className="mcp-seg-btn"
+                      data-on={on}
+                      aria-pressed={on}
+                      onClick={() => (activeTab === 'chat' ? setChatWs(w.id) : setMailWs(w.id))}
+                    >
+                      {w.name}
+                      {n > 0 && <span className="mcp-tab-count">{n > 99 ? '99+' : n}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {activeTab === 'chat' && activeChat && (
+              <PortalChat
+                key={activeChat.surface.id}
+                channel={activeChat.surface}
+                onUnreadChange={onChatUnread}
+                liveMessage={live}
+              />
+            )}
+
+            {activeTab === 'mail' && activeMail && (
+              <PortalMail
+                key={activeMail.surface.id}
+                channel={activeMail.surface}
+                onUnreadChange={onMailUnread}
+                liveMessage={live}
+              />
+            )}
+
+            {activeTab === 'tasks' && (
           <div className="mcp-rise">
             {/* Greeting */}
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 22, flexWrap: 'wrap' }}>
@@ -604,6 +821,8 @@ const PortalDashboardPage = () => {
             {composerOpen && (
               <NewIssueForm
                 categories={context.categories}
+                workstreams={workstreams}
+                defaultWorkstream={workstream !== 'all' ? workstream : ''}
                 onClose={() => setComposerOpen(false)}
                 onCreated={(receipt) => {
                   setComposerOpen(false);
@@ -613,13 +832,55 @@ const PortalDashboardPage = () => {
               />
             )}
 
+            {/* Workstreams — the service lines this client buys. Only shown
+                when there is more than one, because a picker with a single
+                option is a chore rather than a choice. */}
+            {issues.length > 0 && manyWorkstreams && (
+              <div className="mcp-seg" style={{ marginBottom: 14 }}>
+                <button
+                  type="button"
+                  className="mcp-seg-btn"
+                  data-on={workstream === 'all'}
+                  aria-pressed={workstream === 'all'}
+                  onClick={() => setWorkstream('all')}
+                >
+                  All work
+                </button>
+                {workstreams.map((w) => (
+                  <button
+                    key={w.id}
+                    type="button"
+                    className="mcp-seg-btn"
+                    data-on={workstream === w.id}
+                    aria-pressed={workstream === w.id}
+                    onClick={() => setWorkstream(w.id)}
+                  >
+                    {w.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {issues.length > 0 && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 13 }}>
                 <h2 style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', margin: 0, color: '#334155' }}>
                   {filter === 'all' ? 'All requests' : BUCKETS[filter].label}
+                  {workstream !== 'all' && (
+                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>
+                      {' '}· {workstreams.find((w) => w.id === workstream)?.name || ''}
+                    </span>
+                  )}
                   <span style={{ color: '#94A3B8', fontWeight: 600 }}> · {visible.length}</span>
                 </h2>
-                {filter !== 'all' && <button type="button" className="mcp-linkbtn" onClick={() => setFilter('all')}>Show all</button>}
+                {(filter !== 'all' || workstream !== 'all') && (
+                  <button
+                    type="button"
+                    className="mcp-linkbtn"
+                    onClick={() => { setFilter('all'); setWorkstream('all'); }}
+                  >
+                    Show all
+                  </button>
+                )}
               </div>
             )}
 
@@ -678,6 +939,14 @@ const PortalDashboardPage = () => {
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 12 }}>
                       {issue.fromTeam && <FromTeamBadge orgName={context.orgName} />}
+                      {/* Which service line this belongs to. Only worth the
+                          space when the client buys more than one — otherwise
+                          every card would carry the same word. */}
+                      {manyWorkstreams && issue.workstream && (
+                        <span className="mcp-badge" style={{ '--bc': '#7C3AED' }}>
+                          {issue.workstream.name}
+                        </span>
+                      )}
                       <TypeBadge type={issue.type} />
                       <PriorityBadge priority={issue.priority} />
                       {issue.category && <span className="mcp-tag">{issue.category}</span>}
@@ -731,6 +1000,8 @@ const PortalDashboardPage = () => {
               </div>
             )}
           </div>
+            )}
+          </>
         )}
       </main>
     </div>
@@ -799,7 +1070,13 @@ const DashboardSkeleton = () => (
 );
 
 /* ---- New issue form ------------------------------------------------------- */
-const NewIssueForm = ({ categories, onClose, onCreated }) => {
+const NewIssueForm = ({ categories, workstreams = [], defaultWorkstream = '', onClose, onCreated }) => {
+  // Which service line this request is for. A client with exactly one
+  // workstream is never asked — the answer is not in doubt, and the server
+  // accepts the omission in that case too. Otherwise it is required, because
+  // filing an ads request into the SEO queue means the wrong person sees it.
+  const onlyWorkstream = workstreams.length === 1 ? workstreams[0].id : '';
+  const [workstream, setWorkstream] = useState(defaultWorkstream || onlyWorkstream);
   const [name, setName] = useState('');
   const [note, setNote] = useState('');
   const [type, setType] = useState('');
@@ -822,6 +1099,10 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
   const submit = async (e) => {
     e?.preventDefault?.();
     if (locked && phase !== 'partial') return;
+    if (workstreams.length > 1 && !workstream) {
+      setError('Please choose which workstream this is for.');
+      return;
+    }
     if (!name.trim()) { setError('Please describe your issue.'); return; }
     setError('');
 
@@ -831,6 +1112,9 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
       try {
         const { issue } = await createMyIssue({
           name: name.trim(), note: note.trim(),
+          // The server validates this against the board on the token — a group
+          // id is never taken on trust.
+          workstream: workstream || onlyWorkstream || undefined,
           type: type || undefined, priority,
           dueDate: dateInputToISO(dueDate) || undefined,
           category: category || undefined,
@@ -871,6 +1155,32 @@ const NewIssueForm = ({ categories, onClose, onCreated }) => {
         <button type="button" onClick={created ? finishWithoutFailed : onClose} disabled={busy}
           className="mcp-linkbtn" style={{ padding: 4 }} aria-label="Close"><X size={18} /></button>
       </div>
+
+      {/* Workstream — first, because it decides which of the team sees this.
+          Hidden when there is only one, which is then filled in silently. */}
+      {workstreams.length > 1 && (
+        <>
+          <label style={label}>Which workstream is this for?</label>
+          <div className="mcp-seg" style={{ marginBottom: 16 }}>
+            {workstreams.map((w) => {
+              const on = workstream === w.id;
+              return (
+                <button
+                  key={w.id}
+                  type="button"
+                  className="mcp-seg-btn"
+                  data-on={on}
+                  aria-pressed={on}
+                  disabled={locked}
+                  onClick={() => setWorkstream(w.id)}
+                >
+                  {w.name}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       {/* Type */}
       <label style={label}>What kind of request is this?</label>

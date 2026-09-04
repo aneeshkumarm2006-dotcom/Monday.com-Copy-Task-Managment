@@ -70,6 +70,17 @@ const notificationSchema = new mongoose.Schema(
         // below; clicking it opens that channel. Mapped to the 'mentions'
         // preference category in notificationService.
         'chatMention',
+        // A CLIENT posted in a client-facing surface, without mentioning
+        // anyone. Separate from 'chatMention' because it is not a mention and
+        // must not ride the mentions toggle, and separate from 'clientReplied'
+        // because that one deep-links through `task` to the task panel's Client
+        // tab — this carries no task at all.
+        //
+        // Mapped to the 'updates' category in notificationService, and that
+        // mapping is NOT optional: an unmapped type is delivered to everybody
+        // always, with no off switch, and "every message a client sends" is the
+        // single noisiest thing this product could do to a bell.
+        'clientChatMessage',
       ],
     },
     message: {
@@ -112,11 +123,18 @@ const notificationSchema = new mongoose.Schema(
         // Not a board anything: the morning digest is about the PERSON, so it
         // opens My Work, where every task it counted is already theirs.
         'myWork',
+        // A board VIEW again. Client conversations live only on their board's
+        // Chat tab — they are deliberately excluded from the global /chat
+        // sidebar — so a notification about one CANNOT link to `/chat?channel=`.
+        // That link would open a page whose sidebar no longer lists the
+        // channel: a dead end rather than an error.
+        'chat',
         null,
       ],
       default: null,
     },
-    // The chat channel this notification is about (chatMention only). Its own
+    // The chat channel this notification is about (chatMention and
+    // clientChatMessage). Its own
     // field rather than overloading `board`: a channel can be workspace-level
     // with no board at all, and the deep link needs the channel id regardless.
     channel: {

@@ -5,7 +5,6 @@ import {
   Pencil,
   StickyNote,
   Trash2,
-  Link2,
   Tags,
   UserPlus,
   MoreHorizontal,
@@ -67,7 +66,6 @@ const TaskGroupHeader = ({
   onRename,
   onDeleteGroup,
   onOpenNotes,
-  onOpenClientPortal,
   noteCount = 0,
   tags = [],
   onOpenTags,
@@ -135,7 +133,6 @@ const TaskGroupHeader = ({
       icon: StickyNote,
       run: () => onOpenNotes(),
     },
-    onOpenClientPortal && { label: 'Client link', icon: Link2, run: () => onOpenClientPortal() },
     onOpenTags && { label: 'Tags', icon: Tags, run: (e) => onOpenTags(e) },
     onOpenOwner && { label: 'Group owner', icon: UserPlus, run: (e) => onOpenOwner(e) },
     onDeleteGroup && { label: 'Delete group', icon: Trash2, run: () => onDeleteGroup(), danger: true },
@@ -676,20 +673,8 @@ const TaskGroupHeader = ({
         </button>
       )}
 
-      {/* Client link (client boards, managers only) — opens the portal setup
-          modal for this group. */}
-      {onOpenClientPortal && (
-        <button
-          type="button"
-          onClick={onOpenClientPortal}
-          aria-label={`Client link for group ${name}`}
-          title="Client link"
-          className="inline-flex items-center justify-center transition-colors duration-150 hover:bg-[color:var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
-          style={{ width: 28, height: 28, borderRadius: 'var(--radius-sm)' }}
-        >
-          <Link2 size={14} color="var(--color-text-secondary)" aria-hidden="true" />
-        </button>
-      )}
+      {/* The client portal link used to live here, per group. A client board
+          is now ONE client with one link, managed from the board header. */}
 
       {/* Rename group (admin only). Stays mounted but inert while editing, so
           the button row doesn't shift under the cursor mid-rename — clicking it

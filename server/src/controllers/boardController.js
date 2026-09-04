@@ -17,6 +17,7 @@ const ConnectorProject = require('../models/ConnectorProject');
 const ConnectorFieldMapping = require('../models/ConnectorFieldMapping');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
 const Organisation = require('../models/Organisation');
+const ClientContact = require('../models/ClientContact');
 const User = require('../models/User');
 const { isBoardCreator } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
@@ -28,7 +29,14 @@ const { isValidTimezone } = require('../utils/tzDay');
 const { monthKeyOf } = require('../utils/monthKey');
 const { createNotification } = require('../services/notificationService');
 const { requireFeature } = require('../utils/userFeatures');
+const { generatePortalToken } = require('../utils/portalCrypto');
+const { inviteContact } = require('../services/portalInviteService');
+
+// Client-board invitation addresses. Same shape as the one groupController
+// used before board creation took this over.
+const CLIENT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const { cascadeDeleteVaults } = require('../services/vaultCascade');
+const { deleteSurfacesForBoard } = require('../services/workstreamSurfaces');
 
 const VALID_VISIBILITIES = ['public', 'private'];
 
@@ -477,6 +485,10 @@ const getDashboardStats = async (req, res) => {
         assignedTo: new mongoose.Types.ObjectId(userId),
         status: notDoneStatus,
         dueDate: { $ne: null, $lt: startOfToday },
+        // Top-level only, because this number is a LINK: the greeting hands it
+        // to My Work's work tab, which lists rows and not subitems. A count
+        // that opened a list of a different size would read as a bug.
+        parent: null,
       }),
     ]);
     const totalBoards = readableBoardIds.length;
@@ -519,6 +531,12 @@ const createBoard = async (req, res) => {
       boardType = 'standard',
       portalCategories,
       monthTimezone,
+      // Client boards only: the company label shown in the portal, and an
+      // optional first contact to invite straight away. These moved up from
+      // group creation when the BOARD became the client.
+      clientName,
+      clientEmail,
+      clientAuthMethod,
     } = req.body;
 
     if (!organisation) {
@@ -592,12 +610,30 @@ const createBoard = async (req, res) => {
       .lean();
     const nextBoardOrder = (lastBoard?.order ?? -1) + 1;
 
+    // A client board IS one client company, so it mints its shareable link AT
+    // CREATION and turns the portal on immediately — the link exists the moment
+    // the board does. This used to happen per GROUP, back when a group was the
+    // client; the board's groups are now that client's workstreams.
+    //
+    // Every new client board starts on the `basic` tier. Chat arrives only via
+    // the explicit, one-way upgrade — see utils/clientTierUpgrade.js.
+    const isClient = boardType === 'client';
+    const portalFields = isClient
+      ? {
+          portalToken: generatePortalToken(),
+          portalEnabled: true,
+          portalClientName: (clientName || '').trim() || name.trim(),
+          portalTier: 'basic',
+        }
+      : {};
+
     const board = await Board.create({
       name: name.trim(),
       description: typeof description === 'string' ? description.trim() : '',
       visibility: effectiveVisibility,
       boardType,
       portalCategories: cleanPortalCategories,
+      ...portalFields,
       monthTimezone: boardType === 'tracker' ? monthTimezone : null,
       organisation,
       createdBy: userId,
@@ -615,8 +651,31 @@ const createBoard = async (req, res) => {
     // owner's own Share/manage controls until the next full boards load. The
     // byline is hydrated for the same reason — the cached copy is what the
     // header reads.
+    // Best-effort first invitation — never fails the create.
+    let inviteSent = false;
+    const inviteEmail = (clientEmail || '').trim().toLowerCase();
+    if (isClient && CLIENT_EMAIL_RE.test(inviteEmail)) {
+      try {
+        const { ok } = await inviteContact({
+          board,
+          email: inviteEmail,
+          authMethod: clientAuthMethod === 'password' ? 'password' : 'google',
+        });
+        inviteSent = ok;
+      } catch (inviteErr) {
+        console.error('createBoard invite error:', inviteErr);
+      }
+    }
+
     await board.populate('createdBy', CREATOR_FIELDS);
-    return res.status(201).json({ board: withPermissions(board, org, userId) });
+    const payload = withPermissions(board, org, userId);
+    // `withPermissions` spreads the whole document, and THIS board object still
+    // holds the token we just minted in memory (`select: false` only governs
+    // what a QUERY returns, not what `create` hands back). Shipping it here
+    // would put a live portal credential in the create response, which is
+    // exactly what the field is hidden to prevent.
+    delete payload.portalToken;
+    return res.status(201).json({ board: payload, inviteSent });
   } catch (err) {
     console.error('createBoard error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -829,6 +888,21 @@ const deleteBoard = async (req, res) => {
     await cascadeDeleteVaults(id);
     await Task.deleteMany({ board: id });
     await TaskGroup.deleteMany({ board: id });
+    // Client Portal cleanup. A contact belongs to the BOARD, so this is the only
+    // place a deleted client board's roster can be cleaned up — group deletion
+    // deliberately no longer touches it. These rows carry email addresses and
+    // scrypt password hashes; they must not outlive the board.
+    await ClientContact.deleteMany({ board: id });
+    // Conversations — channels, messages, and both kinds of read marker. These
+    // were missing from this cascade entirely: `Channel` was only ever deleted
+    // by services/orgCascade.js on a whole-org teardown, so removing one board
+    // left every room on it, and every message in those rooms, orphaned in the
+    // collection forever. Messages carry TipTap bodies and Cloudinary URLs, so
+    // that is real content, not just index noise.
+    //
+    // Deliberately AFTER the contacts, so a run that dies partway leaves the
+    // rooms without a roster rather than a roster with live rooms.
+    await deleteSurfacesForBoard(id);
     await Board.deleteOne({ _id: id });
 
     return res.json({ success: true });

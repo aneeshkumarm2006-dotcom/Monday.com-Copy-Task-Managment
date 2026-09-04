@@ -138,8 +138,9 @@ const taskSchema = new mongoose.Schema(
     // living on a client board never implies the client can read the row; only
     // this flag does.
     //
-    // It is group-wide, not per-contact: the group IS the client company, so
-    // every contact on it sees a shared task. Client-raised tasks never set it
+    // It is board-wide, not per-contact: the BOARD is the client company (its
+    // groups are that client's workstreams), so every contact on it sees a
+    // shared task. Client-raised tasks never set it
     // (they are already visible to whoever raised them, and flipping it would
     // show one contact's ticket to their colleagues) — enforced in
     // taskController.setTaskPortalShared.

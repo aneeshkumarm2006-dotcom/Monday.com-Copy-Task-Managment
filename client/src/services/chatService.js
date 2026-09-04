@@ -94,6 +94,77 @@ export const makeTaskFromMessage = async (channelId, messageId, payload = {}) =>
   return data;
 };
 
+/* ------------------------------------------------------------------ */
+/* Client boards: workstream surfaces and mail threads                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * GET /api/chat/boards/:id/channels — every surface on ONE board, grouped by
+ * workstream. Powers the board Chat tab.
+ *
+ * Deliberately a different endpoint from `getChannels` rather than a filter on
+ * it: the sidebar wants a flat list of rooms the team can talk in, this wants
+ * the board's GROUPS — including the ones with no surfaces yet, which is the
+ * whole point, since those are the rows that offer "Set up communication".
+ * A filter over the sidebar's response could never show an empty workstream.
+ *
+ * Returns `{ board, canManage, workstreams, extras }`.
+ */
+export const getBoardChannels = async (boardId) => {
+  const { data } = await api.get(`/api/chat/boards/${boardId}/channels`);
+  return data;
+};
+
+/**
+ * POST the setup modal's selection. `selection` is `{ clientChat, clientMail,
+ * team }` — the keys in `utils/chatSurfaces.js`, never a `(mode, audience)`
+ * pair spelled out here.
+ *
+ * Idempotent server-side, so a double-submit converges rather than duplicating.
+ * That is why the response splits what it made from what was already there:
+ * `{ created, existing }`.
+ */
+export const createSurfaces = async (boardId, groupId, selection) => {
+  const { data } = await api.post(
+    `/api/chat/boards/${boardId}/groups/${groupId}/surfaces`,
+    selection
+  );
+  return data;
+};
+
+/**
+ * GET the thread list of a MAIL channel, newest activity first.
+ *
+ * Sorted by last activity rather than by the root's creation date — a
+ * three-week-old subject someone just replied to is the one you want at the
+ * top. `params.before` pages backwards using the cursor the previous response
+ * returned as `nextBefore`.
+ *
+ * Returns `{ threads, nextBefore, canPost, canManage }`.
+ */
+export const getThreads = async (channelId, { before = null } = {}) => {
+  const { data } = await api.get(`/api/chat/channels/${channelId}/threads`, {
+    params: before ? { before } : {},
+  });
+  return data;
+};
+
+/** POST a new mail thread. `subject` is required (1–200 chars); mail channels
+ *  only, and the server 400s on a chat one rather than inventing a subject. */
+export const createThread = async (channelId, payload) => {
+  const { data } = await api.post(`/api/chat/channels/${channelId}/threads`, payload);
+  return data.message;
+};
+
+/** POST — mark one mail thread read. Per THREAD, not per channel: a mailbox is
+ *  read one subject at a time, so opening one must not clear the rest. */
+export const markThreadRead = async (channelId, threadId) => {
+  const { data } = await api.post(
+    `/api/chat/channels/${channelId}/threads/${threadId}/read`
+  );
+  return data;
+};
+
 /** POST a file; returns the attachment descriptor the composer embeds. */
 export const uploadChatAttachment = async (channelId, file) => {
   const form = new FormData();

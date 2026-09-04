@@ -27,9 +27,11 @@ const ConnectorBudget = require('../models/ConnectorBudget');
 const BoardConnector = require('../models/BoardConnector');
 const ConnectorFieldMapping = require('../models/ConnectorFieldMapping');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
+const ClientContact = require('../models/ClientContact');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const VaultEscrow = require('../models/VaultEscrow');
 const { cascadeDeleteVaults } = require('./vaultCascade');
+const { deleteSurfacesForBoard, deleteWorkspaceChannels } = require('./workstreamSurfaces');
 
 /**
  * Permanently delete an organisation and everything that lives under it.
@@ -69,6 +71,10 @@ const cascadeDeleteOrg = async (orgId) => {
 
   await Notification.deleteMany({ organisation: orgId });
   await ItemFollow.deleteMany({ organisation: orgId });
+  // The org-wide half of the ClientContact cleanup — see the board-scoped
+  // delete below. A contact whose board was already deleted has no board to be
+  // found by, and would otherwise survive its whole workspace.
+  await ClientContact.deleteMany({ organisation: orgId });
 
   if (boardIds.length) {
     await cascadeDeleteVaults(boardIds);
@@ -94,12 +100,33 @@ const cascadeDeleteOrg = async (orgId) => {
     await AdsBudget.deleteMany({ board: { $in: boardIds } });
     await ActivityLog.deleteMany({ board: { $in: boardIds }, adsBudget: { $ne: null } });
     await TaskGroup.deleteMany({ board: { $in: boardIds } });
+    // Client Portal contacts. These carry email addresses, scrypt password
+    // hashes and one-time setup-token hashes, so they must not outlive the
+    // workspace. Deleted by board here, and again by org below — the same
+    // belt-and-braces this file already applies to ConnectorFieldMapping and
+    // GoalConnectorLink, so a contact whose board vanished earlier still goes.
+    await ClientContact.deleteMany({ board: { $in: boardIds } });
+    // Conversations. Channels, messages, and both kinds of read marker were
+    // missing here as well as from deleteBoard — so tearing down a workspace
+    // left every room and every message in it behind, permanently unreachable.
+    // A DM is deliberately NOT collected by this loop: it carries no board, and
+    // it belongs to its two PEOPLE rather than to the workspace it was opened
+    // in, so it survives one of them leaving. `deleteWorkspaceChannels` below
+    // takes the org's rooms; nothing takes the DMs, and that is the intent.
+    for (const boardId of boardIds) {
+      await deleteSurfacesForBoard(boardId);
+    }
     await Automation.deleteMany({ board: { $in: boardIds } });
     await BoardConnection.deleteMany({
       $or: [{ fromBoardId: { $in: boardIds } }, { toBoardId: { $in: boardIds } }],
     });
     await Board.deleteMany({ _id: { $in: boardIds } });
   }
+
+  // Workspace-level channels — the ones with no board at all, which the
+  // board loop above cannot reach by definition. DMs are excluded inside the
+  // helper: they follow their two people across workspaces.
+  await deleteWorkspaceChannels(orgId);
 
   // The org's break-glass key. Nothing else references it once the boards are
   // gone, and leaving it would keep a wrapped private key alive for a workspace

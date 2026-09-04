@@ -32,9 +32,23 @@ const { resolveAccess, resolveOrgAccess } = require('./permissions');
  * @param {string} userId
  * @param {Object} [opts]
  * @param {boolean} [opts.requireRead=true] - 403 unless the user can read the board
+ * @param {string} [opts.select] - extra projection, e.g. '+portalToken'.
+ *
+ *   `Board.portalToken` is `select: false` because it is a live credential and
+ *   `withPermissions` spreads the whole board into every board response. Any
+ *   path that WRITES the token must pass '+portalToken' here — otherwise
+ *   `if (!board.portalToken)` reads true on a board that has one, and the
+ *   "mint a token if missing" branches silently rotate a live client link.
+ *   Read-only callers should leave it off and keep failing closed.
  */
-const loadBoardContext = async (boardId, userId, { requireRead = true } = {}) => {
-  const board = await Board.findById(boardId);
+const loadBoardContext = async (
+  boardId,
+  userId,
+  { requireRead = true, select = null } = {}
+) => {
+  const query = Board.findById(boardId);
+  if (select) query.select(select);
+  const board = await query;
   if (!board) return { status: 404, error: 'Board not found' };
 
   const org = await Organisation.findById(board.organisation);

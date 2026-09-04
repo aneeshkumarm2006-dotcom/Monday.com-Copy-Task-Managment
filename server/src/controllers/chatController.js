@@ -9,6 +9,10 @@ const eventBus = require('../services/eventBus');
 const { loadBoardContext, loadOrgContext, requireCapability } = require('../utils/boardContext');
 const { resolveAccess } = require('../utils/permissions');
 const { channelAudience } = require('../services/chatAudience');
+const { markChannelRead: writeChannelRead, markThreadRead: writeThreadRead, threadReadMap } = require('../services/chatRead');
+const { createSurfaces } = require('../services/workstreamSurfaces');
+const { keyForSurface } = require('../utils/chatSurfaces');
+const { isClientBoard } = require('../utils/clientBoard');
 const { createNotificationsForUsers } = require('../services/notificationService');
 const { monthKeyOf } = require('../utils/monthKey');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
@@ -111,6 +115,24 @@ const resolveChannelAccess = async (channel, userId) => {
  * sidebar fetch; the partial unique index makes racing calls converge on one
  * row. `setOnInsert` only — a channel an admin renamed keeps its name when
  * the group's name later drifts.
+ *
+ * TRACKER BOARDS ONLY, and deliberately so. A client board's surfaces are
+ * CHOSEN by the team rather than minted automatically, and this function runs
+ * on every global sidebar fetch — which now excludes client boards — so
+ * extending it there would create rooms it then filters out, org-wide, on
+ * every request.
+ *
+ * `mode` and `audience` are written EXPLICITLY, in both the filter and the
+ * insert. Two reasons, and the first is the one that bites:
+ *
+ *   - The filter `{board, group}` no longer identifies a row. A workstream can
+ *     carry up to four surfaces, so a bare pair could match any of them.
+ *     Tracker groups only ever have the one, but a filter that is accidentally
+ *     right is a filter that stops being right.
+ *   - Relying on schema defaults here means relying on `setDefaultsOnInsert`,
+ *     which is unset globally in this app. A document inserted without them
+ *     indexes as `(board, group, null, null)` — a DIFFERENT key from
+ *     `(board, group, 'chat', 'team')` — and the next call mints a duplicate.
  */
 const ensureAutoChannels = async (orgId) => {
   const boards = await Board.find({
@@ -127,12 +149,14 @@ const ensureAutoChannels = async (orgId) => {
   await Channel.bulkWrite(
     groups.map((g) => ({
       updateOne: {
-        filter: { board: g.board, group: g._id },
+        filter: { board: g.board, group: g._id, mode: 'chat', audience: 'team' },
         update: {
           $setOnInsert: {
             organisation: orgId,
             board: g.board,
             group: g._id,
+            mode: 'chat',
+            audience: 'team',
             name: g.name || 'Untitled client',
             archived: false,
             createdBy: null,
@@ -142,7 +166,17 @@ const ensureAutoChannels = async (orgId) => {
       },
     })),
     { ordered: false }
-  );
+  ).catch((err) => {
+    // E11000 on an upsert IS the race the unique index exists to win — two
+    // sidebar fetches arriving together, one losing. Rethrowing it would turn
+    // a won race into a 500 on the sidebar, the board tab and the portal list
+    // at once, because an unordered bulkWrite throws rather than reporting.
+    const writeErrors = err?.writeErrors || [];
+    const allDuplicates =
+      err?.code === 11000 ||
+      (writeErrors.length > 0 && writeErrors.every((e) => e?.code === 11000));
+    if (!allDuplicates) throw err;
+  });
 };
 
 /* ------------------------------------------------------------------ */
@@ -187,6 +221,15 @@ const listChannels = async (req, res) => {
         return (ch.members || []).some((m) => String(m?._id || m) === String(userId));
       }
       if (!ch.board) return internal;
+      // A CLIENT BOARD'S ROOMS LIVE ONLY ON THAT BOARD'S CHAT TAB.
+      //
+      // Not a permission decision — the reader can already see these — but a
+      // placement one, and it matters. These are conversations WITH an outside
+      // company; mixed into the same list as internal team chat, they are how
+      // somebody answers in the wrong room. `isClientBoardChannel` on the
+      // client mirrors this exactly, and the mobile tab badge must apply the
+      // same filter or it advertises unread the user cannot reach from there.
+      if (isClientBoard(ch.board)) return false;
       return resolveAccess(ch.board, ctx.org, userId).canRead;
     });
 
@@ -524,13 +567,9 @@ const markChannelRead = async (req, res) => {
     const at = req.body?.at ? new Date(req.body.at) : new Date();
     const lastReadAt = Number.isNaN(at.getTime()) ? new Date() : at;
 
-    await ChannelRead.findOneAndUpdate(
-      { channel: channel._id, user: userId },
-      // $max, not $set: a stale tab reporting an old `at` must never move the
-      // marker backwards and resurrect read messages as unread.
-      { $max: { lastReadAt } },
-      { upsert: true }
-    );
+    // $max, not $set — see services/chatRead.js. A stale tab reporting an old
+    // `at` must never move the marker backwards and resurrect read messages.
+    await writeChannelRead({ channelId: channel._id, userId, at: lastReadAt });
     return res.json({ success: true });
   } catch (err) {
     console.error('markChannelRead error:', err);
@@ -671,6 +710,17 @@ const sendMessage = async (req, res) => {
       if (!channel.board) {
         return res.status(400).json({ error: 'Tasks and goals can only be shared in board channels' });
       }
+      // NEVER into a room the client is in. A task chip carries the internal
+      // name and status of a row the client has no other way to see — most
+      // rows on a client board are ordinary internal work — and a goal chip
+      // carries a target we may not have agreed with them. The share picker is
+      // hidden on these channels, but hiding a control is a courtesy; this is
+      // the control.
+      if (channel.audience === 'client') {
+        return res.status(400).json({
+          error: 'Tasks and goals cannot be shared into a client-facing channel',
+        });
+      }
       if (taskId) {
         task = await Task.findById(taskId).select('_id board name');
         if (!task || String(task.board) !== String(channel.board)) {
@@ -699,7 +749,11 @@ const sendMessage = async (req, res) => {
       // that notifies someone into a room they cannot open is a leak.
       audience = await channelAudience(channel, orgCtx.org);
     }
-    const audienceSet = new Set(audience);
+    // `audience` is now {userIds, contactIds}. This is the TEAM send path, so
+    // `mentions` names Users and is validated against userIds only; a team
+    // member mentioning a client contact goes through `mentionsContacts`,
+    // which this endpoint does not accept.
+    const audienceSet = new Set(audience.userIds);
     const validMentions = [
       ...new Set((Array.isArray(mentions) ? mentions : []).map(String)),
     ].filter((id) => audienceSet.has(id));
@@ -717,12 +771,10 @@ const sendMessage = async (req, res) => {
     });
 
     // Posting is reading: your own message must never count against you as
-    // unread, so the marker rides forward with the send.
-    await ChannelRead.findOneAndUpdate(
-      { channel: channel._id, user: userId },
-      { $max: { lastReadAt: message.createdAt } },
-      { upsert: true }
-    );
+    // unread, so the marker rides forward with the send. Through the shared
+    // helper, so the `$max`-never-backwards rule has one implementation across
+    // both principal types and both units (channel and thread).
+    await writeChannelRead({ channelId: channel._id, userId, at: message.createdAt });
 
     // Mentions → the bell, through the same service as everything else (so
     // the 'mentions' preference toggle governs chat too).
@@ -744,13 +796,17 @@ const sendMessage = async (req, res) => {
       });
     }
 
-    // Real-time fan-out to everyone who can see the channel.
+    // Real-time fan-out to everyone who can see the channel — BOTH principal
+    // types. `recipientContactIds` is empty for every team surface, which is
+    // every channel that is not on an upgraded client board, so this is inert
+    // until a board is upgraded.
     try {
       eventBus.emit('chat.message', {
         channelId: String(channel._id),
         messageId: String(message._id),
         orgId: String(channel.organisation),
-        recipientIds: audience.filter((id) => id !== String(userId)),
+        recipientIds: audience.userIds.filter((id) => id !== String(userId)),
+        recipientContactIds: audience.contactIds,
       });
     } catch (emitErr) {
       // Delivery is best-effort; the message is already stored.
@@ -1012,6 +1068,520 @@ const makeTaskFromMessage = async (req, res) => {
   }
 };
 
+
+/* ------------------------------------------------------------------ */
+/* Client boards: the board Chat tab, and the setup picker             */
+/* ------------------------------------------------------------------ */
+
+/** One channel as the board tab wants it, with its surface key resolved. */
+const serializeSurface = (ch, { unread = 0, lastMessage = null } = {}) => ({
+  _id: ch._id,
+  kind: ch.kind || 'channel',
+  mode: ch.mode || 'chat',
+  audience: ch.audience || 'team',
+  surfaceKey: keyForSurface(ch.mode || 'chat', ch.audience || 'team'),
+  name: ch.name,
+  group: ch.group || null,
+  archived: ch.archived,
+  unread,
+  lastMessage,
+});
+
+/**
+ * GET /api/chat/boards/:boardId/channels
+ *
+ * Every surface on one board, grouped by workstream — the board Chat tab.
+ *
+ * Separate from `listChannels` rather than a query param on it, because the two
+ * answer different questions and have opposite defaults. The sidebar asks "what
+ * are all my conversations", auto-creates tracker rooms as a side effect, and
+ * now deliberately EXCLUDES client boards. This asks "what exists on this one
+ * board", creates nothing, and is the only place client rooms appear.
+ */
+const listBoardChannels = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const ctx = await loadBoardContext(req.params.boardId, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+
+    const channels = await Channel.find({ board: ctx.board._id, archived: false }).sort({
+      createdAt: 1,
+    });
+
+    const ids = channels.map((c) => c._id);
+
+    // Same preview + unread machinery as the sidebar. Kept here rather than
+    // shared because the sidebar's version also handles DMs and legacy pair
+    // merging, neither of which can occur on a board.
+    const latest = ids.length
+      ? await Message.aggregate([
+          { $match: { channel: { $in: ids } } },
+          { $sort: { channel: 1, createdAt: -1 } },
+          {
+            $group: {
+              _id: '$channel',
+              lastAt: { $first: '$createdAt' },
+              lastText: { $first: '$bodyText' },
+              lastAuthor: { $first: '$author' },
+              lastAuthorType: { $first: '$authorType' },
+              lastPortalAuthor: { $first: '$portalAuthor' },
+            },
+          },
+        ])
+      : [];
+    const latestByChannel = new Map(latest.map((l) => [String(l._id), l]));
+
+    const reads = await ChannelRead.find({ user: userId, channel: { $in: ids } });
+    const readByChannel = new Map(reads.map((r) => [String(r.channel), r.lastReadAt]));
+
+    const counts = await Promise.all(
+      channels.map(async (ch) => {
+        const last = latestByChannel.get(String(ch._id));
+        if (!last) return 0;
+        const readAt = readByChannel.get(String(ch._id));
+        if (readAt && last.lastAt <= readAt) return 0;
+        return Message.countDocuments({
+          channel: ch._id,
+          ...(readAt ? { createdAt: { $gt: readAt } } : {}),
+          author: { $ne: userId },
+        });
+      })
+    );
+
+    // Author names for the preview line, across BOTH principal types — a client
+    // room's newest message is as likely to be the client's as ours.
+    const User = require('../models/User');
+    const ClientContact = require('../models/ClientContact');
+    const userIds = [...new Set(latest.map((l) => String(l.lastAuthor)).filter(Boolean))];
+    const contactIds = [
+      ...new Set(latest.map((l) => String(l.lastPortalAuthor)).filter(Boolean)),
+    ];
+    const [users, contacts] = await Promise.all([
+      userIds.length ? User.find({ _id: { $in: userIds } }).select('name') : [],
+      contactIds.length
+        ? ClientContact.find({ _id: { $in: contactIds } }).select('name email')
+        : [],
+    ]);
+    const nameOf = new Map(users.map((u) => [String(u._id), u.name]));
+    contacts.forEach((c) => nameOf.set(String(c._id), c.name || c.email));
+
+    const previewFor = (ch) => {
+      const last = latestByChannel.get(String(ch._id));
+      if (!last) return null;
+      const author =
+        last.lastAuthorType === 'system'
+          ? 'Macan'
+          : nameOf.get(String(last.lastPortalAuthor || last.lastAuthor)) || '';
+      return {
+        at: last.lastAt,
+        text: (last.lastText || '').slice(0, 140),
+        authorName: author,
+      };
+    };
+
+    const byGroup = new Map();
+    const extras = [];
+    channels.forEach((ch, i) => {
+      const payload = serializeSurface(ch, {
+        unread: counts[i],
+        lastMessage: previewFor(ch),
+      });
+      if (!ch.group) {
+        extras.push(payload);
+        return;
+      }
+      const key = String(ch.group);
+      if (!byGroup.has(key)) byGroup.set(key, []);
+      byGroup.get(key).push(payload);
+    });
+
+    // Every group, INCLUDING those with no surfaces — a workstream with none is
+    // precisely the row that has to render "Set up communication", so it cannot
+    // be filtered out by starting from the channels.
+    const groups = await TaskGroup.find({ board: ctx.board._id })
+      .select('name order')
+      .sort({ order: 1, createdAt: 1 })
+      .lean();
+
+    return res.json({
+      board: {
+        _id: ctx.board._id,
+        name: ctx.board.name,
+        boardType: ctx.board.boardType,
+        portalTier: ctx.board.portalTier || 'basic',
+        portalClientName: ctx.board.portalClientName || '',
+      },
+      canManage: ctx.can('group.manage'),
+      workstreams: groups.map((g) => {
+        const surfaces = byGroup.get(String(g._id)) || [];
+        return {
+          group: { _id: g._id, name: g.name, order: g.order },
+          surfaces,
+          surfaceKeys: surfaces.map((s) => s.surfaceKey).filter(Boolean),
+        };
+      }),
+      extras,
+    });
+  } catch (err) {
+    console.error('listBoardChannels error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * POST /api/chat/boards/:boardId/groups/:groupId/surfaces
+ * Body: { clientChat, clientMail, team }
+ *
+ * The setup picker's write. Idempotent — re-running with the same selection
+ * reports everything as `existing` and creates nothing.
+ */
+const createGroupSurfaces = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const ctx = await loadBoardContext(req.params.boardId, userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+
+    const denied = requireCapability(
+      ctx,
+      'group.manage',
+      'You do not have permission to set up communication on this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    // The group must be on THIS board. Scoped by the board the caller's access
+    // was resolved against, never by a board id from the body.
+    const group = await TaskGroup.findOne({
+      _id: req.params.groupId,
+      board: ctx.board._id,
+    }).select('name board');
+    if (!group) return res.status(404).json({ error: 'Workstream not found' });
+
+    const result = await createSurfaces(
+      ctx.board,
+      group,
+      {
+        clientChat: Boolean(req.body?.clientChat),
+        clientMail: Boolean(req.body?.clientMail),
+        team: Boolean(req.body?.team),
+      },
+      { createdBy: userId }
+    );
+
+    if (!result.ok) {
+      return res.status(400).json({ error: result.refusals[0], refusals: result.refusals });
+    }
+
+    return res.status(201).json({
+      created: result.created.map((c) => serializeSurface(c)),
+      existing: result.existing.map((c) => serializeSurface(c)),
+    });
+  } catch (err) {
+    console.error('createGroupSurfaces error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/* ------------------------------------------------------------------ */
+/* Mail: threads                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The thread list for a mail channel, newest ACTIVITY first.
+ *
+ * Shared by both planes — the team's endpoint below and the portal's — because
+ * the aggregation IS the feature, and two copies would sort differently within
+ * a release of each other.
+ *
+ * WHY AN AGGREGATION AND NOT THE ORDINARY MESSAGE LIST. Chat's listing sorts
+ * top-level messages by their own `createdAt`, which for mail is the moment the
+ * thread was OPENED. Gmail sorts by last activity, and it is right to: a thread
+ * answered this morning must not sit at the bottom because it was started in
+ * March. So each root is joined to its replies to compute `lastAt`, and that is
+ * what both the sort and the pagination cursor use.
+ *
+ * The cursor is `lastAt` for the same reason. Paging on the root's `createdAt`
+ * while sorting on `lastAt` would skip and repeat rows as threads move.
+ */
+const loadThreads = async (channelId, { before = null, limit = MAX_MESSAGE_LIMIT } = {}) => {
+  const rows = await Message.aggregate([
+    { $match: { channel: channelId, replyTo: null } },
+    {
+      $lookup: {
+        from: 'messages',
+        localField: '_id',
+        foreignField: 'replyTo',
+        as: 'replies',
+      },
+    },
+    {
+      $addFields: {
+        replyCount: { $size: '$replies' },
+        // The root's own timestamp is the floor: a thread with no replies is as
+        // recent as the day it was written, not as recent as nothing.
+        lastAt: { $max: { $concatArrays: [['$createdAt'], '$replies.createdAt'] } },
+        lastText: {
+          $let: {
+            vars: {
+              newest: {
+                $first: { $sortArray: { input: '$replies', sortBy: { createdAt: -1 } } },
+              },
+            },
+            in: { $ifNull: ['$$newest.bodyText', '$bodyText'] },
+          },
+        },
+        // Everyone who has spoken in the thread, root author included. Kept as
+        // two id sets rather than resolved names, because the two planes
+        // resolve them differently — the client must never receive a team
+        // member's email address.
+        participantUsers: {
+          $setUnion: [
+            { $cond: [{ $ifNull: ['$author', false] }, ['$author'], []] },
+            { $filter: { input: '$replies.author', as: 'a', cond: { $ne: ['$$a', null] } } },
+          ],
+        },
+        participantContacts: {
+          $setUnion: [
+            { $cond: [{ $ifNull: ['$portalAuthor', false] }, ['$portalAuthor'], []] },
+            {
+              $filter: {
+                input: '$replies.portalAuthor',
+                as: 'a',
+                cond: { $ne: ['$$a', null] },
+              },
+            },
+          ],
+        },
+      },
+    },
+    ...(before ? [{ $match: { lastAt: { $lt: before } } }] : []),
+    { $sort: { lastAt: -1 } },
+    { $limit: limit },
+    {
+      $project: {
+        subject: 1,
+        bodyText: 1,
+        lastText: 1,
+        lastAt: 1,
+        createdAt: 1,
+        replyCount: 1,
+        participantUsers: 1,
+        participantContacts: 1,
+        author: 1,
+        portalAuthor: 1,
+        authorType: 1,
+      },
+    },
+  ]);
+
+  return {
+    threads: rows,
+    nextBefore: rows.length === limit ? rows[rows.length - 1].lastAt : null,
+  };
+};
+
+/**
+ * Resolve the (user, contact) id sets on a page of threads to display names.
+ *
+ * `includeAvatars` is off for the portal: a team member's `profilePic` is a
+ * Google URL that identifies them beyond the name we chose to share.
+ */
+const nameParticipants = async (rows, { includeAvatars = true } = {}) => {
+  const User = require('../models/User');
+  const ClientContact = require('../models/ClientContact');
+  const userIds = [...new Set(rows.flatMap((r) => (r.participantUsers || []).map(String)))];
+  const contactIds = [
+    ...new Set(rows.flatMap((r) => (r.participantContacts || []).map(String))),
+  ];
+  const [users, contacts] = await Promise.all([
+    userIds.length ? User.find({ _id: { $in: userIds } }).select('name profilePic') : [],
+    contactIds.length
+      ? ClientContact.find({ _id: { $in: contactIds } }).select('name email')
+      : [],
+  ]);
+  const byId = new Map();
+  users.forEach((u) =>
+    byId.set(String(u._id), {
+      name: u.name,
+      ...(includeAvatars ? { profilePic: u.profilePic } : {}),
+      kind: 'user',
+    })
+  );
+  contacts.forEach((c) => byId.set(String(c._id), { name: c.name || c.email, kind: 'client' }));
+  return byId;
+};
+
+/**
+ * One thread row as both planes want it, given the resolved names and this
+ * reader's marker. `unread` is computed rather than stored: no marker at all
+ * means never opened, which is unread.
+ */
+const serializeThreadRow = (t, names, seenAt) => ({
+  _id: t._id,
+  subject: t.subject || '(no subject)',
+  snippet: (t.lastText || t.bodyText || '').slice(0, 140),
+  participants: [...(t.participantUsers || []), ...(t.participantContacts || [])]
+    .map((id) => names.get(String(id)))
+    .filter(Boolean),
+  replyCount: t.replyCount || 0,
+  lastAt: t.lastAt,
+  createdAt: t.createdAt,
+  unread: !seenAt || t.lastAt > seenAt,
+});
+
+/**
+ * GET /api/chat/channels/:channelId/threads?before=<ISO>
+ */
+const listThreads = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const channel = await Channel.findById(req.params.channelId);
+    if (!channel) return res.status(404).json({ error: 'Channel not found' });
+    if (channel.mode !== 'mail') {
+      return res.status(400).json({ error: 'This channel is not a mailbox' });
+    }
+
+    const access = await resolveChannelAccess(channel, userId);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const before = req.query.before ? new Date(req.query.before) : null;
+    const { threads, nextBefore } = await loadThreads(channel._id, {
+      before: before && !Number.isNaN(before.getTime()) ? before : null,
+    });
+
+    const names = await nameParticipants(threads);
+    const readAt = await threadReadMap({ threadIds: threads.map((t) => t._id), userId });
+
+    return res.json({
+      threads: threads.map((t) => serializeThreadRow(t, names, readAt.get(String(t._id)))),
+      nextBefore,
+      canPost: access.post,
+      canManage: access.manage,
+    });
+  } catch (err) {
+    console.error('listThreads error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * POST /api/chat/channels/:channelId/threads
+ * Body: { subject, body, bodyText, attachments, mentions }
+ *
+ * Start a mail thread. THIS is where "a mail root must carry a subject" is
+ * enforced — see the comment on `Message.subject` for why the model cannot:
+ * the rule depends on `channel.mode`, which lives on another document, and this
+ * is a place that already holds it.
+ */
+const createThread = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const channel = await Channel.findById(req.params.channelId);
+    if (!channel) return res.status(404).json({ error: 'Channel not found' });
+    if (channel.mode !== 'mail') {
+      return res.status(400).json({ error: 'This channel is not a mailbox' });
+    }
+    if (channel.archived) return res.status(400).json({ error: 'This channel is archived' });
+
+    const access = await resolveChannelAccess(channel, userId);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+    if (!access.post) {
+      return res.status(403).json({ error: 'You do not have permission to post here' });
+    }
+
+    const subject = (req.body?.subject || '').toString().trim();
+    if (!subject) return res.status(400).json({ error: 'A subject is required' });
+    if (subject.length > 200) {
+      return res.status(400).json({ error: 'Subject must be 200 characters or fewer' });
+    }
+
+    const bodyText = (req.body?.bodyText || '').trim();
+    const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+    if (!bodyText && !attachments.length) {
+      return res.status(400).json({ error: 'Message is empty' });
+    }
+
+    const orgCtx = await loadOrgContext(channel.organisation, userId);
+    if (orgCtx.error) return res.status(orgCtx.status).json({ error: orgCtx.error });
+    const audience = await channelAudience(channel, orgCtx.org);
+    const audienceSet = new Set(audience.userIds);
+    const validMentions = [
+      ...new Set((Array.isArray(req.body?.mentions) ? req.body.mentions : []).map(String)),
+    ].filter((id) => audienceSet.has(id));
+
+    const message = await Message.create({
+      channel: channel._id,
+      author: userId,
+      subject,
+      body: req.body?.body || null,
+      bodyText,
+      attachments,
+      mentions: validMentions,
+      replyTo: null,
+    });
+
+    // Writing a thread is reading it.
+    await writeThreadRead({
+      threadId: message._id,
+      channelId: channel._id,
+      userId,
+      at: message.createdAt,
+    });
+
+    try {
+      eventBus.emit('chat.message', {
+        channelId: String(channel._id),
+        messageId: String(message._id),
+        orgId: String(channel.organisation),
+        recipientIds: audience.userIds.filter((id) => id !== String(userId)),
+        recipientContactIds: audience.contactIds,
+      });
+    } catch (emitErr) {
+      // Delivery is best-effort; the message is already stored.
+    }
+
+    const populated = await Message.findById(message._id).populate(MESSAGE_POPULATE);
+    return res.status(201).json({ message: populated });
+  } catch (err) {
+    console.error('createThread error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * POST /api/chat/channels/:channelId/threads/:threadId/read
+ *
+ * Per-thread, because mail reads a thread. Opening "Q4 budget" must not mark
+ * "October plan" read.
+ */
+const markThreadReadEndpoint = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const channel = await Channel.findById(req.params.channelId);
+    if (!channel) return res.status(404).json({ error: 'Channel not found' });
+
+    const access = await resolveChannelAccess(channel, userId);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const thread = await Message.findOne({
+      _id: req.params.threadId,
+      channel: channel._id,
+      replyTo: null,
+    }).select('_id');
+    if (!thread) return res.status(404).json({ error: 'Thread not found' });
+
+    await writeThreadRead({
+      threadId: thread._id,
+      channelId: channel._id,
+      userId,
+      at: req.body?.at || null,
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('markThreadRead error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   listChannels,
   createChannel,
@@ -1024,7 +1594,17 @@ module.exports = {
   deleteMessage,
   makeTaskFromMessage,
   uploadChatAttachment,
-  // exported for tests
+  listBoardChannels,
+  createGroupSurfaces,
+  listThreads,
+  createThread,
+  markThreadRead: markThreadReadEndpoint,
+  // Exported for tests AND for the portal plane, which reuses the thread
+  // aggregation rather than growing a second one that sorts differently.
   resolveChannelAccess,
   ensureAutoChannels,
+  loadThreads,
+  nameParticipants,
+  serializeThreadRow,
+  serializeSurface,
 };

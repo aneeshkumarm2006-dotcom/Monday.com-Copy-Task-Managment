@@ -41,6 +41,17 @@ const TYPE_CATEGORY = {
   // A chat @mention is a mention. Same toggle as task-thread mentions — one
   // switch for "people calling my name", wherever they do it.
   chatMention: 'mentions',
+  /**
+   * A client posting in a client-facing surface is an UPDATE, not a mention —
+   * nobody called this person's name, the client just said something.
+   *
+   * 'updates' is where `commented` and `replied` already live, so it is the
+   * toggle a user would look for, and it needs no settings-UI work. Leaving it
+   * unmapped would deliver every client message to every team member with board
+   * access, always, with nothing to switch off — the exact failure the seo
+   * mapping above exists as a warning about, except at conversation volume.
+   */
+  clientChatMessage: 'updates',
 };
 
 const categoryForType = (type) => TYPE_CATEGORY[type] || null;

@@ -63,14 +63,17 @@ test('isClientVisibleTask: tolerates null/undefined', () => {
 // ---------------------------------------------------------------------------
 // portalTaskFilter
 // ---------------------------------------------------------------------------
-test('portalTaskFilter: scopes to the group and excludes subitems', () => {
-  const f = portalTaskFilter({ groupId: 'g1', contactId: 'c1' });
-  assert.equal(f.group, 'g1');
+test('portalTaskFilter: scopes to the board and excludes subitems', () => {
+  const f = portalTaskFilter({ boardId: 'b1', contactId: 'c1' });
+  assert.equal(f.board, 'b1');
   assert.equal(f.parent, null);
+  // The board IS the client; its groups are that client's workstreams and the
+  // contact sees all of them. A group clause here would hide most of their work.
+  assert.ok(!Object.hasOwn(f, 'group'), 'filter must not scope by group');
 });
 
 test('portalTaskFilter: matches own submissions OR shared tasks, nothing else', () => {
-  const f = portalTaskFilter({ groupId: 'g1', contactId: 'c1' });
+  const f = portalTaskFilter({ boardId: 'b1', contactId: 'c1' });
   assert.deepEqual(f.$or, [
     { portalSubmitter: 'c1' },
     { portalShared: true },
@@ -79,12 +82,33 @@ test('portalTaskFilter: matches own submissions OR shared tasks, nothing else', 
 
 test('portalTaskFilter: the submitter clause is pinned to THIS contact', () => {
   // Guards the regression that matters most — a filter that matched any
-  // portalSubmitter would show every contact on the group each other's tickets.
-  const f = portalTaskFilter({ groupId: 'g1', contactId: 'c1' });
+  // portalSubmitter would show every contact on the board each other's tickets.
+  const f = portalTaskFilter({ boardId: 'b1', contactId: 'c1' });
   const submitterClause = f.$or.find((c) =>
     Object.hasOwn(c, 'portalSubmitter')
   );
   assert.equal(submitterClause.portalSubmitter, 'c1');
+});
+
+test('portalTaskFilter: REFUSES to build a filter it cannot scope', () => {
+  // The reason this throws rather than returning a partial filter: Mongoose
+  // strips undefined values out of a query. A filter missing its board clause
+  // does not match nothing — it matches every portalShared task in the
+  // database, across every workspace, and hands them to whoever asked.
+  assert.throws(() => portalTaskFilter({ boardId: 'b1' }), /boardId and contactId/);
+  assert.throws(() => portalTaskFilter({ contactId: 'c1' }), /boardId and contactId/);
+  assert.throws(() => portalTaskFilter({}), /boardId and contactId/);
+  assert.throws(() => portalTaskFilter(), /boardId and contactId/);
+});
+
+test('portalTaskFilter: the OLD group-scoped call shape throws', () => {
+  // The portal moved from group-scoped to board-scoped. A call site that was
+  // missed in that migration must fail loudly on its first request rather than
+  // quietly serving one client another client's shared tasks.
+  assert.throws(
+    () => portalTaskFilter({ groupId: 'g1', contactId: 'c1' }),
+    /boardId and contactId/
+  );
 });
 
 // ---------------------------------------------------------------------------

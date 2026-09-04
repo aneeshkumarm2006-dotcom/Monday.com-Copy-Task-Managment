@@ -2,7 +2,7 @@ const Message = require('../models/Message');
 const Channel = require('../models/Channel');
 const TaskGroup = require('../models/TaskGroup');
 const eventBus = require('./eventBus');
-const { channelAudience } = require('./chatAudience');
+const { channelUserAudience } = require('./chatAudience');
 
 /**
  * System posts — the ONE way anything non-human writes into a channel.
@@ -41,7 +41,12 @@ const postSystemMessage = async (channel, { bodyText, taskId = null, goalId = nu
     });
 
     try {
-      const audience = await channelAudience(channel);
+      // A system post is internal by construction — `ensureGroupChannel`
+      // defaults to the team surface and nothing asks it for a client one — so
+      // this deliberately fans out to USERS ONLY. Were a client-facing channel
+      // ever passed in here, the contacts would still not be told, which is the
+      // right way round for a failure mode to point.
+      const audience = await channelUserAudience(channel);
       if (audience.length) {
         eventBus.emit('chat.message', {
           channelId: String(channel._id),
@@ -62,23 +67,50 @@ const postSystemMessage = async (channel, { bodyText, taskId = null, goalId = nu
 };
 
 /**
- * The client channel for one (board, group) — creating it if chat has never
- * been opened in this workspace. Same idempotent upsert as the sidebar's
- * backfill, so an automation firing before anyone visits chat still has a
- * room to post into. Returns null (and posts nowhere) when the group is gone.
+ * The channel for one (board, group, mode, audience) — creating it if chat has
+ * never been opened in this workspace. Same idempotent upsert as the sidebar's
+ * backfill, so an automation firing before anyone visits chat still has a room
+ * to post into. Returns null (and posts nowhere) when the group is gone.
+ *
+ * ---- Why this takes a mode and an audience, and why they default this way ---
+ *
+ * The filter used to be `{board, group}`, which identified exactly one row. A
+ * workstream can now carry up to four surfaces, so that pair matches up to four
+ * documents and MongoDB returns whichever it likes.
+ *
+ * The only caller is the POST_TO_CHANNEL automation. So without these two
+ * arguments, an automation firing on a client board could post an internal
+ * system message — a task name, a status, whatever the rule was written to
+ * announce — straight INTO THE ROOM THE CLIENT IS READING, at random.
+ *
+ * Defaulting to the private team surface is what keeps every existing caller
+ * correct with no edit. If POST_TO_CHANNEL should ever be able to reach a
+ * client, that becomes an explicit field on the action's config — a thing
+ * somebody chose — never a coin flip.
+ *
+ * @param {'chat'|'mail'} [mode='chat']
+ * @param {'team'|'client'} [audience='team']
  */
-const ensureGroupChannel = async (orgId, boardId, groupId) => {
+const ensureGroupChannel = async (
+  orgId,
+  boardId,
+  groupId,
+  mode = 'chat',
+  audience = 'team'
+) => {
   if (!boardId || !groupId) return null;
   const group = await TaskGroup.findById(groupId).select('name board');
   if (!group || String(group.board) !== String(boardId)) return null;
 
   return Channel.findOneAndUpdate(
-    { board: boardId, group: groupId },
+    { board: boardId, group: groupId, mode, audience },
     {
       $setOnInsert: {
         organisation: orgId,
         board: boardId,
         group: groupId,
+        mode,
+        audience,
         name: group.name || 'Untitled client',
         archived: false,
         createdBy: null,

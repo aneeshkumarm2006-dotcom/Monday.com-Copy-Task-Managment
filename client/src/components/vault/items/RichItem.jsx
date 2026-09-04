@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import Input from '../../ui/Input';
 import RichEditor from '../../board/RichEditor';
-import { ReadOnlyRichBody } from '../../board/UpdatesTab';
+import ReadOnlyRichBody from '../../board/ReadOnlyRichBody';
 
 /**
  * Note and Doc — the two rich-text item types, sharing one implementation.

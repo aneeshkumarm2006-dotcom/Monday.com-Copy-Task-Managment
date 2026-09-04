@@ -103,6 +103,15 @@ const UpdateComposer = forwardRef(
       // Chat: the page provides the bordered container, so the form drops its
       // own outer padding down to a snug fit.
       compact = false,
+      // Whether a successful post should refresh the app's notification bell.
+      //
+      // MUST be false on any plane that is not app-authenticated. The refresh
+      // calls `GET /api/notifications` through `services/api.js`, whose 401
+      // handler deletes `macan_token` — so on the Client Portal (a different
+      // JWT, a different axios instance, no app session) posting one message
+      // would sign a team member out of Macan in whatever other tab they had
+      // it open. Task and chat callers inside the app leave this true.
+      refreshNotificationsOnPost = true,
     },
     ref
   ) => {
@@ -221,7 +230,7 @@ const UpdateComposer = forwardRef(
           : await updateService.addUpdate(taskId, payload);
         onPosted?.(created);
         resetComposer();
-        refreshNotifications(currentOrgId || undefined);
+        if (refreshNotificationsOnPost) refreshNotifications(currentOrgId || undefined);
       } catch (err) {
         console.error('Failed to post update:', err);
         // The draft deliberately survives a failed post — that is precisely the
@@ -243,6 +252,7 @@ const UpdateComposer = forwardRef(
       submitting,
       replyingTo,
       refreshNotifications,
+      refreshNotificationsOnPost,
       currentOrgId,
       visibility,
       onPosted,

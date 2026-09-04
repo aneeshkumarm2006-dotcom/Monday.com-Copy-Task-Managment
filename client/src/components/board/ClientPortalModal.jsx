@@ -2,23 +2,24 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Copy, Check, Link2, RefreshCw, Loader2, Mail, Send, KeyRound, Users } from 'lucide-react';
 import {
-  getGroupPortalConfig,
-  saveGroupPortalConfig,
-  sendGroupInvite,
-  getGroupPortalContacts,
+  getBoardPortalConfig,
+  saveBoardPortalConfig,
+  sendBoardPortalInvite,
+  getBoardPortalContacts,
   resendPortalInvite,
 } from '../../services/boardService';
 import ClientSignInMethodField from './ClientSignInMethodField';
 
 /**
- * ClientPortalModal — manage the shareable client link for one group of a Client
- * Portal board. The link is minted when the group is created, so this modal is
- * about SHARING it: copy the link, or email an invitation. Only rendered for
+ * ClientPortalModal — manage the shareable client link for a Client Portal
+ * BOARD. The board IS the client company (its groups are that client's
+ * workstreams), and the link is minted when the board is created — so this modal
+ * is about SHARING it: copy the link, or email an invitation. Only rendered for
  * board managers (BoardDetailPage gates on canManageAccess); the server enforces
  * it too.
  *
  * Props:
- *   groupId, groupName — the group being configured
+ *   boardId, boardName — the client board being configured
  *   onClose            — () => void
  */
 const label = {
@@ -70,7 +71,7 @@ const contactState = (c) => {
   return { label: 'Invited', color: 'var(--color-text-muted)' };
 };
 
-const ClientPortalModal = ({ groupId, groupName, onClose }) => {
+const ClientPortalModal = ({ boardId, boardName, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState(null);
   const [clientName, setClientName] = useState('');
@@ -91,8 +92,8 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
       // Both come from the same manage-gated endpoints; the contact list is
       // secondary, so a failure there must not blank the whole modal.
       const [c, people] = await Promise.all([
-        getGroupPortalConfig(groupId),
-        getGroupPortalContacts(groupId).catch(() => []),
+        getBoardPortalConfig(boardId),
+        getBoardPortalContacts(boardId).catch(() => []),
       ]);
       setConfig(c);
       setClientName(c.clientName || '');
@@ -109,7 +110,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groupId]);
+  }, [boardId]);
 
   const flash = (msg) => {
     setSavedMsg(msg);
@@ -121,7 +122,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
     setError('');
     setSavedMsg('');
     try {
-      const c = await saveGroupPortalConfig(groupId, patch);
+      const c = await saveBoardPortalConfig(boardId, patch);
       setConfig(c);
       setClientName(c.clientName || '');
       flash(successMsg);
@@ -148,7 +149,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
     setError('');
     setSavedMsg('');
     try {
-      const data = await sendGroupInvite(groupId, email, inviteMethod);
+      const data = await sendBoardPortalInvite(boardId, email, inviteMethod);
       if (data.portal) setConfig(data.portal);
       if (Array.isArray(data.contacts)) setContacts(data.contacts);
       setInviteEmail('');
@@ -165,7 +166,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
     setError('');
     setSavedMsg('');
     try {
-      const data = await resendPortalInvite(groupId, contactId);
+      const data = await resendPortalInvite(boardId, contactId);
       if (Array.isArray(data.contacts)) setContacts(data.contacts);
       flash(data.message || 'Email sent.');
     } catch (err) {
@@ -215,7 +216,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
           </button>
         </div>
         <p className="font-body" style={{ fontSize: 13, color: 'var(--color-text-secondary)', margin: '0 0 20px' }}>
-          Share the portal for <strong>{groupName}</strong> so this client can raise issues — copy the link or email an invitation.
+          Share the portal for <strong>{boardName}</strong> so this client can raise issues — copy the link or email an invitation.
         </p>
 
         {loading ? (
@@ -231,7 +232,7 @@ const ClientPortalModal = ({ groupId, groupName, onClose }) => {
                 style={field}
                 value={clientName}
                 onChange={(e) => setClientName(e.target.value)}
-                placeholder={groupName}
+                placeholder={boardName}
                 onBlur={() => {
                   if ((clientName.trim() || '') !== (config?.clientName || '')) {
                     save({ clientName: clientName.trim() }, 'Client name saved.');

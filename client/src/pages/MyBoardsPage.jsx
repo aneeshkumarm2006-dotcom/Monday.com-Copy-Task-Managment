@@ -161,6 +161,12 @@ const MyBoardsPage = () => {
       boardType: values.boardType || 'standard',
       portalCategories: values.portalCategories || [],
       monthTimezone: values.monthTimezone,
+      // Client boards only: the company label shown in the portal and an
+      // optional first contact to invite. The board mints its own portal link
+      // server-side — a client board IS the client, so the link is board-level.
+      clientName: values.clientName,
+      clientEmail: values.clientEmail,
+      clientAuthMethod: values.clientAuthMethod,
       organisation: orgId,
     });
     setCreateOpen(false);

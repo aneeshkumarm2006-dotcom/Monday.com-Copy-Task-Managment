@@ -6,6 +6,7 @@ const Update = require('../models/Update');
 const ClientContact = require('../models/ClientContact');
 const Organisation = require('../models/Organisation');
 const { loadBoardContext } = require('../utils/boardContext');
+const { isClientVisibleTask } = require('../utils/portalVisibility');
 const { createNotificationsForUsers } = require('./notificationService');
 const { logActivity } = require('./activityService');
 
@@ -98,9 +99,22 @@ const processInboundEmail = async ({ recipients, from, text: rawText }) => {
       author = user._id;
     }
   }
-  if (!authorType && task.group) {
-    const contact = await ClientContact.findOne({ group: task.group, email: senderEmail }).select('_id name');
-    if (contact) {
+  // A client contact replying by email. Scoped to the task's BOARD, because a
+  // contact belongs to the board (one client company) and not to a workstream.
+  //
+  // The `isClientVisibleTask` gate is NEW and is not optional. Board-scoping
+  // this lookup widens who matches — previously only contacts on the task's own
+  // group — and this path never checked visibility at all, so a contact could
+  // post onto a purely internal task by replying to any address they could
+  // guess. Their reply lands in the SHARED thread, where the team reads it as
+  // the client speaking. Same rule the portal itself enforces: reaching a task
+  // requires that the task actually reaches the client.
+  if (!authorType && task.board) {
+    const contact = await ClientContact.findOne({
+      board: task.board,
+      email: senderEmail,
+    }).select('_id name');
+    if (contact && isClientVisibleTask(task)) {
       authorType = 'client';
       portalAuthor = contact._id;
       actorLabel = contact.name || senderEmail;
