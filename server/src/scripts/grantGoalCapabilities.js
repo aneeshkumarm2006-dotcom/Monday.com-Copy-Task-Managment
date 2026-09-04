@@ -1,7 +1,7 @@
 /**
  * grantGoalCapabilities.js
  *
- * Ticks the three Monthly Goals capabilities onto the roles of organisations
+ * Ticks the four Monthly Goals capabilities onto the roles of organisations
  * that already existed before those capabilities were added to the catalog.
  *
  * WHY THIS IS NEEDED AT ALL: `ensureSystemRoles` seeds MISSING ROLES, never
@@ -13,11 +13,19 @@
  *
  * Matches the defaults a NEW workspace is seeded with (see SYSTEM_ROLES in
  * utils/capabilities.js):
- *     admin   → goal.view, goal.track, goal.manage
- *     member  → goal.view, goal.track, goal.manage
+ *     admin   → goal.view, goal.track, goal.create, goal.manage
+ *     member  → goal.view, goal.track, goal.create, goal.manage
  *     viewer  → goal.view          (reading whether the month was met is a read)
  *     guest   → nothing            (external; a client's scorecard is not theirs)
  *     owner   → untouched; the resolver short-circuits owners to the full catalog
+ *
+ * `goal.create` JOINED THIS LIST AFTER THE FIRST RUN, so a workspace that ran
+ * this script before the rung existed still needs it: re-run and only the one
+ * missing capability is added. Nobody is BLOCKED waiting for that run any more —
+ * `goal.manage` confers `goal.create` at resolve time (IMPLIED_CAPABILITIES in
+ * utils/capabilities.js), which is what unbroke the Add-a-goal button. Running
+ * this makes the permissions matrix agree with what the server already does, and
+ * grants the rung to roles that hold `goal.track` without `goal.manage`.
  *
  * Custom roles are LEFT ALONE. Somebody wrote those deliberately and this script
  * has no business guessing what they meant.
@@ -40,8 +48,8 @@ const Organisation = require('../models/Organisation');
 
 /** Role key → the capabilities a freshly-seeded workspace would give it. */
 const GRANTS = {
-  admin: ['goal.view', 'goal.track', 'goal.manage'],
-  member: ['goal.view', 'goal.track', 'goal.manage'],
+  admin: ['goal.view', 'goal.track', 'goal.create', 'goal.manage'],
+  member: ['goal.view', 'goal.track', 'goal.create', 'goal.manage'],
   viewer: ['goal.view'],
 };
 

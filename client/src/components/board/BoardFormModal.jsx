@@ -54,6 +54,11 @@ const BoardFormModal = ({
   useEffect(() => {
     if (!isOpen) return;
     setValues({
+      // Spread the defaults first: the client fields below are only rendered
+      // once Client Portal is picked, so leaving them out here left them
+      // undefined and `values.clientEmail.trim()` threw the moment the type
+      // was selected.
+      ...DEFAULTS,
       name: initialValues?.name || '',
       visibility: initialValues?.visibility || 'private',
       description: initialValues?.description || '',

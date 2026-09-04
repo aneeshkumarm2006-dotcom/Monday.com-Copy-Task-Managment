@@ -1,5 +1,6 @@
 const {
   ALL_CAPABILITIES,
+  expandImplied,
   BOARD_SCOPED,
   OWNER_BOARD_CAPABILITIES,
   OWNER_ONLY_CAPABILITIES,
@@ -110,8 +111,20 @@ const orgCapabilities = (org, userId) => {
   }
 
   if (!role) return new Set();
+  // `expandImplied` is what keeps a STORED role honest against a catalog that
+  // has moved on. A workspace older than the `goal.create` split stores
+  // `goal.manage` ("do anything to anyone's goal") and not `goal.create` ("add
+  // one"), and this layer is an AND — so without the expansion the org role, not
+  // the board, is what refused a board editor their own create. See
+  // IMPLIED_CAPABILITIES in [capabilities.js](./capabilities.js) for the rule
+  // about what may go in that table.
+  //
+  // Expand FIRST, then filter: an owner-only capability must not slip in through
+  // the back door of something that implies it.
   return new Set(
-    (role.permissions || []).filter((c) => !OWNER_ONLY_CAPABILITIES.has(c))
+    [...expandImplied(role.permissions || [])].filter(
+      (c) => !OWNER_ONLY_CAPABILITIES.has(c)
+    )
   );
 };
 

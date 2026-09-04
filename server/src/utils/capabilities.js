@@ -299,6 +299,70 @@ const BOARD_SCOPED = new Set([
 ]);
 
 /**
+ * Capabilities that another capability CONFERS, whatever the stored role says.
+ *
+ * This exists because a role is stored data, and stored data is frozen at the
+ * moment it was written. `ensureSystemRoles` seeds MISSING ROLES, never missing
+ * capabilities on roles an org already has — deliberately, so that a capability
+ * an admin consciously turned off is never silently switched back on. The cost
+ * of that rule is that a capability added to the catalog LATER is absent from
+ * every workspace that predates it, forever, until somebody runs a grant script
+ * or ticks a box by hand.
+ *
+ * That cost is acceptable for a NEW power ("nobody had ads budgets before, so
+ * nobody is missing anything they had"). It is not acceptable when the new
+ * capability is a LOWER RUNG carved out of one people already hold. `goal.create`
+ * was carved out of `goal.manage`: every workspace older than that split stores
+ * "edit and delete ANYONE's goals" and does not store "add a goal". The resolver
+ * then refused a create to the very people allowed to rewrite what they were
+ * creating — the client offered the Add button (it asks `canManage || canCreate`)
+ * and the server answered 403 (goal.create) on save.
+ *
+ * So: state the ladder inside the group, and resolve it. A capability listed here
+ * is conferred by its holder, in addition to whatever the role stores.
+ *
+ * WHAT BELONGS HERE: only a strictly-weaker rung of the SAME power. `goal.manage`
+ * is "do anything to any goal", so it cannot coherently withhold "add one", "type
+ * a number into one", or "see one" — a matrix that says otherwise is describing
+ * an impossible person, not a policy.
+ *
+ * WHAT DOES NOT: two capabilities that merely tend to travel together.
+ * `org.manage_settings` does not confer `org.manage_holidays` (see the note
+ * beside it — the split is the point), and no board capability confers another
+ * board's. When a future feature splits a rung out of an existing capability,
+ * add the pair here in the same commit; that is what stops this bug recurring.
+ */
+const IMPLIED_CAPABILITIES = {
+  'goal.manage': ['goal.create', 'goal.track', 'goal.view'],
+};
+
+/**
+ * `caps` plus everything those capabilities confer, to a fixed point.
+ *
+ * Returns a NEW set and never mutates its argument. Iterating to a fixed point
+ * rather than expanding once means a chain (a → b → c) resolves without the
+ * table having to spell out its own transitive closure.
+ */
+const expandImplied = (caps) => {
+  const out = new Set(caps);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const cap of out) {
+      for (const implied of IMPLIED_CAPABILITIES[cap] || []) {
+        if (!out.has(implied)) {
+          out.add(implied);
+          changed = true;
+          break; // the set grew — restart, rather than mutate mid-iteration
+        }
+      }
+      if (changed) break;
+    }
+  }
+  return out;
+};
+
+/**
  * The board access ladder. Each rung is a superset of the one below it, so the
  * ladder is defined by what each rung ADDS. `LEVEL_CAPABILITIES` expands them.
  *
@@ -706,6 +770,7 @@ module.exports = {
   CAPABILITY_GROUPS,
   ALL_CAPABILITIES,
   BOARD_SCOPED,
+  IMPLIED_CAPABILITIES,
   BOARD_LEVELS,
   LEVEL_ADDS,
   LEVEL_CAPABILITIES,
@@ -716,6 +781,7 @@ module.exports = {
   DEFAULT_ROLE_KEY,
   OWNER_ROLE_KEY,
   capabilitiesForLevel,
+  expandImplied,
   normaliseLevel,
   levelAtLeast,
   isCapability,

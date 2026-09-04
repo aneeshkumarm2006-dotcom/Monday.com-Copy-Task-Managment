@@ -642,3 +642,80 @@ test('outsider: a non-member gets nothing anywhere', () => {
   assert.equal(resolveBoardAccess(priv, org, OUTSIDER).canRead, false);
   assert.ok(!resolveAccess(pub, org, OUTSIDER).can('column.manage'));
 });
+
+// --- implied capabilities: stored roles vs a catalog that moved on ----------
+
+/**
+ * The regression these cover: `goal.create` was carved OUT of `goal.manage`
+ * after these workspaces were created, and `ensureSystemRoles` never adds a
+ * capability to a role that already exists. So every pre-split org stored
+ * "edit and delete anyone's goals" and not "add a goal", and because the two
+ * layers AND, the org role refused the create — to people the board had already
+ * put at the top rung. On screen: the Add button appears (the client asks
+ * `canManage || canCreate`) and saving answers 403 (goal.create).
+ */
+const preSplitOrg = () => {
+  const stale = roles.map((r) => ({
+    ...r,
+    // Exactly what a workspace older than the split has on disk: the three goal
+    // capabilities that existed then, minus the rung that did not.
+    permissions: r.permissions.filter((c) => c !== 'goal.create'),
+  }));
+  return makeOrg({ roles: stale });
+};
+
+test('implied: goal.manage confers goal.create on a role stored before the split', () => {
+  const org = preSplitOrg();
+  const board = makeBoard({ createdBy: OWNER, visibility: 'public', publicDefaultLevel: 'edit' });
+
+  const stored = org.roles.find((r) => r.key === 'member').permissions;
+  assert.ok(!stored.includes('goal.create'), 'fixture must be genuinely pre-split');
+  assert.ok(stored.includes('goal.manage'));
+
+  const a = resolveAccess(board, org, MEMBER);
+  assert.ok(a.can('goal.manage'), 'the stored capability still resolves');
+  assert.ok(
+    a.can('goal.create'),
+    'a person who may rewrite ANYONE\'s goal must be able to add one — this is '
+    + 'the 403 users hit on Add this goal'
+  );
+});
+
+test('implied: it does not invent reach the board never gave', () => {
+  // Same stale org, but the board only lets them look. The board layer refuses
+  // both goal capabilities, so implication has nothing to expand into.
+  const org = preSplitOrg();
+  const board = makeBoard({
+    createdBy: OWNER,
+    visibility: 'public',
+    publicDefaultLevel: 'view',
+  });
+  const a = resolveAccess(board, org, MEMBER);
+
+  assert.ok(a.can('goal.view'));
+  assert.ok(!a.can('goal.manage'));
+  assert.ok(!a.can('goal.create'), 'the AND still holds — implication is not an override');
+});
+
+test('implied: a viewer gains nothing, because they hold nothing that implies', () => {
+  const org = preSplitOrg();
+  const board = makeBoard({ createdBy: OWNER, visibility: 'public', publicDefaultLevel: 'edit' });
+  const a = resolveAccess(board, org, VIEWER);
+
+  assert.ok(a.can('goal.view'));
+  assert.ok(!a.can('goal.create'), 'read-only across the workspace stays read-only');
+  assert.ok(!a.can('goal.track'));
+});
+
+test('implied: a custom role holding only goal.manage still gets the lower rungs', () => {
+  // The case the grant script cannot reach — it leaves custom roles alone.
+  const custom = { _id: 'roleX', key: 'strategist', name: 'Strategist', permissions: ['board.view_public', 'goal.manage'] };
+  const org = makeOrg({ roles: [...roles, custom], memberRoles: [{ user: MEMBER, role: 'roleX' }] });
+  const board = makeBoard({ createdBy: OWNER, visibility: 'public', publicDefaultLevel: 'edit' });
+  const a = resolveAccess(board, org, MEMBER);
+
+  assert.ok(a.can('goal.create'));
+  assert.ok(a.can('goal.track'), 'and can type in the result of the goal they set');
+  assert.ok(a.can('goal.view'));
+  assert.ok(!a.can('column.manage'), 'nothing outside the goals group leaks in');
+});

@@ -161,3 +161,50 @@ test('the roles that could track goals can now also add them', () => {
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// IMPLIED_CAPABILITIES — the table that keeps stored roles honest
+// ---------------------------------------------------------------------------
+
+test('every capability named in the implication table is a real capability', () => {
+  // Same trap as the typo guard above, one level deeper: a misspelt key here
+  // implies nothing, silently, for everyone.
+  const { IMPLIED_CAPABILITIES } = require('./capabilities');
+  for (const [holder, implied] of Object.entries(IMPLIED_CAPABILITIES)) {
+    assert.ok(KNOWN.has(holder), `${holder} implies things but is not a capability`);
+    for (const c of implied) {
+      assert.ok(KNOWN.has(c), `${holder} implies ${c}, which is not a capability`);
+      assert.notEqual(c, holder, `${holder} must not imply itself`);
+    }
+  }
+});
+
+test('expandImplied terminates, and only ever adds', () => {
+  const { expandImplied, ALL_CAPABILITIES: all } = require('./capabilities');
+  // A cycle in the table would spin the fixed-point loop forever; the whole
+  // catalog at once is the worst case and must still come back unchanged.
+  const everything = expandImplied(all);
+  assert.equal(everything.size, all.length, 'the full catalog implies nothing new');
+
+  const one = expandImplied(['goal.manage']);
+  assert.ok(one.has('goal.manage'), 'the input survives');
+  assert.ok(one.has('goal.create'));
+  assert.equal(expandImplied([]).size, 0, 'nothing in, nothing out');
+});
+
+test('an implied capability is conferred by the same board rung as its holder', () => {
+  // The expansion happens on the ORG layer only. If a rung conferred
+  // `goal.manage` without also conferring what it implies, the AND would strip
+  // the implication straight back out and this fix would look like it worked
+  // everywhere except the board.
+  const caps = require('./capabilities');
+  for (const [holder, implied] of Object.entries(caps.IMPLIED_CAPABILITIES)) {
+    for (const level of caps.BOARD_LEVELS) {
+      const set = caps.capabilitiesForLevel(level);
+      if (!set.has(holder)) continue;
+      for (const c of implied) {
+        assert.ok(set.has(c), `${level} confers ${holder} but not ${c}, which it implies`);
+      }
+    }
+  }
+});
