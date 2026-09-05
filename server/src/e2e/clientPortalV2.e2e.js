@@ -110,7 +110,6 @@ const main = async () => {
     portalEnabled: true,
     portalToken: 'e2e-portal-token',
     portalClientName: 'Acme Corp',
-    portalTier: 'basic',
   });
 
   const ads = await TaskGroup.create({ name: 'Ads', board: board._id, order: 0 });
@@ -198,19 +197,18 @@ const main = async () => {
   const B = board._id;
 
   // ======================================================================
-  console.log('--- 1. the tier gate: nothing exists on a basic board --------');
+  console.log('--- 1. no tier gate: client surfaces exist from the start ----');
   // ======================================================================
+  //
+  // This section used to assert the OPPOSITE: that a 'basic' board refused every
+  // client-facing surface until an explicit one-way upgrade. The tier is gone
+  // (see utils/clientBoard.js) because no UI ever called that upgrade, so every
+  // board stayed basic and client chat and mail were unreachable in production.
+  //
+  // NOTHING HERE MAY CREATE A SURFACE ON `ads` — section 2 owns that group and
+  // asserts it goes from zero surfaces to exactly three.
 
-  let r = await team('POST', `/api/chat/boards/${B}/groups/${ads._id}/surfaces`, {
-    clientChat: true, team: true,
-  });
-  check(
-    'client surfaces are REFUSED on a basic-tier board',
-    r.status === 400 && /Advanced/i.test(r.body?.error || ''),
-    `${r.status} ${JSON.stringify(r.body)}`
-  );
-
-  r = await team('POST', `/api/chat/boards/${B}/groups/${ads._id}/surfaces`, {});
+  let r = await team('POST', `/api/chat/boards/${B}/groups/${ads._id}/surfaces`, {});
   check(
     'an EMPTY selection is refused',
     r.status === 400 && /at least one/i.test(r.body?.error || ''),
@@ -219,31 +217,28 @@ const main = async () => {
 
   r = await client('GET', '/api/portal/me/chat/channels');
   check(
-    'the client gets 403, not an empty list, on a basic board',
-    r.status === 403,
+    'the client reaches the channel list with no upgrade (200, not 403)',
+    r.status === 200,
     `${r.status} ${JSON.stringify(r.body)}`
   );
 
-  // A team-only room needs no tier — it has no client in it.
+  // A team-only room has no client in it, so the client-portal gate has nothing
+  // to say about it either way.
   r = await team('POST', `/api/chat/boards/${B}/groups/${seo._id}/surfaces`, { team: true });
   check(
-    'a TEAM-ONLY room is allowed on a basic board',
+    'a TEAM-ONLY room is allowed',
     r.status === 201 && r.body?.created?.length === 1,
     `${r.status} ${JSON.stringify(r.body)}`
   );
 
   // ======================================================================
-  console.log('\n--- 2. upgrading, then creating surfaces ---------------------');
+  console.log('\n--- 2. creating the full set of surfaces ---------------------');
   // ======================================================================
-
-  r = await team('POST', `/api/portal/boards/${B}/tier/upgrade`, { confirm: 'Acme Corp' });
-  check('the board upgrades to advanced', r.status === 200 && r.body?.tier === 'advanced',
-    `${r.status} ${JSON.stringify(r.body)}`);
 
   r = await team('POST', `/api/chat/boards/${B}/groups/${ads._id}/surfaces`, {
     clientChat: true, clientMail: true, team: true,
   });
-  check('all three surfaces are created for Ads',
+  check('all three surfaces are created for Ads — no upgrade, no tier',
     r.status === 201 && r.body?.created?.length === 3,
     `${r.status} ${JSON.stringify(r.body?.created?.map((c) => c.surfaceKey))}`);
   check('each carries its resolved surfaceKey',
@@ -320,8 +315,8 @@ const main = async () => {
     JSON.stringify(adsRow?.surfaces?.map((s) => s.surfaceKey)));
   check('SEO shows only its team room', seoRow?.surfaces?.length === 1,
     JSON.stringify(seoRow?.surfaces?.map((s) => s.surfaceKey)));
-  check('the board payload carries the tier, for the tab gate',
-    r.body?.board?.portalTier === 'advanced', JSON.stringify(r.body?.board));
+  check('the board payload identifies a client board, for the tab gate',
+    r.body?.board?.boardType === 'client', JSON.stringify(r.body?.board));
 
   // A workstream with NO surfaces must still be listed — it is the row that
   // renders "Set up communication".
@@ -628,7 +623,181 @@ const main = async () => {
   stream.close();
 
   // ======================================================================
-  console.log('\n--- 10. THE CASCADE -----------------------------------------');
+  console.log('\n--- 10. THE BATCH INVITE ------------------------------------');
+  // ======================================================================
+  //
+  // The shape the whole feature exists for: four rows, three of them sharing an
+  // address. Must produce THREE services and TWO emails, and every service must
+  // arrive with its chat, its mailbox and its private team room.
+  //
+  // Deliberately BEFORE the migration sections, which rewrite and delete boards.
+
+  // Six rows in ONE submission, because `portal:invite-batch` allows three
+  // requests a minute and this section deliberately does not special-case the
+  // limiter it is also proving exists. The pat rows carry the mixed sign-in
+  // method so that case rides along rather than costing a fourth request.
+  const batchRows = [
+    { service: 'Content Marketing', email: 'asha@acme.com' },
+    { service: 'Meta Ads', email: 'Asha@Acme.com' },
+    { service: 'Google Ads', email: 'newraj@acme.com' },
+    { service: 'content marketing', email: 'asha@acme.com' },
+    { service: 'SEO', email: 'pat@acme.com', authMethod: 'google' },
+    { service: 'Meta Ads', email: 'pat@acme.com', authMethod: 'password' },
+  ];
+
+  r = await team('POST', `/api/portal/boards/${B}/invites`, { rows: batchRows, notify: false });
+  check('the batch is accepted', r.status === 200,
+    `${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+
+  const svcNames = (r.body?.services || []).map((x) => x.name).sort();
+  check('"Content Marketing" and "content marketing" are ONE service, first casing kept',
+    svcNames.length === 4 && svcNames.includes('Content Marketing')
+      && !svcNames.includes('content marketing'),
+    JSON.stringify(svcNames));
+
+  // A row naming a service the board ALREADY HAS is a success, not a conflict —
+  // "put Pat on SEO" when SEO exists is the ordinary second-invite case.
+  check('an existing service is REUSED, not refused or duplicated',
+    (r.body?.services || []).find((x) => x.name === 'SEO')?.created === false,
+    JSON.stringify((r.body?.services || []).map((x) => [x.name, x.created])));
+
+  check('every service ends up with all three surfaces',
+    (r.body?.services || []).length === 4
+      && r.body.services.every((x) => x.surfaces.created.length + x.surfaces.existing.length === 3),
+    JSON.stringify((r.body?.services || []).map((x) => [x.name, x.surfaces])));
+
+  const batchContacts = r.body?.contacts || [];
+  check('three rows for one address collapse to ONE contact, so ONE email',
+    batchContacts.length === 3, JSON.stringify(batchContacts.map((c) => c.email)));
+
+  const ashaRow = batchContacts.find((c) => c.email === 'asha@acme.com');
+  check('…holding BOTH of her services',
+    ashaRow && ashaRow.services.length === 2
+      && ashaRow.services.includes('Content Marketing')
+      && ashaRow.services.includes('Meta Ads'),
+    JSON.stringify(ashaRow && ashaRow.services));
+
+  check('the row outcomes are index-aligned with the request',
+    (r.body?.rows || []).length === batchRows.length
+      && r.body.rows.every((x, i) => x.index === i && x.email === batchRows[i].email.toLowerCase()),
+    JSON.stringify(r.body?.rows));
+
+  const pat = batchContacts.find((c) => c.email === 'pat@acme.com');
+  check('password beats google for one address, and the team is told why',
+    pat && pat.authMethod === 'password' && (r.body?.warnings || []).length === 1,
+    JSON.stringify({ pat, warnings: r.body?.warnings }));
+
+  const contentGroup = await TaskGroup.findOne({ board: B, name: 'Content Marketing' });
+  check('the new service is a real group carrying its catalog slug',
+    contentGroup && contentGroup.serviceKey === 'content-marketing',
+    contentGroup && contentGroup.serviceKey);
+
+  const catalog = await team('GET', `/api/orgs/${org._id}/service-catalog`);
+  const catSlugs = (catalog.body?.services || []).map((x) => x.slug);
+  check('the services joined the organisation catalog, once each',
+    catSlugs.filter((x) => x === 'content-marketing').length === 1
+      && catSlugs.includes('meta-ads') && catSlugs.includes('google-ads'),
+    `${catalog.status} ${JSON.stringify(catSlugs)}`);
+
+  // ---- IDEMPOTENCE: the single most valuable assertion in this file -------
+  // A MISSING unique index looks exactly like a working one until duplicates
+  // appear, because createSurfaces catches E11000 on purpose.
+  const groupsBefore = await TaskGroup.countDocuments({ board: B });
+  const contactsBefore = await ClientContact.countDocuments({ board: B });
+  const channelsBefore = await Channel.countDocuments({ board: B });
+
+  r = await team('POST', `/api/portal/boards/${B}/invites`, { rows: batchRows, notify: false });
+  check('re-submitting the identical batch is accepted', r.status === 200, `${r.status}`);
+  check('…and creates NO new services',
+    (await TaskGroup.countDocuments({ board: B })) === groupsBefore);
+  check('…NO new contacts',
+    (await ClientContact.countDocuments({ board: B })) === contactsBefore);
+  check('…NO new channels',
+    (await Channel.countDocuments({ board: B })) === channelsBefore);
+  check('…and reports every service as already existing',
+    (r.body?.services || []).every((x) => x.created === false),
+    JSON.stringify((r.body?.services || []).map((x) => [x.name, x.created])));
+
+  const ashaDoc = await ClientContact.findOne({ board: B, email: 'asha@acme.com' });
+  check('$addToSet did not duplicate her services on the re-run',
+    ashaDoc && ashaDoc.services.length === 2, ashaDoc && String(ashaDoc.services.length));
+
+  // ---- the roster carries the service chips ------------------------------
+  r = await team('GET', `/api/portal/boards/${B}/contacts`);
+  const roster = Array.isArray(r.body) ? r.body : (r.body?.contacts || []);
+  const rosterAsha = roster.find((c) => c.email === 'asha@acme.com');
+  check('the team roster shows which services each contact was invited on',
+    rosterAsha && Array.isArray(rosterAsha.services) && rosterAsha.services.length === 2,
+    JSON.stringify(rosterAsha && rosterAsha.services));
+
+  // ---- validation is all-or-nothing --------------------------------------
+  const beforeBad = await TaskGroup.countDocuments({ board: B });
+  r = await team('POST', `/api/portal/boards/${B}/invites`, {
+    rows: [
+      { service: 'Brand New Service', email: 'ok@acme.com' },
+      { service: 'Another New One', email: 'not-an-email' },
+    ],
+    notify: false,
+  });
+  check('one bad row refuses the WHOLE batch', r.status === 400, `${r.status}`);
+  check('…naming the offending row index',
+    (r.body?.errors || []).some((e) => e.index === 1 && e.field === 'email'),
+    JSON.stringify(r.body?.errors));
+  check('…and creates nothing at all',
+    (await TaskGroup.countDocuments({ board: B })) === beforeBad);
+
+  // ---- deleting a service detaches it from every contact -----------------
+  r = await team('DELETE', `/api/groups/${contentGroup._id}`);
+  check('a service can be deleted', r.status === 200, `${r.status} ${JSON.stringify(r.body)}`);
+  const ashaAfter = await ClientContact.findOne({ board: B, email: 'asha@acme.com' });
+  check('deleting a service $pulls it from every contact that held it',
+    ashaAfter && ashaAfter.services.length === 1, ashaAfter && String(ashaAfter.services.length));
+  check('…and takes its three channels with it',
+    (await Channel.countDocuments({ board: B, group: contentGroup._id })) === 0);
+
+  // ---- the portal home: one call, every service --------------------------
+  r = await client('GET', '/api/portal/me/home');
+  check('the portal home loads', r.status === 200, `${r.status} ${JSON.stringify(r.body)}`);
+  check('it carries the CONTACT ID, which no portal payload used to',
+    r.body?.contact?.id === String(dana._id), JSON.stringify(r.body?.contact));
+
+  const homeIds = (r.body?.services || []).map((x) => x.id);
+  const allGroups = await TaskGroup.find({ board: B }).select('_id').lean();
+  check('it lists EVERY service on the board, not only ones with channels',
+    homeIds.length === allGroups.length,
+    `${homeIds.length} services vs ${allGroups.length} groups`);
+
+  const adsHome = (r.body?.services || []).find((x) => x.id === String(ads._id));
+  check('a service reports its chat and mail channel ids',
+    adsHome && adsHome.channels.chat && adsHome.channels.mail,
+    JSON.stringify(adsHome && adsHome.channels));
+  check('…its request buckets',
+    adsHome && typeof adsHome.requests.open === 'number'
+      && typeof adsHome.requests.resolved === 'number',
+    JSON.stringify(adsHome && adsHome.requests));
+  check('…and its unread split by mode',
+    adsHome && typeof adsHome.unread.chat === 'number'
+      && typeof adsHome.unread.mail === 'number',
+    JSON.stringify(adsHome && adsHome.unread));
+
+  // A service created by the batch has a catalog slug, so it has a colour.
+  const gadsHome = (r.body?.services || []).find((x) => x.name === 'Google Ads');
+  check('a service created by the batch carries its slug and colour',
+    gadsHome && gadsHome.slug === 'google-ads' && /^#[0-9A-Fa-f]{6}$/.test(gadsHome.color || ''),
+    JSON.stringify(gadsHome && { slug: gadsHome.slug, color: gadsHome.color }));
+
+  // ---- ?service= narrows, and refuses another board's group --------------
+  r = await client('GET', `/api/portal/me/issues?service=${ads._id}`);
+  check('?service= narrows the issue list to that service',
+    r.status === 200 && (r.body?.issues || []).every((i) => i.workstream?.id === String(ads._id)),
+    `${r.status} ${JSON.stringify((r.body?.issues || []).map((i) => i.workstream))}`);
+
+  r = await client('GET', `/api/portal/me/issues?service=${tracker._id}`);
+  check('…and a group id from ANOTHER board is refused, not silently ignored',
+    r.status === 400, `${r.status} ${JSON.stringify(r.body)}`);
+
+  // ======================================================================
+  console.log('\n--- 11. THE CASCADE -----------------------------------------');
   // ======================================================================
 
   const beforeChannels = await Channel.countDocuments({ group: ads._id });
@@ -661,7 +830,7 @@ const main = async () => {
   check('…and its contacts', afterContacts === 0, `${afterContacts} survived`);
 
   // ======================================================================
-  console.log('\n--- 11. the migration, as a real subprocess ------------------');
+  console.log('\n--- 12. the migration, as a real subprocess ------------------');
   // ======================================================================
 
   // Put the collection back into its PRE-migration state: a channel with no
@@ -735,7 +904,7 @@ const main = async () => {
     !idxNames.includes('board_1_group_1'), idxNames.join(', '));
 
   // ======================================================================
-  console.log('\n--- 12. migratePortalToBoard, on a PRE-migration board -------');
+  console.log('\n--- 13. migratePortalToBoard, on a PRE-migration board -------');
   // ======================================================================
   //
   // This is the migration that touches live client CREDENTIALS, so its guards
@@ -875,6 +1044,73 @@ const main = async () => {
   out = runPortal(['--promote', '--drop-legacy']);
   check('re-running the migration is a no-op, not an error',
     out.status === 0, `${out.status} ${(out.stdout || '').slice(-300)}`);
+
+  // ======================================================================
+  console.log('\n--- 14. resetClientPortals, as a real subprocess -------------');
+  // ======================================================================
+  //
+  // Run LAST, because --wipe destroys every client board in the database. The
+  // ordering is the point of the runbook, so the test follows it exactly.
+
+  const runReset = (args) =>
+    spawnSync(process.execPath, [S('src/scripts/resetClientPortals.js'), ...args], {
+      env: { ...process.env, MONGODB_URI: uri },
+      encoding: 'utf8',
+      cwd: S('.'),
+    });
+
+  out = runReset([]);
+  check('--report is the default, exits 0 and writes nothing',
+    out.status === 0 && /REPORT/.test(out.stdout || ''),
+    `${out.status} ${(out.stdout || '').slice(-300)}`);
+  check('…and NAMES the boards it would destroy, not just counts them',
+    /CLIENT BOARD\(S\)/.test(out.stdout || '') && /•/.test(out.stdout || ''),
+    (out.stdout || '').slice(-400));
+
+  const boardsBeforeReset = await mongoose.connection
+    .collection('boards')
+    .countDocuments({ boardType: 'client' });
+  check('the report really did leave the boards alone', boardsBeforeReset > 0,
+    String(boardsBeforeReset));
+
+  // --- the guard ----------------------------------------------------------
+  out = runReset(['--wipe']);
+  check('--wipe REFUSES without --force',
+    out.status !== 0 && /REFUSING/.test(out.stdout || ''),
+    `${out.status} ${(out.stdout || '').slice(-300)}`);
+  check('…and destroyed nothing',
+    (await mongoose.connection.collection('boards')
+      .countDocuments({ boardType: 'client' })) === boardsBeforeReset);
+
+  // --- seed the catalog BEFORE the wipe -----------------------------------
+  out = runReset(['--seed-catalog']);
+  check('--seed-catalog exits 0', out.status === 0, `${out.status} ${(out.stdout || '').slice(-300)}`);
+  const seeded = await mongoose.connection.collection('servicecatalogentries').countDocuments({});
+  check('…and the doomed group names became the service vocabulary', seeded > 0, String(seeded));
+
+  // --- the wipe -----------------------------------------------------------
+  out = runReset(['--wipe', '--force', '--drop-boards']);
+  check('--wipe --force exits 0', out.status === 0, `${out.status} ${(out.stdout || '').slice(-400)}`);
+  check('every client board is gone',
+    (await mongoose.connection.collection('boards')
+      .countDocuments({ boardType: 'client' })) === 0);
+  check('…along with every client contact',
+    (await mongoose.connection.collection('clientcontacts').countDocuments({})) === 0);
+  check('…and the catalog SURVIVED the wipe, which is why it is seeded first',
+    (await mongoose.connection.collection('servicecatalogentries').countDocuments({})) === seeded);
+
+  // --- indexes and verify --------------------------------------------------
+  out = runReset(['--indexes']);
+  check('--indexes exits 0', out.status === 0, `${out.status} ${(out.stdout || '').slice(-300)}`);
+  const catIdx = await mongoose.connection.collection('servicecatalogentries').indexes();
+  check('the catalog unique index is built EXPLICITLY, not left to autoIndex',
+    catIdx.some((i) => i.name === 'organisation_1_slug_1' && i.unique),
+    JSON.stringify(catIdx.map((i) => i.name)));
+
+  out = runReset(['--verify']);
+  check('--verify passes after the full runbook',
+    out.status === 0 && /All checks passed/.test(out.stdout || ''),
+    `${out.status} ${(out.stdout || '').slice(-500)}`);
 
   // ======================================================================
   console.log('\n=============================================================');

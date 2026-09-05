@@ -16,6 +16,7 @@ const connectDB = require('./src/config/db');
 const { startAutomationRunner } = require('./src/services/automationRunner');
 const { startGoalReminderRunner } = require('./src/services/goalReminderRunner');
 const { startDueDigestRunner } = require('./src/services/dueDigestRunner');
+const { startPortalDigestRunner } = require('./src/services/portalDigestRunner');
 const eventBus = require('./src/services/eventBus');
 const {
   mountAutomationEventDispatcher,
@@ -70,6 +71,7 @@ const start = async () => {
   startAutomationRunner();
   startGoalReminderRunner();
   startDueDigestRunner();
+  startPortalDigestRunner();
   reportConnectorReadiness();
   // Hourly tick, weekly WORK — the freshness decision is per (project, kind) and
   // lives in the snapshot service, so a missed window is caught within the hour

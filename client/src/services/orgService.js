@@ -139,3 +139,14 @@ export const deleteHoliday = async (orgId, date) => {
   const { data } = await api.delete(`/api/orgs/${orgId}/holidays/${date}`);
   return data.holidays;
 };
+
+/**
+ * GET /api/orgs/:id/service-catalog — the workspace's reusable service names,
+ * behind the invite table's "catalog + free text" picker. Returns `services`,
+ * best-used-first. Read-only: entries are minted by USING a service, never by a
+ * form, so there is deliberately no create/update sibling here.
+ */
+export const getServiceCatalog = async (orgId) => {
+  const { data } = await api.get(`/api/orgs/${orgId}/service-catalog`, { timeout: 20000 });
+  return data;
+};

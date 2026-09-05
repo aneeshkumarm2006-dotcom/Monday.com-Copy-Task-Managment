@@ -10,7 +10,8 @@ import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
   getIssueThread, postThreadMessage, reopenIssue, rateIssue,
   getPortalToken, clearPortalToken, getLastPortalLink,
-  getPortalChannels,
+  getPortalChannels, getPortalHome,
+  getPortalPreferences, updatePortalPreferences,
 } from '../services/portalService';
 import usePortalStream from '../hooks/usePortalStream';
 import PortalChat from '../components/portal/PortalChat';
@@ -19,6 +20,7 @@ import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
 import { dateInputToISO } from '../utils/dateUtils';
 import '../styles/portal.css';
 import { streamsOfMode } from '../utils/portalChatRows';
+import PortalServiceTable from '../components/portal/PortalServiceTable';
 
 /* ---- shared config -------------------------------------------------------- */
 const BUCKETS = {
@@ -427,7 +429,23 @@ const PortalDashboardPage = () => {
   // Which of this client's workstreams (SEO, Ads, Web Development) to show.
   // The board IS the client and its groups are the service lines, so this is
   // the primary axis — the state counts below recount within it.
-  const [workstream, setWorkstream] = useState('all');
+  /**
+   * WHICH SERVICE the client is looking at, or null for the service table.
+   *
+   * This is the spine of the portal now. A client company buys several things —
+   * SEO, Meta Ads, Google Ads, web development — and each is run by a different
+   * person on their side; one flat list made all of it look like a single pile.
+   * The table picks a service, and requests, chat and mail are all scoped to it
+   * from then on.
+   *
+   * It doubles as the old `workstream` filter, which is why the request list and
+   * the intake form needed no rework: they already filtered on exactly this.
+   */
+  const [serviceId, setServiceId] = useState(null);
+  const [home, setHome] = useState(null);
+  // null until known, so the switch never renders in a guessed position.
+  const [notifyEmail, setNotifyEmail] = useState(null);
+  const workstream = serviceId || 'all';
   const [showHelp, setShowHelp] = useState(false);
   const [annDismissed, setAnnDismissed] = useState(false);
 
@@ -499,12 +517,61 @@ const PortalDashboardPage = () => {
   }, []);
 
   useEffect(() => {
-    if (expired || context.tier !== 'advanced') return undefined;
+    // No tier check any more: chat and mail are what a client portal IS, and
+    // every service has both from the day it is created.
+    if (expired) return undefined;
     loadChannels();
     const tick = () => document.visibilityState === 'visible' && loadChannels();
     const id = setInterval(tick, LIST_POLL);
     return () => clearInterval(id);
-  }, [expired, context.tier, loadChannels]);
+  }, [expired, loadChannels]);
+
+  // The service table's single read. Polled on the same cadence as the issue
+  // list, because the counts on it are the reason to come back to this screen.
+  const loadHome = useCallback(async () => {
+    try {
+      setHome(await getPortalHome());
+    } catch (err) {
+      if (err?.response?.status === 401) setExpired(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (expired) return undefined;
+    loadHome();
+    const tick = () => document.visibilityState === 'visible' && loadHome();
+    const id = setInterval(tick, LIST_POLL);
+    return () => clearInterval(id);
+  }, [expired, loadHome]);
+
+  /**
+   * The invitation email deep-links straight at a service (`?service=<groupId>`),
+   * so somebody invited for Meta Ads lands on Meta Ads rather than on a table
+   * they have to read first.
+   *
+   * Consumed once and stripped from the URL: leaving it there would re-select
+   * that service every time the client navigated back to the table.
+   */
+  useEffect(() => {
+    if (!home) return;
+    const want = new URLSearchParams(window.location.search).get('service');
+    if (!want) return;
+    window.history.replaceState({}, '', window.location.pathname);
+    if ((home.services || []).some((x) => String(x.id) === String(want))) {
+      setServiceId(String(want));
+    }
+  }, [home]);
+
+  useEffect(() => {
+    if (expired) return;
+    getPortalPreferences()
+      .then((r) => setNotifyEmail(r.notifyEmail !== false))
+      // A preference we cannot read is a switch we should not show.
+      .catch(() => setNotifyEmail(null));
+  }, [expired]);
+
+  const services = home?.services || [];
+  const activeService = serviceId ? services.find((x) => String(x.id) === String(serviceId)) : null;
 
   const chatStreams = useMemo(() => streamsOfMode(channels, 'chat'), [channels]);
   const mailStreams = useMemo(() => streamsOfMode(channels, 'mail'), [channels]);
@@ -512,17 +579,33 @@ const PortalDashboardPage = () => {
   const hasMail = mailStreams.length > 0;
 
   // Keep each picker on a workstream that still exists.
+  // Locked to the SERVICE the client picked. The old per-tab workstream
+  // pickers are gone: choosing the service already answered that question, and
+  // asking again on every tab was the duplication this redesign removes.
   useEffect(() => {
-    setChatWs((cur) => (chatStreams.some((w) => w.id === cur) ? cur : chatStreams[0]?.id || ''));
-  }, [chatStreams]);
+    setChatWs(
+      serviceId && chatStreams.some((w) => w.id === serviceId)
+        ? serviceId
+        : chatStreams[0]?.id || ''
+    );
+  }, [chatStreams, serviceId]);
   useEffect(() => {
-    setMailWs((cur) => (mailStreams.some((w) => w.id === cur) ? cur : mailStreams[0]?.id || ''));
-  }, [mailStreams]);
+    setMailWs(
+      serviceId && mailStreams.some((w) => w.id === serviceId)
+        ? serviceId
+        : mailStreams[0]?.id || ''
+    );
+  }, [mailStreams, serviceId]);
 
   // One identity per contact per company — there is no contact id in the
   // dashboard payload, and this pair is what distinguishes two people sharing
   // a browser.
-  const contactKey = `${context.companyName || ''}|${context.contactName || ''}`;
+  // The contact id when the home payload has arrived, falling back to the old
+  // company|name pair until it does. That pair COLLIDES for two people with the
+  // same name at one company — they share a browser bucket — which is why the
+  // home endpoint carries an id at all.
+  const contactKey =
+    home?.contact?.id || `${context.companyName || ''}|${context.contactName || ''}`;
 
   // Restore the remembered tab once we know which tabs actually exist. Only
   // ever moves off Tasks — never overrides a tab the client just picked.
@@ -649,7 +732,35 @@ const PortalDashboardPage = () => {
               {PORTAL_BRAND}
             </span>
           </div>
-          <button type="button" onClick={logout} className="mcp-linkbtn"><LogOut size={15} /> Sign out</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            {/* The client's own switch for notification email.
+                NOT a nicety: these go out over the team's own Gmail, and a
+                client who cannot turn them off marks them as spam instead — a
+                complaint against the sending domain is far more expensive than
+                a missed notification. */}
+            {notifyEmail !== null && (
+              <label
+                style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--p-muted-text)', cursor: 'pointer' }}
+                title="Email me when the team sends a message"
+              >
+                <input
+                  type="checkbox"
+                  checked={notifyEmail}
+                  onChange={(e) => {
+                    const next = e.target.checked;
+                    setNotifyEmail(next);
+                    // Optimistic, and reverted on failure — a toggle that
+                    // silently does nothing is worse than one that flicks back.
+                    updatePortalPreferences({ notifyEmail: next }).catch(() =>
+                      setNotifyEmail(!next)
+                    );
+                  }}
+                />
+                Email me about new messages
+              </label>
+            )}
+            <button type="button" onClick={logout} className="mcp-linkbtn"><LogOut size={15} /> Sign out</button>
+          </div>
         </div>
       </header>
 
@@ -663,54 +774,139 @@ const PortalDashboardPage = () => {
               onBack={() => { setSelectedId(null); loadIssues(); }}
             />
           </div>
-        ) : (
-          <>
-            {/* Tasks | Chat | Mail. Rendered only when the team has actually
-                opened a client surface — a portal without chat looks exactly
-                as it always has, down to the pixel. */}
-            {(hasChat || hasMail) && (
-              <div className="mcp-seg mcp-tabs">
-                {[
-                  { key: 'tasks', label: 'Tasks', Icon: ClipboardList, count: 0, on: true },
-                  { key: 'chat', label: 'Chat', Icon: MessageSquare, count: chatUnread, on: hasChat },
-                  { key: 'mail', label: 'Mail', Icon: Mail, count: mailUnread, on: hasMail },
-                ].filter((t) => t.on).map((t) => (
-                  <button
-                    key={t.key}
-                    type="button"
-                    className="mcp-seg-btn"
-                    data-on={activeTab === t.key}
-                    aria-pressed={activeTab === t.key}
-                    onClick={() => selectTab(t.key)}
-                  >
-                    <t.Icon size={15} /> {t.label}
-                    {t.count > 0 && <span className="mcp-tab-count">{t.count > 99 ? '99+' : t.count}</span>}
-                  </button>
-                ))}
+        ) : !serviceId ? (
+          /* ------------------------------------------------------------------
+             THE SERVICE TABLE — the portal's home.
+
+             A client company buys several things and each is run by a different
+             person on their side. One flat list made all of it look like a
+             single pile, so the first question this screen asks is "which
+             service?" — and everything after it is scoped to the answer.
+             ------------------------------------------------------------------ */
+          <div className="mcp-rise">
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 22, flexWrap: 'wrap' }}>
+              <div>
+                <h1 className="mcp-greet-name">
+                  {firstName ? `Welcome back, ${firstName}` : 'Welcome back'}
+                </h1>
+                <p className="mcp-greet-sub" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <span>Here&rsquo;s where everything stands.</span>
+                  {context.companyName && (
+                    <span className="mcp-company"><Building2 size={13} /> {context.companyName}</span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {/* One announcement per account, so it belongs on the account's
+                screen rather than repeated on every service. */}
+            {context.announcement && !annDismissed && (
+              <div className="mcp-flash" style={{ marginBottom: 18 }}>
+                <span className="mcp-flash-ico"><Megaphone size={15} /></span>
+                <div style={{ minWidth: 0 }}>
+                  <div className="mcp-flash-sub" style={{ whiteSpace: 'pre-wrap' }}>
+                    {context.announcement}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="mcp-flash-x"
+                  onClick={() => setAnnDismissed(true)}
+                  aria-label="Dismiss announcement"
+                >
+                  <X size={14} />
+                </button>
               </div>
             )}
 
-            {/* A client who buys more than one service line gets one room per
-                line, so which room you are in has to be a visible choice. */}
-            {activeTab !== 'tasks' && (activeTab === 'chat' ? chatStreams : mailStreams).length > 1 && (
-              <div className="mcp-seg" style={{ marginBottom: 14 }}>
-                {(activeTab === 'chat' ? chatStreams : mailStreams).map((w) => {
-                  const on = (activeTab === 'chat' ? chatWs : mailWs) === w.id;
-                  const n = unread[w.surface.id] || 0;
-                  return (
-                    <button
-                      key={w.id}
-                      type="button"
-                      className="mcp-seg-btn"
-                      data-on={on}
-                      aria-pressed={on}
-                      onClick={() => (activeTab === 'chat' ? setChatWs(w.id) : setMailWs(w.id))}
-                    >
-                      {w.name}
-                      {n > 0 && <span className="mcp-tab-count">{n > 99 ? '99+' : n}</span>}
-                    </button>
-                  );
-                })}
+            <h2 style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--p-muted-text)', margin: '0 0 10px' }}>
+              Your services
+            </h2>
+
+            <PortalServiceTable
+              services={services}
+              serverTime={home?.serverTime}
+              onOpen={(id, tab) => { setServiceId(String(id)); setTab(tab || 'tasks'); }}
+            />
+
+            {(context.faqs || []).length > 0 && (
+              <div style={{ marginTop: 26 }}>
+                <button
+                  type="button"
+                  className="mcp-linkbtn"
+                  onClick={() => setShowHelp((v) => !v)}
+                >
+                  {showHelp ? 'Hide' : 'Help & FAQs'}
+                </button>
+                {showHelp && (
+                  <div className="mcp-card" style={{ marginTop: 12 }}>
+                    {context.faqs.map((f, i) => (
+                      <div key={f.q || i} style={{ marginBottom: 12 }}>
+                        <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 3 }}>{f.q}</div>
+                        <div style={{ fontSize: 13, color: 'var(--p-muted-text)', lineHeight: 1.55 }}>{f.a}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <>
+            {/* Back to the table, then the service's own three interfaces. */}
+            <button
+              type="button"
+              className="mcp-svc-back"
+              onClick={() => { setServiceId(null); setTab('tasks'); }}
+            >
+              <ChevronLeft size={14} /> All services
+            </button>
+
+            <h1
+              className="mcp-svc-title"
+              style={{ '--p-svc': activeService?.color || 'var(--p-primary)' }}
+            >
+              {activeService?.name || 'Service'}
+            </h1>
+
+            {/* Requests | Chat | Mail — always all three. Chat and mail exist on
+                every service now, so a missing tab would read as "they don't
+                offer that" rather than "nobody has set it up". */}
+            <div className="mcp-seg mcp-tabs">
+              {[
+                { key: 'tasks', label: 'Requests', Icon: ClipboardList, count: 0, on: true },
+                { key: 'chat', label: 'Chat', Icon: MessageSquare, count: chatUnread, on: true },
+                { key: 'mail', label: 'Mail', Icon: Mail, count: mailUnread, on: true },
+              ].filter((t) => t.on).map((t) => (
+                <button
+                  key={t.key}
+                  type="button"
+                  className="mcp-seg-btn"
+                  data-on={activeTab === t.key}
+                  aria-pressed={activeTab === t.key}
+                  onClick={() => selectTab(t.key)}
+                >
+                  <t.Icon size={15} /> {t.label}
+                  {t.count > 0 && <span className="mcp-tab-count">{t.count > 99 ? '99+' : t.count}</span>}
+                </button>
+              ))}
+            </div>
+
+            {activeTab === 'chat' && !activeChat && (
+              <div className="mcp-card" style={{ textAlign: 'center' }}>
+                <p style={{ fontWeight: 700, marginBottom: 6 }}>Chat isn&rsquo;t switched on yet</p>
+                <p className="mcp-note" style={{ margin: 0 }}>
+                  Raise a request or send a message and the team will pick it up.
+                </p>
+              </div>
+            )}
+
+            {activeTab === 'mail' && !activeMail && (
+              <div className="mcp-card" style={{ textAlign: 'center' }}>
+                <p style={{ fontWeight: 700, marginBottom: 6 }}>Mail isn&rsquo;t switched on yet</p>
+                <p className="mcp-note" style={{ margin: 0 }}>
+                  Raise a request or use chat and the team will pick it up.
+                </p>
               </div>
             )}
 
@@ -734,18 +930,14 @@ const PortalDashboardPage = () => {
 
             {activeTab === 'tasks' && (
           <div className="mcp-rise">
-            {/* Greeting */}
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 22, flexWrap: 'wrap' }}>
-              <div>
-                <h1 className="mcp-greet-name">{firstName ? `Welcome back, ${firstName}` : 'Welcome back'}</h1>
-                <p className="mcp-greet-sub" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  {/* The list is no longer only the client's own tickets — the
-                      team shares items onto it too — so the greeting can't
-                      promise "everything you've raised". */}
-                  <span>Everything you and the team are tracking together.</span>
-                  {context.companyName && <span className="mcp-company"><Building2 size={13} /> {context.companyName}</span>}
-                </p>
-              </div>
+            {/* No greeting here any more — the SERVICE TABLE greets, and this
+                screen is already headed by the service's own name. Two
+                headings, one of them generic, pushed the actual work below the
+                fold on a phone. */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 18, flexWrap: 'wrap' }}>
+              <p className="mcp-greet-sub" style={{ margin: 0 }}>
+                Everything you and the team are tracking together on this service.
+              </p>
               <button type="button" className="mcp-btn mcp-btn--primary" onClick={() => setComposerOpen(true)}>
                 <Plus size={16} /> Raise a request
               </button>
@@ -776,21 +968,9 @@ const PortalDashboardPage = () => {
               </div>
             )}
 
-            {/* Team announcement banner */}
-            {context.announcement && !annDismissed && (
-              <div className="mcp-card" style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '14px 16px', marginBottom: 18, background: '#FEFCE8', borderColor: '#FDE68A' }}>
-                <span style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#FEF08A', color: '#A16207' }}>
-                  <Megaphone size={16} />
-                </span>
-                <div style={{ flex: 1, minWidth: 0, fontSize: 13.5, color: '#713F12', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-                  {context.announcement}
-                </div>
-                <button type="button" onClick={() => setAnnDismissed(true)} aria-label="Dismiss"
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#A16207', padding: 2 }}>
-                  <X size={16} />
-                </button>
-              </div>
-            )}
+            {/* The announcement moved to the service table. It comes from the
+                board, so there is exactly ONE of them — repeating it on four
+                service screens is four dismissals of the same sentence. */}
 
             {/* Welcome hero (first visit) */}
             {showWelcome && (
@@ -823,6 +1003,7 @@ const PortalDashboardPage = () => {
                 categories={context.categories}
                 workstreams={workstreams}
                 defaultWorkstream={workstream !== 'all' ? workstream : ''}
+                serviceName={activeService?.name || ''}
                 onClose={() => setComposerOpen(false)}
                 onCreated={(receipt) => {
                   setComposerOpen(false);
@@ -832,52 +1013,20 @@ const PortalDashboardPage = () => {
               />
             )}
 
-            {/* Workstreams — the service lines this client buys. Only shown
-                when there is more than one, because a picker with a single
-                option is a chore rather than a choice. */}
-            {issues.length > 0 && manyWorkstreams && (
-              <div className="mcp-seg" style={{ marginBottom: 14 }}>
-                <button
-                  type="button"
-                  className="mcp-seg-btn"
-                  data-on={workstream === 'all'}
-                  aria-pressed={workstream === 'all'}
-                  onClick={() => setWorkstream('all')}
-                >
-                  All work
-                </button>
-                {workstreams.map((w) => (
-                  <button
-                    key={w.id}
-                    type="button"
-                    className="mcp-seg-btn"
-                    data-on={workstream === w.id}
-                    aria-pressed={workstream === w.id}
-                    onClick={() => setWorkstream(w.id)}
-                  >
-                    {w.name}
-                  </button>
-                ))}
-              </div>
-            )}
+            {/* The workstream picker used to live here. It is gone: the SERVICE
+                TABLE picks the service before this screen renders, and asking
+                again — on every tab — was the duplication the redesign removes. */}
 
             {issues.length > 0 && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 13 }}>
                 <h2 style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', margin: 0, color: '#334155' }}>
                   {filter === 'all' ? 'All requests' : BUCKETS[filter].label}
-                  {workstream !== 'all' && (
-                    <span style={{ color: '#94A3B8', fontWeight: 600 }}>
-                      {' '}· {workstreams.find((w) => w.id === workstream)?.name || ''}
-                    </span>
-                  )}
-                  <span style={{ color: '#94A3B8', fontWeight: 600 }}> · {visible.length}</span>
+                  <span style={{ color: 'var(--p-muted-text)', fontWeight: 600 }}>
+                    {' '}· {visible.length}
+                  </span>
                 </h2>
-                {(filter !== 'all' || workstream !== 'all') && (
-                  <button
-                    type="button"
-                    className="mcp-linkbtn"
-                    onClick={() => { setFilter('all'); setWorkstream('all'); }}
-                  >
+                {filter !== 'all' && (
+                  <button type="button" className="mcp-linkbtn" onClick={() => setFilter('all')}>
                     Show all
                   </button>
                 )}
@@ -892,10 +1041,17 @@ const PortalDashboardPage = () => {
                   <input className="mcp-field" style={{ paddingLeft: 34 }} placeholder="Search requests…"
                     value={query} onChange={(e) => setQuery(e.target.value)} />
                 </div>
-                <select className="mcp-field" style={{ width: 'auto', cursor: 'pointer' }} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-                  <option value="all">All types</option>
-                  {Object.entries(TYPES).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
-                </select>
+                {/* Only for requests raised BEFORE types were dropped. New
+                    ones carry none, so on a portal with no legacy rows this
+                    filter would match nothing and read as broken. */}
+                {issues.some((i) => i.type) && (
+                  <select className="mcp-field" style={{ width: 'auto', cursor: 'pointer' }} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                    <option value="all">All types</option>
+                    {Object.entries(TYPES)
+                      .filter(([k]) => issues.some((i) => i.type === k))
+                      .map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
+                  </select>
+                )}
                 <select className="mcp-field" style={{ width: 'auto', cursor: 'pointer' }} value={sort} onChange={(e) => setSort(e.target.value)}>
                   <option value="newest">Newest first</option>
                   <option value="oldest">Oldest first</option>
@@ -1070,16 +1226,24 @@ const DashboardSkeleton = () => (
 );
 
 /* ---- New issue form ------------------------------------------------------- */
-const NewIssueForm = ({ categories, workstreams = [], defaultWorkstream = '', onClose, onCreated }) => {
+const NewIssueForm = ({
+  categories,
+  workstreams = [],
+  defaultWorkstream = '',
+  serviceName = '',
+  onClose,
+  onCreated,
+}) => {
   // Which service line this request is for. A client with exactly one
   // workstream is never asked — the answer is not in doubt, and the server
   // accepts the omission in that case too. Otherwise it is required, because
   // filing an ads request into the SEO queue means the wrong person sees it.
   const onlyWorkstream = workstreams.length === 1 ? workstreams[0].id : '';
-  const [workstream, setWorkstream] = useState(defaultWorkstream || onlyWorkstream);
+  // No setter: the service comes from the screen this form was opened on, and
+  // is not the client's to change mid-request.
+  const workstream = defaultWorkstream || onlyWorkstream;
   const [name, setName] = useState('');
   const [note, setNote] = useState('');
-  const [type, setType] = useState('');
   const [priority, setPriority] = useState('medium');
   const [dueDate, setDueDate] = useState('');
   const [category, setCategory] = useState('');
@@ -1100,7 +1264,10 @@ const NewIssueForm = ({ categories, workstreams = [], defaultWorkstream = '', on
     e?.preventDefault?.();
     if (locked && phase !== 'partial') return;
     if (workstreams.length > 1 && !workstream) {
-      setError('Please choose which workstream this is for.');
+      // Cannot happen from the UI — the form is only reachable from inside a
+      // service — but a request filed against no service would be invisible
+      // under a per-service portal, so it is still refused.
+      setError('Open a service first, then raise your request there.');
       return;
     }
     if (!name.trim()) { setError('Please describe your issue.'); return; }
@@ -1115,9 +1282,10 @@ const NewIssueForm = ({ categories, workstreams = [], defaultWorkstream = '', on
           // The server validates this against the board on the token — a group
           // id is never taken on trust.
           workstream: workstream || onlyWorkstream || undefined,
-          type: type || undefined, priority,
+          // `type` and `category` are no longer sent: the server ignores them
+          // and the pickers are gone. See the note above the form's fields.
+          priority,
           dueDate: dateInputToISO(dueDate) || undefined,
-          category: category || undefined,
         });
         issueInfo = { id: issue.id, ref: issue.ref };
         setCreated(issueInfo);
@@ -1144,7 +1312,10 @@ const NewIssueForm = ({ categories, workstreams = [], defaultWorkstream = '', on
     onCreated({ ref: created?.ref, uploaded: doneCount, failed: failedCount });
 
   const label = { fontSize: 12.5, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 7 };
-  const f = TYPE_FORM[type] || DEFAULT_FORM;
+  // The type-specific label sets went with the type picker. DEFAULT_FORM's
+  // wording is deliberately service-agnostic, which is what a form inside a
+  // known service wants anyway.
+  const f = DEFAULT_FORM;
 
   return (
     <form onSubmit={submit} className="mcp-card-lg mcp-pop" style={{ padding: 22, marginBottom: 20 }}>
@@ -1156,46 +1327,14 @@ const NewIssueForm = ({ categories, workstreams = [], defaultWorkstream = '', on
           className="mcp-linkbtn" style={{ padding: 4 }} aria-label="Close"><X size={18} /></button>
       </div>
 
-      {/* Workstream — first, because it decides which of the team sees this.
-          Hidden when there is only one, which is then filled in silently. */}
-      {workstreams.length > 1 && (
-        <>
-          <label style={label}>Which workstream is this for?</label>
-          <div className="mcp-seg" style={{ marginBottom: 16 }}>
-            {workstreams.map((w) => {
-              const on = workstream === w.id;
-              return (
-                <button
-                  key={w.id}
-                  type="button"
-                  className="mcp-seg-btn"
-                  data-on={on}
-                  aria-pressed={on}
-                  disabled={locked}
-                  onClick={() => setWorkstream(w.id)}
-                >
-                  {w.name}
-                </button>
-              );
-            })}
-          </div>
-        </>
+      {/* Neither a workstream picker nor a type picker — see the note above the
+          component. The service is known from the screen this was opened on,
+          and the type list was half service names. */}
+      {serviceName && (
+        <p className="mcp-note" style={{ marginTop: -4, marginBottom: 16 }}>
+          This goes to the team working on <strong>{serviceName}</strong>.
+        </p>
       )}
-
-      {/* Type */}
-      <label style={label}>What kind of request is this?</label>
-      <div className="mcp-seg" style={{ marginBottom: 16 }}>
-        {Object.entries(TYPES).map(([k, t]) => {
-          const Icon = t.icon; const on = type === k;
-          return (
-            <button key={k} type="button" className="mcp-seg-btn" data-on={on} disabled={locked}
-              onClick={() => setType(on ? '' : k)}
-              style={on ? { color: t.color, borderColor: t.color, background: `${t.color}12`, boxShadow: `0 0 0 4px ${t.color}22` } : undefined}>
-              <Icon size={15} /> {t.label}
-            </button>
-          );
-        })}
-      </div>
 
       <label style={label}>{f.titleLabel}</label>
       <input className="mcp-field" style={{ marginBottom: 16 }} placeholder={f.titlePlaceholder} disabled={locked}

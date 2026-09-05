@@ -9,6 +9,7 @@ const eventBus = require('../services/eventBus');
 const { loadBoardContext, loadOrgContext, requireCapability } = require('../utils/boardContext');
 const { resolveAccess } = require('../utils/permissions');
 const { channelAudience } = require('../services/chatAudience');
+const { notifyClientsOfTeamMessage } = require('../services/portalNotify');
 const { markChannelRead: writeChannelRead, markThreadRead: writeThreadRead, threadReadMap } = require('../services/chatRead');
 const { createSurfaces } = require('../services/workstreamSurfaces');
 const { keyForSurface } = require('../utils/chatSurfaces');
@@ -812,6 +813,14 @@ const sendMessage = async (req, res) => {
       // Delivery is best-effort; the message is already stored.
     }
 
+    // Tell the client something is waiting. Chat and mail have no inbound email
+    // path, so without this a team reply sits unseen until they happen to open
+    // the portal. Throttled and opt-out-able in services/portalNotify.js, and
+    // deliberately NOT awaited into the response — the message is already stored.
+    notifyClientsOfTeamMessage(channel, message, { authorName: req.user?.name || '' }).catch(
+      () => {}
+    );
+
     const populated = await Message.findById(message._id).populate(MESSAGE_POPULATE);
     return res.status(201).json({ message: populated });
   } catch (err) {
@@ -1208,7 +1217,6 @@ const listBoardChannels = async (req, res) => {
         _id: ctx.board._id,
         name: ctx.board.name,
         boardType: ctx.board.boardType,
-        portalTier: ctx.board.portalTier || 'basic',
         portalClientName: ctx.board.portalClientName || '',
       },
       canManage: ctx.can('group.manage'),
@@ -1538,6 +1546,14 @@ const createThread = async (req, res) => {
     } catch (emitErr) {
       // Delivery is best-effort; the message is already stored.
     }
+
+    // Tell the client something is waiting. Chat and mail have no inbound email
+    // path, so without this a team reply sits unseen until they happen to open
+    // the portal. Throttled and opt-out-able in services/portalNotify.js, and
+    // deliberately NOT awaited into the response — the message is already stored.
+    notifyClientsOfTeamMessage(channel, message, { authorName: req.user?.name || '' }).catch(
+      () => {}
+    );
 
     const populated = await Message.findById(message._id).populate(MESSAGE_POPULATE);
     return res.status(201).json({ message: populated });

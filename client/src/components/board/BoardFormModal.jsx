@@ -27,7 +27,6 @@ const DEFAULTS = {
   visibility: 'private',
   description: '',
   boardType: 'standard',
-  portalCategoriesText: '',
   // Client boards only. The portal link belongs to the BOARD now, so the client
   // company's name and first contact are collected here — they used to be asked
   // for when creating a group, back when a group was the client.
@@ -63,9 +62,6 @@ const BoardFormModal = ({
       visibility: initialValues?.visibility || 'private',
       description: initialValues?.description || '',
       boardType: initialValues?.boardType || 'standard',
-      portalCategoriesText: Array.isArray(initialValues?.portalCategories)
-        ? initialValues.portalCategories.join(', ')
-        : '',
     });
     setError(null);
     setSubmitting(false);
@@ -169,12 +165,6 @@ const BoardFormModal = ({
         // for a tracker, and for the same reason: a board silently on UTC while
         // the team is on IST files every month-boundary task in the wrong month.
         monthTimezone: isTracker ? browserTimezone : undefined,
-        portalCategories: isClient
-          ? values.portalCategoriesText
-              .split(',')
-              .map((c) => c.trim())
-              .filter(Boolean)
-          : [],
         // The board mints its portal link on create; these decide what the
         // client sees it called and who gets the first invitation.
         ...(mode === 'create' && isClient
@@ -577,15 +567,6 @@ const BoardFormModal = ({
                 disabled={submitting}
               />
             )}
-            <Input
-              label="Client issue categories (optional)"
-              placeholder="e.g. Bug, Concern, Request"
-              value={values.portalCategoriesText}
-              onChange={(e) =>
-                setValues((v) => ({ ...v, portalCategoriesText: e.target.value }))
-              }
-              helperText="Comma-separated. Clients can optionally tag a request with one."
-            />
           </>
         )}
 

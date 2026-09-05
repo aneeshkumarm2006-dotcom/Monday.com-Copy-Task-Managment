@@ -38,7 +38,6 @@ const domainOf = (email) => String(email || '').split('@')[1] || '(none)';
 const inspect = async (board) => {
   head(`BOARD "${board.name}"  (${board._id})`);
   log(`  boardType   : ${board.boardType}`);
-  log(`  portalTier  : ${board.portalTier || '(unset → basic)'}`);
   log(`  board-level portalToken: ${board.portalToken ? 'present' : 'ABSENT (not yet promoted)'}`);
 
   const groups = await col('taskgroups')

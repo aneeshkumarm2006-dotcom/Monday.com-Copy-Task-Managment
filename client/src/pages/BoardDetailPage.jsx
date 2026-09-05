@@ -63,6 +63,10 @@ import PriorityMenu from '../components/board/PriorityMenu';
 import TaskActionsMenu from '../components/board/TaskActionsMenu';
 import CommentPanel from '../components/board/CommentPanel';
 import GroupNotesPanel from '../components/board/GroupNotesPanel';
+import ServiceRail from '../components/board/client/ServiceRail';
+import ClientOverview from '../components/board/client/ClientOverview';
+import ClientPeoplePanel from '../components/board/client/ClientPeoplePanel';
+import { getBoardChannels } from '../services/chatService';
 import ClientPortalModal from '../components/board/ClientPortalModal';
 import BoardChatTab from '../components/board/BoardChatTab';
 import AutomationsModal from '../components/board/AutomationsModal';
@@ -575,12 +579,13 @@ const BoardDetailPage = () => {
    * would be a second, drifting implementation of a confidentiality boundary,
    * which is exactly what the two-layer permission model exists to remove.
    *
-   * The tier half mirrors `server/src/utils/clientBoard.js`'s
-   * `isAdvancedClientBoard`, and fails closed the same way: a board loaded
-   * without `portalTier`, and every non-client board, answer false.
+   * ONE condition, since the portal tier was removed. Chat and mail are what a
+   * client portal IS, not an upsell, so every client board has them — see
+   * `server/src/utils/clientBoard.js`. This used to also require
+   * `portalTier === 'advanced'`, which no board was ever set to, which is why
+   * the tab was unreachable in practice.
    */
-  const canViewBoardChat =
-    board?.boardType === 'client' && board?.portalTier === 'advanced';
+  const canViewBoardChat = board?.boardType === 'client';
 
   // Add-ons: board type AND capability, the same shape as Delivery and Goals.
   //
@@ -770,9 +775,145 @@ const BoardDetailPage = () => {
   );
 
   // A Client Portal BOARD is one client company, with one shareable link,
-  // managed only by board managers. Its groups are that client's workstreams.
+  // managed only by board managers. Its groups are that client's SERVICES.
   const isClientBoard = board?.boardType === 'client';
   const [portalModalOpen, setPortalModalOpen] = useState(false);
+
+  /* ---------------------------------------------------------------------
+   * CLIENT WORKSPACE
+   *
+   * A client board is one client company and its groups are the SERVICES the
+   * agency sells them. Four services with a chat, a mailbox and a team room
+   * each is twelve conversations, which the ordinary board grid renders as an
+   * unreadable stack — so a client board gets a rail that puts ONE service on
+   * screen at a time.
+   *
+   * Deliberately NOT a separate route. Every deep link in the product points at
+   * /boards/:id — utils/taskLink.js, notificationMeta, My Work, the server's own
+   * taskDeepLink in already-sent emails — so the route stays and the view
+   * branches. `svc` is the rail selection: 'overview', a group id, 'people' or
+   * 'settings'.
+   * ------------------------------------------------------------------- */
+  const svcParam = searchParams.get('svc') || 'overview';
+  const svcTab = searchParams.get('svctab') === 'talk' ? 'talk' : 'work';
+  const [clientChannels, setClientChannels] = useState(null);
+
+  const selectService = useCallback(
+    (key, tab) => {
+      const next = new URLSearchParams(searchParams);
+      next.set('svc', String(key));
+      if (tab) next.set('svctab', tab);
+      else next.delete('svctab');
+      setSearchParams(next, { replace: false });
+    },
+    [searchParams, setSearchParams]
+  );
+
+  // Unread per surface, for the rail badges. One request, reusing the same
+  // endpoint the Chat tab already calls — no new endpoint, and no second
+  // EventSource: liveMessage below nudges it rather than opening a stream.
+  useEffect(() => {
+    if (!isClientBoard || !boardId) return undefined;
+    let alive = true;
+    getBoardChannels(boardId)
+      .then((res) => { if (alive) setClientChannels(res); })
+      .catch(() => { if (alive) setClientChannels({ workstreams: [] }); });
+    return () => { alive = false; };
+  }, [isClientBoard, boardId, boardRefreshSignal]);
+
+  const clientServices = useMemo(() => {
+    if (!isClientBoard) return [];
+    const doneStatusId = Array.isArray(board?.statuses)
+      ? board.statuses.find((st) => st.key === 'done')?._id || null
+      : null;
+    const isDone = (t) => {
+      if (t.status == null) return false;
+      return doneStatusId ? String(t.status) === String(doneStatusId) : t.status === 'done';
+    };
+    const wsById = new Map(
+      (clientChannels?.workstreams || []).map((w) => [String(w.group?._id), w])
+    );
+
+    return orderedGroups.map((g) => {
+      const tasks = tasksByGroup[g._id] || [];
+      const ws = wsById.get(String(g._id));
+      const surfaces = ws?.surfaces || [];
+      const unreadOf = (mode) =>
+        surfaces
+          .filter((c) => c.mode === mode && c.audience === 'client')
+          .reduce((n, c) => n + (c.unread || 0), 0);
+      return {
+        id: String(g._id),
+        name: g.name,
+        color: null,
+        owner: g.owner || null,
+        taskCount: tasks.length,
+        doneCount: tasks.filter(isDone).length,
+        // "Open request" = raised by the CLIENT and not finished. Counted here
+        // rather than fetched: the task store already holds every row.
+        openRequests: tasks.filter((t) => t.source === 'client' && !isDone(t)).length,
+        sharedCount: tasks.filter((t) => t.portalShared).length,
+        unreadChat: unreadOf('chat'),
+        unreadMail: unreadOf('mail'),
+        unread: surfaces.reduce((n, c) => n + (c.unread || 0), 0),
+        hasRooms: surfaces.length > 0,
+      };
+    });
+  }, [isClientBoard, orderedGroups, tasksByGroup, board, clientChannels]);
+
+  /**
+   * The short "needs you" list on the overview. Ordered by how much someone is
+   * waiting: an unread client message first, then a client request nobody owns,
+   * then a service with no rooms at all.
+   */
+  const clientNeedsYou = useMemo(() => {
+    if (!isClientBoard) return [];
+    const out = [];
+    for (const s of clientServices) {
+      if (s.unread > 0) {
+        out.push({
+          id: `u-${s.id}`,
+          serviceId: s.id,
+          serviceName: s.name,
+          tab: 'talk',
+          tone: 'unread',
+          text: `${s.unread} unread message${s.unread === 1 ? '' : 's'} from the client`,
+        });
+      }
+    }
+    for (const s of clientServices) {
+      const unowned = (tasksByGroup[s.id] || []).filter(
+        (t) => t.source === 'client' && !(t.assignedTo || []).length
+      ).length;
+      if (unowned > 0) {
+        out.push({
+          id: `r-${s.id}`,
+          serviceId: s.id,
+          serviceName: s.name,
+          tab: 'work',
+          tone: 'requests',
+          text: `${unowned} client request${unowned === 1 ? '' : 's'} with nobody assigned`,
+        });
+      }
+    }
+    for (const s of clientServices) {
+      if (!s.hasRooms) {
+        out.push({
+          id: `n-${s.id}`,
+          serviceId: s.id,
+          serviceName: s.name,
+          tab: 'talk',
+          tone: 'requests',
+          text: 'No chat or mailbox set up yet',
+        });
+      }
+    }
+    return out.slice(0, 6);
+  }, [isClientBoard, clientServices, tasksByGroup]);
+
+  const activeService = isClientBoard
+    ? clientServices.find((s) => s.id === svcParam) || null
+    : null;
 
   // If we navigated directly and the boards list is empty, fetch it so the
   // header can resolve the board metadata.
@@ -2001,7 +2142,7 @@ const BoardDetailPage = () => {
       setGroupModalOpen(false);
       setNewGroupName('');
       if (isClientBoard) {
-        toastSuccess(`Workstream “${created.name}” added — your client will see it in their portal.`);
+        toastSuccess(`“${created.name}” added — it has its own chat, mailbox and team room, and your client can see it in their portal.`);
       }
     } catch (err) {
       console.error('Failed to create group:', err);
@@ -2293,6 +2434,251 @@ const BoardDetailPage = () => {
       </PageWrapper>
     );
   }
+
+  /**
+   * The board's task grid, hoisted so it can be placed in two layouts: on its
+   * own for a standard or tracker board, and inside the selected service's
+   * Work tab on a client board. ONE copy, deliberately — statuses, inline
+   * edit, pins, bulk actions and every "client can see this" affordance all
+   * live in here, and a second copy would drift from it within a release.
+   */
+  const taskGroupsSection = (
+      <section className="mt-6 flex flex-col gap-4">
+        {loading && !hasGroups ? (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-label="Loading board"
+            className="flex flex-col gap-4"
+          >
+            <SkeletonTaskGroup rowCount={4} index={0} />
+            <SkeletonTaskGroup rowCount={3} index={1} />
+          </div>
+        ) : !hasGroups ? (
+          <div
+            className="bg-surface"
+            style={{
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-card)',
+              padding: '48px 16px',
+            }}
+          >
+            <EmptyState
+              icon={Plus}
+              title="No task groups yet"
+              description={
+                canEdit
+                  ? 'Create your first group to start organising tasks'
+                  : 'Nothing has been set up on this board yet'
+              }
+              actionLabel={canEdit ? 'Create first group' : undefined}
+              onAction={canEdit ? handleOpenGroupModal : undefined}
+            />
+          </div>
+        ) : filtersActive && visibleGroupCount === 0 ? (
+          <div
+            className="bg-surface"
+            style={{
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: 'var(--shadow-card)',
+              padding: '48px 16px',
+            }}
+          >
+            <EmptyState
+              icon={SearchX}
+              title={
+                groupFiltersActive && !taskFiltersActive
+                  ? 'No groups match your filters'
+                  : 'No tasks match your filters'
+              }
+              description="Try removing or loosening a filter to see more."
+              actionLabel="Clear all filters"
+              onAction={() => setFilters(EMPTY_FILTERS)}
+            />
+          </div>
+        ) : (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleBoardDragEnd}
+          >
+            <SortableContext items={orderedGroupIds} strategy={verticalListSortingStrategy}>
+              {(isClientBoard
+                ? orderedGroups.filter((g) => String(g._id) === String(svcParam))
+                : orderedGroups
+              ).map((group, idx) => {
+                // Pinned-first render order. The progress math below reads the
+                // unsorted filtered bucket, since it's order-independent.
+                const groupTasks = displayTasksByGroup[group._id] || [];
+                // Filtered out by owner, or emptied by a task filter. `idx` is
+                // still the ORDERED index, so the header dot colours don't
+                // reshuffle as groups come and go.
+                if (filtersActive && !isGroupVisible(group)) return null;
+                const doneStatusId =
+                  board && Array.isArray(board.statuses)
+                    ? (board.statuses.find((s) => s.key === 'done')?._id || null)
+                    : null;
+                const doneCount = groupTasks.filter((t) => {
+                  if (t.status == null) return false;
+                  if (doneStatusId) {
+                    return t.status.toString() === doneStatusId.toString();
+                  }
+                  return t.status === 'done';
+                }).length;
+                const isCollapsed = collapsed.has(group._id);
+                // Disable task DnD inside this group while it's hosting an
+                // inline create/edit row — but leave the group's own handle
+                // sortable so users can still rearrange columns.
+                const isEditingHere =
+                  (editingTaskId != null && groupTasks.some((t) => t._id === editingTaskId)) ||
+                  creatingInGroup === group._id;
+                // Keep the card clipped to its rounded corners in the normal
+                // state so the grey header and row backgrounds don't poke past
+                // the 14px radius. Only lift the clip while an inline edit/create
+                // row is open here, where the field dropdowns must escape the
+                // card bounds. The inner table/grid wrappers clip their own
+                // overflow, so this doesn't change popover or drag behaviour.
+                const needsOverflowVisible = isEditingHere;
+
+                return (
+                  <SortableItem
+                    key={group._id}
+                    id={group._id}
+                    data={{ type: 'group' }}
+                    disabled={groupDndDisabled}
+                  >
+                    {({ ref, setActivatorNodeRef, style, attributes, listeners, isDragging }) => (
+                      <div
+                        ref={ref}
+                        // The People tab's drill-down scrolls to a group by id.
+                        data-group-id={group._id}
+                        className={`bg-surface macan-group-card ${
+                          needsOverflowVisible ? 'overflow-visible' : 'overflow-hidden'
+                        }`}
+                        style={{
+                          ...style,
+                          borderRadius: 'var(--radius-lg)',
+                          boxShadow: 'var(--shadow-card)',
+                          position: 'relative',
+                          zIndex: isDragging ? 30 : 'auto',
+                        }}
+                      >
+                        <TaskGroupHeader
+                          name={group.name}
+                          colorDot={GROUP_DOT_CYCLE[idx % GROUP_DOT_CYCLE.length]}
+                          totalCount={groupTasks.length}
+                          doneCount={doneCount}
+                          collapsed={isCollapsed}
+                          onToggle={() => toggleGroup(group._id)}
+                          onRename={
+                            canEdit ? (next) => handleRenameGroup(group, next) : undefined
+                          }
+                          onDeleteGroup={canEdit ? () => handleDeleteGroup(group) : undefined}
+                          onOpenNotes={() => handleOpenNotes(group)}
+                          tags={resolveGroupTags(group)}
+                          onOpenTags={
+                            canTagGroups
+                              ? (event) => handleOpenGroupTags(group, event)
+                              : undefined
+                          }
+                          owner={group.owner || null}
+                          ownerInherited={!!group.ownerInherited}
+                          ownerActive={group.ownerActive !== false}
+                          ownerFromLabel={
+                            group.ownerFromMonth ? formatMonthKey(group.ownerFromMonth) : ''
+                          }
+                          onOpenOwner={
+                            // `monthKey` is legitimately null while the month list
+                            // loads or when ?month= is stale. Opening the picker
+                            // then would write into the SERVER's current month
+                            // instead of the one on screen — a 200, and the wrong
+                            // month, with no error anywhere.
+                            canOwnGroups && monthKey
+                              ? (event) => handleOpenGroupOwner(group, event)
+                              : undefined
+                          }
+                          noteCount={notesCountByGroup[group._id] ?? 0}
+                          dragHandle={
+                            !groupDndDisabled && (
+                              <button
+                                ref={setActivatorNodeRef}
+                                type="button"
+                                aria-label={`Drag to reorder group ${group.name}`}
+                                {...attributes}
+                                {...listeners}
+                                className="flex items-center justify-center opacity-0 group-hover/group-header:opacity-100 focus-visible:opacity-100 transition-opacity duration-150"
+                                style={{
+                                  width: 20,
+                                  height: 24,
+                                  cursor: 'grab',
+                                  touchAction: 'none',
+                                  background: 'transparent',
+                                  border: 'none',
+                                  padding: 0,
+                                  marginLeft: -4,
+                                }}
+                              >
+                                <GripVertical
+                                  size={14}
+                                  color="var(--color-text-muted)"
+                                  aria-hidden="true"
+                                />
+                              </button>
+                            )
+                          }
+                        />
+                        {!isCollapsed && (
+                          board?.useFlexibleColumns ? (
+                            <DataGrid
+                              board={board}
+                              tasks={groupTasks}
+                              personalPins={personalPins}
+                              readOnly={!canEdit}
+                            />
+                          ) : (
+                            <TaskTable
+                              tasks={groupTasks}
+                              personalPins={personalPins}
+                              board={board}
+                              members={members}
+                              editingTaskId={editingTaskId}
+                              isCreating={canCreateTasks && !taskFiltersActive}
+                              createKey={newTaskKeysByGroup[group._id] || 0}
+                              isAdmin={canEdit}
+                              canCreate={canCreateTasks}
+                              canAssign={canAssignOthers}
+                              selfId={selfId}
+                              highlightedTaskId={highlightedTaskId}
+                              highlightedParentId={highlightedParentId}
+                              onOpenTask={handleOpenTask}
+                              onStatusClick={handleStatusClick}
+                              onPriorityClick={handlePriorityClick}
+                              onLabelsClick={handleLabelsClick}
+                              onOwnerClick={handleOwnerClick}
+                              onActionsClick={canEdit ? handleActionsClick : undefined}
+                              onDueDateChange={handleDueDateChange}
+                              onSaveNew={(payload) => handleSaveNewTask(group._id, payload)}
+                              onSaveEdit={handleSaveEditTask}
+                              onCancelEdit={handleCancelEdit}
+                              groupId={group._id}
+                              dndDisabled={dndDisabledGlobal || isEditingHere}
+                              selectedIds={selectedTaskIds}
+                              onToggleSelect={handleToggleSelectTask}
+                              onToggleSelectAll={handleToggleSelectGroup}
+                              askPortalShare={canSharePortal}
+                            />
+                          )
+                        )}
+                      </div>
+                    )}
+                  </SortableItem>
+                );
+              })}
+            </SortableContext>
+          </DndContext>
+        )}
+      </section>
+  );
 
   return (
     <PageWrapper>
@@ -2741,7 +3127,8 @@ const BoardDetailPage = () => {
       )}
 
       {/* Filter bar + group sort toggle */}
-      {view === 'board' && hasGroups && board && (
+      {view === 'board' && hasGroups && board
+        && (!isClientBoard || (activeService && svcTab === 'work')) && (
         <div className="flex flex-row items-start gap-2">
           <div className="flex-1 min-w-0">
             <BoardFilterBar
@@ -2788,240 +3175,184 @@ const BoardDetailPage = () => {
         </div>
       )}
 
-      {/* Task groups */}
-      {view === 'board' && (
-      <section className="mt-6 flex flex-col gap-4">
-        {loading && !hasGroups ? (
-          <div
-            role="status"
-            aria-live="polite"
-            aria-label="Loading board"
-            className="flex flex-col gap-4"
-          >
-            <SkeletonTaskGroup rowCount={4} index={0} />
-            <SkeletonTaskGroup rowCount={3} index={1} />
-          </div>
-        ) : !hasGroups ? (
-          <div
-            className="bg-surface"
-            style={{
-              borderRadius: 'var(--radius-lg)',
-              boxShadow: 'var(--shadow-card)',
-              padding: '48px 16px',
-            }}
-          >
-            <EmptyState
-              icon={Plus}
-              title="No task groups yet"
-              description={
-                canEdit
-                  ? 'Create your first group to start organising tasks'
-                  : 'Nothing has been set up on this board yet'
-              }
-              actionLabel={canEdit ? 'Create first group' : undefined}
-              onAction={canEdit ? handleOpenGroupModal : undefined}
-            />
-          </div>
-        ) : filtersActive && visibleGroupCount === 0 ? (
-          <div
-            className="bg-surface"
-            style={{
-              borderRadius: 'var(--radius-lg)',
-              boxShadow: 'var(--shadow-card)',
-              padding: '48px 16px',
-            }}
-          >
-            <EmptyState
-              icon={SearchX}
-              title={
-                groupFiltersActive && !taskFiltersActive
-                  ? 'No groups match your filters'
-                  : 'No tasks match your filters'
-              }
-              description="Try removing or loosening a filter to see more."
-              actionLabel="Clear all filters"
-              onAction={() => setFilters(EMPTY_FILTERS)}
-            />
-          </div>
-        ) : (
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handleBoardDragEnd}
-          >
-            <SortableContext items={orderedGroupIds} strategy={verticalListSortingStrategy}>
-              {orderedGroups.map((group, idx) => {
-                // Pinned-first render order. The progress math below reads the
-                // unsorted filtered bucket, since it's order-independent.
-                const groupTasks = displayTasksByGroup[group._id] || [];
-                // Filtered out by owner, or emptied by a task filter. `idx` is
-                // still the ORDERED index, so the header dot colours don't
-                // reshuffle as groups come and go.
-                if (filtersActive && !isGroupVisible(group)) return null;
-                const doneStatusId =
-                  board && Array.isArray(board.statuses)
-                    ? (board.statuses.find((s) => s.key === 'done')?._id || null)
-                    : null;
-                const doneCount = groupTasks.filter((t) => {
-                  if (t.status == null) return false;
-                  if (doneStatusId) {
-                    return t.status.toString() === doneStatusId.toString();
-                  }
-                  return t.status === 'done';
-                }).length;
-                const isCollapsed = collapsed.has(group._id);
-                // Disable task DnD inside this group while it's hosting an
-                // inline create/edit row — but leave the group's own handle
-                // sortable so users can still rearrange columns.
-                const isEditingHere =
-                  (editingTaskId != null && groupTasks.some((t) => t._id === editingTaskId)) ||
-                  creatingInGroup === group._id;
-                // Keep the card clipped to its rounded corners in the normal
-                // state so the grey header and row backgrounds don't poke past
-                // the 14px radius. Only lift the clip while an inline edit/create
-                // row is open here, where the field dropdowns must escape the
-                // card bounds. The inner table/grid wrappers clip their own
-                // overflow, so this doesn't change popover or drag behaviour.
-                const needsOverflowVisible = isEditingHere;
+      {/* The task grid. On a client board it is rendered INSIDE the service
+          workspace below (Work tab); everywhere else it is the board. */}
+      {view === 'board' && !isClientBoard && taskGroupsSection}
 
-                return (
-                  <SortableItem
-                    key={group._id}
-                    id={group._id}
-                    data={{ type: 'group' }}
-                    disabled={groupDndDisabled}
+      {/* ------------------------------------------------------------------
+          THE CLIENT WORKSPACE
+
+          A client board is ONE client company, and its groups are the SERVICES
+          the agency sells them. Four services, each with a client chat, a client
+          mailbox and a private team room, is twelve conversations — which the
+          ordinary board grid renders as an unreadable stack. So a client board
+          gets a rail that puts ONE service on screen at a time.
+
+          The grid inside the Work tab is the SAME `taskGroupsSection` every
+          other board type renders, filtered to the selected service. Statuses,
+          inline edit, pins, bulk actions, the detail panel and every "client can
+          see this" affordance therefore keep working untouched.
+          ------------------------------------------------------------------ */}
+      {view === 'board' && isClientBoard && (
+        <div className="mt-5 flex flex-col lg:flex-row items-start gap-5">
+          <ServiceRail
+            services={clientServices}
+            activeKey={svcParam}
+            onSelect={(k) => selectService(k, k === svcParam ? svcTab : undefined)}
+            canManage={canManageAccess}
+            onAddService={() => setGroupModalOpen(true)}
+          />
+
+          <div className="flex-1 min-w-0 w-full">
+            {svcParam === 'overview' && (
+              <ClientOverview
+                services={clientServices}
+                needsYou={clientNeedsYou}
+                canManage={canManageAccess}
+                onOpen={(id, tab) => selectService(id, tab)}
+                onSetUpRooms={(id) => selectService(id, 'talk')}
+                onInvite={() => selectService('people')}
+              />
+            )}
+
+            {svcParam === 'people' && (
+              <ClientPeoplePanel
+                boardId={boardId}
+                services={clientServices}
+                canManage={canManageAccess}
+                onServicesChanged={() => refreshBoardTasks(boardId)}
+              />
+            )}
+
+            {svcParam === 'settings' && (
+              <div className="flex flex-col items-start gap-3" style={{ maxWidth: 620 }}>
+                <p className="font-body" style={{ fontSize: 13.5, fontWeight: 600 }}>
+                  Portal settings
+                </p>
+                <p
+                  className="font-body"
+                  style={{ fontSize: 12.5, color: 'var(--color-text-muted)', lineHeight: 1.6 }}
+                >
+                  The shareable link, the client&rsquo;s name, the announcement banner and
+                  the FAQ &mdash; plus rotating or switching the link off.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setPortalModalOpen(true)}
+                  className="font-body"
+                  style={{
+                    height: 34,
+                    padding: '0 14px',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: '#FFFFFF',
+                    background: 'var(--color-accent)',
+                    borderRadius: 'var(--radius-md)',
+                  }}
+                >
+                  Open portal settings
+                </button>
+              </div>
+            )}
+
+            {activeService && (
+              <>
+                <div className="flex items-center gap-2.5 flex-wrap mb-3">
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: 3,
+                      background: activeService.color || 'var(--color-accent)',
+                    }}
+                  />
+                  <h2 className="font-display truncate" style={{ fontSize: 18, fontWeight: 700 }}>
+                    {activeService.name}
+                  </h2>
+                  <span
+                    className="font-body"
+                    style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
                   >
-                    {({ ref, setActivatorNodeRef, style, attributes, listeners, isDragging }) => (
-                      <div
-                        ref={ref}
-                        // The People tab's drill-down scrolls to a group by id.
-                        data-group-id={group._id}
-                        className={`bg-surface macan-group-card ${
-                          needsOverflowVisible ? 'overflow-visible' : 'overflow-hidden'
-                        }`}
+                    {activeService.taskCount} task{activeService.taskCount === 1 ? '' : 's'}
+                    {activeService.sharedCount > 0
+                      ? ` · ${activeService.sharedCount} the client sees`
+                      : ''}
+                  </span>
+                </div>
+
+                {/* Two tabs, not three. REQUESTS ARE NOT A SEPARATE TAB: they
+                    are tasks, and they live in the Work grid alongside the
+                    team's own rows. A second surface for them would split the
+                    board in half and hide half the work from whoever opened the
+                    wrong one. */}
+                <div
+                  role="tablist"
+                  aria-label={activeService.name}
+                  className="flex items-center gap-1 mb-4"
+                  style={{ borderBottom: '1px solid var(--color-border)' }}
+                >
+                  {[
+                    { key: 'work', label: 'Work', badge: activeService.openRequests },
+                    { key: 'talk', label: 'Conversations', badge: activeService.unread },
+                  ].map((t) => {
+                    const on = svcTab === t.key;
+                    return (
+                      <button
+                        key={t.key}
+                        type="button"
+                        role="tab"
+                        aria-selected={on}
+                        onClick={() => selectService(activeService.id, t.key)}
+                        className="font-body flex items-center gap-1.5"
                         style={{
-                          ...style,
-                          borderRadius: 'var(--radius-lg)',
-                          boxShadow: 'var(--shadow-card)',
-                          position: 'relative',
-                          zIndex: isDragging ? 30 : 'auto',
+                          height: 36,
+                          padding: '0 12px',
+                          fontSize: 13,
+                          fontWeight: on ? 700 : 500,
+                          color: on ? 'var(--color-accent)' : 'var(--color-text-secondary)',
+                          borderBottom: `2px solid ${on ? 'var(--color-accent)' : 'transparent'}`,
+                          background: 'transparent',
+                          marginBottom: -1,
                         }}
                       >
-                        <TaskGroupHeader
-                          name={group.name}
-                          colorDot={GROUP_DOT_CYCLE[idx % GROUP_DOT_CYCLE.length]}
-                          totalCount={groupTasks.length}
-                          doneCount={doneCount}
-                          collapsed={isCollapsed}
-                          onToggle={() => toggleGroup(group._id)}
-                          onRename={
-                            canEdit ? (next) => handleRenameGroup(group, next) : undefined
-                          }
-                          onDeleteGroup={canEdit ? () => handleDeleteGroup(group) : undefined}
-                          onOpenNotes={() => handleOpenNotes(group)}
-                          tags={resolveGroupTags(group)}
-                          onOpenTags={
-                            canTagGroups
-                              ? (event) => handleOpenGroupTags(group, event)
-                              : undefined
-                          }
-                          owner={group.owner || null}
-                          ownerInherited={!!group.ownerInherited}
-                          ownerActive={group.ownerActive !== false}
-                          ownerFromLabel={
-                            group.ownerFromMonth ? formatMonthKey(group.ownerFromMonth) : ''
-                          }
-                          onOpenOwner={
-                            // `monthKey` is legitimately null while the month list
-                            // loads or when ?month= is stale. Opening the picker
-                            // then would write into the SERVER's current month
-                            // instead of the one on screen — a 200, and the wrong
-                            // month, with no error anywhere.
-                            canOwnGroups && monthKey
-                              ? (event) => handleOpenGroupOwner(group, event)
-                              : undefined
-                          }
-                          noteCount={notesCountByGroup[group._id] ?? 0}
-                          dragHandle={
-                            !groupDndDisabled && (
-                              <button
-                                ref={setActivatorNodeRef}
-                                type="button"
-                                aria-label={`Drag to reorder group ${group.name}`}
-                                {...attributes}
-                                {...listeners}
-                                className="flex items-center justify-center opacity-0 group-hover/group-header:opacity-100 focus-visible:opacity-100 transition-opacity duration-150"
-                                style={{
-                                  width: 20,
-                                  height: 24,
-                                  cursor: 'grab',
-                                  touchAction: 'none',
-                                  background: 'transparent',
-                                  border: 'none',
-                                  padding: 0,
-                                  marginLeft: -4,
-                                }}
-                              >
-                                <GripVertical
-                                  size={14}
-                                  color="var(--color-text-muted)"
-                                  aria-hidden="true"
-                                />
-                              </button>
-                            )
-                          }
-                        />
-                        {!isCollapsed && (
-                          board?.useFlexibleColumns ? (
-                            <DataGrid
-                              board={board}
-                              tasks={groupTasks}
-                              personalPins={personalPins}
-                              readOnly={!canEdit}
-                            />
-                          ) : (
-                            <TaskTable
-                              tasks={groupTasks}
-                              personalPins={personalPins}
-                              board={board}
-                              members={members}
-                              editingTaskId={editingTaskId}
-                              isCreating={canCreateTasks && !taskFiltersActive}
-                              createKey={newTaskKeysByGroup[group._id] || 0}
-                              isAdmin={canEdit}
-                              canCreate={canCreateTasks}
-                              canAssign={canAssignOthers}
-                              selfId={selfId}
-                              highlightedTaskId={highlightedTaskId}
-                              highlightedParentId={highlightedParentId}
-                              onOpenTask={handleOpenTask}
-                              onStatusClick={handleStatusClick}
-                              onPriorityClick={handlePriorityClick}
-                              onLabelsClick={handleLabelsClick}
-                              onOwnerClick={handleOwnerClick}
-                              onActionsClick={canEdit ? handleActionsClick : undefined}
-                              onDueDateChange={handleDueDateChange}
-                              onSaveNew={(payload) => handleSaveNewTask(group._id, payload)}
-                              onSaveEdit={handleSaveEditTask}
-                              onCancelEdit={handleCancelEdit}
-                              groupId={group._id}
-                              dndDisabled={dndDisabledGlobal || isEditingHere}
-                              selectedIds={selectedTaskIds}
-                              onToggleSelect={handleToggleSelectTask}
-                              onToggleSelectAll={handleToggleSelectGroup}
-                              askPortalShare={canSharePortal}
-                            />
-                          )
+                        {t.label}
+                        {t.badge > 0 && (
+                          <span
+                            style={{
+                              minWidth: 16,
+                              height: 16,
+                              padding: '0 4px',
+                              borderRadius: 999,
+                              background: t.key === 'work' ? '#B45309' : 'var(--color-accent)',
+                              color: '#FFFFFF',
+                              fontSize: 10,
+                              fontWeight: 700,
+                              lineHeight: '16px',
+                              textAlign: 'center',
+                            }}
+                          >
+                            {t.badge > 99 ? '99+' : t.badge}
+                          </span>
                         )}
-                      </div>
-                    )}
-                  </SortableItem>
-                );
-              })}
-            </SortableContext>
-          </DndContext>
-        )}
-      </section>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {svcTab === 'talk' ? (
+                  <BoardChatTab
+                    boardId={boardId}
+                    onlyGroupId={activeService.id}
+                    clientName={board?.portalClientName || board?.name || ''}
+                  />
+                ) : (
+                  taskGroupsSection
+                )}
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Status chip menu */}
@@ -3323,7 +3654,7 @@ const BoardDetailPage = () => {
               {creatingGroup
                 ? 'Creating…'
                 : isClientBoard
-                ? 'Add workstream'
+                ? 'Add service'
                 : 'Create Group'}
             </Button>
           </>
@@ -3331,7 +3662,7 @@ const BoardDetailPage = () => {
       >
         <form onSubmit={handleSubmitNewGroup} className="flex flex-col gap-3">
           <Input
-            label={isClientBoard ? 'Workstream name' : 'Group Name'}
+            label={isClientBoard ? 'Service name' : 'Group Name'}
             required
             placeholder={isClientBoard ? 'e.g. SEO, Ads, Web Development' : 'e.g. To Do'}
             value={newGroupName}
@@ -3343,7 +3674,7 @@ const BoardDetailPage = () => {
               className="font-body text-xs"
               style={{ color: 'var(--color-text-muted)', marginTop: -4 }}
             >
-              A workstream is one of the services you deliver for this client.
+              A service is one of the things you deliver for this client.
               They see all of them in their portal, and can raise a request
               against any one. The portal link is managed from “Client portal”.
             </p>

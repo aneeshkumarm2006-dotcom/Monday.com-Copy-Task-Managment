@@ -62,13 +62,13 @@ test('one tick is enough', () => {
 // The tier gate
 // ---------------------------------------------------------------------------
 
-test('client surfaces are refused when the board is not advanced', () => {
+test('client surfaces are refused when the board is not a live client portal', () => {
   const plan = planSurfaces(
     { clientChat: true, clientMail: true },
     { allowClientSurfaces: false }
   );
   assert.equal(plan.ok, false);
-  assert.match(plan.refusals[0], /Advanced/);
+  assert.match(plan.refusals[0], /live client portal/i);
   // And nothing is planned — not even a partial set. A caller that ignored
   // `ok` must not be handed half a selection to POST.
   assert.deepEqual(plan.surfaces, []);

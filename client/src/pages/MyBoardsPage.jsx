@@ -155,11 +155,10 @@ const MyBoardsPage = () => {
       name: values.name,
       visibility: values.visibility,
       description: values.description,
-      // Client Portal boards: boardType 'client' + optional client categories.
+      // Client Portal boards: boardType 'client'.
       // Tracker boards: boardType 'tracker' + the browser's resolved timezone,
       // which the server requires and validates.
       boardType: values.boardType || 'standard',
-      portalCategories: values.portalCategories || [],
       monthTimezone: values.monthTimezone,
       // Client boards only: the company label shown in the portal and an
       // optional first contact to invite. The board mints its own portal link

@@ -439,6 +439,240 @@ const sendPortalInviteEmail = async ({ to, orgName, clientName, link }) => {
 };
 
 /**
+ * The coloured list of services in a multi-service invitation.
+ *
+ * `linked` is false for the password flow, and that is not a styling choice: a
+ * client who has not chosen a password yet cannot open a service link, so every
+ * row would be a dead end. One CTA, one destination — the set-password link.
+ */
+const portalServiceRows = (services, { linked = true } = {}) =>
+  (services || [])
+    .map((s) => {
+      const dot = `<span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${escapeHtml(
+        s.color || '#2563EB'
+      )};margin-right:10px;vertical-align:middle;"></span>`;
+      const label = escapeHtml(s.name || '');
+      const text =
+        linked && s.link
+          ? `<a href="${s.link}" style="color:#111827;text-decoration:none;font-weight:600;">${label}</a>`
+          : `<span style="color:#111827;font-weight:600;">${label}</span>`;
+      return `<tr><td style="padding:9px 0;border-bottom:1px solid #E5E7EB;font-size:14px;">${dot}${text}</td></tr>`;
+    })
+    .join('');
+
+/**
+ * Email a client their portal invitation when they have been set up for one or
+ * more SERVICES — the multi-service form of sendPortalInviteEmail.
+ *
+ * ONE EMAIL PER PERSON, however many services they manage. That is the whole
+ * point of the batch invite: an address appearing on four rows of the invite
+ * table produces this message once, listing four services, rather than four
+ * near-identical emails a client would reasonably read as a mistake.
+ *
+ * A single service gets a specific title and a CTA straight into it; several get
+ * a general title and a linked list, because "Open SEO" is wrong when three of
+ * the four things they were given are not SEO.
+ *
+ * @param {object}   opts
+ * @param {string}   opts.to
+ * @param {string}   opts.orgName
+ * @param {string}   opts.clientName
+ * @param {string}   opts.link      — the bare /portal/:portalToken URL
+ * @param {Array}    opts.services  — [{ name, color, link }]
+ */
+const sendPortalServicesInviteEmail = async ({ to, orgName, clientName, link, services = [] }) => {
+  const company = clientName || orgName || '';
+  const one = services.length === 1 ? services[0] : null;
+
+  const html = buildPortalHtml({
+    orgName,
+    title: one
+      ? `You've been invited to your ${escapeHtml(one.name)} portal`
+      : "You've been invited to your client portal",
+    intro: one
+      ? `You've been set up on the ${escapeHtml(company)} portal for <b>${escapeHtml(
+        one.name
+      )}</b>, where you can raise requests, chat with the team and send messages. Click below to accept — you'll sign in securely with your Google account.`
+      : `You've been set up on the ${escapeHtml(company)} portal for ${
+        services.length
+      } services. For each one you can raise requests, chat with the team and send messages. Click below to accept — you'll sign in securely with your Google account.`,
+    bodyCard: services.length
+      ? `<div class="card"><p class="card-label">${
+        one ? 'YOUR SERVICE' : 'YOUR SERVICES'
+      }</p><table style="width:100%;border-collapse:collapse;">${portalServiceRows(
+        services
+      )}</table></div>`
+      : '',
+    ctaLabel: one ? `Open ${one.name}` : 'Open my portal',
+    ctaLink: one && one.link ? one.link : link,
+  });
+
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
+    to,
+    subject: one
+      ? `You're invited to the ${company} ${one.name} portal`
+      : `You're invited to the ${company} client portal`,
+    html,
+  });
+};
+
+/**
+ * The password-flow twin of the above: the client's address is not a Google
+ * account, so the CTA must be their one-time set-password link.
+ *
+ * The service list is rendered UNLINKED here — see `portalServiceRows`.
+ */
+const sendPortalPasswordServicesInviteEmail = async ({
+  to,
+  orgName,
+  clientName,
+  link,
+  services = [],
+  expiresIn = '7 days',
+}) => {
+  const company = clientName || orgName || '';
+  const one = services.length === 1 ? services[0] : null;
+
+  const serviceBlock =
+    services.length > 1
+      ? '<p class="card-label" style="margin-top:16px;">YOUR SERVICES</p>' +
+        '<table style="width:100%;border-collapse:collapse;">' +
+        portalServiceRows(services, { linked: false }) +
+        '</table>'
+      : '';
+
+  const html = buildPortalHtml({
+    orgName,
+    title: 'Set up your client portal',
+    intro:
+      "You've been set up on the " +
+      escapeHtml(company) +
+      ' portal' +
+      (one ? ' for <b>' + escapeHtml(one.name) + '</b>' : '') +
+      '. Choose a password below and you can raise requests, chat with the team and send messages.',
+    bodyCard:
+      '<div class="card"><p class="card-label">SIGNING IN AS</p>' +
+      '<p class="card-text">' + escapeHtml(to) + '</p>' +
+      serviceBlock +
+      '<p class="card-label" style="margin-top:16px;">THIS LINK EXPIRES IN ' +
+      escapeHtml(String(expiresIn).toUpperCase()) +
+      '</p><p class="card-text">It can only be used once.</p></div>',
+    ctaLabel: 'Set my password',
+    ctaLink: link,
+  });
+
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
+    to,
+    subject: 'Set up your ' + company + ' client portal',
+    html,
+  });
+};
+
+/**
+ * Tell a client that a team message is waiting in their portal.
+ *
+ * NOTIFY-ONLY. Chat and mail live inside Macan and have no inbound email path,
+ * so this deliberately sets NO `Reply-To` — see services/portalNotify.js, which
+ * owns when this is sent and is the only thing that should call it.
+ *
+ * The copy names the SERVICE, because a client with four of them needs to know
+ * which one is waiting before deciding whether to open it now.
+ */
+const sendPortalNewMessageEmail = async ({
+  to,
+  orgName,
+  clientName,
+  serviceName,
+  mode = 'chat',
+  authorName = '',
+  subject = null,
+  snippet = '',
+  link,
+}) => {
+  const who = authorName ? escapeHtml(authorName) : 'Someone';
+  const where = escapeHtml(serviceName || '');
+  const isMail = mode === 'mail';
+
+  const card = subject
+    ? '<div class="card"><p class="card-label">' + escapeHtml(subject) + '</p>' +
+      '<p class="card-text">' + escapeHtml(snippet) + '</p></div>'
+    : snippet
+      ? '<div class="card"><p class="card-text">' + escapeHtml(snippet) + '</p></div>'
+      : '';
+
+  const html = buildPortalHtml({
+    orgName,
+    title: 'You have a new message',
+    intro:
+      who + ' sent you a message in the <b>' + where + '</b> ' +
+      (isMail ? 'mailbox' : 'chat') + ' on the ' + escapeHtml(clientName || orgName || '') +
+      ' portal. Replies happen in the portal — this email is just a heads-up.',
+    bodyCard: card,
+    ctaLabel: 'Open my portal',
+    ctaLink: link,
+  });
+
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
+    to,
+    subject: isMail
+      ? 'New message in your ' + (serviceName || 'client') + ' mailbox'
+      : (authorName || 'Someone') + ' sent you a message about ' + (serviceName || 'your portal'),
+    html,
+  });
+};
+
+/**
+ * The daily catch-all: everything still unread across every service, once.
+ *
+ * The companion to the first-unread email rather than a replacement for it. That
+ * one is prompt and per-conversation; this one exists for the client who has not
+ * opened the portal all day and whose six-hour ceiling has quietly lapsed.
+ *
+ * A contact with nothing unread gets NOTHING — see services/portalDigestRunner.js.
+ * An empty digest is how a digest gets filtered to a folder nobody opens.
+ */
+const sendPortalDigestEmail = async ({ to, orgName, clientName, name = '', rows = [], link }) => {
+  const body = rows
+    .map((r) => {
+      const bits = [];
+      if (r.chat) bits.push(r.chat + ' new message' + (r.chat === 1 ? '' : 's'));
+      if (r.mail) bits.push(r.mail + ' new mail');
+      if (r.requests) bits.push(r.requests + ' request update' + (r.requests === 1 ? '' : 's'));
+      const dot =
+        '<span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:' +
+        escapeHtml(r.color || '#2563EB') + ';margin-right:10px;vertical-align:middle;"></span>';
+      return (
+        '<tr><td style="padding:9px 0;border-bottom:1px solid #E5E7EB;font-size:14px;">' + dot +
+        '<span style="color:#111827;font-weight:600;">' + escapeHtml(r.name) + '</span>' +
+        '<span style="color:#6B7280;"> — ' + escapeHtml(bits.join(' · ')) + '</span></td></tr>'
+      );
+    })
+    .join('');
+
+  const html = buildPortalHtml({
+    orgName,
+    title: 'Waiting for you in your portal',
+    intro:
+      (name ? escapeHtml(name.split(' ')[0]) + ', there' : 'There') +
+      ' are updates on the ' + escapeHtml(clientName || orgName || '') + ' portal you have not read yet.',
+    bodyCard:
+      '<div class="card"><table style="width:100%;border-collapse:collapse;">' + body + '</table></div>',
+    ctaLabel: 'Open my portal',
+    ctaLink: link,
+  });
+
+  await getPortalTransporter().sendMail({
+    from: portalFrom(),
+    to,
+    subject: 'Your ' + (clientName || orgName || 'client') + ' portal — what is waiting',
+    html,
+  });
+};
+
+/**
  * Email a client a ONE-TIME link to choose their portal password. This is the
  * invitation for clients whose email isn't a Google account — the link carries a
  * single-use token and drops them on the set-password page, after which they
@@ -661,6 +895,10 @@ module.exports = {
   sendMentionEmail,
   sendUpdateEmail,
   sendPortalInviteEmail,
+  sendPortalServicesInviteEmail,
+  sendPortalNewMessageEmail,
+  sendPortalDigestEmail,
+  sendPortalPasswordServicesInviteEmail,
   sendPortalPasswordInviteEmail,
   sendPortalPasswordResetEmail,
   sendPortalReplyEmail,

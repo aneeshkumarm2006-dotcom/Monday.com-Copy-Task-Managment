@@ -16,6 +16,7 @@ const {
   saveHolidays,
   setHoliday,
   deleteHoliday,
+  listServiceCatalog,
 } = require('../controllers/orgController');
 const {
   listRoles,
@@ -90,6 +91,10 @@ router.delete('/:id/roles/:roleId', deleteRole);
 // single-date PUT/DELETE pair is the quick-mark path used from a calendar day
 // cell, so marking tomorrow off never means resending the whole year.
 // ---------------------------------------------------------------------------
+// The service catalog behind the invite table's "catalog + free text" picker.
+// Read-only and open to any member — see the handler for why there is no POST.
+router.get('/:id/service-catalog', listServiceCatalog);
+
 router.get('/:id/holidays', listHolidays);
 
 router.put(

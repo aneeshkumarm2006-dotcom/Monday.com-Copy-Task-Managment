@@ -5,7 +5,11 @@ const Task = require('../models/Task');
 const Update = require('../models/Update');
 const ClientContact = require('../models/ClientContact');
 const Organisation = require('../models/Organisation');
-const { loadBoardContext } = require('../utils/boardContext');
+const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const { inviteServiceContacts } = require('../services/portalBatchInvite');
+const { unreadByChannel } = require('../services/portalUnread');
+const { resolveColors } = require('../services/serviceCatalogService');
+const Channel = require('../models/Channel');
 const { isResolvedStatus } = require('../utils/doneStatus');
 const {
   generatePortalToken,
@@ -28,7 +32,6 @@ const {
 } = require('../utils/portalAttachments');
 const { portalTaskFilter, isTeamAuthoredIssue } = require('../utils/portalVisibility');
 const { isClientBoard } = require('../utils/clientBoard');
-const { checkUpgrade, describeEffects } = require('../utils/clientTierUpgrade');
 const portalStream = require('../services/portalStream');
 
 const CLIENT_URL = () => process.env.CLIENT_URL || 'http://localhost:5173';
@@ -64,7 +67,7 @@ const clientLabel = (board) =>
 const loadPortalBoard = async (portalToken) => {
   if (!portalToken) return null;
   const board = await Board.findOne({ portalToken, portalEnabled: true }).select(
-    '+portalToken name portalClientName portalTier boardType organisation statuses portalCategories'
+    '+portalToken name portalClientName boardType organisation statuses portalCategories'
   );
   if (!board || !isClientBoard(board)) return null;
   return { board };
@@ -116,17 +119,30 @@ const classifyIssue = (board, statusValue) => {
   };
 };
 
-// Request types the client can raise, and the priorities they can set.
-const PORTAL_TYPES = [
-  'bug',
-  'feature',
-  'requirement',
-  'question',
-  'meta_ads',
-  'google_ads',
-  'email_marketing',
-  'website_development',
-];
+/**
+ * THERE IS NO REQUEST-TYPE LIST ANY MORE, and no category list either.
+ *
+ * `PORTAL_TYPES` used to hold eight values, four of which — meta_ads,
+ * google_ads, email_marketing, website_development — were SERVICE NAMES. They
+ * existed because there was no service axis: the only way to say "this is about
+ * Meta Ads" was to pick it as a type. There is one now. A client raising a
+ * request is already inside a service, so asking "which service is this?" a
+ * second time under a different label was asking them to answer twice and give
+ * two answers that could disagree.
+ *
+ * The remaining four (bug / feature / requirement / question) went with them,
+ * deliberately: a request is a title, some detail, a priority and a needed-by
+ * date, inside a known service. Every extra field on an intake form is a
+ * decision someone has to make before they can ask for help.
+ *
+ * `Board.portalCategories` is retired for the same reason and one more: the
+ * board form no longer offers any way to SET it, so the dropdown could only ever
+ * have been empty.
+ *
+ * `Task.portalType` and `Task.portalCategory` remain on the model, and
+ * `serializeIssue` still reports them, so requests raised before this change
+ * keep their badge. Nothing writes them any more.
+ */
 const PORTAL_PRIORITIES = ['low', 'medium', 'high', 'critical'];
 
 /**
@@ -512,8 +528,247 @@ const portalCompletePasswordSetup = async (req, res) => {
 // ============================================================================
 
 /**
- * GET /api/portal/me/issues
+ * GET  /api/portal/me/preferences
+ * PATCH /api/portal/me/preferences   Body: { notifyEmail?: boolean }
+ *
+ * The client's own switch for "email me when a message is waiting". Exists
+ * because these emails go out over the team's Gmail, and a client who cannot
+ * turn them off marks them as spam instead — a complaint against the sending
+ * domain is a far more expensive outcome than a missed notification.
+ *
+ * Scoped to the contact in the TOKEN. There is no id in the URL, so one client
+ * cannot reach another's preferences even on the same board.
+ */
+const getPortalPreferences = async (req, res) => {
+  try {
+    const contact = await ClientContact.findById(req.portal.contactId).select('notifyEmail');
+    if (!contact) return res.status(404).json({ error: 'Not found' });
+    return res.json({ notifyEmail: contact.notifyEmail !== false });
+  } catch (err) {
+    console.error('getPortalPreferences error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+const updatePortalPreferences = async (req, res) => {
+  try {
+    const patch = {};
+    if (typeof req.body?.notifyEmail === 'boolean') patch.notifyEmail = req.body.notifyEmail;
+    if (!Object.keys(patch).length) {
+      return res.status(400).json({ error: 'Nothing to update.' });
+    }
+    const contact = await ClientContact.findByIdAndUpdate(
+      req.portal.contactId,
+      { $set: patch },
+      { new: true }
+    ).select('notifyEmail');
+    if (!contact) return res.status(404).json({ error: 'Not found' });
+    return res.json({ notifyEmail: contact.notifyEmail !== false });
+  } catch (err) {
+    console.error('updatePortalPreferences error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/portal/me/home
+ *
+ * Everything the portal's SERVICE TABLE needs, in one call: who the client is,
+ * who is signed in, and one row per service carrying its request counts, its
+ * chat and mail unread, and when anything last happened on it.
+ *
+ * ---- WHY THIS IS NOT ASSEMBLED FROM THE TWO ENDPOINTS THAT EXIST -----------
+ *
+ * `getMyIssues` + `getPortalChannels` between them hold most of these numbers,
+ * and using them would be wrong for one decisive reason: `getPortalChannels`
+ * FILTERS OUT a group with no channel (`groups.filter(g => byGroup.has(...))`).
+ * That is right for a channel list and fatal for a service table — a service the
+ * client is paying for would silently vanish from their home screen the moment
+ * its rooms were missing. This endpoint is authoritative about services and must
+ * never inherit that filter: it lists EVERY group on the board, and reports
+ * `channels: { chat: null, mail: null }` for one that has no rooms yet.
+ *
+ * ---- SIX ROUND TRIPS, NO N+1 -----------------------------------------------
+ *
+ *   1  board          5  requests + last activity, ONE $facet aggregate
+ *   2  organisation   6  chat/mail unread, ONE aggregate (services/portalUnread)
+ *   3  groups         +  colours resolved for every slug in ONE catalog query
+ *   4  channels
+ *
+ * The `$match` reuses `portalTaskFilter` verbatim, including the throw that
+ * refuses to build an unscoped filter, and the `$lookup` is served by Update's
+ * existing `{ task, visibility, createdAt }` index — no new index.
+ *
+ * Bucketing into open / in-progress / resolved happens in JS, NOT in Mongo.
+ * `utils/doneStatus.js` owns what "resolved" means for a board, and re-encoding
+ * that rule in an aggregation pipeline is precisely what that file's header
+ * exists to prevent.
+ */
+const getPortalHome = async (req, res) => {
+  try {
+    const { contactId, boardId } = req.portal;
+
+    const board = await Board.findById(boardId).select(
+      'statuses portalCategories organisation portalAnnouncement portalFaqs name portalClientName portalToken'
+    );
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+
+    const [org, groups] = await Promise.all([
+      Organisation.findById(board.organisation).select('name'),
+      TaskGroup.find({ board: boardId })
+        .select('name order serviceKey')
+        .sort({ order: 1, createdAt: 1 })
+        .lean(),
+    ]);
+
+    // ---- requests, per service, plus last activity ------------------------
+    const tasks = await Task.find(portalTaskFilter({ boardId, contactId }))
+      .select('group status updatedAt createdAt')
+      .lean();
+
+    const lastByTask = new Map();
+    if (tasks.length) {
+      const rows = await Update.aggregate([
+        {
+          $match: {
+            task: { $in: tasks.map((t) => t._id) },
+            // Written as a NEGATION on purpose: rows that predate the field
+            // carry no `visibility` at all, so an inclusive match would silently
+            // report every existing thread as empty.
+            visibility: { $ne: 'internal' },
+          },
+        },
+        { $group: { _id: '$task', lastAt: { $max: '$createdAt' } } },
+      ]);
+      rows.forEach((r) => lastByTask.set(String(r._id), r.lastAt));
+    }
+
+    const perGroup = new Map();
+    const bucketFor = (gid) => {
+      const key = String(gid || '');
+      if (!perGroup.has(key)) {
+        perGroup.set(key, { open: 0, ongoing: 0, resolved: 0, total: 0, lastAt: null });
+      }
+      return perGroup.get(key);
+    };
+    for (const t of tasks) {
+      const b = bucketFor(t.group);
+      const { state } = classifyIssue(board, t.status);
+      b[state] += 1;
+      b.total += 1;
+      const at = lastByTask.get(String(t._id)) || t.updatedAt || t.createdAt;
+      if (at && (!b.lastAt || at > b.lastAt)) b.lastAt = at;
+    }
+
+    // ---- conversations, per service ---------------------------------------
+    const channels = await Channel.find({
+      board: boardId,
+      audience: 'client',
+      archived: false,
+    })
+      .select('_id group mode')
+      .lean();
+
+    const unreadMap = await unreadByChannel({
+      channelIds: channels.map((c) => c._id),
+      contactId,
+    });
+
+    const convByGroup = new Map();
+    for (const ch of channels) {
+      const key = String(ch.group || '');
+      if (!convByGroup.has(key)) {
+        convByGroup.set(key, { chat: null, mail: null, unread: { chat: 0, mail: 0 }, lastAt: null });
+      }
+      const slot = convByGroup.get(key);
+      const mode = ch.mode === 'mail' ? 'mail' : 'chat';
+      slot[mode] = String(ch._id);
+      const u = unreadMap.get(String(ch._id));
+      if (u) {
+        // Mail is read one THREAD at a time, so its badge counts conversations,
+        // not messages — otherwise the home screen and the mailbox disagree.
+        slot.unread[mode] = mode === 'mail' ? u.unreadThreads : u.unread;
+        if (u.lastAt && (!slot.lastAt || u.lastAt > slot.lastAt)) slot.lastAt = u.lastAt;
+      }
+    }
+
+    // ---- one query for every colour on the page ---------------------------
+    const colors = await resolveColors(
+      board.organisation,
+      groups.map((g) => g.serviceKey).filter(Boolean)
+    );
+
+    const services = groups.map((g) => {
+      const key = String(g._id);
+      const r = perGroup.get(key) || { open: 0, ongoing: 0, resolved: 0, total: 0, lastAt: null };
+      const c = convByGroup.get(key) || {
+        chat: null,
+        mail: null,
+        unread: { chat: 0, mail: 0 },
+        lastAt: null,
+      };
+      const lastActivityAt =
+        r.lastAt && c.lastAt ? (r.lastAt > c.lastAt ? r.lastAt : c.lastAt) : r.lastAt || c.lastAt;
+      return {
+        id: key,
+        name: g.name,
+        slug: g.serviceKey || null,
+        color: g.serviceKey ? colors.get(g.serviceKey) || null : null,
+        order: g.order || 0,
+        channels: { chat: c.chat, mail: c.mail },
+        requests: { open: r.open, ongoing: r.ongoing, resolved: r.resolved, total: r.total },
+        unread: c.unread,
+        lastActivityAt: lastActivityAt || null,
+      };
+    });
+
+    // A request whose group was deleted has `group: null` and would otherwise be
+    // unreachable under a per-service IA. Reported rather than hidden.
+    const unfiled = perGroup.get('') || { open: 0, ongoing: 0, resolved: 0, total: 0 };
+
+    const contact = req.portal.contact;
+    const name = contact?.name || '';
+
+    return res.json({
+      contact: {
+        // The contact id, which no portal payload has ever carried. Without it
+        // the client keys its local read-state on "company|name", so two people
+        // with the same name at one company share a browser bucket.
+        id: String(contactId),
+        name,
+        firstName: (name || contact?.email || '').split(' ')[0] || '',
+        email: contact?.email || req.portal.email || '',
+      },
+      company: { name: req.portal.clientName, orgName: org?.name || '' },
+      portal: {
+        linkToken: board.portalToken || null,
+        announcement: board.portalAnnouncement || '',
+        faqs: (Array.isArray(board.portalFaqs) ? board.portalFaqs : [])
+          .filter((f) => f && (f.q || f.a))
+          .map((f) => ({ q: f.q || '', a: f.a || '' })),
+        categories: Array.isArray(board.portalCategories) ? board.portalCategories : [],
+      },
+      services,
+      unfiled: { requests: unfiled },
+      // Relative times computed against a client clock that is an hour out read
+      // as nonsense. One field, and "12m ago" becomes trustworthy.
+      serverTime: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('getPortalHome error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/portal/me/issues[?service=<groupId>]
  * The signed-in contact's own issues + dashboard context (branding, categories).
+ *
+ * `?service=` narrows to one service, which is what makes the home screen's
+ * counts clickable. The group is validated against the board FROM THE TOKEN —
+ * the same check `createMyIssue` makes, and the only security property either
+ * needs, since a contact may see every service on their own board but none on
+ * anyone else's.
  */
 const getMyIssues = async (req, res) => {
   try {
@@ -525,8 +780,21 @@ const getMyIssues = async (req, res) => {
     // Board-scoped: this board IS the client, and its groups are that client's
     // workstreams — they see all of them. Served by Task's existing
     // { board, createdAt } index, which the old group filter had none of.
-    const tasks = await Task.find(portalTaskFilter({ boardId, contactId }))
-      .sort({ createdAt: -1 });
+    // Optional narrowing to one service. Validated against the board from the
+    // TOKEN before it is trusted, exactly as createMyIssue validates a submitted
+    // workstream — an id from another board must not select anything.
+    const filter = portalTaskFilter({ boardId, contactId });
+    const wantService = (req.query?.service || '').toString().trim();
+    if (wantService) {
+      const group = await TaskGroup.findOne({ _id: wantService, board: boardId })
+        .select('_id')
+        .lean()
+        .catch(() => null);
+      if (!group) return res.status(400).json({ error: 'Unknown service.' });
+      filter.group = group._id;
+    }
+
+    const tasks = await Task.find(filter).sort({ createdAt: -1 });
 
     const org = await Organisation.findById(board.organisation).select('name');
 
@@ -582,9 +850,6 @@ const getMyIssues = async (req, res) => {
         // The client's service lines. Empty means the board has no groups yet,
         // and the portal must say so rather than offer an unusable form.
         workstreams,
-        // Whether this portal has chat. A courtesy for the UI only — every
-        // chat route enforces the tier itself. See utils/clientBoard.js.
-        tier: req.portal.tier,
         announcement: board.portalAnnouncement || '',
         faqs: (Array.isArray(board.portalFaqs) ? board.portalFaqs : [])
           .filter((f) => f && (f.q || f.a))
@@ -652,17 +917,13 @@ const createMyIssue = async (req, res) => {
       status = (fav || board.statuses[0])._id;
     }
 
-    // Category is optional and must be one the board actually offers.
-    let portalCategory = '';
-    const requested = (req.body?.category || '').trim();
-    if (requested && Array.isArray(board.portalCategories) && board.portalCategories.includes(requested)) {
-      portalCategory = requested;
-    }
-
-    // Request type + priority are optional and validated against fixed sets, so a
-    // client can never inject an arbitrary value onto the team's board.
-    const reqType = (req.body?.type || '').toString().trim().toLowerCase();
-    const portalType = PORTAL_TYPES.includes(reqType) ? reqType : '';
+    // `type` and `category` are no longer accepted — see the note by
+    // PORTAL_PRIORITIES. A client that still posts them is not an error; the
+    // fields are simply ignored, which is what keeps an older cached bundle
+    // working rather than 400ing on a field it was told to send.
+    //
+    // Priority IS still validated against a fixed set, so a client can never
+    // inject an arbitrary value onto the team's board.
     const reqPriority = (req.body?.priority || '').toString().trim().toLowerCase();
     const priority = PORTAL_PRIORITIES.includes(reqPriority) ? reqPriority : 'medium';
 
@@ -709,8 +970,6 @@ const createMyIssue = async (req, res) => {
       order,
       source: 'client',
       portalSubmitter: contactId,
-      portalCategory,
-      portalType,
       priority,
       portalRef,
       dueDate,
@@ -1111,7 +1370,10 @@ const loadManageContext = async (boardId, userId) => {
   if (!ctx.access.canManageAccess) {
     return { status: 403, error: 'Only board managers can manage client links' };
   }
-  return { board: ctx.board, org: ctx.org };
+  // `ctx` as well, so a caller needing a SECOND capability (the batch invite
+  // also restructures the board, so it wants `group.manage`) can ask without
+  // reloading the board. Additive — every existing destructure still works.
+  return { board: ctx.board, org: ctx.org, ctx };
 };
 
 const adminPortalPayload = (board) => ({
@@ -1119,9 +1381,6 @@ const adminPortalPayload = (board) => ({
   portalEnabled: !!board.portalEnabled,
   clientName: board.portalClientName || '',
   link: board.portalToken ? `${CLIENT_URL()}/portal/${board.portalToken}` : null,
-  // 'basic' | 'advanced'. One-way — see utils/clientBoard.js and Board's hooks.
-  tier: board.portalTier || 'basic',
-  tierUpgradedAt: board.portalTierUpgradedAt || null,
   announcement: board.portalAnnouncement || '',
   faqs: (Array.isArray(board.portalFaqs) ? board.portalFaqs : []).map((f) => ({
     q: f.q || '',
@@ -1231,13 +1490,92 @@ const serializeContact = (contact) => ({
   verified: !!contact.verified,
   invitedAt: contact.invitedAt || null,
   lastSeenAt: contact.lastSeenAt || null,
+  /**
+   * The services this person was invited on - chips in the team's roster, so
+   * "Asha - SEO, Meta Ads" survives the moment the invite table was submitted.
+   *
+   * LABELLING ONLY. It grants nothing: every contact on a client board can see
+   * every service on it. See the field comment on ClientContact.services.
+   *
+   * A populated entry that came back null is SKIPPED rather than throwing -
+   * losing one chip beats failing the whole roster read because a group was
+   * deleted in a way that missed the $pull in groupController.deleteGroup.
+   */
+  services: (contact.services || [])
+    .filter((g) => g && g.name)
+    .map((g) => ({ id: String(g._id), name: g.name, serviceKey: g.serviceKey || null })),
 });
 
 const listBoardContacts = (boardId) =>
   ClientContact.find({ board: boardId })
     .select('+passwordHash')
+    .populate('services', 'name serviceKey')
     .sort({ createdAt: 1 })
     .then((rows) => rows.map(serializeContact));
+
+/**
+ * POST /api/portal/boards/:boardId/invites
+ * Body: `{ rows: [{ service, email, authMethod?, color? }], notify? }`
+ *
+ * THE BATCH INVITE. Several people, several services, one submission — the
+ * shape an agency actually works in, where Meta Ads, Google Ads, SEO and web
+ * development each have a different manager at the client and some of them are
+ * the same person twice.
+ *
+ * N rows become N services (groups) on the board, each with its client chat,
+ * client mailbox and private team room; and ONE email per unique address,
+ * naming every service that person manages. The dedupe rule and the phase
+ * ordering live in services/portalBatchInvite.js.
+ *
+ * ---- TWO CAPABILITIES, NOT ONE --------------------------------------------
+ *
+ * `canManageAccess` (via loadManageContext) because this hands out portal
+ * access, AND `group.manage` because it also RESTRUCTURES THE BOARD. Either one
+ * alone would let someone do half of something they were not trusted with, and
+ * the second gate costs a line because loadManageContext now returns its ctx.
+ *
+ * Plural route, not a variant of `/invite`: this is a different resource that
+ * happens to send mail, and folding it into the singular endpoint would put a
+ * 25-row body behind a limiter sized for one address.
+ */
+const sendPortalInviteBatch = async (req, res) => {
+  try {
+    const mc = await loadManageContext(req.params.boardId, req.user.userId);
+    if (mc.error) return res.status(mc.status).json({ error: mc.error });
+
+    const denied = requireCapability(
+      mc.ctx,
+      'group.manage',
+      'You do not have permission to add services to this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    const result = await inviteServiceContacts({
+      board: mc.board,
+      orgName: mc.org?.name || '',
+      actorId: req.user.userId,
+      rows: req.body?.rows,
+      notify: req.body?.notify !== false,
+    });
+
+    if (!result.ok) {
+      return res.status(result.status || 400).json({ errors: result.errors });
+    }
+
+    return res.json({
+      portal: adminPortalPayload(mc.board),
+      services: result.services,
+      contacts: result.contacts,
+      // Index-aligned with the request, so the UI can mark each table row.
+      rows: result.rows,
+      warnings: result.warnings,
+      roster: await listBoardContacts(mc.board._id),
+    });
+  } catch (err) {
+    console.error('sendPortalInviteBatch error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
 
 /**
  * POST /api/portal/boards/:boardId/invite   Body: { email, authMethod? }
@@ -1349,112 +1687,6 @@ const resendPortalInvite = async (req, res) => {
   }
 };
 
-/**
- * GET /api/portal/boards/:boardId/tier
- * What upgrading would do, for the confirmation dialog. Runs the SAME pure
- * checker the write path runs, which is the point: the dialog cannot promise
- * something the endpoint would refuse.
- */
-const getPortalTierPreview = async (req, res) => {
-  try {
-    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-
-    const [groupCount, contactCount] = await Promise.all([
-      TaskGroup.countDocuments({ board: ctx.board._id }),
-      ClientContact.countDocuments({ board: ctx.board._id }),
-    ]);
-    const check = checkUpgrade({ board: ctx.board, groupCount, contactCount });
-
-    return res.json({
-      tier: ctx.board.portalTier || 'basic',
-      ...check,
-      effects: describeEffects(),
-      groupCount,
-      contactCount,
-      // Typing this back is what confirms the upgrade — the same bar a
-      // destructive action gets, because the irreversibility is the same.
-      confirmPhrase: (ctx.board.portalClientName || '').trim() || ctx.board.name,
-    });
-  } catch (err) {
-    console.error('getPortalTierPreview error:', err);
-    return res.status(500).json({ error: 'Server error' });
-  }
-};
-
-/**
- * POST /api/portal/boards/:boardId/tier/upgrade
- *
- * Move a client board from `basic` to `advanced`. There is deliberately NO
- * endpoint that sets the tier to an arbitrary value: upgrading is an ACTION,
- * not a settable property, so a downgrade is not expressible on the wire.
- *
- * The write is a conditional `updateOne` matching `portalTier: 'basic'`, which
- * makes it atomic and idempotent — two racing confirmations produce one write,
- * and the second reports `alreadyUpgraded` rather than failing.
- */
-const upgradePortalTier = async (req, res) => {
-  try {
-    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    const { board } = ctx;
-
-    const [groupCount, contactCount] = await Promise.all([
-      TaskGroup.countDocuments({ board: board._id }),
-      ClientContact.countDocuments({ board: board._id }),
-    ]);
-    const check = checkUpgrade({ board, groupCount, contactCount });
-    if (!check.ok) {
-      return res.status(400).json({ error: check.refusals[0], refusals: check.refusals });
-    }
-    if (check.noop) {
-      return res.json({
-        tier: 'advanced',
-        alreadyUpgraded: true,
-        portal: adminPortalPayload(board),
-      });
-    }
-
-    // Confirmation: the caller must echo the client's name back. Checked here
-    // and not only in the dialog, because "irreversible" has to mean it on the
-    // wire too.
-    const typed = (req.body?.confirm || '').toString().trim().toLowerCase();
-    const expected = ((board.portalClientName || '').trim() || board.name)
-      .trim()
-      .toLowerCase();
-    if (typed !== expected) {
-      return res.status(400).json({
-        error: 'Type the client name exactly to confirm this permanent change.',
-      });
-    }
-
-    const result = await Board.updateOne(
-      { _id: board._id, boardType: 'client', portalTier: 'basic' },
-      {
-        $set: {
-          portalTier: 'advanced',
-          portalTierUpgradedAt: new Date(),
-          portalTierUpgradedBy: req.user.userId,
-        },
-      }
-    );
-    if (!result.matchedCount) {
-      // Someone upgraded it between our read and our write. Not an error.
-      return res.json({ tier: 'advanced', alreadyUpgraded: true });
-    }
-
-    const fresh = await Board.findById(board._id).select('+portalToken');
-    return res.json({
-      tier: 'advanced',
-      alreadyUpgraded: false,
-      portal: adminPortalPayload(fresh),
-    });
-  } catch (err) {
-    console.error('upgradePortalTier error:', err);
-    return res.status(500).json({ error: 'Server error' });
-  }
-};
-
 module.exports = {
   // public
   getPortalMeta,
@@ -1464,6 +1696,9 @@ module.exports = {
   portalCheckSetupToken,
   portalCompletePasswordSetup,
   // portal-authed
+  getPortalHome,
+  getPortalPreferences,
+  updatePortalPreferences,
   getMyIssues,
   createMyIssue,
   uploadIssueAttachment,
@@ -1475,10 +1710,9 @@ module.exports = {
   getPortalConfig,
   savePortalConfig,
   sendPortalInvite,
+  sendPortalInviteBatch,
   listPortalContacts,
   resendPortalInvite,
-  getPortalTierPreview,
-  upgradePortalTier,
   // reused by updateController for the "team replied on a client task" email hook
   sendPortalReplyEmailForTask: async (task, snippet = '') => {
     try {

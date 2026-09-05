@@ -26,6 +26,11 @@
   --p-ink: #0f172a;
   --p-ink-2: #475569;
   --p-muted: #94a3b8;
+  /* AA-compliant body text. `--p-muted` above is #94a3b8, which is 2.84:1 on
+     the white card — below the 4.5:1 floor — and it was being used for the mail
+     snippet, timestamps and attachment sizes. This is 4.76:1. `--p-muted` stays
+     for icons, borders and dividers, where the floor is 3:1. */
+  --p-muted-text: #64748b;
 
   --p-bg: #f6f8fc;
   --p-card: #ffffff;
@@ -1871,4 +1876,199 @@ textarea.mcp-field {
   color: var(--p-ink-2);
   line-height: 1.5;
   margin: 0 0 16px;
+}
+
+/* ==========================================================================
+   THE SERVICE TABLE — the portal's home screen
+   ==========================================================================
+   One <table>, restyled into cards below 860px rather than a second DOM tree:
+   real table semantics where there is room for them, and no duplicate markup
+   to drift out of step.
+
+   `--p-svc` is the per-service accent, set inline per row. It follows the
+   per-instance custom-property idiom already used by `--sc` (status colour) and
+   `--bc` (badge colour) further up this file, and defaults to the portal blue
+   so a service with no catalog entry still renders.
+   ========================================================================== */
+
+.mcp .mcp-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.mcp .mcp-svc-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  background: var(--p-card);
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-r-lg);
+  overflow: hidden;
+}
+
+.mcp .mcp-svc-table thead th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--p-muted-text, #64748b);
+  padding: 10px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--p-border);
+  white-space: nowrap;
+}
+
+.mcp .mcp-svc-table td {
+  padding: 13px 14px;
+  font-size: 13.5px;
+  color: var(--p-ink);
+  border-top: 1px solid var(--p-border);
+  vertical-align: middle;
+}
+
+.mcp .mcp-svc-table tbody tr:first-child td { border-top: none; }
+.mcp .mcp-svc-table tbody tr:hover,
+.mcp .mcp-svc-table tbody tr:focus-within { background: #f8fafc; }
+
+/* The service's colour as a rule down the left edge — legible at a glance,
+   and it survives the switch to cards below. */
+.mcp .mcp-svc-table td:first-child {
+  box-shadow: inset 3px 0 0 0 var(--p-svc, var(--p-primary));
+}
+
+.mcp .mcp-svc-name {
+  font: inherit;
+  font-weight: 700;
+  color: var(--p-ink);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.mcp .mcp-svc-name:hover { text-decoration: underline; }
+
+.mcp .mcp-svc-strong { font-weight: 700; color: #b45309; }
+.mcp .mcp-svc-quiet { color: var(--p-muted-text, #64748b); font-size: 12.5px; }
+
+.mcp .mcp-svc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-r-sm);
+  background: transparent;
+  color: var(--p-muted-text, #64748b);
+  cursor: pointer;
+}
+.mcp .mcp-svc-chip:hover:not(:disabled) { background: #eff6ff; color: var(--p-primary); }
+.mcp .mcp-svc-chip[data-unread='true'] { border-color: var(--p-primary); color: var(--p-primary); }
+.mcp .mcp-svc-chip:disabled { opacity: 0.35; cursor: default; }
+
+.mcp .mcp-svc-go {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--p-r-sm);
+  background: transparent;
+  color: var(--p-muted-text, #64748b);
+  cursor: pointer;
+}
+.mcp .mcp-svc-go:hover { background: #eff6ff; color: var(--p-primary); }
+
+/* Back to all services, above a scoped service screen. */
+.mcp .mcp-svc-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--p-muted-text, #64748b);
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.mcp .mcp-svc-back:hover { color: var(--p-primary); }
+
+.mcp .mcp-svc-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 14px;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--p-ink);
+}
+.mcp .mcp-svc-title::before {
+  content: '';
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--p-svc, var(--p-primary));
+  flex: 0 0 auto;
+}
+
+/* ---- cards below 860px --------------------------------------------------
+   Same rows, same markup. `data-label` supplies the header each cell lost. */
+@media (max-width: 860px) {
+  .mcp .mcp-svc-table,
+  .mcp .mcp-svc-table tbody,
+  .mcp .mcp-svc-table tr,
+  .mcp .mcp-svc-table td { display: block; width: 100%; }
+
+  .mcp .mcp-svc-table thead { display: none; }
+
+  .mcp .mcp-svc-table {
+    border: 0;
+    background: transparent;
+    border-radius: 0;
+    overflow: visible;
+  }
+
+  .mcp .mcp-svc-table tr {
+    background: var(--p-card);
+    border: 1px solid var(--p-border);
+    border-radius: var(--p-r);
+    margin-bottom: 10px;
+    padding: 12px 14px 12px 16px;
+    box-shadow: var(--p-shadow);
+    position: relative;
+    border-left: 3px solid var(--p-svc, var(--p-primary));
+  }
+
+  .mcp .mcp-svc-table td {
+    border: 0;
+    padding: 2px 0;
+    box-shadow: none !important;
+  }
+
+  .mcp .mcp-svc-table td[data-label='Chat'],
+  .mcp .mcp-svc-table td[data-label='Mail'] {
+    display: inline-block;
+    width: auto;
+    margin: 6px 6px 0 0;
+  }
+
+  .mcp .mcp-svc-table td:last-child { display: none; }
+
+  .mcp .mcp-svc-name { font-size: 15px; }
+
+  /* A 30px chip is below the comfortable tap target on a phone. */
+  .mcp .mcp-svc-chip { min-height: 40px; padding: 0 14px; }
 }

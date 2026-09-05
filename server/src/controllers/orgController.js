@@ -4,6 +4,7 @@ const Organisation = require('../models/Organisation');
 const User = require('../models/User');
 const { sendInviteEmail } = require('../services/emailService');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
+const { listCatalog } = require('../services/serviceCatalogService');
 const { createNotificationsForUsers } = require('../services/notificationService');
 const { resolveOrgAccess, isOrgOwner } = require('../utils/permissions');
 const { DEFAULT_ROLE_KEY, OWNER_ROLE_KEY } = require('../utils/capabilities');
@@ -733,7 +734,46 @@ const deleteHoliday = async (req, res) => {
 };
 
 
+/* -------------------------------------------------------------------------- */
+/* Service catalog                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * GET /api/orgs/:id/service-catalog — the workspace's service vocabulary.
+ *
+ * Any member, because this is a dropdown's contents and not a secret: the names
+ * an agency sells are on its own website. Gating it on a capability would mean a
+ * contributor opening the invite table sees an empty list and types a duplicate
+ * of a service that already exists, which is the exact outcome the catalog is
+ * there to prevent.
+ *
+ * READ ONLY, and there is deliberately no sibling POST. Entries are minted by
+ * USING a service (`services/serviceCatalogService.recordServiceUse`, called
+ * from the batch invite), so the catalog cannot accumulate names nobody ever put
+ * on a board. Rename / recolour / archive is a later change; when it comes the
+ * capability is `org.manage_settings`, the key the holiday calendar already
+ * uses — do not invent a new one, `utils/capabilities.js` is curated.
+ */
+const listServiceCatalog = async (req, res) => {
+  try {
+    const org = await Organisation.findById(req.params.id).select('members');
+    if (!org) return res.status(404).json({ error: 'Organisation not found' });
+
+    const isMember = (org.members || []).some(
+      (m) => String(m?._id || m) === String(req.user.userId)
+    );
+    if (!isMember) return res.status(403).json({ error: 'Not a member of this organisation' });
+
+    const services = await listCatalog(req.params.id);
+    return res.json({ services });
+  } catch (err) {
+    console.error('listServiceCatalog error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
+  listServiceCatalog,
   createOrg,
   getOrg,
   joinOrg,

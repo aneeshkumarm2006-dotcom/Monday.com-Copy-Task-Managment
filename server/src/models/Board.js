@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const { PORTAL_TIERS } = require('../utils/clientBoard');
 
 /**
  * Per-board label. Tasks reference labels by `_id` so renames/recolors
@@ -297,37 +296,6 @@ const boardSchema = new mongoose.Schema(
       trim: true,
     },
     /**
-     * How much portal this client gets. See `utils/clientBoard.js`, which owns
-     * the predicates — nothing should re-spell the tier test inline.
-     *
-     *   'basic'    — the task list and the per-task Client thread.
-     *   'advanced' — plus chat: a team-only and a client-facing room per
-     *                workstream, with the client's contacts in the latter.
-     *
-     * ONE-WAY. `advanced` is a deliberate statement that this board holds
-     * exactly one company, which is what makes it safe for every contact on it
-     * to read every workstream and share one set of rooms. The pre-save hook
-     * below refuses the reverse, and there is no route that can express it.
-     *
-     * Every board that predates the field reads back as `basic`, which is
-     * exactly what they already were — no migration.
-     */
-    portalTier: {
-      type: String,
-      enum: PORTAL_TIERS,
-      default: 'basic',
-    },
-    /** When and by whom the one-way upgrade was made. Audit only. */
-    portalTierUpgradedAt: {
-      type: Date,
-      default: null,
-    },
-    portalTierUpgradedBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      default: null,
-    },
-    /**
      * Optional categories a client may tag an issue with when submitting from the
      * portal (e.g. "Bug", "Concern", "Request"). Configured per client board by
      * the team; empty means the portal submit form omits the category field.
@@ -501,52 +469,18 @@ boardSchema.pre('save', function enforceMonthTimezone() {
 boardSchema.index({ portalToken: 1 }, { unique: true, sparse: true });
 
 /**
- * Model-level invariant: `portalTier` is one-way.
+ * THERE IS NO `portalTier`, AND NO ONE-WAY HOOKS GUARDING IT.
  *
- * The route layer already makes a downgrade inexpressible — upgrading is an
- * ACTION (`POST .../tier/upgrade`), not a settable property, and the write is a
- * conditional `updateOne` matching `portalTier: 'basic'`. This hook is the
- * third layer, and it catches the case the other two cannot: some future code
- * path doing `board.portalTier = 'basic'; await board.save()` by accident.
+ * Two hooks used to stand here refusing an advanced -> basic downgrade, backing
+ * a `portalTier` field that gated client chat and mail. All of it is gone: chat
+ * and mail are what a client portal IS, not an upsell. See utils/clientBoard.js
+ * for the full reasoning and `isLiveClientBoard`, the predicate that replaced
+ * `isAdvancedClientBoard`.
  *
- * `isModified` only fires when the value actually CHANGES, so re-saving a board
- * that is already basic is not caught — which is correct. Only a real
- * advanced → basic transition throws.
- *
- * Why refuse at all: advancing a board is the statement that it holds exactly
- * one client company, and every contact on it can then read every workstream
- * and post in its rooms. Reverting the flag would not un-send those messages,
- * so a "downgrade" would leave the board in a state the UI describes wrongly.
+ * Left as a note rather than a silent deletion because the removed hooks were
+ * the third layer of a deliberate three-layer guard, and a reader who finds the
+ * route and the conditional update in git history should not go looking for a
+ * model hook that no longer needs to exist.
  */
-boardSchema.pre('save', function enforceOneWayPortalTier() {
-  if (this.isNew) return;
-  if (this.isModified('portalTier') && this.portalTier === 'basic') {
-    throw new Error(
-      'Board.portalTier is one-way: an advanced client board cannot be downgraded to basic'
-    );
-  }
-});
-
-/**
- * The same refusal on the query path, which does not run `pre('save')`.
- *
- * The migration script deliberately writes through the raw driver collection
- * (`mongoose.connection.collection('boards')`), which bypasses hooks entirely —
- * the same escape hatch `scripts/renameMonthlyBoardType.js` already uses, and
- * for the same reason: a migration is the one caller allowed to set a field to
- * whatever the data actually requires.
- */
-boardSchema.pre(['updateOne', 'updateMany', 'findOneAndUpdate'], function refuseTierDowngrade() {
-  const update = this.getUpdate() || {};
-  const set = update.$set || {};
-  if (set.portalTier === 'basic' || update.portalTier === 'basic') {
-    // A filter that already pins basic is a no-op upgrade guard, not a downgrade.
-    const filter = this.getFilter() || {};
-    if (filter.portalTier === 'basic') return;
-    throw new Error(
-      'Board.portalTier is one-way: an advanced client board cannot be downgraded to basic'
-    );
-  }
-});
 
 module.exports = mongoose.model('Board', boardSchema);

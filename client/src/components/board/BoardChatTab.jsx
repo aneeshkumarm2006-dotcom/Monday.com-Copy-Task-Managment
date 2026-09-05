@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, Hash, Mail, MessageCircle, Plus } from 'lucide-react';
+import { ChevronLeft, Eye, Hash, Lock, Mail, MessageCircle, Plus } from 'lucide-react';
 import MessageItem from '../chat/MessageItem';
 import { timeShort } from '../chat/chatFormat';
 import UpdateComposer from './UpdateComposer';
@@ -188,7 +188,16 @@ const ThreadRow = ({ thread, active, onClick }) => (
   </button>
 );
 
-const BoardChatTab = ({ boardId }) => {
+/**
+ * @param {string}  boardId
+ * @param {string} [onlyGroupId] — scope to ONE service. Set by the client
+ *   workspace, where the service is already chosen by the rail on the left, so
+ *   a second vertical rail listing every service again would be the duplication
+ *   this redesign exists to remove. With it set the surfaces render as a
+ *   horizontal room switcher, split by who is in the room.
+ * @param {string} [clientName] — the company, for the audience banner.
+ */
+const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
   const navigate = useNavigate();
   const currentUser = useAuthStore((s) => s.user);
   const toast = useToastStore.getState();
@@ -210,8 +219,13 @@ const BoardChatTab = ({ boardId }) => {
   const feedRef = useRef(null);
   const stickToBottom = useRef(true);
 
-  const workstreams = data?.workstreams || [];
-  const extras = data?.extras || [];
+  const allWorkstreams = data?.workstreams || [];
+  const workstreams = onlyGroupId
+    ? allWorkstreams.filter((w) => String(w.group?._id) === String(onlyGroupId))
+    : allWorkstreams;
+  // "Other" holds board-level rooms that belong to no service, so scoping to one
+  // service must not show them.
+  const extras = onlyGroupId ? [] : data?.extras || [];
   const allSurfaces = [...workstreams.flatMap((w) => w.surfaces || []), ...extras];
   const activeChannel =
     allSurfaces.find((c) => String(c._id) === String(activeId)) || null;
@@ -227,9 +241,18 @@ const BoardChatTab = ({ boardId }) => {
           // Land on something rather than an empty pane. The first surface of
           // the first workstream that has one — a board whose workstreams are
           // all unset stays on the empty state, which is the correct screen.
-          const first = (res.workstreams || [])
+          const pool = onlyGroupId
+            ? (res.workstreams || []).filter(
+              (w) => String(w.group?._id) === String(onlyGroupId)
+            )
+            : res.workstreams || [];
+          const surfaces = pool
             .flatMap((w) => w.surfaces || [])
-            .concat(res.extras || [])[0];
+            .concat(onlyGroupId ? [] : res.extras || []);
+          // Prefer a CLIENT-facing room: on a service the client conversation is
+          // the one the team came here for, and landing in the private team room
+          // by accident is exactly the confusion the framing below guards against.
+          const first = surfaces.find((c) => c.audience === 'client') || surfaces[0];
           if (first) setActiveId(String(first._id));
         }
         return res;
@@ -241,7 +264,7 @@ const BoardChatTab = ({ boardId }) => {
         return null;
       }
     },
-    [boardId]
+    [boardId, onlyGroupId]
   );
 
   useEffect(() => {
@@ -630,7 +653,14 @@ const BoardChatTab = ({ boardId }) => {
       className="flex"
       style={{
         height: 'clamp(440px, 66vh, 760px)',
-        border: '1px solid var(--color-border)',
+        border:
+          onlyGroupId && activeChannel
+            ? `2px solid ${
+              activeChannel.audience === 'client'
+                ? 'var(--color-accent)'
+                : 'var(--color-border-strong)'
+            }`
+            : '1px solid var(--color-border)',
         borderRadius: 'var(--radius-lg)',
         background: '#FFFFFF',
         overflow: 'hidden',
@@ -652,15 +682,41 @@ const BoardChatTab = ({ boardId }) => {
         )}
         {workstreams.map((ws) => (
           <div key={ws.group._id}>
-            <RailLabel>{ws.group.name}</RailLabel>
+            {/* Scoped to one service, the SERVICE name is already the pane
+                title, so the rail labels by AUDIENCE instead — which is the
+                distinction that actually matters here. */}
+            {onlyGroupId ? (
+              <RailLabel>
+                {(clientName || '').trim() || 'The client'} is in these
+              </RailLabel>
+            ) : (
+              <RailLabel>{ws.group.name}</RailLabel>
+            )}
             {(ws.surfaces || []).length > 0 ? (
-              ws.surfaces.map((c) => (
-                <SurfaceRow
-                  key={c._id}
-                  channel={c}
-                  active={String(c._id) === String(activeId)}
-                  onClick={() => openSurface(c)}
-                />
+              (onlyGroupId
+                ? [
+                  ...ws.surfaces.filter((c) => c.audience === 'client'),
+                  ...ws.surfaces.filter((c) => c.audience !== 'client'),
+                ]
+                : ws.surfaces
+              ).map((c, i, arr) => (
+                <React.Fragment key={c._id}>
+                  {/* The one genuinely dangerous confusion on a client board is
+                      posting in the client room believing it is the team room.
+                      A labelled break is the first of four redundant signals;
+                      the pane's border, its banner and the composer placeholder
+                      are the others. */}
+                  {onlyGroupId
+                    && c.audience !== 'client'
+                    && (i === 0 || arr[i - 1].audience === 'client') && (
+                    <RailLabel>Private to us</RailLabel>
+                  )}
+                  <SurfaceRow
+                    channel={c}
+                    active={String(c._id) === String(activeId)}
+                    onClick={() => openSurface(c)}
+                  />
+                </React.Fragment>
               ))
             ) : canManage ? (
               <button
@@ -741,6 +797,46 @@ const BoardChatTab = ({ boardId }) => {
           </div>
         ) : (
           <>
+            {/* WHO IS IN THIS ROOM — stated before anything else, and repeated
+                by the composer placeholder further down. A team member scanning
+                for "can the client see this?" must not have to look for it. */}
+            <div
+              className="font-body flex items-center gap-2 px-3 shrink-0"
+              style={{
+                height: 30,
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: '0.04em',
+                color:
+                  activeChannel.audience === 'client'
+                    ? 'var(--color-accent-text)'
+                    : 'var(--color-text-secondary)',
+                background:
+                  activeChannel.audience === 'client'
+                    ? 'var(--color-accent-light)'
+                    : 'var(--color-bg-subtle)',
+                borderBottom: '1px solid var(--color-border)',
+              }}
+            >
+              {activeChannel.audience === 'client' ? (
+                <>
+                  <Eye size={12} aria-hidden="true" className="shrink-0" />
+                  <span className="truncate">
+                    {((clientName || data.board?.portalClientName || 'THE CLIENT') + '')
+                      .toUpperCase()}{' '}
+                    IS IN THIS {activeChannel.mode === 'mail' ? 'MAILBOX' : 'ROOM'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <Lock size={12} aria-hidden="true" className="shrink-0" />
+                  <span className="truncate">
+                    PRIVATE — THE CLIENT IS NEVER IN THIS ROOM
+                  </span>
+                </>
+              )}
+            </div>
+
             {/* Header */}
             <div
               className="flex items-center gap-2 px-3 shrink-0"
@@ -879,7 +975,13 @@ const BoardChatTab = ({ boardId }) => {
                           key={`board-mail-reply:${threadId}`}
                           draftKey={`board-mail-reply:${threadId}`}
                           submitMessage={submitThreadReply}
-                          placeholder="Reply…"
+                          placeholder={
+                            activeChannel.audience === 'client'
+                              ? `Reply to ${
+                                (clientName || data.board?.portalClientName || 'the client')
+                              }…`
+                              : 'Reply (private to the team)…'
+                          }
                           submitLabel="Send"
                           {...composerProps}
                         />
@@ -1003,7 +1105,15 @@ const BoardChatTab = ({ boardId }) => {
                         key={`board-chat:${activeId}`}
                         draftKey={`board-chat:${activeId}`}
                         submitMessage={submitStreamMessage}
-                        placeholder={`Message #${activeChannel.name}`}
+                        // The fourth redundant "who sees this" signal, and the
+                        // one that is under the cursor at the moment it matters.
+                        placeholder={
+                          activeChannel.audience === 'client'
+                            ? `Message ${
+                              (clientName || data.board?.portalClientName || 'the client')
+                            } here…`
+                            : `Message the team (private)…`
+                        }
                         submitLabel="Send"
                         {...composerProps}
                       />
@@ -1028,7 +1138,7 @@ const BoardChatTab = ({ boardId }) => {
             workstreams.find((w) => String(w.group._id) === String(setupGroup._id))
               ?.surfaceKeys || []
           }
-          allowClientSurfaces={data.board?.portalTier === 'advanced'}
+          allowClientSurfaces={data.board?.boardType === 'client'}
           onCreate={handleCreateSurfaces}
         />
       )}

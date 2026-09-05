@@ -91,8 +91,9 @@ export const isClientFacing = (audience) => audience === 'client';
  * @param {Object} selection - `{ clientChat, clientMail, team }`, truthy = on
  * @param {Object} [opts]
  * @param {boolean} [opts.allowClientSurfaces=true] - false on a board that is
- *   not a live advanced client board, where a client-facing room would be
- *   readable by nobody and postable by nobody, but would still exist.
+ *   not a LIVE client portal board, where a client-facing room would be readable
+ *   by nobody and postable by nobody, but would still exist. (This used to also
+ *   mean "not on the advanced tier"; there is no tier any more.)
  * @returns {{ok: boolean, surfaces: Array, refusals: string[]}}
  *
  * An EMPTY selection is refused rather than treated as "no change". A
@@ -119,7 +120,7 @@ export const planSurfaces = (selection, { allowClientSurfaces = true } = {}) => 
   const clientChosen = chosen.filter((s) => isClientFacing(s.audience));
   if (clientChosen.length && !allowClientSurfaces) {
     refusals.push(
-      'Client chat and mail need the Advanced client tier. Upgrade the board first.'
+      'Client chat and mail need a live client portal board.'
     );
   }
 

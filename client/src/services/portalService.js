@@ -99,8 +99,36 @@ export const completePortalPasswordSetup = (portalToken, token, password) =>
     .then((r) => r.data);
 
 // ---- Client dashboard (portal-authenticated) ----
-export const getMyIssues = () =>
-  portalApi.get('/api/portal/me/issues').then((r) => r.data);
+/**
+ * GET /api/portal/me/home — the SERVICE TABLE's single read.
+ *
+ * Returns the client, the signed-in contact (including a contact id, which no
+ * other portal payload carries), and one row per service with its request
+ * counts, chat and mail unread, and last activity.
+ *
+ * Deliberately NOT assembled from getMyIssues + getPortalChannels: the channel
+ * list drops a service that has no rooms yet, which would make a service the
+ * client is paying for vanish from their own home screen.
+ */
+export const getPortalHome = () =>
+  portalApi.get('/api/portal/me/home').then((r) => r.data);
+
+/**
+ * `service` narrows the list to one service, which is what makes the home
+ * table's counts clickable. The server validates the id against the board in
+ * the token before it trusts it.
+ */
+export const getMyIssues = (service = null) =>
+  portalApi
+    .get('/api/portal/me/issues', service ? { params: { service } } : undefined)
+    .then((r) => r.data);
+
+/** The client's own "email me about new messages" switch. */
+export const getPortalPreferences = () =>
+  portalApi.get('/api/portal/me/preferences').then((r) => r.data);
+
+export const updatePortalPreferences = (patch) =>
+  portalApi.patch('/api/portal/me/preferences', patch).then((r) => r.data);
 
 export const createMyIssue = (payload) =>
   portalApi.post('/api/portal/me/issues', payload).then((r) => r.data);

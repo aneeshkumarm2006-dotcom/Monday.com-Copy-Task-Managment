@@ -12,9 +12,13 @@ const mongoose = require('mongoose');
  * email resolves back to the same contact (upsert on sign-in).
  *
  * It used to be (group, email), back when a GROUP was the client company. A
- * board's groups are now that one client's WORKSTREAMS (SEO, Ads, Web
- * Development), and a contact sees ALL of them — which is exactly why identity
- * had to move up with the link. See `utils/clientBoard.js`.
+ * board's groups are now that one client's SERVICES (SEO, Meta Ads, Google Ads,
+ * Web Development), and a contact sees ALL of them — which is exactly why
+ * identity had to move up with the link. See `utils/clientBoard.js`.
+ *
+ * `services` below records which of those services this person was invited on.
+ * It is routing and labelling ONLY — read its comment before using it for
+ * anything, because the obvious use is the wrong one.
  *
  * A contact signs in one of two ways, recorded in `authMethod`:
  *   'google'   — the default. Clicks "Continue with Google" on the landing page.
@@ -43,19 +47,55 @@ const clientContactSchema = new mongoose.Schema(
       trim: true,
     },
     /**
-     * VESTIGIAL. The workstream this contact was first invited on, back when a
-     * group was the client. Written by nothing, read by nothing, and dropped
-     * once the migration's soak window closes.
+     * The SERVICES this person was invited on — ids of groups on this contact's
+     * own board.
      *
-     * `required` had to go in the same change that stopped writing it, or every
-     * new contact would throw a ValidationError. It is kept as a path at all
-     * only so the pre-migration value survives a rollback.
+     * ---- IT CONFERS NOTHING. THIS IS LOAD-BEARING. --------------------------
+     *
+     * Every contact on a client board has full access to every service on it:
+     * `portalTaskFilter` is board-scoped, `chatAudience` returns every
+     * ClientContact on the board for any client-facing surface, and
+     * `Task.portalShared` is board-wide by design. NOTHING may ever be gated on
+     * this array.
+     *
+     * In particular, do NOT filter client chat or mail notifications by it. That
+     * looks like the obvious use and is the dangerous one: it would withhold
+     * messages from contacts who can and do read the room — a filter with no
+     * authorisation behind it, whose only effect is silently dropping messages
+     * people are entitled to see.
+     *
+     * WHAT IT IS ACTUALLY FOR, honestly, in descending order of weight:
+     *
+     *   1. THE INVITE EMAIL. Four rows naming one address produce ONE email
+     *      listing four services. This is the load-bearing use and the reason
+     *      the field exists at all.
+     *   2. THE TEAM'S ROSTER. "Asha — SEO, Meta Ads" in People with access.
+     *      Without persistence the team loses the (service, email) pairing they
+     *      typed the moment they hit send.
+     *   3. A default landing service, when a contact has exactly one. Weak, but
+     *      free once 1 and 2 are paid for.
+     *
+     * GROUP IDS rather than names or slugs, so renaming a service never orphans
+     * the link — the same reason `TaskGroup.tags` stores ids into
+     * `Board.groupTags`. `groupController.deleteGroup` $pulls a deleted id from
+     * every contact on the board; an id that somehow survives is skipped by the
+     * serializer rather than throwing, because losing one chip beats failing a
+     * roster read.
+     *
+     * No index. Read only via `_id` or `{ board }`, both already served by the
+     * unique index below; a multikey index would tax every contact write for a
+     * query nobody makes.
+     *
+     * (This replaces a vestigial single `group` field, from back when a group
+     * WAS the client company. A scalar could not express a person who manages
+     * two services, which is the entire shape this rewrite exists to support.)
      */
-    group: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'TaskGroup',
-      default: undefined,
-    },
+    services: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'TaskGroup',
+      },
+    ],
     /**
      * The client board this person has access to — half of their identity, and
      * the only scope any portal read is allowed to use. Already present and
@@ -84,6 +124,20 @@ const clientContactSchema = new mongoose.Schema(
     lastSeenAt: {
       type: Date,
       default: null,
+    },
+
+    /**
+     * Whether to email this person when a message is waiting for them in the
+     * portal. Default ON — a client who is never told will not come back.
+     *
+     * A per-contact opt-out, surfaced in the portal itself, is NOT a nicety.
+     * These emails go out over the team's own Gmail, and a client who cannot
+     * turn them off marks them as spam instead; a spam complaint against the
+     * sending domain is a far more expensive outcome than a missed notification.
+     */
+    notifyEmail: {
+      type: Boolean,
+      default: true,
     },
 
     // ---- Sign-in method -----------------------------------------------------

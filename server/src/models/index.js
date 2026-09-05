@@ -84,3 +84,14 @@ require('./ChannelContactRead');
 // models on their own hit MissingSchemaError, and `Message.portalAuthor`
 // populate depended on load order rather than on registration.
 require('./ClientContact');
+
+// The organisation's service catalog — the vocabulary a client board's groups
+// are named from. Registered here for the same reason ClientContact is: a
+// migration or a test that loads the models on its own must not depend on some
+// controller having happened to require the file by path first.
+require('./ServiceCatalogEntry');
+
+// The daily client-portal digest's claim row. Registered for the same reason as
+// the two above: a runner or a script that loads the models on its own must not
+// depend on some controller having required the file by path first.
+require('./PortalDigest');

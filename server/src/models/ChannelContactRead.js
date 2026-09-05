@@ -47,6 +47,25 @@ const channelContactReadSchema = new mongoose.Schema(
       type: Date,
       required: true,
     },
+    /**
+     * When this contact was last EMAILED that they have something waiting in
+     * this channel. The throttle for the notify-only mail, and the reason it
+     * lives here rather than in its own collection: the row that knows what they
+     * have read is the row that should know when they were last nudged about it.
+     *
+     * `services/portalNotify.js` owns the rule. In short: send when this is null,
+     * or when `lastReadAt` has moved past it (they read, so a new message earns a
+     * fresh nudge), or when it is more than six hours old. So a forty-message
+     * conversation sends ONE email, and a client who never opens the portal gets
+     * at most one every six hours.
+     *
+     * Null on every row that predates the field, which correctly reads as "never
+     * notified" and lets the first message after deploy through.
+     */
+    lastNotifiedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

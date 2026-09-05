@@ -108,18 +108,19 @@ test('an EMPTY selection is refused', () => {
   assert.equal(planSurfaces({ clientChat: false, clientMail: false, team: false }).ok, false);
 });
 
-test('client surfaces are refused on a board that is not advanced', () => {
+test('client surfaces are refused on a board that is not a live client portal', () => {
   const plan = planSurfaces(
     { clientChat: true, team: true },
     { allowClientSurfaces: false }
   );
   assert.equal(plan.ok, false);
-  assert.match(plan.refusals[0], /Advanced/);
+  assert.match(plan.refusals[0], /live client portal/i);
 });
 
-test('a TEAM-ONLY selection is fine on a board that is not advanced', () => {
-  // The private room has no client in it, so the tier has nothing to say about
-  // it. Refusing it would make the modal useless on a basic board.
+test('a TEAM-ONLY selection is fine on a board with no live client portal', () => {
+  // The private room has no client in it, so the client-portal gate has nothing
+  // to say about it. Refusing it would make the modal useless on every board
+  // that is not a live client portal, which is most of them.
   const plan = planSurfaces({ team: true }, { allowClientSurfaces: false });
   assert.equal(plan.ok, true);
   assert.deepEqual(plan.surfaces, [{ mode: 'chat', audience: 'team', key: 'team' }]);

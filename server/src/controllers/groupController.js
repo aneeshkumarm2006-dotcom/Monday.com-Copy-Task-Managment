@@ -12,7 +12,10 @@ const AdsBudget = require('../models/AdsBudget');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
 const ConnectorProject = require('../models/ConnectorProject');
 const eventBus = require('../services/eventBus');
-const { deleteSurfacesForGroup } = require('../services/workstreamSurfaces');
+const ClientContact = require('../models/ClientContact');
+const { deleteSurfacesForGroup, createSurfaces } = require('../services/workstreamSurfaces');
+const { isClientBoard } = require('../utils/clientBoard');
+const { recordServiceUse } = require('../services/serviceCatalogService');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { requireFeature } = require('../utils/userFeatures');
 const { setOwnerForMonth } = require('../utils/groupOwner');
@@ -51,7 +54,27 @@ const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * `excludeId` is the group being renamed: without it, saving a group under its
  * own unchanged name would collide with itself.
  *
- * Returns `{ name }` on success, or `{ error, status }` to hand straight back.
+ * ---- WHY THIS REPORTS A COLLISION RATHER THAN REFUSING ONE ----------------
+ *
+ * It used to return `{ error, status: 409 }` and callers handed that straight
+ * back. That is right for `createGroup`, where the request means "make me a NEW
+ * group" and an existing one of that name is a mistake — but wrong for the batch
+ * invite (`services/portalBatchInvite.js`), where a row reading
+ * `SEO / asha@acme.com` on a board that already has an SEO service is the normal
+ * second-invite case and must resolve to the existing group.
+ *
+ * So this reports the FACT and lets each caller pick the policy:
+ *
+ *   { name }                     — free, nothing else on the board holds it
+ *   { name, duplicate: <group> }  — taken; createGroup 409s, the batch reuses it
+ *   { error, status: 400 }        — the name is empty, which is never valid
+ *
+ * One function, two policies. The alternative — a second copy of the trim, the
+ * clamp and the case-insensitive check inside the invite service — is how the
+ * two drift and a board ends up with "SEO" and "seo".
+ *
+ * Exported for that reason; it was module-private while this file was its only
+ * caller.
  */
 const resolveGroupName = async (rawName, boardId, excludeId = null) => {
   // Trim again after the clamp: slicing can land mid-gap and leave a trailing space.
@@ -66,16 +89,22 @@ const resolveGroupName = async (rawName, boardId, excludeId = null) => {
   };
   if (excludeId) filter._id = { $ne: excludeId };
 
-  const duplicate = await TaskGroup.findOne(filter).select('_id').lean();
-  if (duplicate) {
-    return {
-      error: `A group named "${name}" already exists on this board. Please choose a different name.`,
-      status: 409,
-    };
-  }
+  // The whole document, not just `_id`: the batch invite reuses it directly
+  // rather than issuing a second read for the group it was just told about.
+  const duplicate = await TaskGroup.findOne(filter);
+  if (duplicate) return { name, duplicate };
 
   return { name };
 };
+
+/**
+ * The 409 `createGroup` and `updateGroup` both raise for a taken name. Here so
+ * the sentence is written once and the two paths cannot drift apart.
+ */
+const duplicateGroupNameError = (name) => ({
+  error: `A group named "${name}" already exists on this board. Please choose a different name.`,
+  status: 409,
+});
 
 // ---------------------------------------------------------------------------
 // Group owner (tracker boards) — resolution on the way out
@@ -204,9 +233,15 @@ const createGroup = async (req, res) => {
     if (denied) return res.status(denied.status).json({ error: denied.error });
 
     // Trim, clamp, and reject a duplicate name on this board (case-insensitive).
+    // This endpoint means "make me a NEW group", so a name that is taken is a
+    // mistake — unlike the batch invite, which reuses the existing group.
     const resolved = await resolveGroupName(name, boardId);
     if (resolved.error) {
       return res.status(resolved.status).json({ error: resolved.error });
+    }
+    if (resolved.duplicate) {
+      const denial = duplicateGroupNameError(resolved.name);
+      return res.status(denial.status).json({ error: denial.error });
     }
     const groupName = resolved.name;
 
@@ -215,16 +250,56 @@ const createGroup = async (req, res) => {
       resolvedOrder = await TaskGroup.countDocuments({ board: boardId });
     }
 
-    // A group on a client board is a WORKSTREAM (SEO, Ads, Web Development),
+    // A group on a client board is a SERVICE (SEO, Meta Ads, Web Development),
     // not a client. The portal link belongs to the board, is minted when the
     // board is created, and is not this function's business — creating a group
     // here is exactly what it is on every other board type.
+    //
+    // What IS different on a client board: the group is recorded against the
+    // organisation's service catalog, so the next client board's invite table
+    // offers this name in its dropdown. `serviceKey` is a slug and may be null —
+    // a name made only of punctuation slugs to nothing, and a group with no
+    // service key is simply a group with a name, which is what it always was.
+    const isClient = isClientBoard(ctx.board);
+    let serviceKey = null;
+    if (isClient) {
+      const entry = await recordServiceUse({
+        orgId: ctx.board.organisation,
+        name: groupName,
+        actorId: userId,
+      });
+      serviceKey = entry ? entry.slug : null;
+    }
+
     const group = await TaskGroup.create({
       name: groupName,
       board: boardId,
       order: resolvedOrder,
       createdBy: userId,
+      serviceKey,
     });
+
+    // Every service can be talked about from the day it exists. See
+    // services/workstreamSurfaces.js for why this reverses that file's original
+    // "a client workstream starts with NOTHING" position.
+    //
+    // BEST-EFFORT AND SWALLOWED, deliberately. A channel that failed to mint is
+    // healable — reopen the setup modal, or run the migration's
+    // --backfill-surfaces — whereas a group create that 500s because a chat room
+    // could not be made is a worse outcome than the missing room. Idempotent
+    // under Channel's unique index, so a retry converges rather than duplicating.
+    if (isClient) {
+      try {
+        await createSurfaces(
+          ctx.board,
+          group,
+          { clientChat: true, clientMail: true, team: true },
+          { createdBy: userId }
+        );
+      } catch (surfaceErr) {
+        console.error('createGroup surfaces error:', surfaceErr);
+      }
+    }
 
     // Record the creation. `createdBy` above already carries the byline, but
     // that dies with the group — this row is what still answers "who set this
@@ -321,6 +396,10 @@ const updateGroup = async (req, res) => {
       const resolved = await resolveGroupName(name, group.board, group._id);
       if (resolved.error) {
         return res.status(resolved.status).json({ error: resolved.error });
+      }
+      if (resolved.duplicate) {
+        const denial = duplicateGroupNameError(resolved.name);
+        return res.status(denial.status).json({ error: denial.error });
       }
       group.name = resolved.name;
     }
@@ -487,10 +566,20 @@ const deleteGroup = async (req, res) => {
     }
     await Note.deleteMany({ group: id });
     await Task.deleteMany({ group: id });
-    // NOTE: deliberately NO ClientContact cleanup here any more. A contact
-    // belongs to the BOARD (one client company), not to a workstream — deleting
-    // the Ads group must not sign that client out of their portal. Contacts are
-    // cascaded in boardController.deleteBoard and services/orgCascade.js.
+    // NOTE: deliberately NO ClientContact DELETION here. A contact belongs to
+    // the BOARD (one client company), not to a service — deleting the Ads group
+    // must not sign that client out of their portal. Contacts are cascaded in
+    // boardController.deleteBoard and services/orgCascade.js.
+    //
+    // Their `services` array does have to lose the dead id, though. That is not
+    // a contradiction of the paragraph above: the contact survives, only the
+    // chip naming a service that no longer exists goes. Exactly what
+    // `deleteGroupTag` does when a tag is deleted out from under the groups
+    // holding it.
+    await ClientContact.updateMany(
+      { board: group.board },
+      { $pull: { services: id } }
+    );
     // Tracker cleanup: drop this group's confirmations/waivers, and take it out
     // of any tracker that named it explicitly.
     //
@@ -657,6 +746,11 @@ const reorderGroups = async (req, res) => {
 
 module.exports = {
   getGroups,
+  // Exported for services/portalBatchInvite.js, which resolves a service name to
+  // a group using the SAME trim/clamp/case-insensitive rule this file applies —
+  // and then reuses a duplicate instead of refusing it.
+  resolveGroupName,
+  duplicateGroupNameError,
   createGroup,
   updateGroup,
   deleteGroup,

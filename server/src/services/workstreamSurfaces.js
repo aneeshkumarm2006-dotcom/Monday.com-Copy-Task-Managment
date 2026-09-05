@@ -4,7 +4,7 @@ const ChannelRead = require('../models/ChannelRead');
 const ChannelContactRead = require('../models/ChannelContactRead');
 const MailThreadRead = require('../models/MailThreadRead');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
-const { isAdvancedClientBoard } = require('../utils/clientBoard');
+const { isLiveClientBoard } = require('../utils/clientBoard');
 const {
   planSurfaces,
   surfaceName,
@@ -12,19 +12,41 @@ const {
 } = require('../utils/chatSurfaces');
 
 /**
- * Creating and destroying a workstream's conversations.
+ * Creating and destroying a SERVICE's conversations.
  *
- * This REPLACES blanket auto-creation for client boards. `ensureAutoChannels`
- * mints one room per tracker group on every sidebar fetch, which is right there
- * — a tracker group is a client and always wants a room — and wrong here: not
- * every client wants chat, some want subject-lined mail, and a room nobody
- * asked for that a client can post into is worse than no room. So a client
- * workstream starts with NOTHING, and surfaces exist because someone chose
- * them in the setup modal.
+ * A group on a client board is one SERVICE the agency sells that client — SEO,
+ * Meta Ads, Web Development — and it gets all three surfaces the day it is
+ * created: a client chat, a client mailbox, and a private team room.
+ *
+ * ---- THIS REVERSES AN EARLIER DECISION, DELIBERATELY --------------------
+ *
+ * This file used to argue the opposite, and the argument is worth recording
+ * because it was not silly: not every client wants chat, some want subject-lined
+ * mail, and a room nobody asked for that a client can post into is worse than no
+ * room. So a client workstream started with NOTHING and surfaces existed only
+ * because someone ticked them in the setup modal.
+ *
+ * What that missed is that the modal was a step nobody took. Combined with the
+ * (now removed) 'advanced' tier gate, the practical result was that client chat
+ * and mail existed in the code and nowhere else. "Chat and mail by default" is
+ * now the product requirement, and the empty-room worry is answered better by
+ * the surface itself: an unused room shows an empty state, costs one Channel
+ * row, and is one click from being useful — whereas a missing room reads to the
+ * client as a feature the agency does not offer.
+ *
+ * If a team genuinely wants a service with no client mailbox, the answer is a
+ * per-service setting, not a global default of nothing.
+ *
+ * Callers that auto-create: `groupController.createGroup` (client boards only),
+ * `services/portalBatchInvite.js`, and the migration's --backfill-surfaces.
+ * `SetUpCommunicationModal` remains the manual path for repair and for adding a
+ * surface someone turned off.
  *
  * Everything below is idempotent under the `(board, group, mode, audience)`
- * unique index, so a double-submit, a retry, or re-opening the modal on a
- * workstream that already has chat all converge rather than duplicate.
+ * unique index, so a double-submit, a retry, an auto-create racing a manual one,
+ * or re-opening the modal on a service that already has chat all converge rather
+ * than duplicate. That is what makes auto-creation safe to call from three
+ * places without coordinating them.
  */
 
 /**
@@ -32,7 +54,7 @@ const {
  * afterwards, split by whether this call made it — the caller needs that split
  * to say "Chat is already set up" rather than claiming to have created it.
  *
- * @param {Object} board - a Board doc; must carry `boardType`, `portalTier`,
+ * @param {Object} board - a Board doc; must carry `boardType`, `portalEnabled`,
  *                         `portalClientName`, `organisation`
  * @param {Object} group - a TaskGroup doc; must carry `name`, `board`
  * @param {Object} selection - `{ clientChat, clientMail, team }`
@@ -41,12 +63,17 @@ const {
  * @returns {Promise<{ok, refusals, created, existing}>}
  */
 const createSurfaces = async (board, group, selection, { createdBy = null } = {}) => {
-  // The tier gate lives here rather than at the route, because this is the
-  // function every path — endpoint, upgrade flow, future automation — goes
-  // through, and a confidentiality boundary enforced at one of three entrances
-  // is enforced at none.
+  // The gate lives here rather than at the route, because this is the function
+  // every path — the setup modal, the batch invite, createGroup's auto-create,
+  // the migration backfill — goes through, and a confidentiality boundary
+  // enforced at one of four entrances is enforced at none.
+  //
+  // It is no longer a TIER check (that concept is gone); it asks whether a
+  // client-facing room could be read by anybody at all. On a board that is not
+  // a live client portal the answer is no, and such a room would exist while
+  // being readable and postable by nobody.
   const plan = planSurfaces(selection, {
-    allowClientSurfaces: isAdvancedClientBoard(board),
+    allowClientSurfaces: isLiveClientBoard(board),
   });
   if (!plan.ok) return { ok: false, refusals: plan.refusals, created: [], existing: [] };
 

@@ -58,6 +58,38 @@ const taskGroupSchema = new mongoose.Schema({
       type: mongoose.Schema.Types.ObjectId,
     },
   ],
+  /**
+   * Which SERVICE this group is, on a client board — a slug into the
+   * organisation's service catalog (`models/ServiceCatalogEntry.js`).
+   *
+   * A SLUG, deliberately NOT an ObjectId ref. A ref would create a cascade
+   * obligation nobody wants (delete a catalog entry -> what happens to every
+   * group pointing at it?), would let a group point at another org's entry, and
+   * would turn "the catalog row is gone" into a dangling pointer. A slug
+   * degrades to a group with a name, which is exactly what a client board group
+   * already was. Same reasoning as `Board.statuses[].key`.
+   *
+   * The catalog supplies the COLOUR and nothing else. `name` remains the
+   * identity within the board — case-insensitively unique, enforced by
+   * `groupController.resolveGroupName` — and the slug is only how "SEO" on
+   * Acme's board and "SEO" on Globex's board are recognised as the same service.
+   *
+   * NULL on every group that predates this field, on every standard and tracker
+   * board group, and on any client group somebody renamed to something the
+   * catalog has never seen. EVERY READER MUST TOLERATE NULL.
+   *
+   * No index: `{ board: 1 }` already prefixes every query that touches this, and
+   * there is no "find every SEO group across boards" read. Add one the day
+   * somebody builds a cross-board service report, not before.
+   */
+  serviceKey: {
+    type: String,
+    default: null,
+    trim: true,
+    lowercase: true,
+    maxlength: 60,
+  },
+
   // ---- Group owner, TRACKER BOARDS ONLY (the controller gates every write on
   // board.boardType === 'tracker'). ----
   //

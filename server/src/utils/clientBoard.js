@@ -2,33 +2,25 @@
  * What a Client Portal board is, in one place.
  *
  * A `boardType: 'client'` board IS one client company. Its GROUPS are that
- * client's workstreams (SEO, Ads, Web Development) — not, as they once were,
- * separate clients. One portal link per board; a signed-in contact sees the
- * whole board.
+ * client's SERVICES (SEO, Meta Ads, Google Ads, Web Development) — not, as they
+ * once were, separate clients. One portal link per board; a signed-in contact
+ * sees the whole board, every service on it.
  *
- * Two tiers, `Board.portalTier`:
+ * THERE ARE NO TIERS. `portalTier` ('basic' | 'advanced') is gone, along with
+ * `isAdvancedClientBoard`, `utils/clientTierUpgrade.js` and the two upgrade
+ * routes. Chat and mail are what a client portal IS, not an upsell:
+ * every service gets a client chat, a client mailbox and a private team room the
+ * day it is created (`services/workstreamSurfaces.js`).
  *
- *   'basic'    — the task list and the per-task Client thread. What every
- *                client board is on creation, and what every board that
- *                predates the field reads back as.
- *   'advanced' — everything basic has, plus chat: a team-only room and a
- *                client-facing room per workstream.
- *
- * The upgrade is ONE-WAY, and that is a product decision with a data reason
- * behind it: advancing a board is a deliberate statement that it holds exactly
- * one company, which is what makes it safe for every contact on it to read
- * every workstream and to share one set of rooms. Walking that back would not
- * un-send the messages.
- *
- * EVERY gate that asks "does client chat exist here?" calls the predicate
- * below rather than re-spelling the two-part test. Two copies of a
- * confidentiality boundary is how one of them ends up checking only half.
+ * That removal was not a simplification for its own sake. The tier defaulted to
+ * 'basic', no UI ever called the upgrade endpoint, and `chatAudience` therefore
+ * returned an empty contact list for every board in existence — so the entire
+ * client chat and mail feature was unreachable in production while looking, to
+ * anyone reading the code, like a shipped one.
  *
  * Deliberately dependency-free (no models, no mongoose) so it can be required
  * from a controller, a service or a plain node test without a database.
  */
-
-const PORTAL_TIERS = ['basic', 'advanced'];
 
 /**
  * Is this a Client Portal board at all?
@@ -37,16 +29,26 @@ const PORTAL_TIERS = ['basic', 'advanced'];
 const isClientBoard = (board) => board?.boardType === 'client';
 
 /**
- * Is this a client board with chat switched on — the ONLY place a
- * `ClientContact` may ever see or post in a channel?
+ * Is this a LIVE client portal board — the ONLY place a `ClientContact` may
+ * ever see or post in a channel?
  *
- * Fails closed by construction: a board loaded without `portalTier`, a board
- * that predates the field, and every non-client board all answer false.
+ * This replaces `isAdvancedClientBoard`. What survives from it is the half that
+ * was always the real gate: the KILL SWITCH. Disabling a portal must stop a
+ * long-lived SSE stream, not merely the next request, which is why
+ * `services/chatAudience.js` re-reads this on every call rather than trusting
+ * whatever was true when the connection opened.
+ *
+ * With the tier gone this is now the only thing standing between a disabled
+ * portal and an open room, so it is load-bearing in a way its predecessor was
+ * not — `src/e2e/clientPortalV2.e2e.js` exercises it directly.
+ *
+ * Fails closed by construction: no board, a board loaded without
+ * `portalEnabled` selected, and every non-client board all answer false.
  *
  * @param {Object} board - a Board doc or plain object
  * @returns {boolean}
  */
-const isAdvancedClientBoard = (board) =>
-  isClientBoard(board) && board?.portalTier === 'advanced';
+const isLiveClientBoard = (board) =>
+  isClientBoard(board) && board?.portalEnabled === true;
 
-module.exports = { PORTAL_TIERS, isClientBoard, isAdvancedClientBoard };
+module.exports = { isClientBoard, isLiveClientBoard };

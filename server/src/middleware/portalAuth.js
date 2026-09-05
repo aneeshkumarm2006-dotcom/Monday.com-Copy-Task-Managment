@@ -46,7 +46,7 @@ const verifyPortalToken = async (token) => {
   // `+portalToken` because the field is `select: false` — it is a credential,
   // and the comparison below is the entire point of loading it.
   const board = await Board.findById(contact.board).select(
-    '+portalToken portalEnabled portalClientName portalTier boardType name organisation'
+    '+portalToken portalEnabled portalClientName boardType name organisation'
   );
   if (!board || !isClientBoard(board)) return null;
 
@@ -105,7 +105,6 @@ const portalAuth = async (req, res, next) => {
       // Precomputed so no handler has to reach into the board for it, and so
       // the label is derived in exactly one place.
       clientName: (board.portalClientName || '').trim() || board.name,
-      tier: board.portalTier || 'basic',
       contact,
       board,
     };

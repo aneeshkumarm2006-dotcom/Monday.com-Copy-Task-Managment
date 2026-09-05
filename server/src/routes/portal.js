@@ -15,6 +15,16 @@ const createLimit = rateLimit({ bucket: 'portal:create', windowMs: 60_000, max: 
 const threadLimit = rateLimit({ bucket: 'portal:thread', windowMs: 60_000, max: 30, message: 'You are sending messages too quickly. Please wait a moment.' });
 const uploadLimit = rateLimit({ bucket: 'portal:upload', windowMs: 60_000, max: 20, message: 'Too many uploads. Please wait a moment.' });
 const publicLimit = rateLimit({ bucket: 'portal:public', windowMs: 60_000, max: 60 });
+// The BATCH invite is its own bucket, and much tighter than the singular one.
+// `inviteLimit` allows 5 REQUESTS a minute, which for a 25-row batch would be an
+// effective ceiling of 125 emails a minute. Three batches is the real limit.
+const inviteBatchLimit = rateLimit({
+  bucket: 'portal:invite-batch',
+  windowMs: 60_000,
+  max: 3,
+  message: 'Too many invitations sent. Please wait a minute and try again.',
+});
+
 // Chat is chattier than tickets by design, so its buckets are wider than
 // portal:thread — but they are still per-CONTACT, because these limiters run
 // after portalAuth and rateLimit prefers `req.portal.contactId` over IP.
@@ -54,15 +64,24 @@ const router = express.Router();
 router.get('/boards/:boardId/config', authMiddleware, portal.getPortalConfig);
 router.put('/boards/:boardId/config', authMiddleware, portal.savePortalConfig);
 router.post('/boards/:boardId/invite', authMiddleware, inviteLimit, portal.sendPortalInvite);
+// The multi-row invite table: N services, M people, one submission. Plural on
+// purpose — a different resource, not a variant of the singular invite.
+router.post(
+  '/boards/:boardId/invites',
+  authMiddleware,
+  inviteBatchLimit,
+  portal.sendPortalInviteBatch
+);
 router.get('/boards/:boardId/contacts', authMiddleware, portal.listPortalContacts);
 router.post('/boards/:boardId/contacts/:contactId/resend', authMiddleware, inviteLimit, portal.resendPortalInvite);
-// Basic → Advanced. There is deliberately no route that SETS a tier: upgrading
-// is an action, so a downgrade cannot be expressed on the wire at all.
-router.get('/boards/:boardId/tier', authMiddleware, portal.getPortalTierPreview);
-router.post('/boards/:boardId/tier/upgrade', authMiddleware, inviteLimit, portal.upgradePortalTier);
 
 // ---- Portal-authenticated client ----
 // rateLimit runs AFTER portalAuth so it keys on the signed-in contact, not IP.
+// The service table's single read: every service with its counts and unread.
+router.get('/me/home', portalAuth, portal.getPortalHome);
+// The client's own "email me about new messages" switch. See the handler.
+router.get('/me/preferences', portalAuth, portal.getPortalPreferences);
+router.patch('/me/preferences', portalAuth, threadLimit, portal.updatePortalPreferences);
 router.get('/me/issues', portalAuth, portal.getMyIssues);
 router.post('/me/issues', portalAuth, createLimit, portal.createMyIssue);
 router.post(
@@ -78,9 +97,11 @@ router.post('/me/issues/:id/thread', portalAuth, threadLimit, portal.postIssueTh
 router.post('/me/issues/:id/reopen', portalAuth, threadLimit, portal.reopenIssue);
 router.post('/me/issues/:id/rating', portalAuth, threadLimit, portal.rateIssue);
 
-// ---- Portal chat + mail (Advanced tier only) ----
-// Every one of these re-checks the tier itself (`requireChat`); `portalAuth`
-// only proves the link is live. Registered here, well above `/:portalToken`,
+// ---- Portal chat + mail ----
+// Available on EVERY live client portal. There is no tier and no `requireChat`:
+// `portalAuth` proving the link is live IS the gate, and `loadClientChannel` is
+// what keeps the private team room private. Registered here, well above
+// `/:portalToken`,
 // for the reason the router's header comment gives: a route after that one is
 // swallowed whole by getPortalMeta.
 //

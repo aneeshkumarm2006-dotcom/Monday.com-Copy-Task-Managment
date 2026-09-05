@@ -44,7 +44,7 @@ import {
  *   groupName, clientName   — for the title and the question
  *   existingKeys            — surfaces already on this workstream; shown on and
  *                             disabled, and never counted by the button
- *   allowClientSurfaces     — false on a board that is not advanced
+ *   allowClientSurfaces     — false on a board with no live client portal
  *   onCreate(selection)     — returns a promise; the parent closes on success
  */
 
@@ -327,7 +327,7 @@ const SetUpCommunicationModal = ({
       // Inline, never a toast-and-close: the selection took thought, and
       // throwing it away to show a message that disappears means making every
       // choice again. The server's own words where it gave any — it knows
-      // things this modal does not, like a tier that changed mid-session.
+      // things this modal does not, like a portal disabled mid-session.
       setError(
         err?.response?.data?.error || 'Could not set this up. Please try again.'
       );
@@ -406,9 +406,9 @@ const SetUpCommunicationModal = ({
             surfaceKey={key}
             selected={!!selection[key]}
             existing={existing.has(key)}
-            // A basic board can hold no client-facing room at all. Disabling
-            // the card is the honest shape: the choice is unavailable, not
-            // absent, and the note below says what would make it available.
+            // A board with no live client portal can hold no client-facing
+            // room at all. Disabling the card is the honest shape: the choice is
+            // unavailable, not absent, and the note below says why.
             disabled={!allowClientSurfaces}
             onToggle={toggle}
           />
@@ -420,8 +420,8 @@ const SetUpCommunicationModal = ({
           className="font-body"
           style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginTop: 8 }}
         >
-          Chat and mail with the client need the Advanced client tier. Upgrade
-          the board first — the private team room below works either way.
+          Chat and mail with the client need a live client portal on this
+          board — the private team room below works either way.
         </p>
       )}
 

@@ -8,6 +8,8 @@ import {
   Zap,
   X,
   ArrowDown,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import Modal from '../ui/Modal';
 import Input from '../ui/Input';
@@ -621,6 +623,66 @@ const ConditionRow = ({
 };
 
 /**
+ * Move the item at `from` to `to`, returning a new array. Out-of-range
+ * targets return the original array so callers can wire the arrows up
+ * without guarding the ends themselves.
+ */
+const moveInArray = (arr, from, to) => {
+  if (!Array.isArray(arr)) return arr;
+  if (to < 0 || to >= arr.length || from === to) return arr;
+  const next = [...arr];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+};
+
+/**
+ * Up/down arrows for reordering one row in a builder list. Order is
+ * meaningful: actions and templates run top-to-bottom, and the tasks they
+ * spawn land in the group in that same order.
+ */
+const ReorderButtons = ({ index, count, onMove, disabled, label = 'row' }) => {
+  const btnStyle = (off) => ({
+    width: 22,
+    height: 18,
+    border: '1.5px solid var(--color-border)',
+    background: 'transparent',
+    borderRadius: 'var(--radius-sm)',
+    cursor: disabled || off ? 'not-allowed' : 'pointer',
+    opacity: off ? 0.4 : 1,
+    padding: 0,
+  });
+  const upOff = index === 0;
+  const downOff = index === count - 1;
+  return (
+    <div className="flex flex-col" style={{ gap: 2 }}>
+      <button
+        type="button"
+        aria-label={`Move ${label} up`}
+        title="Move up"
+        onClick={() => onMove(index - 1)}
+        disabled={disabled || upOff}
+        className="flex items-center justify-center hover:bg-[color:var(--color-bg-subtle)]"
+        style={btnStyle(upOff)}
+      >
+        <ChevronUp size={11} color="var(--color-text-secondary)" />
+      </button>
+      <button
+        type="button"
+        aria-label={`Move ${label} down`}
+        title="Move down"
+        onClick={() => onMove(index + 1)}
+        disabled={disabled || downOff}
+        className="flex items-center justify-center hover:bg-[color:var(--color-bg-subtle)]"
+        style={btnStyle(downOff)}
+      >
+        <ChevronDown size={11} color="var(--color-text-secondary)" />
+      </button>
+    </div>
+  );
+};
+
+/**
  * One action row in the ITEM_CREATED builder. CREATE_SUBITEM hides the
  * group selector (subitems inherit their parent's group); CREATE_TASK
  * requires a group.
@@ -628,8 +690,10 @@ const ConditionRow = ({
 const ActionRow = ({
   action,
   index,
+  count,
   onChange,
   onRemove,
+  onMove,
   groupOptions,
   disabled,
 }) => {
@@ -657,6 +721,13 @@ const ActionRow = ({
         >
           {index === 0 ? 'Then' : 'and then'}
         </span>
+        <ReorderButtons
+          index={index}
+          count={count}
+          onMove={onMove}
+          disabled={disabled}
+          label="action"
+        />
         <select
           value={action.type}
           disabled={disabled}
@@ -828,6 +899,9 @@ const EventDrivenBuilder = ({
       actions: [...(f.actions || []), buildEmptyAction(groups)],
     }));
   };
+  const moveAction = (idx, to) => {
+    setForm((f) => ({ ...f, actions: moveInArray(f.actions || [], idx, to) }));
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -940,8 +1014,10 @@ const EventDrivenBuilder = ({
             key={i}
             action={a}
             index={i}
+            count={actions.length}
             onChange={(next) => updateAction(i, next)}
             onRemove={() => removeAction(i)}
+            onMove={(to) => moveAction(i, to)}
             groupOptions={groupOptions}
             disabled={saving}
           />
@@ -976,8 +1052,10 @@ const EventDrivenBuilder = ({
 const GroupCreatedTemplateRow = ({
   template,
   index,
+  count,
   onChange,
   onRemove,
+  onMove,
   members,
   disabled,
 }) => (
@@ -1002,6 +1080,13 @@ const GroupCreatedTemplateRow = ({
       >
         {index === 0 ? 'Task' : `Task ${index + 1}`}
       </span>
+      <ReorderButtons
+        index={index}
+        count={count}
+        onMove={onMove}
+        disabled={disabled}
+        label="task"
+      />
       <input
         type="text"
         placeholder="Task name"
@@ -1142,6 +1227,12 @@ const GroupCreatedBuilder = ({
       ],
     }));
   };
+  const moveTemplate = (idx, to) => {
+    setForm((f) => ({
+      ...f,
+      groupCreatedTemplates: moveInArray(f.groupCreatedTemplates || [], idx, to),
+    }));
+  };
 
   return (
     <div className="flex flex-col gap-3">
@@ -1213,8 +1304,10 @@ const GroupCreatedBuilder = ({
             key={i}
             template={t}
             index={i}
+            count={templates.length}
             onChange={(next) => updateTemplate(i, next)}
             onRemove={() => removeTemplate(i)}
+            onMove={(to) => moveTemplate(i, to)}
             members={members}
             disabled={saving}
           />

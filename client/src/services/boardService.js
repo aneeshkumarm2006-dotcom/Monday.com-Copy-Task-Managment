@@ -190,6 +190,29 @@ export const getBoardPortalContacts = async (boardId) => {
 };
 
 /**
+ * POST /api/portal/boards/:boardId/invites — THE BATCH INVITE.
+ *
+ * `rows` is `[{ service, email, authMethod }]`, up to 25. N services become N
+ * groups on the board, each with its client chat, client mailbox and private
+ * team room; addresses are deduped, so one person on four rows gets ONE email
+ * listing four services.
+ *
+ * The response's `rows` is INDEX-ALIGNED WITH WHAT WAS SENT — that is what lets
+ * the table put a tick or a message on each row the user typed. Also returns
+ * `services`, `contacts`, `warnings` and a fresh `roster`.
+ *
+ * 30s, not the usual 20: this sends up to 25 emails through Gmail SMTP.
+ */
+export const sendBoardPortalInvites = async (boardId, rows) => {
+  const { data } = await api.post(
+    `/api/portal/boards/${boardId}/invites`,
+    { rows },
+    { timeout: 30000 }
+  );
+  return data;
+};
+
+/**
  * POST /api/portal/boards/:boardId/contacts/:contactId/resend — re-send whatever
  * this contact needs (Google invite, first set-password link, or a reset link).
  * Returns { message, contacts }.
@@ -204,35 +227,12 @@ export const resendPortalInvite = async (boardId, contactId) => {
 };
 
 /**
- * GET /api/portal/boards/:boardId/tier — what upgrading to Advanced would do.
- * Returns { tier, ok, noop, refusals, warnings, effects, groupCount,
- * contactCount, confirmPhrase }. Runs the same pure checker the write path
- * runs, so the dialog cannot promise something the endpoint would refuse.
+ * There is no portal TIER any more, and so no `getBoardPortalTier` /
+ * `upgradeBoardPortalTier`. Both existed here with ZERO call sites for their
+ * whole life: no UI ever offered the upgrade, so every client board stayed on
+ * 'basic' and client chat and mail were unreachable in production. The tier is
+ * removed server-side (see server/src/utils/clientBoard.js); these went with it.
  */
-export const getBoardPortalTier = async (boardId) => {
-  const { data } = await api.get(`/api/portal/boards/${boardId}/tier`, {
-    timeout: 20000,
-  });
-  return data;
-};
-
-/**
- * POST /api/portal/boards/:boardId/tier/upgrade — Basic → Advanced. ONE-WAY.
- *
- * `confirm` must echo the client's name back; the server checks it too, because
- * "irreversible" has to mean it on the wire and not only in the dialog. There is
- * deliberately no downgrade endpoint.
- *
- * Returns { tier, alreadyUpgraded, portal? }.
- */
-export const upgradeBoardPortalTier = async (boardId, confirm) => {
-  const { data } = await api.post(
-    `/api/portal/boards/${boardId}/tier/upgrade`,
-    { confirm },
-    { timeout: 20000 }
-  );
-  return data;
-};
 
 // --- Labels ----------------------------------------------------------------
 

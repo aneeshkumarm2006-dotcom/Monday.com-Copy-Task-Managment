@@ -3,6 +3,8 @@ const ClientContact = require('../models/ClientContact');
 const { generateSetupToken, hashSetupToken } = require('../utils/portalCrypto');
 const {
   sendPortalInviteEmail,
+  sendPortalServicesInviteEmail,
+  sendPortalPasswordServicesInviteEmail,
   sendPortalPasswordInviteEmail,
   sendPortalPasswordResetEmail,
 } = require('./emailService');
@@ -70,6 +72,11 @@ const RESET_TTL_LABEL = '24 hours';
  * @param {string} [opts.authMethod='google']
  * @param {string} [opts.setupToken] — raw one-time token, required for 'password'
  * @param {string} [opts.purpose='setup'] — 'setup' | 'reset', picks the copy
+ * @param {Array}  [opts.services=[]] — `[{ name, slug, groupId, color }]`. When
+ *   non-empty the SERVICE-AWARE templates are used instead: one email naming
+ *   every service this person manages, rather than one email per service. This
+ *   is what makes four invite-table rows sharing an address produce one message.
+ * @param {string} [opts.orgName] — saves a lookup when the caller already has it
  * @returns {Promise<boolean>} whether the email was sent
  */
 const sendInviteEmail = async ({
@@ -78,27 +85,63 @@ const sendInviteEmail = async ({
   authMethod = 'google',
   setupToken = null,
   purpose = 'setup',
+  services = [],
+  orgName = null,
 }) => {
   try {
     // The token guard is also what catches a board loaded without
     // `+portalToken` — a silent no-send beats emailing a broken link.
     if (!board?.portalToken || !email) return false;
-    const org = await Organisation.findById(board.organisation).select('name');
+    let name = orgName;
+    if (name == null) {
+      const org = await Organisation.findById(board.organisation).select('name');
+      name = org?.name || '';
+    }
     const common = {
       to: email,
-      orgName: org?.name || '',
+      orgName: name,
       clientName: clientLabel(board),
     };
+
+    // Each service carries a deep link straight into itself. `?service=` on a
+    // URL that already carries the portal credential leaks nothing new, and the
+    // group id is validated against the token's board before anything trusts it
+    // (exactly as createMyIssue already does with a submitted workstream).
+    const serviceList = (services || []).map((s) => ({
+      name: s.name,
+      color: s.color || null,
+      link: `${portalLink(board)}?service=${encodeURIComponent(s.groupId)}`,
+    }));
 
     if (authMethod === 'password') {
       // No token means we'd be mailing a dead link — fail loudly-ish (false)
       // rather than sending the client somewhere broken.
       if (!setupToken) return false;
+      const expiresIn = purpose === 'reset' ? RESET_TTL_LABEL : SETUP_TTL_LABEL;
+      const link = setupLink(board, setupToken);
+
+      // A reset is about the password, not about services — someone who has
+      // forgotten their password does not need their service list recited.
+      if (serviceList.length && purpose !== 'reset') {
+        await sendPortalPasswordServicesInviteEmail({
+          ...common,
+          link,
+          services: serviceList,
+          expiresIn,
+        });
+        return true;
+      }
+
       const send = purpose === 'reset' ? sendPortalPasswordResetEmail : sendPortalPasswordInviteEmail;
-      await send({
+      await send({ ...common, link, expiresIn });
+      return true;
+    }
+
+    if (serviceList.length) {
+      await sendPortalServicesInviteEmail({
         ...common,
-        link: setupLink(board, setupToken),
-        expiresIn: purpose === 'reset' ? RESET_TTL_LABEL : SETUP_TTL_LABEL,
+        link: portalLink(board),
+        services: serviceList,
       });
       return true;
     }

@@ -615,15 +615,14 @@ const createBoard = async (req, res) => {
     // the board does. This used to happen per GROUP, back when a group was the
     // client; the board's groups are now that client's workstreams.
     //
-    // Every new client board starts on the `basic` tier. Chat arrives only via
-    // the explicit, one-way upgrade — see utils/clientTierUpgrade.js.
+    // Chat and mail need no opt-in: there is no tier, and every service group
+    // gets its surfaces on creation (services/workstreamSurfaces.js).
     const isClient = boardType === 'client';
     const portalFields = isClient
       ? {
           portalToken: generatePortalToken(),
           portalEnabled: true,
           portalClientName: (clientName || '').trim() || name.trim(),
-          portalTier: 'basic',
         }
       : {};
 

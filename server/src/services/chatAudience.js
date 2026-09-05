@@ -2,7 +2,7 @@ const Board = require('../models/Board');
 const Organisation = require('../models/Organisation');
 const ClientContact = require('../models/ClientContact');
 const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
-const { isAdvancedClientBoard } = require('../utils/clientBoard');
+const { isLiveClientBoard } = require('../utils/clientBoard');
 
 /**
  * Who may currently SEE a channel — the fan-out list for SSE frames, mention
@@ -41,9 +41,11 @@ const { isAdvancedClientBoard } = require('../utils/clientBoard');
  *      contact, whatever the board is. This is the load-bearing one: the
  *      private team room and the client room differ ONLY by this field, and it
  *      is what makes an internal conversation internal.
- *   2. the board is a live ADVANCED client board — `isAdvancedClientBoard`
- *      AND `portalEnabled`. A basic-tier board has no client surfaces at all,
- *      and a disabled portal is the kill switch: it must stop a long-lived SSE
+ *   2. the board is a LIVE client board — `isLiveClientBoard`, which is a
+ *      client board whose portal is enabled. This used to also require the
+ *      'advanced' tier; that tier is gone (see utils/clientBoard.js), and its
+ *      removal makes THIS the only thing standing between a disabled portal and
+ *      an open room. It is the kill switch: it must stop a long-lived SSE
  *      stream, not just the next request, so it is re-read here on every call
  *      rather than trusted from whenever the connection opened.
  *   3. `contact.board === channel.board`, which the query expresses directly.
@@ -90,7 +92,7 @@ const channelAudience = async (channel, org = null) => {
   if (channel.audience !== 'client') return { userIds, contactIds: [] };
 
   // Parts 2 and 3.
-  if (!isAdvancedClientBoard(board) || !board.portalEnabled) {
+  if (!isLiveClientBoard(board)) {
     return { userIds, contactIds: [] };
   }
 

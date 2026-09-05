@@ -1,4 +1,13 @@
 /**
+ * SUPERSEDED by scripts/resetClientPortals.js.
+ *
+ * This migrated the portal link from the GROUP up to the BOARD, back when a
+ * group was a client company. It is kept for the record and for anyone rolling
+ * a very old database forward, but the data it migrates is the data the reset
+ * script wipes, and the `portalTier` it used to carry no longer exists.
+ */
+
+/**
  * migratePortalToBoard.js
  *
  * Moves the Client Portal from being GROUP-scoped to BOARD-scoped.
@@ -28,7 +37,7 @@
  * WRITES THROUGH THE RAW DRIVER COLLECTION, not through Mongoose. Same escape
  * hatch `renameMonthlyBoardType.js` uses and for the same reasons: the fields
  * being read no longer exist on the TaskGroup schema, `Board.portalToken` is
- * `select: false`, and `Board`'s one-way `portalTier` hooks must not fire on a
+ * `select: false`, and the model's hooks must not fire on a
  * migration that is allowed to write whatever the data actually requires.
  *
  * IDEMPOTENT. Every phase's criterion is a fact about the data ("this board has
@@ -41,7 +50,8 @@
  *   - Standard boards. They have never had a portal.
  *   - Task.portalShared / Task.source / Update.visibility. The two doors into
  *     the portal are unchanged; only their SCOPE moved.
- *   - Board.portalTier. Every board stays on 'basic'. Chat arrives only through
+ *   - Board.portalTier. REMOVED ENTIRELY — there is no tier any more; see
+ *     utils/clientBoard.js. This script no longer writes the field. It arrives only through
  *     the explicit one-way upgrade in the app.
  *
  * Run from the server directory:
@@ -295,7 +305,6 @@ const promote = async () => {
         portalToken: generatePortalToken(),
         portalEnabled: false,
         portalClientName: b.portalClientName || b.name,
-        portalTier: b.portalTier || 'basic',
       };
       minted += 1;
       log(`  + "${b.name}" — minted a DISABLED token (no group carried one)`);
@@ -307,7 +316,6 @@ const promote = async () => {
         portalToken: primary.portalToken,
         portalEnabled: !!anyEnabled,
         portalClientName: (primary.portalClientName || '').trim() || b.name,
-        portalTier: b.portalTier || 'basic',
       };
       log(`  ✓ "${b.name}" — promoted token from group "${primary.name}" (enabled=${anyEnabled})`);
     }

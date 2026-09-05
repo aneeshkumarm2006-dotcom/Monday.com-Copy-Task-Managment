@@ -7,7 +7,8 @@ const eventBus = require('../services/eventBus');
 const portalStream = require('../services/portalStream');
 const { verifyPortalToken } = require('../middleware/portalAuth');
 const { channelAudience } = require('../services/chatAudience');
-const { markChannelRead, markThreadRead, channelReadMap, threadReadMap } = require('../services/chatRead');
+const { markChannelRead, markThreadRead, threadReadMap } = require('../services/chatRead');
+const { unreadByChannel } = require('../services/portalUnread');
 const { createNotificationsForUsers } = require('../services/notificationService');
 const {
   loadThreads,
@@ -19,7 +20,6 @@ const {
   serializeMessageForPortal,
   contactLabel,
 } = require('../utils/portalMessage');
-const { isAdvancedClientBoard } = require('../utils/clientBoard');
 const { describeSurface } = require('../utils/chatSurfaces');
 
 /**
@@ -42,25 +42,35 @@ const MAX_BODY_TEXT = 8000;
 const MAX_SUBJECT = 200;
 
 /* ------------------------------------------------------------------ */
-/* The gate                                                            */
+/* The gate — there isn't one here any more                            */
 /* ------------------------------------------------------------------ */
 
 /**
- * Is chat available on this portal at all?
+ * THERE IS NO `requireChat`, AND ITS ABSENCE IS NOT AN OVERSIGHT.
  *
- * `portalAuth` has already proved the board is a live client board and that the
- * link has not been rotated. This adds the tier, which is the one thing that
- * separates a board where these endpoints exist from one where they do not.
+ * A `requireChat(req)` guard used to run at the top of all nine handlers below,
+ * asserting `isAdvancedClientBoard(req.portal.board)`. It checked the tier and
+ * NOTHING ELSE — its own comment said so — and the tier is gone (see
+ * utils/clientBoard.js). Repointing it at `isLiveClientBoard` would have been
+ * the obvious move and would have been wrong: `middleware/portalAuth.js`'s
+ * `verifyPortalToken` ALREADY proves, on every single request that reaches this
+ * file, that the board is a client board, that `portalEnabled` is true, and that
+ * the token's `ptk` still matches the board's. A repointed guard would re-assert
+ * what the middleware just established, and a guard that can never fail is a
+ * guard the next reader trusts for more than it does.
  *
- * Returns an `{ status, error }` or null, matching the shape the rest of the
- * codebase's guards use.
+ * What still gates these handlers, and where:
+ *
+ *   - the board is a live client portal   → portalAuth.verifyPortalToken
+ *   - the caller is a contact ON that board → portalAuth, via the JWT's boardId
+ *   - the channel is one the client may be in → `loadClientChannel` below,
+ *     whose `audience: 'client'` condition is what keeps the private team room
+ *     private
+ *
+ * `streamPortalEvents` calls `verifyPortalToken` inline rather than through the
+ * middleware (an EventSource cannot send headers), so it inherits the same three
+ * guarantees from the same function.
  */
-const requireChat = (req) => {
-  if (!isAdvancedClientBoard(req.portal.board)) {
-    return { status: 403, error: 'Chat is not enabled for this portal' };
-  }
-  return null;
-};
 
 /**
  * Load a channel this contact may actually be in.
@@ -97,9 +107,6 @@ const loadClientChannel = async (req, channelId) => {
  */
 const getPortalChannels = async (req, res) => {
   try {
-    const denied = requireChat(req);
-    if (denied) return res.status(denied.status).json({ error: denied.error });
-
     const { boardId, contactId } = req.portal;
 
     const channels = await Channel.find({
@@ -108,7 +115,7 @@ const getPortalChannels = async (req, res) => {
       archived: false,
     }).sort({ createdAt: 1 });
 
-    if (!channels.length) return res.json({ tier: req.portal.tier, workstreams: [] });
+    if (!channels.length) return res.json({ workstreams: [] });
 
     const ids = channels.map((c) => c._id);
 
@@ -128,22 +135,12 @@ const getPortalChannels = async (req, res) => {
     ]);
     const latestByChannel = new Map(latest.map((l) => [String(l._id), l]));
 
-    const readAt = await channelReadMap({ channelIds: ids, contactId });
-
-    const counts = await Promise.all(
-      channels.map(async (ch) => {
-        const last = latestByChannel.get(String(ch._id));
-        if (!last) return 0;
-        const seen = readAt.get(String(ch._id));
-        if (seen && last.lastAt <= seen) return 0;
-        return Message.countDocuments({
-          channel: ch._id,
-          ...(seen ? { createdAt: { $gt: seen } } : {}),
-          // Not the client's own messages — posting is reading.
-          portalAuthor: { $ne: contactId },
-        });
-      })
-    );
+    // ONE aggregate for every channel's unread count — see services/portalUnread.js.
+    // This used to be a countDocuments per channel, which cost nothing while the
+    // portal tier meant no board had client channels at all, and costs two
+    // queries per service now that every service has a chat and a mailbox.
+    const unreadMap = await unreadByChannel({ channelIds: ids, contactId });
+    const counts = channels.map((ch) => unreadMap.get(String(ch._id))?.unread || 0);
 
     // Preview author names. Team members are named, never emailed.
     const ClientContact = require('../models/ClientContact');
@@ -191,7 +188,6 @@ const getPortalChannels = async (req, res) => {
     });
 
     return res.json({
-      tier: req.portal.tier,
       // Only workstreams that actually have a surface: the client has no way to
       // create one, so listing an empty workstream would show them a room they
       // cannot open and cannot ask for from here.
@@ -218,9 +214,6 @@ const getPortalChannels = async (req, res) => {
  */
 const getPortalMessages = async (req, res) => {
   try {
-    const denied = requireChat(req);
-    if (denied) return res.status(denied.status).json({ error: denied.error });
-
     const channel = await loadClientChannel(req, req.params.channelId);
     if (!channel) return res.status(404).json({ error: 'Conversation not found' });
 
@@ -438,9 +431,6 @@ const writeClientMessage = async (req, channel, { subject = null, replyTo = null
  */
 const sendPortalMessage = async (req, res) => {
   try {
-    const denied = requireChat(req);
-    if (denied) return res.status(denied.status).json({ error: denied.error });
-
     const channel = await loadClientChannel(req, req.params.channelId);
     if (!channel) return res.status(404).json({ error: 'Conversation not found' });
     if (channel.archived) {
@@ -494,12 +484,6 @@ const uploadPortalChatAttachment = async (req, res) => {
     ]);
 
   try {
-    const denied = requireChat(req);
-    if (denied) {
-      await discard();
-      return res.status(denied.status).json({ error: denied.error });
-    }
-
     const channel = await loadClientChannel(req, req.params.channelId);
     if (!channel || channel.archived) {
       await discard();
@@ -525,9 +509,6 @@ const uploadPortalChatAttachment = async (req, res) => {
 /** POST /api/portal/me/chat/channels/:channelId/read */
 const markPortalChannelRead = async (req, res) => {
   try {
-    const denied = requireChat(req);
-    if (denied) return res.status(denied.status).json({ error: denied.error });
-
     const channel = await loadClientChannel(req, req.params.channelId);
     if (!channel) return res.status(404).json({ error: 'Conversation not found' });
 
@@ -550,9 +531,6 @@ const markPortalChannelRead = async (req, res) => {
 /** GET /api/portal/me/chat/channels/:channelId/threads?before= */
 const getPortalThreads = async (req, res) => {
   try {
-    const denied = requireChat(req);
-    if (denied) return res.status(denied.status).json({ error: denied.error });
-
     const channel = await loadClientChannel(req, req.params.channelId);
     if (!channel) return res.status(404).json({ error: 'Conversation not found' });
     if (channel.mode !== 'mail') {
@@ -598,9 +576,6 @@ const getPortalThreads = async (req, res) => {
  */
 const createPortalThread = async (req, res) => {
   try {
-    const denied = requireChat(req);
-    if (denied) return res.status(denied.status).json({ error: denied.error });
-
     const channel = await loadClientChannel(req, req.params.channelId);
     if (!channel) return res.status(404).json({ error: 'Conversation not found' });
     if (channel.mode !== 'mail') {
@@ -649,9 +624,6 @@ const createPortalThread = async (req, res) => {
  */
 const markPortalThreadRead = async (req, res) => {
   try {
-    const denied = requireChat(req);
-    if (denied) return res.status(denied.status).json({ error: denied.error });
-
     const thread = await Message.findOne({
       _id: req.params.threadId,
       replyTo: null,
@@ -683,9 +655,6 @@ const markPortalThreadRead = async (req, res) => {
  */
 const getPortalMentions = async (req, res) => {
   try {
-    const denied = requireChat(req);
-    if (denied) return res.status(denied.status).json({ error: denied.error });
-
     // Derived from a client-facing channel's audience rather than from the org
     // roster, so it is exactly the set the send path will accept — a suggestion
     // the server would then drop is a promise the UI cannot keep.
@@ -737,10 +706,6 @@ const streamPortalEvents = async (req, res) => {
     if (!resolved) {
       return res.status(401).json({ error: 'This portal is no longer available' });
     }
-    if (!isAdvancedClientBoard(resolved.board)) {
-      return res.status(403).json({ error: 'Chat is not enabled for this portal' });
-    }
-
     res.set({
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
@@ -783,6 +748,5 @@ module.exports = {
   streamPortalEvents,
   // exported for tests
   loadClientChannel,
-  requireChat,
   cleanAttachments,
 };
