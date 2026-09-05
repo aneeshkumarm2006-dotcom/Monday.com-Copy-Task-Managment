@@ -779,141 +779,6 @@ const BoardDetailPage = () => {
   const isClientBoard = board?.boardType === 'client';
   const [portalModalOpen, setPortalModalOpen] = useState(false);
 
-  /* ---------------------------------------------------------------------
-   * CLIENT WORKSPACE
-   *
-   * A client board is one client company and its groups are the SERVICES the
-   * agency sells them. Four services with a chat, a mailbox and a team room
-   * each is twelve conversations, which the ordinary board grid renders as an
-   * unreadable stack — so a client board gets a rail that puts ONE service on
-   * screen at a time.
-   *
-   * Deliberately NOT a separate route. Every deep link in the product points at
-   * /boards/:id — utils/taskLink.js, notificationMeta, My Work, the server's own
-   * taskDeepLink in already-sent emails — so the route stays and the view
-   * branches. `svc` is the rail selection: 'overview', a group id, 'people' or
-   * 'settings'.
-   * ------------------------------------------------------------------- */
-  const svcParam = searchParams.get('svc') || 'overview';
-  const svcTab = searchParams.get('svctab') === 'talk' ? 'talk' : 'work';
-  const [clientChannels, setClientChannels] = useState(null);
-
-  const selectService = useCallback(
-    (key, tab) => {
-      const next = new URLSearchParams(searchParams);
-      next.set('svc', String(key));
-      if (tab) next.set('svctab', tab);
-      else next.delete('svctab');
-      setSearchParams(next, { replace: false });
-    },
-    [searchParams, setSearchParams]
-  );
-
-  // Unread per surface, for the rail badges. One request, reusing the same
-  // endpoint the Chat tab already calls — no new endpoint, and no second
-  // EventSource: liveMessage below nudges it rather than opening a stream.
-  useEffect(() => {
-    if (!isClientBoard || !boardId) return undefined;
-    let alive = true;
-    getBoardChannels(boardId)
-      .then((res) => { if (alive) setClientChannels(res); })
-      .catch(() => { if (alive) setClientChannels({ workstreams: [] }); });
-    return () => { alive = false; };
-  }, [isClientBoard, boardId, boardRefreshSignal]);
-
-  const clientServices = useMemo(() => {
-    if (!isClientBoard) return [];
-    const doneStatusId = Array.isArray(board?.statuses)
-      ? board.statuses.find((st) => st.key === 'done')?._id || null
-      : null;
-    const isDone = (t) => {
-      if (t.status == null) return false;
-      return doneStatusId ? String(t.status) === String(doneStatusId) : t.status === 'done';
-    };
-    const wsById = new Map(
-      (clientChannels?.workstreams || []).map((w) => [String(w.group?._id), w])
-    );
-
-    return orderedGroups.map((g) => {
-      const tasks = tasksByGroup[g._id] || [];
-      const ws = wsById.get(String(g._id));
-      const surfaces = ws?.surfaces || [];
-      const unreadOf = (mode) =>
-        surfaces
-          .filter((c) => c.mode === mode && c.audience === 'client')
-          .reduce((n, c) => n + (c.unread || 0), 0);
-      return {
-        id: String(g._id),
-        name: g.name,
-        color: null,
-        owner: g.owner || null,
-        taskCount: tasks.length,
-        doneCount: tasks.filter(isDone).length,
-        // "Open request" = raised by the CLIENT and not finished. Counted here
-        // rather than fetched: the task store already holds every row.
-        openRequests: tasks.filter((t) => t.source === 'client' && !isDone(t)).length,
-        sharedCount: tasks.filter((t) => t.portalShared).length,
-        unreadChat: unreadOf('chat'),
-        unreadMail: unreadOf('mail'),
-        unread: surfaces.reduce((n, c) => n + (c.unread || 0), 0),
-        hasRooms: surfaces.length > 0,
-      };
-    });
-  }, [isClientBoard, orderedGroups, tasksByGroup, board, clientChannels]);
-
-  /**
-   * The short "needs you" list on the overview. Ordered by how much someone is
-   * waiting: an unread client message first, then a client request nobody owns,
-   * then a service with no rooms at all.
-   */
-  const clientNeedsYou = useMemo(() => {
-    if (!isClientBoard) return [];
-    const out = [];
-    for (const s of clientServices) {
-      if (s.unread > 0) {
-        out.push({
-          id: `u-${s.id}`,
-          serviceId: s.id,
-          serviceName: s.name,
-          tab: 'talk',
-          tone: 'unread',
-          text: `${s.unread} unread message${s.unread === 1 ? '' : 's'} from the client`,
-        });
-      }
-    }
-    for (const s of clientServices) {
-      const unowned = (tasksByGroup[s.id] || []).filter(
-        (t) => t.source === 'client' && !(t.assignedTo || []).length
-      ).length;
-      if (unowned > 0) {
-        out.push({
-          id: `r-${s.id}`,
-          serviceId: s.id,
-          serviceName: s.name,
-          tab: 'work',
-          tone: 'requests',
-          text: `${unowned} client request${unowned === 1 ? '' : 's'} with nobody assigned`,
-        });
-      }
-    }
-    for (const s of clientServices) {
-      if (!s.hasRooms) {
-        out.push({
-          id: `n-${s.id}`,
-          serviceId: s.id,
-          serviceName: s.name,
-          tab: 'talk',
-          tone: 'requests',
-          text: 'No chat or mailbox set up yet',
-        });
-      }
-    }
-    return out.slice(0, 6);
-  }, [isClientBoard, clientServices, tasksByGroup]);
-
-  const activeService = isClientBoard
-    ? clientServices.find((s) => s.id === svcParam) || null
-    : null;
 
   // If we navigated directly and the boards list is empty, fetch it so the
   // header can resolve the board metadata.
@@ -1402,6 +1267,142 @@ const BoardDetailPage = () => {
     () => orderedGroups.map((g) => g._id),
     [orderedGroups]
   );
+
+  /* ---------------------------------------------------------------------
+   * CLIENT WORKSPACE
+   *
+   * A client board is one client company and its groups are the SERVICES the
+   * agency sells them. Four services with a chat, a mailbox and a team room
+   * each is twelve conversations, which the ordinary board grid renders as an
+   * unreadable stack — so a client board gets a rail that puts ONE service on
+   * screen at a time.
+   *
+   * Deliberately NOT a separate route. Every deep link in the product points at
+   * /boards/:id — utils/taskLink.js, notificationMeta, My Work, the server's own
+   * taskDeepLink in already-sent emails — so the route stays and the view
+   * branches. `svc` is the rail selection: 'overview', a group id, 'people' or
+   * 'settings'.
+   * ------------------------------------------------------------------- */
+  const svcParam = searchParams.get('svc') || 'overview';
+  const svcTab = searchParams.get('svctab') === 'talk' ? 'talk' : 'work';
+  const [clientChannels, setClientChannels] = useState(null);
+
+  const selectService = useCallback(
+    (key, tab) => {
+      const next = new URLSearchParams(searchParams);
+      next.set('svc', String(key));
+      if (tab) next.set('svctab', tab);
+      else next.delete('svctab');
+      setSearchParams(next, { replace: false });
+    },
+    [searchParams, setSearchParams]
+  );
+
+  // Unread per surface, for the rail badges. One request, reusing the same
+  // endpoint the Chat tab already calls — no new endpoint, and no second
+  // EventSource: liveMessage below nudges it rather than opening a stream.
+  useEffect(() => {
+    if (!isClientBoard || !boardId) return undefined;
+    let alive = true;
+    getBoardChannels(boardId)
+      .then((res) => { if (alive) setClientChannels(res); })
+      .catch(() => { if (alive) setClientChannels({ workstreams: [] }); });
+    return () => { alive = false; };
+  }, [isClientBoard, boardId, boardRefreshSignal]);
+
+  const clientServices = useMemo(() => {
+    if (!isClientBoard) return [];
+    const doneStatusId = Array.isArray(board?.statuses)
+      ? board.statuses.find((st) => st.key === 'done')?._id || null
+      : null;
+    const isDone = (t) => {
+      if (t.status == null) return false;
+      return doneStatusId ? String(t.status) === String(doneStatusId) : t.status === 'done';
+    };
+    const wsById = new Map(
+      (clientChannels?.workstreams || []).map((w) => [String(w.group?._id), w])
+    );
+
+    return orderedGroups.map((g) => {
+      const tasks = tasksByGroup[g._id] || [];
+      const ws = wsById.get(String(g._id));
+      const surfaces = ws?.surfaces || [];
+      const unreadOf = (mode) =>
+        surfaces
+          .filter((c) => c.mode === mode && c.audience === 'client')
+          .reduce((n, c) => n + (c.unread || 0), 0);
+      return {
+        id: String(g._id),
+        name: g.name,
+        color: null,
+        owner: g.owner || null,
+        taskCount: tasks.length,
+        doneCount: tasks.filter(isDone).length,
+        // "Open request" = raised by the CLIENT and not finished. Counted here
+        // rather than fetched: the task store already holds every row.
+        openRequests: tasks.filter((t) => t.source === 'client' && !isDone(t)).length,
+        sharedCount: tasks.filter((t) => t.portalShared).length,
+        unreadChat: unreadOf('chat'),
+        unreadMail: unreadOf('mail'),
+        unread: surfaces.reduce((n, c) => n + (c.unread || 0), 0),
+        hasRooms: surfaces.length > 0,
+      };
+    });
+  }, [isClientBoard, orderedGroups, tasksByGroup, board, clientChannels]);
+
+  /**
+   * The short "needs you" list on the overview. Ordered by how much someone is
+   * waiting: an unread client message first, then a client request nobody owns,
+   * then a service with no rooms at all.
+   */
+  const clientNeedsYou = useMemo(() => {
+    if (!isClientBoard) return [];
+    const out = [];
+    for (const s of clientServices) {
+      if (s.unread > 0) {
+        out.push({
+          id: `u-${s.id}`,
+          serviceId: s.id,
+          serviceName: s.name,
+          tab: 'talk',
+          tone: 'unread',
+          text: `${s.unread} unread message${s.unread === 1 ? '' : 's'} from the client`,
+        });
+      }
+    }
+    for (const s of clientServices) {
+      const unowned = (tasksByGroup[s.id] || []).filter(
+        (t) => t.source === 'client' && !(t.assignedTo || []).length
+      ).length;
+      if (unowned > 0) {
+        out.push({
+          id: `r-${s.id}`,
+          serviceId: s.id,
+          serviceName: s.name,
+          tab: 'work',
+          tone: 'requests',
+          text: `${unowned} client request${unowned === 1 ? '' : 's'} with nobody assigned`,
+        });
+      }
+    }
+    for (const s of clientServices) {
+      if (!s.hasRooms) {
+        out.push({
+          id: `n-${s.id}`,
+          serviceId: s.id,
+          serviceName: s.name,
+          tab: 'talk',
+          tone: 'requests',
+          text: 'No chat or mailbox set up yet',
+        });
+      }
+    }
+    return out.slice(0, 6);
+  }, [isClientBoard, clientServices, tasksByGroup]);
+
+  const activeService = isClientBoard
+    ? clientServices.find((s) => s.id === svcParam) || null
+    : null;
 
   const toggleGroup = (groupId) => {
     // Closing the group is the signal that the user has finished working in
