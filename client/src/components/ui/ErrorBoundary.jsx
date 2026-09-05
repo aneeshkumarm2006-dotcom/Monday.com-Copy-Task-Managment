@@ -1,6 +1,7 @@
 import { Component } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import Button from './Button';
+import { checkForNewBuild } from '../../utils/swUpdate';
 
 /**
  * The app's only stop against a white screen.
@@ -11,7 +12,7 @@ import Button from './Button';
  * the page down to a blank white rectangle with no message, nothing in the UI
  * to click, and no clue for the person looking at it.
  *
- * Two distinct failures land here and they need different answers:
+ * Three distinct failures land here and they need different answers:
  *
  * 1. A STALE CHUNK. `lazy(() => import(...))` resolves a filename that was
  *    minted at build time. Deploy again while someone has the tab open and that
@@ -21,7 +22,16 @@ import Button from './Button';
  *    a sessionStorage flag: if the reload does not fix it the second pass falls
  *    through to the panel rather than looping forever.
  *
- * 2. A REAL BUG. Show the error, in words, on the screen. `resetKey` (pass the
+ * 2. A STALE BUILD. The chunk loaded fine, but the whole bundle running this
+ *    tab predates the current deploy — the service worker precaches the shell,
+ *    so a tab opened around a release runs the old build until something
+ *    reloads it. The crash is then a bug that is already fixed on the server,
+ *    and no amount of retrying the component will help. So every error asks the
+ *    worker whether a newer build exists; if one does it activates, claims the
+ *    page, and utils/swUpdate.js reloads onto it. This is why a person hitting
+ *    "Reload the page" here used to be the only thing that worked.
+ *
+ * 3. A REAL BUG. Show the error, in words, on the screen. `resetKey` (pass the
  *    tab name, the route, whatever scopes this boundary) clears the error when
  *    it changes, so a broken tab stays broken but every OTHER tab keeps working
  *    — you can navigate away from it instead of reloading.
@@ -63,7 +73,15 @@ class ErrorBoundary extends Component {
         // dead panel; a genuine loop needs the file to 404 on a fresh load too.
       }
       window.location.reload();
+      return;
     }
+
+    // Anything else: the build running this tab may simply be older than the
+    // one on the server, in which case the fix is already deployed and the page
+    // just has to get to it. Nothing happens if this IS the newest build — the
+    // panel below stays up and the error is the real story. Fire-and-forget;
+    // the reload, if there is one, comes from utils/swUpdate.js.
+    checkForNewBuild();
   }
 
   componentDidUpdate(prevProps) {

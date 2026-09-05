@@ -5,6 +5,10 @@ import './styles/globals.css'
 // and must be caught before React is even mounted or the Install button in
 // Settings would have nothing to fire.
 import './utils/installPrompt'
+// Also side effect ONLY: listens for the service worker handing this page to a
+// newer build and reloads onto it, so a tab opened before a deploy stops
+// running the old bundle. See utils/swUpdate.js.
+import './utils/swUpdate'
 import App from './App.jsx'
 import ErrorBoundary from './components/ui/ErrorBoundary.jsx'
 
@@ -40,3 +44,4 @@ if (splash) {
     setTimeout(() => splash.remove(), 320)
   })
 }
+
