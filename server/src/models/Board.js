@@ -210,10 +210,14 @@ const boardSchema = new mongoose.Schema(
     },
     /**
      * Client Portal boards ('client') add an external-collaboration plane on top
-     * of a normal PRIVATE board: each group exposes a shareable link (minted when
-     * the group is created) that an external client opens, accepts, and signs into
-     * with Google — no passcode — to submit issues and hold a thread with the
-     * team. A 'standard' board is an ordinary internal board.
+     * of a normal PRIVATE board: the BOARD exposes one shareable link that an
+     * external client opens and signs into with Google or a password — no
+     * passcode — to submit issues and hold a thread with the team. Its groups are
+     * that one client's SERVICES. A 'standard' board is an ordinary internal
+     * board.
+     *
+     * The link is minted by the FIRST SERVICE, not at board creation and not per
+     * group — see `portalToken` below and `utils/portalActivation.js`.
      *
      * This is intentionally SEPARATE from `visibility` — a client board is still
      * `visibility: 'private'` internally, so the whole org access model (roles,
@@ -257,6 +261,14 @@ const boardSchema = new mongoose.Schema(
      * closes the portal without discarding the token — and, because
      * `middleware/portalAuth.js` re-reads this on every request, it also ends
      * every signed-in client's session on their next call.
+     *
+     * `default: false` IS THE STARTING STATE, not a fallback. A client board is
+     * created with the portal off and no token at all, and the first SERVICE
+     * added to it is what switches both on. `boardController.createBoard` used
+     * to override this to `true`; it no longer does, because a portal with no
+     * services renders "Your portal is being set up" and a link handed over in
+     * that state is worse than no link. `utils/portalActivation.js` is the only
+     * implementation of the rule.
      */
     portalEnabled: {
       type: Boolean,
@@ -266,6 +278,12 @@ const boardSchema = new mongoose.Schema(
      * The public link id (crypto.randomBytes hex), in the URL the client opens:
      * `${CLIENT_URL}/portal/${portalToken}`. Regenerating rotates it and kills
      * every live session, by the same mechanism as disabling.
+     *
+     * ABSENT until the board's FIRST SERVICE, which is what mints it
+     * (`utils/portalActivation.js`). A missing token on a client board therefore
+     * means "no service has been added yet" — a state to REPORT, which
+     * `adminPortalPayload`'s `hasServices` is for — and never one to quietly
+     * fix by minting one.
      *
      * NO `default`, ON PURPOSE — the field must be ABSENT, not null. A sparse
      * index skips absent fields but DOES index null values, so `default: null`

@@ -160,12 +160,11 @@ const MyBoardsPage = () => {
       // which the server requires and validates.
       boardType: values.boardType || 'standard',
       monthTimezone: values.monthTimezone,
-      // Client boards only: the company label shown in the portal and an
-      // optional first contact to invite. The board mints its own portal link
-      // server-side — a client board IS the client, so the link is board-level.
+      // Client boards only, and a LABEL only — what the client sees at the top
+      // of their portal. No contact is invited here and no link is minted: the
+      // first SERVICE added to the board does both, because a portal with no
+      // services opens on an empty page. See server/src/utils/portalActivation.js.
       clientName: values.clientName,
-      clientEmail: values.clientEmail,
-      clientAuthMethod: values.clientAuthMethod,
       organisation: orgId,
     });
     setCreateOpen(false);

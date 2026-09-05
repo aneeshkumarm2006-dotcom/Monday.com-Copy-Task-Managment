@@ -79,8 +79,15 @@ const clientBoardFilter = () => {
   return f;
 };
 
+// `portalEnabled` is projected because --verify has to tell a LIVE client board
+// from one whose portal was switched off: a service on the latter legitimately
+// has no client-facing rooms, and without the field every board reads as
+// `undefined` and the check silently inspects nothing.
 const clientBoards = () =>
-  col('boards').find(clientBoardFilter()).project({ name: 1, organisation: 1 }).toArray();
+  col('boards')
+    .find(clientBoardFilter())
+    .project({ name: 1, organisation: 1, portalEnabled: 1 })
+    .toArray();
 
 /* ------------------------------------------------------------------ */
 /* --report                                                            */
@@ -363,7 +370,13 @@ const verify = async () => {
     (await col('clientcontacts').countDocuments({ group: { $exists: true } })) === 0);
 
   const boards = await clientBoards();
-  const ids = boards.map((b) => b._id);
+  // LIVE boards only. `workstreamSurfaces.createSurfaces` refuses a client-facing
+  // room on a board whose portal is off — that is the confidentiality gate, not
+  // a bug — so a service added while a client was offboarded legitimately has
+  // only its private team room. Counting those as "naked" would fail this check
+  // on a perfectly healthy database and teach whoever runs it to ignore the
+  // output. See server/src/utils/portalActivation.js.
+  const ids = boards.filter((b) => b.portalEnabled === true).map((b) => b._id);
   const groups = await col('taskgroups').find({ board: { $in: ids } }).project({ _id: 1, name: 1 }).toArray();
   const withClientChannel = new Set(
     (
@@ -374,7 +387,7 @@ const verify = async () => {
     ).map((c) => String(c.group))
   );
   const naked = groups.filter((g) => !withClientChannel.has(String(g._id)));
-  ok('every service has client-facing rooms', naked.length === 0,
+  ok('every service on a LIVE board has client-facing rooms', naked.length === 0,
     naked.map((g) => g.name).join(', '));
 
   // A services entry pointing at a group on another board would be a labelling

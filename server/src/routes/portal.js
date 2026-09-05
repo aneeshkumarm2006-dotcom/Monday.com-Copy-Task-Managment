@@ -11,6 +11,7 @@ const portalChat = require('../controllers/portalChatController');
 // The portal is the only public, unauthenticated surface, so every write path
 // gets a brake. Limits are per-client (contact when signed in, else IP).
 const inviteLimit = rateLimit({ bucket: 'portal:invite', windowMs: 60_000, max: 5, message: 'Too many invites sent. Please wait a minute and try again.' });
+const serviceLimit = rateLimit({ bucket: 'portal:service', windowMs: 60_000, max: 6, message: 'You are adding services too quickly. Please wait a moment.' });
 const createLimit = rateLimit({ bucket: 'portal:create', windowMs: 60_000, max: 10, message: 'You are creating requests too quickly. Please wait a moment.' });
 const threadLimit = rateLimit({ bucket: 'portal:thread', windowMs: 60_000, max: 30, message: 'You are sending messages too quickly. Please wait a moment.' });
 const uploadLimit = rateLimit({ bucket: 'portal:upload', windowMs: 60_000, max: 20, message: 'Too many uploads. Please wait a moment.' });
@@ -71,6 +72,29 @@ router.post(
   authMiddleware,
   inviteBatchLimit,
   portal.sendPortalInviteBatch
+);
+// Add ONE service, optionally inviting the people who look after it. This is
+// what brings a client board's portal to life: the board is created with no
+// link at all (utils/portalActivation.js), and the first service minted here —
+// or by createGroup, or by the batch above — is what makes one exist.
+//
+// Its OWN bucket, and the number is arithmetic rather than taste.
+//
+// `inviteBatchLimit` allows 3 a minute because 3 x MAX_ROWS is 75 emails, and
+// that is the ceiling this server is willing to push through one team's Gmail
+// account in a minute. Reusing it here would be wrong in the other direction:
+// adding four or five services during setup is ordinary behaviour and must not
+// hit a wall.
+//
+// So this endpoint caps its OWN invite list at MAX_SERVICE_INVITES (10) rather
+// than MAX_ROWS, and 6 x 10 = 60 lands under the same 75-email ceiling while
+// leaving twice the request headroom. `inviteLimit` (5/min, one address each)
+// is not the comparison — that one is a single email per request.
+router.post(
+  '/boards/:boardId/services',
+  authMiddleware,
+  serviceLimit,
+  portal.createPortalService
 );
 router.get('/boards/:boardId/contacts', authMiddleware, portal.listPortalContacts);
 router.post('/boards/:boardId/contacts/:contactId/resend', authMiddleware, inviteLimit, portal.resendPortalInvite);

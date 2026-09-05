@@ -130,15 +130,23 @@ export const transferBoardOwnership = async (boardId, userId) => {
 
 // --- Client Portal (per-BOARD link management; client boards only) ----------
 //
-// A client board IS one client company, so the portal link, the contact roster
-// and the tier all hang off the board. These were per-GROUP until the board
-// became the client; a group is now that client's workstream (SEO, Ads, Web
-// Development) and has no portal of its own.
+// A client board IS one client company, so the portal link and the contact
+// roster hang off the board. These were per-GROUP until the board became the
+// client; a group is now that client's SERVICE (SEO, Ads, Web Development) and
+// has no portal of its own. There is no tier — chat and mail are what a client
+// portal IS, not an upsell.
+//
+// The link does not exist until the board has a SERVICE on it. Everything below
+// that shows or sends it therefore has a "not yet" state, which the server
+// reports as `hasServices: false` and refuses with 409 `PORTAL_NO_SERVICES`.
 
 /**
  * GET /api/portal/boards/:boardId/config — the board's portal state for the
  * management modal. Board-manager only (enforced server-side).
- * Returns { boardId, portalEnabled, clientName, link, tier, announcement, faqs }.
+ * Returns { boardId, portalEnabled, clientName, link, hasServices,
+ * announcement, faqs }. `link` is null until the first SERVICE is added, and
+ * `hasServices` is how the modal tells "no link yet" apart from "link switched
+ * off" — see utils/portalActivation.js on the server.
  */
 export const getBoardPortalConfig = async (boardId) => {
   const { data } = await api.get(`/api/portal/boards/${boardId}/config`, {
@@ -160,8 +168,13 @@ export const saveBoardPortalConfig = async (boardId, payload) => {
 };
 
 /**
- * POST /api/portal/boards/:boardId/invite — invite a client (ensures the link is
- * live first). Body: { email, authMethod }.
+ * POST /api/portal/boards/:boardId/invite — invite one client to a portal that is
+ * ALREADY live. Body: { email, authMethod }.
+ *
+ * It no longer turns the portal on: adding a SERVICE is the only thing that does
+ * that. Answers 409 `PORTAL_NO_SERVICES` on a board with no services and 409
+ * `PORTAL_DISABLED` on one whose link the team switched off, rather than mailing
+ * a link that would not open.
  *
  * `authMethod` decides which email goes out AND how this person may sign in:
  *   'google'   — the shared portal link, "Accept invitation"
@@ -207,6 +220,37 @@ export const sendBoardPortalInvites = async (boardId, rows) => {
   const { data } = await api.post(
     `/api/portal/boards/${boardId}/invites`,
     { rows },
+    { timeout: 30000 }
+  );
+  return data;
+};
+
+/**
+ * POST /api/portal/boards/:boardId/services — ADD ONE SERVICE, and invite the
+ * people who look after it.
+ *
+ * This is the call behind "Add service" on a client board, and on the first
+ * service it is what brings the client's portal into existence: a client board
+ * is created with NO link and the portal off, because a portal with no services
+ * opens on an empty page and a link to one is worse than none.
+ *
+ * Body: `{ name, invites: [{ email, authMethod }], color?, notify? }`.
+ * `invites` may be empty — the service is still created and the link still goes
+ * live; only the mail is conditional.
+ *
+ * Returns `{ service, contacts, warnings, portalActivated, portal, roster }`.
+ * `portalActivated` is true exactly once per board, on the service that made
+ * the link real.
+ *
+ * A name the board already carries answers 409 — "add a service" means a NEW
+ * one. Use `sendBoardPortalInvites` to put somebody on an existing service.
+ *
+ * 30s, not the usual 20: this can send several emails through Gmail SMTP.
+ */
+export const createBoardPortalService = async (boardId, payload) => {
+  const { data } = await api.post(
+    `/api/portal/boards/${boardId}/services`,
+    payload,
     { timeout: 30000 }
   );
   return data;

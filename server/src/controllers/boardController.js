@@ -29,12 +29,6 @@ const { isValidTimezone } = require('../utils/tzDay');
 const { monthKeyOf } = require('../utils/monthKey');
 const { createNotification } = require('../services/notificationService');
 const { requireFeature } = require('../utils/userFeatures');
-const { generatePortalToken } = require('../utils/portalCrypto');
-const { inviteContact } = require('../services/portalInviteService');
-
-// Client-board invitation addresses. Same shape as the one groupController
-// used before board creation took this over.
-const CLIENT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const { cascadeDeleteVaults } = require('../services/vaultCascade');
 const { deleteSurfacesForBoard } = require('../services/workstreamSurfaces');
 
@@ -531,12 +525,10 @@ const createBoard = async (req, res) => {
       boardType = 'standard',
       portalCategories,
       monthTimezone,
-      // Client boards only: the company label shown in the portal, and an
-      // optional first contact to invite straight away. These moved up from
-      // group creation when the BOARD became the client.
+      // Client boards only: the company label shown in the portal. There is
+      // deliberately NO first contact to invite here — see the portal comment
+      // further down, where the link is no longer minted at create time either.
       clientName,
-      clientEmail,
-      clientAuthMethod,
     } = req.body;
 
     if (!organisation) {
@@ -610,20 +602,29 @@ const createBoard = async (req, res) => {
       .lean();
     const nextBoardOrder = (lastBoard?.order ?? -1) + 1;
 
-    // A client board IS one client company, so it mints its shareable link AT
-    // CREATION and turns the portal on immediately — the link exists the moment
-    // the board does. This used to happen per GROUP, back when a group was the
-    // client; the board's groups are now that client's workstreams.
+    // ---- A CLIENT BOARD IS BORN WITHOUT A PORTAL LINK -------------------
+    //
+    // It used to mint `portalToken` and set `portalEnabled: true` right here,
+    // so the shareable link existed the moment the board did. That was the
+    // wrong moment: a board with no SERVICES on it has nothing for a client to
+    // look at, and the link handed over on day one opens on "Your portal is
+    // being set up". Sharing a dead link is worse than having none to share.
+    //
+    // The link is now minted when the FIRST SERVICE is created — by
+    // `groupController.createGroup`, by the batch invite, or by the
+    // add-a-service endpoint, all of which route through
+    // `utils/portalActivation.ensurePortalLive`. Until then
+    // `getPortalConfig` reports `link: null, hasServices: false` and every
+    // invite path refuses, which is the whole point.
+    //
+    // `portalClientName` is still set here: it is a LABEL, not a credential,
+    // and the create form asks for it.
     //
     // Chat and mail need no opt-in: there is no tier, and every service group
     // gets its surfaces on creation (services/workstreamSurfaces.js).
     const isClient = boardType === 'client';
     const portalFields = isClient
-      ? {
-          portalToken: generatePortalToken(),
-          portalEnabled: true,
-          portalClientName: (clientName || '').trim() || name.trim(),
-        }
+      ? { portalClientName: (clientName || '').trim() || name.trim() }
       : {};
 
     const board = await Board.create({
@@ -650,31 +651,23 @@ const createBoard = async (req, res) => {
     // owner's own Share/manage controls until the next full boards load. The
     // byline is hydrated for the same reason — the cached copy is what the
     // header reads.
-    // Best-effort first invitation — never fails the create.
-    let inviteSent = false;
-    const inviteEmail = (clientEmail || '').trim().toLowerCase();
-    if (isClient && CLIENT_EMAIL_RE.test(inviteEmail)) {
-      try {
-        const { ok } = await inviteContact({
-          board,
-          email: inviteEmail,
-          authMethod: clientAuthMethod === 'password' ? 'password' : 'google',
-        });
-        inviteSent = ok;
-      } catch (inviteErr) {
-        console.error('createBoard invite error:', inviteErr);
-      }
-    }
+    // NO INVITATION IS SENT HERE. Creating the board is not the moment a client
+    // is told about it — there is nothing in the portal yet. The first email
+    // goes out with the first service, from the add-a-service flow.
 
     await board.populate('createdBy', CREATOR_FIELDS);
     const payload = withPermissions(board, org, userId);
-    // `withPermissions` spreads the whole document, and THIS board object still
-    // holds the token we just minted in memory (`select: false` only governs
-    // what a QUERY returns, not what `create` hands back). Shipping it here
-    // would put a live portal credential in the create response, which is
-    // exactly what the field is hidden to prevent.
+    // `withPermissions` spreads the whole document, and `select: false` only
+    // governs what a QUERY returns, not what `create` hands back. A client board
+    // no longer mints a token here, but a future field could — and shipping a
+    // live portal credential in the create response is exactly what the hidden
+    // field exists to prevent, so the delete stays unconditional.
     delete payload.portalToken;
-    return res.status(201).json({ board: payload, inviteSent });
+    // `inviteSent` is kept, always false, purely so an older client build in a
+    // tab somebody has not reloaded does not read `undefined` off this response.
+    // Nothing is invited at create time any more, and nothing in the current
+    // client reads it.
+    return res.status(201).json({ board: payload, inviteSent: false });
   } catch (err) {
     console.error('createBoard error:', err);
     return res.status(500).json({ error: 'Server error' });

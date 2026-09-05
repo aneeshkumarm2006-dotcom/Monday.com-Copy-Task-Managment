@@ -20,19 +20,16 @@ import { previewBoardConversion } from '../../services/monthService';
  *                   Ignored on create (choosing the visibility of a board that
  *                   does not exist yet is `board.create`, not a change).
  */
-import ClientSignInMethodField from './ClientSignInMethodField';
 
 const DEFAULTS = {
   name: '',
   visibility: 'private',
   description: '',
   boardType: 'standard',
-  // Client boards only. The portal link belongs to the BOARD now, so the client
-  // company's name and first contact are collected here — they used to be asked
-  // for when creating a group, back when a group was the client.
+  // Client boards only, and a LABEL only. There is no contact field here: the
+  // client's invitation goes out with the first SERVICE, not with the board,
+  // because a portal with no services is an empty page.
   clientName: '',
-  clientEmail: '',
-  clientAuthMethod: 'google',
 };
 
 const BoardFormModal = ({
@@ -54,9 +51,9 @@ const BoardFormModal = ({
     if (!isOpen) return;
     setValues({
       // Spread the defaults first: the client fields below are only rendered
-      // once Client Portal is picked, so leaving them out here left them
-      // undefined and `values.clientEmail.trim()` threw the moment the type
-      // was selected.
+      // once Client Portal is picked, so leaving them out here would leave them
+      // undefined and any `values.clientName.trim()` would throw the moment the
+      // type was selected.
       ...DEFAULTS,
       name: initialValues?.name || '',
       visibility: initialValues?.visibility || 'private',
@@ -133,18 +130,6 @@ const BoardFormModal = ({
       setError('Board name is required');
       return;
     }
-    // The invitation address is optional — you can create the portal now and
-    // share the link yourself — but a typo in one is worth catching here.
-    const clientEmail = values.clientEmail.trim();
-    if (
-      mode === 'create' &&
-      isClient &&
-      clientEmail &&
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail)
-    ) {
-      setError('Enter a valid client email, or leave it blank to share the link yourself.');
-      return;
-    }
     try {
       setSubmitting(true);
       setError(null);
@@ -165,14 +150,12 @@ const BoardFormModal = ({
         // for a tracker, and for the same reason: a board silently on UTC while
         // the team is on IST files every month-boundary task in the wrong month.
         monthTimezone: isTracker ? browserTimezone : undefined,
-        // The board mints its portal link on create; these decide what the
-        // client sees it called and who gets the first invitation.
+        // A LABEL, and nothing else. Creating a client board no longer mints a
+        // portal link or invites anybody — both happen when the first SERVICE
+        // is added, because a portal with no services on it is an empty page
+        // and a link to one is worse than no link at all.
         ...(mode === 'create' && isClient
-          ? {
-              clientName: values.clientName.trim(),
-              clientEmail: values.clientEmail.trim(),
-              clientAuthMethod: values.clientAuthMethod,
-            }
+          ? { clientName: values.clientName.trim() }
           : {}),
       });
     } catch (err) {
@@ -377,8 +360,9 @@ const BoardFormModal = ({
                 className="font-body mt-2"
                 style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
               >
-                A private board where each group is a client. You'll generate a
-                shareable link per group so clients can raise issues.
+                A private board that IS one client. Each group on it is a service
+                you deliver, and adding the first one creates the client&rsquo;s
+                portal link and sends their invitation.
               </p>
             )}
             {mode === 'create' && isTracker && (
@@ -534,8 +518,14 @@ const BoardFormModal = ({
         )}
 
         {/* The client themselves — client boards only, at create time. This
-            board IS one company: it gets one portal link, and its groups become
-            that company's workstreams (SEO, Ads, Web Development). */}
+            board IS one company, and its groups become that company's SERVICES
+            (SEO, Ads, Web Development).
+
+            THERE IS NO EMAIL FIELD HERE ANY MORE. It used to invite the first
+            contact the moment the board existed, which meant a client opened
+            their portal on "Your portal is being set up" — nothing to see, no
+            request to raise. Adding the first service is what creates the link
+            and sends the invitation now. */}
         {mode === 'create' && isClient && (
           <>
             <Input
@@ -547,26 +537,20 @@ const BoardFormModal = ({
               }
               helperText="What the client sees at the top of their portal. Defaults to the board name."
             />
-            <Input
-              label="Client email (we'll send the invitation)"
-              type="email"
-              placeholder="client@company.com"
-              value={values.clientEmail}
-              onChange={(e) =>
-                setValues((v) => ({ ...v, clientEmail: e.target.value }))
-              }
-              helperText="Optional — leave blank to copy the link and share it yourself."
-            />
-            {/* Only asked once there is someone to ask about. */}
-            {values.clientEmail.trim() && (
-              <ClientSignInMethodField
-                value={values.clientAuthMethod}
-                onChange={(next) =>
-                  setValues((v) => ({ ...v, clientAuthMethod: next }))
-                }
-                disabled={submitting}
-              />
-            )}
+            <p
+              className="font-body"
+              style={{
+                fontSize: 12,
+                lineHeight: 1.55,
+                color: 'var(--color-text-muted)',
+                margin: 0,
+              }}
+            >
+              Next you&rsquo;ll add a service &mdash; SEO, Ads, Web Development.
+              That&rsquo;s when the client&rsquo;s portal link is created and
+              their invitation goes out, so they arrive to something worth
+              looking at.
+            </p>
           </>
         )}
 

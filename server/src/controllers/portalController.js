@@ -6,7 +6,11 @@ const Update = require('../models/Update');
 const ClientContact = require('../models/ClientContact');
 const Organisation = require('../models/Organisation');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
-const { inviteServiceContacts } = require('../services/portalBatchInvite');
+const {
+  inviteServiceContacts,
+  createServiceWithInvites,
+} = require('../services/portalBatchInvite');
+const { boardHasServices } = require('../utils/portalActivation');
 const { unreadByChannel } = require('../services/portalUnread');
 const { resolveColors } = require('../services/serviceCatalogService');
 const Channel = require('../models/Channel');
@@ -1348,7 +1352,8 @@ const rateIssue = async (req, res) => {
 };
 
 // ============================================================================
-// TEAM ADMIN (req.user set by middleware/auth) — manage a group's portal link.
+// TEAM ADMIN (req.user set by middleware/auth) — manage a client BOARD's portal:
+// its link, its label, its people, and the services that bring it to life.
 // Gated on board-manage: only the owner + full-access managers.
 // ============================================================================
 
@@ -1358,8 +1363,10 @@ const rateIssue = async (req, res) => {
  *
  * Loads `+portalToken` because every caller either shows the link or mints one.
  * That projection is REQUIRED, not an optimisation: without it
- * `if (!board.portalToken)` is true on a board that HAS one, and the lazy-mint
- * branches below would rotate a live client link on every save.
+ * `if (!board.portalToken)` is true on a board that HAS one, and every path
+ * below that writes the token — the explicit rotate, the safety-net mint on the
+ * invite endpoints, and `ensurePortalLive` inside the add-a-service flow —
+ * would rotate a live client link and kill every signed-in contact's session.
  */
 const loadManageContext = async (boardId, userId) => {
   const ctx = await loadBoardContext(boardId, userId, { select: '+portalToken' });
@@ -1376,11 +1383,25 @@ const loadManageContext = async (boardId, userId) => {
   return { board: ctx.board, org: ctx.org, ctx };
 };
 
-const adminPortalPayload = (board) => ({
+/**
+ * @param {object}   board
+ * @param {boolean}  hasServices — does this board carry at least one service?
+ *
+ * `hasServices` is not decoration. A client board is created with NO portal
+ * token and the portal off (see `utils/portalActivation.js`), so `link` is null
+ * until the first service lands. The UI has to be able to tell "no link yet,
+ * add a service" apart from "the link was switched off", and those two states
+ * are `link: null, hasServices: false` and `portalEnabled: false` respectively.
+ *
+ * Every caller must pass it rather than let it default, because the honest
+ * answer costs one indexed count and a guess costs the client a dead link.
+ */
+const adminPortalPayload = (board, hasServices) => ({
   boardId: String(board._id),
   portalEnabled: !!board.portalEnabled,
   clientName: board.portalClientName || '',
   link: board.portalToken ? `${CLIENT_URL()}/portal/${board.portalToken}` : null,
+  hasServices: !!hasServices,
   announcement: board.portalAnnouncement || '',
   faqs: (Array.isArray(board.portalFaqs) ? board.portalFaqs : []).map((f) => ({
     q: f.q || '',
@@ -1402,7 +1423,9 @@ const getPortalConfig = async (req, res) => {
   try {
     const ctx = await loadManageContext(req.params.boardId, req.user.userId);
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-    return res.json({ portal: adminPortalPayload(ctx.board) });
+    return res.json({
+      portal: adminPortalPayload(ctx.board, await boardHasServices(TaskGroup, ctx.board._id)),
+    });
   } catch (err) {
     console.error('getPortalConfig error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -1413,8 +1436,17 @@ const getPortalConfig = async (req, res) => {
  * PUT /api/portal/boards/:boardId/config
  * Body: { enabled?, clientName?, regenerateLink?, announcement?, faqs? }
  * Set the client label, enable/disable, rotate the link, or edit the portal
- * announcement + FAQ. The link is minted when the client board is created; this
- * only mints one lazily for a board that somehow has none.
+ * announcement + FAQ.
+ *
+ * ---- IT WILL NOT CONJURE A LINK OUT OF A BOARD WITH NO SERVICES -----------
+ *
+ * This used to mint one lazily whenever `portalToken` was missing. Now that a
+ * client board is deliberately created WITHOUT a token
+ * (`utils/portalActivation.js`), that branch would fire on the very first save
+ * — renaming the client, say — and hand back a live link to an empty portal,
+ * which is the whole thing this change removes. So minting and enabling are
+ * both refused until the board carries at least one service; adding one is what
+ * turns the portal on.
  */
 const savePortalConfig = async (req, res) => {
   try {
@@ -1423,20 +1455,38 @@ const savePortalConfig = async (req, res) => {
     const { board } = ctx;
     const { enabled, clientName, regenerateLink, announcement, faqs } = req.body || {};
 
+    const hasServices = await boardHasServices(TaskGroup, board._id);
+
+    // Asking to rotate or switch ON a portal that has nothing in it is a
+    // mistake worth naming rather than quietly granting. Everything else on
+    // this endpoint — the client label, the announcement, the FAQ, and
+    // switching a live portal OFF — stays available on an empty board.
+    if ((regenerateLink || enabled === true) && !hasServices) {
+      return res.status(409).json({
+        error:
+          'Add a service to this board first. Until then the portal has nothing in it, and its link would open on an empty page.',
+        code: 'PORTAL_NO_SERVICES',
+      });
+    }
+
     if (typeof clientName === 'string') {
       board.portalClientName = clientName.trim();
     }
 
-    // Mint a token the first time, or on explicit rotate. Rotating invalidates
-    // the old link and, via portalAuth's ptk check, kills every live client
-    // session on this board.
+    // Rotate on explicit request. Rotating invalidates the old link and, via
+    // portalAuth's ptk check, kills every live client session on this board.
     //
     // `loadManageContext` selected `+portalToken`, which is what makes
     // `!board.portalToken` mean what it says. Loaded without it this branch
     // would fire on EVERY save and silently rotate a working client link.
-    const needsToken = !board.portalToken;
-    const rotated = Boolean(regenerateLink) && !needsToken;
-    if (regenerateLink || needsToken) {
+    //
+    // THE LAZY MINT IS GONE. A missing token now means "no service has been
+    // added yet", which is a state to report, not one to fix behind the user's
+    // back — see the docblock. The guard above is what makes that safe: by here
+    // a rotate implies the board has services, and a board with services was
+    // given its token when the first one landed.
+    const rotated = Boolean(regenerateLink) && !!board.portalToken;
+    if (regenerateLink) {
       board.portalToken = generatePortalToken();
     }
 
@@ -1473,7 +1523,7 @@ const savePortalConfig = async (req, res) => {
       }
     }
 
-    return res.json({ portal: adminPortalPayload(board) });
+    return res.json({ portal: adminPortalPayload(board, hasServices) });
   } catch (err) {
     console.error('savePortalConfig error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -1559,11 +1609,17 @@ const sendPortalInviteBatch = async (req, res) => {
     });
 
     if (!result.ok) {
-      return res.status(result.status || 400).json({ errors: result.errors });
+      return res.status(result.status || 400).json({
+        errors: result.errors,
+        error: result.errors?.[0]?.message || 'Could not send those invitations.',
+        ...(result.code ? { code: result.code } : {}),
+      });
     }
 
     return res.json({
-      portal: adminPortalPayload(mc.board),
+      // It created at least one service, so by construction the board now has
+      // one and its portal is live.
+      portal: adminPortalPayload(mc.board, true),
       services: result.services,
       contacts: result.contacts,
       // Index-aligned with the request, so the UI can mark each table row.
@@ -1579,12 +1635,21 @@ const sendPortalInviteBatch = async (req, res) => {
 
 /**
  * POST /api/portal/boards/:boardId/invite   Body: { email, authMethod? }
- * Email (or re-email) the invitation to a client. Ensures the board has a live
- * link first, so this doubles as "turn the portal on and invite".
+ * Email (or re-email) the invitation to a client — one address, no service.
  *
  * `authMethod` is how this client signs in: 'google' (default) sends the shared
  * portal link, 'password' registers the address and sends a one-time link to
  * choose a password.
+ *
+ * ---- IT NO LONGER DOUBLES AS "TURN THE PORTAL ON AND INVITE" --------------
+ *
+ * It used to mint the token and flip `portalEnabled` itself, which made it a
+ * way to email a client the link to a board with nothing on it. Adding a
+ * SERVICE is the only thing that brings a portal to life now
+ * (`utils/portalActivation.js`), so this refuses on a board that has none and
+ * says what to do instead. Every other invite path either creates a service as
+ * part of its work (the batch, add-a-service) or is a re-send to somebody
+ * already on a live board.
  */
 const sendPortalInvite = async (req, res) => {
   try {
@@ -1598,9 +1663,34 @@ const sendPortalInvite = async (req, res) => {
     }
     const authMethod = req.body?.authMethod === 'password' ? 'password' : 'google';
 
-    if (!board.portalToken) board.portalToken = generatePortalToken();
-    if (!board.portalEnabled) board.portalEnabled = true;
-    await board.save();
+    if (!(await boardHasServices(TaskGroup, board._id))) {
+      return res.status(409).json({
+        error:
+          'Add a service to this board before inviting anyone. Until then the invitation would open on an empty portal.',
+        code: 'PORTAL_NO_SERVICES',
+      });
+    }
+    // A board with services was given its token when the first one landed, so
+    // this is a safety net for a board that predates that rule rather than the
+    // ordinary path.
+    if (!board.portalToken) {
+      board.portalToken = generatePortalToken();
+      await board.save();
+    }
+    // ENABLING IS REFUSED, NOT DONE SILENTLY. This used to flip `portalEnabled`
+    // itself, so sending mail quietly undid a deliberate "Disable link" — the
+    // one control the team has for cutting a client off. Simply dropping that
+    // and carrying on would be worse in the other direction: the email would go
+    // out carrying a link `loadPortalBoard` refuses, and the client would be
+    // told to visit a page that does not load. So say so, and let the toggle in
+    // portal settings be the only thing that turns a portal back on.
+    if (!board.portalEnabled) {
+      return res.status(409).json({
+        error:
+          "This board's client link is switched off, so the invitation would not open. Turn it back on in portal settings first.",
+        code: 'PORTAL_DISABLED',
+      });
+    }
 
     const { ok } = await inviteContact({ board, email, authMethod });
     if (!ok) {
@@ -1613,11 +1703,101 @@ const sendPortalInvite = async (req, res) => {
         authMethod === 'password'
           ? `Password set-up link sent to ${email}.`
           : `Invitation sent to ${email}.`,
-      portal: adminPortalPayload(board),
+      portal: adminPortalPayload(board, true),
       contacts: await listBoardContacts(board._id),
     });
   } catch (err) {
     console.error('sendPortalInvite error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * POST /api/portal/boards/:boardId/services
+ * Body: `{ name, color?, invites?: [{ email, authMethod? }], notify? }`
+ *
+ * ADD ONE SERVICE, AND TELL THE PEOPLE WHO CARE ABOUT IT. This is the endpoint
+ * behind "Add service" on a client board, and it is where a client portal comes
+ * into existence.
+ *
+ * ---- WHY THIS EXISTS RATHER THAN AN `invites` FIELD ON createGroup --------
+ *
+ * A PERMISSION BOUNDARY. `POST /api/boards/:boardId/groups` is gated on
+ * `group.manage` alone, because restructuring a board's groups is one power.
+ * Handing a stranger access to a client's portal is a DIFFERENT power, gated on
+ * `canManageAccess`. Letting `createGroup` accept invitations would hand every
+ * `group.manage` holder the second capability along with the first, silently.
+ *
+ * So the split is: `createGroup` still creates a service and still brings the
+ * portal to life (a link nobody has been given is not access), and THIS
+ * endpoint — holding both gates, exactly as the batch invite does — is the only
+ * one that can also email somebody.
+ *
+ * ---- WHY NOT JUST USE THE BATCH -------------------------------------------
+ *
+ * `POST .../invites` reuses a service the board already has, because a row
+ * reading `SEO / asha@acme.com` on a board with an SEO service is the ordinary
+ * second-invite case. "Add service" means a NEW one, and a name already on the
+ * board is a mistake worth a 409 — the policy `createGroup` has always had, and
+ * the reason `resolveGroupName` reports a collision instead of refusing one.
+ *
+ * `invites` may be EMPTY. Adding a service before anyone knows who at the
+ * client will look after it is normal, and so is adding a second service for a
+ * client whose people are already invited. The service is created and the
+ * portal goes live either way; only the mail is conditional.
+ */
+const createPortalService = async (req, res) => {
+  try {
+    const mc = await loadManageContext(req.params.boardId, req.user.userId);
+    if (mc.error) return res.status(mc.status).json({ error: mc.error });
+
+    // Both gates, for the reason in the docblock above. Either one alone would
+    // let someone do half of something they were not trusted with.
+    const denied = requireCapability(
+      mc.ctx,
+      'group.manage',
+      'You do not have permission to add services to this board'
+    );
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    const result = await createServiceWithInvites({
+      board: mc.board,
+      orgName: mc.org?.name || '',
+      actorId: req.user.userId,
+      name: req.body?.name,
+      color: typeof req.body?.color === 'string' ? req.body.color : null,
+      invites: req.body?.invites,
+      notify: req.body?.notify !== false,
+    });
+
+    if (!result.ok) {
+      return res.status(result.status || 400).json({
+        errors: result.errors,
+        // The first message, so a caller that only renders `error` still says
+        // something true. Every other endpoint here answers in that shape.
+        error: result.errors?.[0]?.message || 'Could not add that service.',
+        // Forwarded so the UI can match on the reason rather than on the
+        // sentence, as it does for PORTAL_NO_SERVICES.
+        ...(result.code ? { code: result.code } : {}),
+      });
+    }
+
+    return res.status(201).json({
+      service: result.service,
+      contacts: result.contacts,
+      warnings: result.warnings,
+      // True exactly once per board — the service that brought the portal to
+      // life. The UI tells the team their client link is now live, once.
+      portalActivated: result.portalActivated,
+      // Whether the link opens AT ALL right now. False on a board whose portal
+      // the team switched off: the service was created, but nothing about the
+      // client's access changed and the UI must not say otherwise.
+      portalLive: result.portalLive,
+      portal: adminPortalPayload(mc.board, true),
+      roster: await listBoardContacts(mc.board._id),
+    });
+  } catch (err) {
+    console.error('createPortalService error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -1655,9 +1835,30 @@ const resendPortalInvite = async (req, res) => {
     }).select('+passwordHash');
     if (!existing) return res.status(404).json({ error: 'Contact not found' });
 
-    if (!board.portalToken) board.portalToken = generatePortalToken();
-    if (!board.portalEnabled) board.portalEnabled = true;
-    await board.save();
+    if (!(await boardHasServices(TaskGroup, board._id))) {
+      return res.status(409).json({
+        error:
+          'This board has no services yet, so there is nothing to send anyone to. Add one first.',
+        code: 'PORTAL_NO_SERVICES',
+      });
+    }
+    // Mint only, and only as a safety net for a board that predates the
+    // activation rule.
+    if (!board.portalToken) {
+      board.portalToken = generatePortalToken();
+      await board.save();
+    }
+    // Same refusal as `sendPortalInvite`, for the same two reasons: forcing
+    // `portalEnabled` true here silently undid a deliberate "Disable link", and
+    // omitting the force without saying anything would mail a link that does
+    // not open. See that handler.
+    if (!board.portalEnabled) {
+      return res.status(409).json({
+        error:
+          "This board's client link is switched off, so the email would not open. Turn it back on in portal settings first.",
+        code: 'PORTAL_DISABLED',
+      });
+    }
 
     const wasSet = !!existing.passwordHash;
     const { ok } = await inviteContact({
@@ -1711,6 +1912,7 @@ module.exports = {
   savePortalConfig,
   sendPortalInvite,
   sendPortalInviteBatch,
+  createPortalService,
   listPortalContacts,
   resendPortalInvite,
   // reused by updateController for the "team replied on a client task" email hook

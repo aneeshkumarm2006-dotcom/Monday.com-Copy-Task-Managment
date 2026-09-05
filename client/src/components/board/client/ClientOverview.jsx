@@ -166,7 +166,7 @@ const ClientOverview = ({
   canManage,
   onOpen,
   onSetUpRooms,
-  onInvite,
+  onAddService,
 }) => (
   <div className="flex flex-col gap-6">
     {needsYou.length > 0 && (
@@ -255,20 +255,21 @@ const ClientOverview = ({
         >
           <AlertCircle size={20} color="var(--color-text-muted)" aria-hidden="true" />
           <p className="font-body" style={{ fontSize: 13.5, fontWeight: 600 }}>
-            No services yet
+            No services yet &mdash; the portal isn&rsquo;t live
           </p>
           <p
             className="font-body"
             style={{ fontSize: 12.5, color: 'var(--color-text-muted)', maxWidth: 460 }}
           >
-            Invite the people who manage this client&rsquo;s work and name the service each
-            of them looks after. One service becomes one group here, with its own
-            requests, chat and mailbox.
+            A service is one of the things you deliver for this client, and it comes
+            with its own requests, chat and mailbox. Adding the first one is what
+            creates this client&rsquo;s portal link and sends their invitation &mdash;
+            so they arrive to something worth looking at, rather than an empty page.
           </p>
           {canManage && (
             <button
               type="button"
-              onClick={onInvite}
+              onClick={onAddService}
               className="font-body flex items-center gap-1.5"
               style={{
                 height: 32,
@@ -281,7 +282,7 @@ const ClientOverview = ({
               }}
             >
               <Plus size={13} aria-hidden="true" />
-              Invite people
+              Add the first service
             </button>
           )}
         </div>

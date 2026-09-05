@@ -14,8 +14,20 @@
 
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/** Matches the server's MAX_ROWS. */
+/** Matches the server's MAX_ROWS — the cap on ONE BATCH of (service, email) rows. */
 export const MAX_ROWS = 25;
+
+/**
+ * Matches the server's `MAX_SERVICE_INVITES` — the cap on the invite list of a
+ * SINGLE service, used by `AddServiceModal`.
+ *
+ * Lower than MAX_ROWS on purpose, and it is a mail budget rather than a UI
+ * limit: `routes/portal.js` allows 6 add-a-service requests a minute, and
+ * 6 x 10 keeps that under the same 75-emails-a-minute ceiling the batch limiter
+ * was sized to hold one team's Gmail account to. Raising it here without
+ * raising it there just moves the failure to a 400.
+ */
+export const MAX_SERVICE_INVITES = 10;
 
 const norm = (s) => (typeof s === 'string' ? s.trim() : '');
 

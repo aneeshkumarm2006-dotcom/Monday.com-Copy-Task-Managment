@@ -6,8 +6,11 @@ import SignInMethodInfoModal from './SignInMethodInfoModal';
  * ClientSignInMethodField — the "is this a Google account or not?" choice shown
  * wherever a team member types a client's email, plus the (i) explainer.
  *
- * Used by both invite surfaces (the new-group modal and ClientPortalModal) so the
- * control and its wording only exist once.
+ * Used by ClientPortalModal's single-address invite box. `AddServiceModal` and
+ * `InvitePeopleTable` draw the same choice inline per row, because a per-row
+ * control cannot be a labelled block — but they share this file's wording and
+ * its (i) explainer (`SignInMethodInfoModal`), which is the part that must not
+ * exist twice.
  *
  * The answer isn't cosmetic: 'password' registers the address on the server and
  * is what authorises it to use the portal's password form at all.

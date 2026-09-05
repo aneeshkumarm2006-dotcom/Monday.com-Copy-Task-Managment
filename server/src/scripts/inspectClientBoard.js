@@ -38,7 +38,15 @@ const domainOf = (email) => String(email || '').split('@')[1] || '(none)';
 const inspect = async (board) => {
   head(`BOARD "${board.name}"  (${board._id})`);
   log(`  boardType   : ${board.boardType}`);
-  log(`  board-level portalToken: ${board.portalToken ? 'present' : 'ABSENT (not yet promoted)'}`);
+  // ABSENT has two meanings and the operator has to be able to tell them apart:
+  // a pre-migration board whose token is still on a group, or an ordinary new
+  // board that has not had its first SERVICE yet (utils/portalActivation.js).
+  // The group listing below is what settles it.
+  log(
+    `  board-level portalToken: ${
+      board.portalToken ? 'present' : 'ABSENT (not promoted, or no service added yet)'
+    }`
+  );
 
   const groups = await col('taskgroups')
     .find({ board: board._id })

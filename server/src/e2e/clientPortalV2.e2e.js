@@ -797,6 +797,302 @@ const main = async () => {
     r.status === 400, `${r.status} ${JSON.stringify(r.body)}`);
 
   // ======================================================================
+  console.log('\n--- 10b. A CLIENT BOARD IS BORN WITH NO PORTAL --------------');
+  // ======================================================================
+  // THE WHOLE POINT OF THE ACCESS-ON-SERVICE-CREATION CHANGE, end to end.
+  //
+  // Every other board in this file is seeded straight into mongo with
+  // `portalEnabled: true` and a hardcoded token, which is convenient and also
+  // exactly why nothing here could catch a regression in how a REAL board is
+  // born. So this section goes through `POST /api/boards` like the UI does.
+  //
+  // The rule: a client board is created with no `portalToken` and the portal
+  // off, because a portal with no services renders "Your portal is being set
+  // up" and a link to that is worse than no link. The FIRST SERVICE mints the
+  // token, switches the portal on, and sends the invitations.
+  //
+  // Deliberately BEFORE section 11, which deletes and wipes boards.
+
+  r = await team('POST', '/api/boards', {
+    name: 'Zenith Ltd',
+    organisation: String(org._id),
+    boardType: 'client',
+    clientName: 'Zenith Ltd',
+  });
+  check('a client board can be created through the real endpoint',
+    r.status === 201, `${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+  const Z = r.body?.board?._id;
+  check('…and the response never carries a portal credential',
+    r.body?.board?.portalToken === undefined, JSON.stringify(r.body?.board?.portalToken));
+  check('…and reports that nothing was invited',
+    r.body?.inviteSent === false, String(r.body?.inviteSent));
+
+  const zBorn = await Board.findById(Z).select('+portalToken');
+  check('THE BOARD HAS NO LINK: no token was minted at creation',
+    !zBorn?.portalToken, String(zBorn?.portalToken));
+  check('…and the portal is not on',
+    zBorn?.portalEnabled !== true, String(zBorn?.portalEnabled));
+  check('…while the client LABEL, which is not a credential, was kept',
+    zBorn?.portalClientName === 'Zenith Ltd', String(zBorn?.portalClientName));
+  check('…and nobody was invited',
+    (await ClientContact.countDocuments({ board: Z })) === 0);
+
+  // ---- the team UI is told the honest thing ------------------------------
+  r = await team('GET', `/api/portal/boards/${Z}/config`);
+  check('portal config loads on a board with no services', r.status === 200, `${r.status}`);
+  check('…reporting no link',
+    r.body?.portal?.link === null, JSON.stringify(r.body?.portal?.link));
+  check('…and hasServices:false, which is how the modal tells "no link yet" from "switched off"',
+    r.body?.portal?.hasServices === false, JSON.stringify(r.body?.portal));
+
+  // ---- every door to a dead link is shut ---------------------------------
+  r = await team('PUT', `/api/portal/boards/${Z}/config`, { enabled: true });
+  check('switching the portal ON is REFUSED while it has nothing in it',
+    r.status === 409 && r.body?.code === 'PORTAL_NO_SERVICES',
+    `${r.status} ${JSON.stringify(r.body)}`);
+
+  r = await team('PUT', `/api/portal/boards/${Z}/config`, { regenerateLink: true });
+  check('…and so is rotating a link that does not exist',
+    r.status === 409, `${r.status} ${JSON.stringify(r.body)}`);
+
+  r = await team('POST', `/api/portal/boards/${Z}/invite`, { email: 'nobody@zenith.test' });
+  check('…and so is emailing an invitation to it',
+    r.status === 409 && r.body?.code === 'PORTAL_NO_SERVICES',
+    `${r.status} ${JSON.stringify(r.body)}`);
+
+  check('none of those refusals minted a token behind the scenes',
+    !(await Board.findById(Z).select('+portalToken'))?.portalToken);
+
+  // ---- but the LABEL and the FAQ stay editable ---------------------------
+  r = await team('PUT', `/api/portal/boards/${Z}/config`, {
+    announcement: 'Kick-off Monday.',
+  });
+  check('editing the announcement on an empty board still works, and mints nothing',
+    r.status === 200 && r.body?.portal?.link === null,
+    `${r.status} ${JSON.stringify(r.body?.portal)}`);
+
+  // ---- THE FIRST SERVICE BRINGS THE PORTAL TO LIFE -----------------------
+  r = await team('POST', `/api/portal/boards/${Z}/services`, {
+    name: 'Technical SEO',
+    invites: [
+      { email: 'Meera@Zenith.test', authMethod: 'google' },
+      { email: 'omar@zenith.test', authMethod: 'password' },
+      { email: '', authMethod: 'google' },
+    ],
+    notify: false,
+  });
+  check('the first service is accepted', r.status === 201,
+    `${r.status} ${JSON.stringify(r.body).slice(0, 400)}`);
+  check('…and reports that it activated the portal',
+    r.body?.portalActivated === true, String(r.body?.portalActivated));
+  check('…handing back a real link',
+    typeof r.body?.portal?.link === 'string' && r.body.portal.link.includes('/portal/'),
+    JSON.stringify(r.body?.portal?.link));
+  check('…and hasServices is now true',
+    r.body?.portal?.hasServices === true, JSON.stringify(r.body?.portal?.hasServices));
+
+  const zLive = await Board.findById(Z).select('+portalToken');
+  const zToken = zLive?.portalToken;
+  check('the board now holds a token and an enabled portal',
+    !!zToken && zLive.portalEnabled === true,
+    JSON.stringify({ token: !!zToken, enabled: zLive?.portalEnabled }));
+
+  const seoZ = await TaskGroup.findOne({ board: Z, name: 'Technical SEO' });
+  check('the service is a real group carrying its catalog slug',
+    seoZ && seoZ.serviceKey === 'technical-seo', seoZ && seoZ.serviceKey);
+
+  // THE REGRESSION THIS ORDERING EXISTS FOR. `createSurfaces` gates client
+  // rooms on `isLiveClientBoard`, and `chatSurfaces` refuses the WHOLE plan —
+  // the team room included — when that is false. Activate after the rooms and
+  // the FIRST service of every new board silently gets none of the three.
+  check('THE FIRST SERVICE GETS ALL THREE ROOMS, not zero',
+    (await Channel.countDocuments({ board: Z, group: seoZ._id })) === 3,
+    String(await Channel.countDocuments({ board: Z, group: seoZ._id })));
+
+  const zContacts = await ClientContact.find({ board: Z }).sort({ email: 1 });
+  check('the two filled-in addresses became contacts, and the blank row did not',
+    zContacts.length === 2, JSON.stringify(zContacts.map((c) => c.email)));
+  check('…lowercased, as identity requires',
+    zContacts.some((c) => c.email === 'meera@zenith.test'),
+    JSON.stringify(zContacts.map((c) => c.email)));
+  check('…each carrying the sign-in method it was invited with',
+    zContacts.find((c) => c.email === 'omar@zenith.test')?.authMethod === 'password',
+    JSON.stringify(zContacts.map((c) => [c.email, c.authMethod])));
+  check('…and the service noted against them, for the roster chips',
+    zContacts.every((c) => c.services.length === 1 && String(c.services[0]) === String(seoZ._id)),
+    JSON.stringify(zContacts.map((c) => c.services.map(String))));
+
+  // ---- the client link actually opens now --------------------------------
+  const anon = async (method, url, body) => {
+    const res = await fetch(base + url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    let json = null;
+    try { json = await res.json(); } catch { /* empty body */ }
+    return { status: res.status, body: json };
+  };
+  r = await anon('GET', `/api/portal/${zToken}`);
+  check('the minted link resolves for a client who has never signed in',
+    r.status === 200 && r.body?.clientName === 'Zenith Ltd',
+    `${r.status} ${JSON.stringify(r.body).slice(0, 200)}`);
+
+  // ---- the SECOND service changes nothing about the link -----------------
+  r = await team('POST', `/api/portal/boards/${Z}/services`, {
+    name: 'Content',
+    invites: [],
+    notify: false,
+  });
+  check('a second service, with nobody to invite, is accepted', r.status === 201,
+    `${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+  check('…and does NOT claim to have activated anything',
+    r.body?.portalActivated === false, String(r.body?.portalActivated));
+  check('…and invited nobody',
+    (r.body?.contacts || []).length === 0 && (await ClientContact.countDocuments({ board: Z })) === 2,
+    JSON.stringify(r.body?.contacts));
+  check('THE TOKEN IS NOT ROTATED — every live client session survives',
+    (await Board.findById(Z).select('+portalToken'))?.portalToken === zToken);
+  check('…and it too got its three rooms',
+    (await Channel.countDocuments({
+      board: Z,
+      group: (await TaskGroup.findOne({ board: Z, name: 'Content' }))._id,
+    })) === 3);
+
+  // ---- "add a service" means a NEW one -----------------------------------
+  const zGroupsBefore = await TaskGroup.countDocuments({ board: Z });
+  r = await team('POST', `/api/portal/boards/${Z}/services`, {
+    name: 'technical seo',
+    invites: [{ email: 'someone@zenith.test' }],
+    notify: false,
+  });
+  check('a name the board already carries is a 409, not a silent reuse',
+    r.status === 409, `${r.status} ${JSON.stringify(r.body)}`);
+  check('…and nothing was created or invited by the attempt',
+    (await TaskGroup.countDocuments({ board: Z })) === zGroupsBefore
+      && (await ClientContact.countDocuments({ board: Z })) === 2);
+
+  // ---- a service added the ORDINARY way also brings a portal to life -----
+  // `POST /api/boards/:id/groups` cannot invite anybody — `group.manage` is not
+  // permission to hand out portal access — but it still creates a SERVICE, and
+  // a service is what makes a link worth having.
+  r = await team('POST', '/api/boards', {
+    name: 'Nadir Co',
+    organisation: String(org._id),
+    boardType: 'client',
+  });
+  const N = r.body?.board?._id;
+  check('a second client board is created, also without a link',
+    r.status === 201 && !(await Board.findById(N).select('+portalToken'))?.portalToken,
+    `${r.status}`);
+
+  r = await team('POST', `/api/boards/${N}/groups`, { name: 'Paid Social' });
+  check('adding a group the ordinary way is accepted', r.status === 201, `${r.status}`);
+  check('…and it reports that it activated the portal',
+    r.body?.portalActivated === true, String(r.body?.portalActivated));
+  const nLive = await Board.findById(N).select('+portalToken');
+  check('…the board now has a live link',
+    !!nLive?.portalToken && nLive.portalEnabled === true,
+    JSON.stringify({ token: !!nLive?.portalToken, enabled: nLive?.portalEnabled }));
+  const nGroup = await TaskGroup.findOne({ board: N, name: 'Paid Social' });
+  check('…and its first service got all three rooms too',
+    (await Channel.countDocuments({ board: N, group: nGroup._id })) === 3,
+    String(await Channel.countDocuments({ board: N, group: nGroup._id })));
+
+  r = await team('POST', `/api/boards/${N}/groups`, { name: 'Display' });
+  check('the second group does not claim to have activated anything',
+    r.body?.portalActivated === false, String(r.body?.portalActivated));
+  check('…and did not rotate the link',
+    (await Board.findById(N).select('+portalToken'))?.portalToken === nLive.portalToken);
+
+  // ---- a switched-off portal refuses mail rather than sending a dead link -
+  await Board.updateOne({ _id: Z }, { $set: { portalEnabled: false } });
+  r = await team('POST', `/api/portal/boards/${Z}/invite`, { email: 'late@zenith.test' });
+  check('inviting into a DISABLED portal is refused, not silently re-enabled',
+    r.status === 409 && r.body?.code === 'PORTAL_DISABLED',
+    `${r.status} ${JSON.stringify(r.body)}`);
+  check('…and the portal stayed off — sending mail must not undo "Disable link"',
+    (await Board.findById(Z))?.portalEnabled === false);
+
+  const someContact = await ClientContact.findOne({ board: Z });
+  r = await team('POST', `/api/portal/boards/${Z}/contacts/${someContact._id}/resend`);
+  check('resending into a disabled portal is refused for the same reason',
+    r.status === 409 && r.body?.code === 'PORTAL_DISABLED',
+    `${r.status} ${JSON.stringify(r.body)}`);
+
+  // ---- adding a SERVICE to an offboarded board: allowed, but silent -------
+  // Restructuring a board internally must keep working. What must not happen is
+  // the portal quietly coming back: the token is never rotated, so re-enabling
+  // would revive the client's ORIGINAL link and every JWT already issued
+  // against that ptk.
+  const zGroupsOff = await TaskGroup.countDocuments({ board: Z });
+  r = await team('POST', `/api/boards/${Z}/groups`, { name: 'Wrap-up' });
+  check('a group can still be added to a board whose portal is switched off',
+    r.status === 201, `${r.status} ${JSON.stringify(r.body).slice(0, 200)}`);
+  check('…and it does NOT claim to have activated anything',
+    r.body?.portalActivated === false, String(r.body?.portalActivated));
+  check('THE KILL SWITCH HOLDS: the portal is still off',
+    (await Board.findById(Z))?.portalEnabled === false);
+  const wrapUp = await TaskGroup.findOne({ board: Z, name: 'Wrap-up' });
+  check('…and the new service still gets its PRIVATE TEAM ROOM, just not the client pair',
+    (await Channel.countDocuments({ board: Z, group: wrapUp._id })) === 1
+      && (await Channel.countDocuments({ board: Z, group: wrapUp._id, audience: 'team' })) === 1,
+    JSON.stringify(await Channel.find({ board: Z, group: wrapUp._id }).select('audience mode').lean()));
+
+  r = await team('POST', `/api/portal/boards/${Z}/services`, {
+    name: 'Also Offboarded',
+    invites: [{ email: 'nobody@zenith.test' }],
+  });
+  check('add-a-service WITH invites is refused on a disabled portal',
+    r.status === 409 && r.body?.code === 'PORTAL_DISABLED',
+    `${r.status} ${JSON.stringify(r.body)}`);
+  check('…creating nothing and inviting nobody',
+    (await TaskGroup.countDocuments({ board: Z })) === zGroupsOff + 1
+      && (await ClientContact.countDocuments({ board: Z })) === 2);
+
+  r = await team('POST', `/api/portal/boards/${Z}/services`, {
+    name: 'No Invites Needed',
+    invites: [],
+  });
+  check('…but add-a-service with NOBODY to invite is allowed',
+    r.status === 201, `${r.status} ${JSON.stringify(r.body).slice(0, 200)}`);
+  check('…reporting that the link is not live, so the UI cannot claim otherwise',
+    r.body?.portalLive === false && r.body?.portalActivated === false,
+    JSON.stringify({ live: r.body?.portalLive, act: r.body?.portalActivated }));
+
+  // The BATCH invite is refused for the same reason, through the same
+  // `refusalIfPortalDisabled` helper — not asserted here because
+  // `portal:invite-batch` allows three requests a minute and section 10 spends
+  // all three proving the limiter exists. The shared helper is pinned instead
+  // by the source probe in utils/portalActivation.test.js.
+
+  r = await team('PUT', `/api/portal/boards/${Z}/config`, { enabled: true });
+  check('the toggle is the ONE thing that turns it back on, and it works now there are services',
+    r.status === 200 && r.body?.portal?.portalEnabled === true,
+    `${r.status} ${JSON.stringify(r.body?.portal)}`);
+  check('…and it did not rotate the token, so existing client links survive',
+    (await Board.findById(Z).select('+portalToken'))?.portalToken === zToken);
+
+  // ---- tidy up after ourselves -------------------------------------------
+  // Section 12 runs `migrate:chat-surfaces --verify`, which asserts that NO
+  // client-facing surface exists in the whole database by the time it runs —
+  // section 11's cascade is what makes that true for the main board. These two
+  // boards would leave eight behind and fail a check that has nothing to do
+  // with them, so they go out the same door, through the API, so the cascade
+  // that removes their channels is the real one.
+  for (const id of [Z, N]) {
+    const del = await team('DELETE', `/api/boards/${id}`);
+    check(`the throwaway board ${id} is deleted`, del.status === 200,
+      `${del.status} ${JSON.stringify(del.body)}`);
+  }
+  check('…taking every one of their channels with them',
+    (await Channel.countDocuments({ board: { $in: [Z, N] } })) === 0,
+    String(await Channel.countDocuments({ board: { $in: [Z, N] } })));
+  check('…and every contact minted along the way',
+    (await ClientContact.countDocuments({ board: { $in: [Z, N] } })) === 0,
+    String(await ClientContact.countDocuments({ board: { $in: [Z, N] } })));
+
+  // ======================================================================
   console.log('\n--- 11. THE CASCADE -----------------------------------------');
   // ======================================================================
 

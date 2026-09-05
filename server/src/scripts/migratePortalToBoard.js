@@ -555,9 +555,19 @@ const verify = async () => {
   const add = (label, actual, expected = 0) =>
     checks.push({ label, actual, ok: actual === expected });
 
+  // A client board with SERVICES on it must hold a token: the first service is
+  // what mints one (server/src/utils/portalActivation.js). A client board with
+  // NO services legitimately has none and must not be counted — that is now the
+  // normal state of a board somebody created five minutes ago, and asserting
+  // otherwise would fail this check on every healthy deployment.
+  const boardsWithServices = await col('taskgroups').distinct('board');
   add(
-    'client boards with no portalToken',
-    await col('boards').countDocuments({ boardType: 'client', portalToken: { $exists: false } })
+    'client boards that have services but no portalToken',
+    await col('boards').countDocuments({
+      boardType: 'client',
+      _id: { $in: boardsWithServices },
+      portalToken: { $exists: false },
+    })
   );
   add(
     'non-client boards carrying a portalToken',

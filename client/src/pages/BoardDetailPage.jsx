@@ -66,6 +66,8 @@ import GroupNotesPanel from '../components/board/GroupNotesPanel';
 import ServiceRail from '../components/board/client/ServiceRail';
 import ClientOverview from '../components/board/client/ClientOverview';
 import ClientPeoplePanel from '../components/board/client/ClientPeoplePanel';
+import AddServiceModal from '../components/board/client/AddServiceModal';
+import { createBoardPortalService } from '../services/boardService';
 import { getBoardChannels } from '../services/chatService';
 import ClientPortalModal from '../components/board/ClientPortalModal';
 import BoardChatTab from '../components/board/BoardChatTab';
@@ -2133,24 +2135,122 @@ const BoardDetailPage = () => {
     try {
       setCreatingGroup(true);
       setGroupModalError(null);
-      // A group on a client board is a WORKSTREAM (SEO, Ads, Web Development).
-      // The portal link and the contact roster belong to the BOARD, so creating
-      // one here is exactly what it is on any other board type.
       const { group: created } = await taskService.createGroup(boardId, {
         name: trimmed,
       });
       addGroupLocal(created);
       setGroupModalOpen(false);
       setNewGroupName('');
-      if (isClientBoard) {
-        toastSuccess(`“${created.name}” added — it has its own chat, mailbox and team room, and your client can see it in their portal.`);
-      }
     } catch (err) {
       console.error('Failed to create group:', err);
       setGroupModalError(
         err?.response?.data?.error ||
           'Failed to create group. Please try again.'
       );
+    } finally {
+      setCreatingGroup(false);
+    }
+  };
+
+  /**
+   * ADD A SERVICE to a client board — and, in the same submission, invite the
+   * people at the client who look after it.
+   *
+   * A separate path from `handleSubmitNewGroup` because it is a separate
+   * ENDPOINT, and that is a permission boundary rather than a style choice:
+   * `POST /api/boards/:id/groups` is gated on `group.manage` alone, while
+   * handing somebody access to a client's portal also demands
+   * `canManageAccess`. `POST /api/portal/boards/:id/services` holds both.
+   *
+   * It is also where a client portal comes into existence. The board was
+   * created with no link at all, so the first service to land is what mints one
+   * — `portalActivated` is true on exactly that submission, and it is the one
+   * moment worth telling the team their client link is now live.
+   */
+  const handleSubmitNewService = async ({ name, invites }) => {
+    setCreatingGroup(true);
+    try {
+      // ---- TWO ENDPOINTS, ONE MODAL, PICKED BY CAPABILITY ---------------
+      //
+      // `POST /api/portal/boards/:id/services` needs `canManageAccess` on top of
+      // `group.manage`, because it can email a stranger a client's portal link.
+      // An `edit` grant confers `group.manage` WITHOUT `canManageAccess` — a
+      // first-class state, and the standard way to let somebody run a client's
+      // work without handing out access to it.
+      //
+      // The header's "New Group" button is gated on `canEdit`, so that person
+      // reaches this modal. Sending them at the manager-only endpoint would
+      // answer "Only board managers can manage client links" and take away a
+      // thing they could do before: `POST /api/boards/:id/groups` is still
+      // `group.manage` alone, still creates a service, and still brings the
+      // portal to life. So they go there instead.
+      //
+      // Decided on the capability, never by catching the 403: a retry after a
+      // rejected write is how you double-create on a race.
+      //
+      // `AddServiceModal` is told the same thing through `canInvite` and hides
+      // the invitation half, so `invites` is already empty on this branch —
+      // this is belt and braces, not the enforcement.
+      if (!canManageAccess) {
+        const { group: created, portalActivated } = await taskService.createGroup(
+          boardId,
+          { name }
+        );
+        addGroupLocal(created);
+        setGroupModalOpen(false);
+        toastSuccess(
+          portalActivated
+            ? `“${created.name}” added. Your client portal is now live — a board manager can invite the client from the People tab.`
+            : `“${created.name}” added.`
+        );
+        return null;
+      }
+
+      const res = await createBoardPortalService(boardId, { name, invites });
+      // GROUPS FIRST, and both are required. The service rail reads
+      // `orderedGroups`, which comes from the store's `groups` — and
+      // `refreshBoardTasks` deliberately does not touch that list, so on its own
+      // it would leave the service the user just created invisible until a full
+      // reload. Tasks follow because `tasksByGroup` is keyed off the group list
+      // and would otherwise have no bucket for the new one.
+      //
+      // Refetched rather than spliced: this endpoint returns a portal-shaped
+      // service, not a serialized group with its byline and owner resolved, and
+      // a half-shaped row in the store is worse than one extra request.
+      await refreshBoardGroups(boardId);
+      await refreshBoardTasks(boardId);
+      setGroupModalOpen(false);
+
+      const invited = (res?.contacts || []).length;
+      const failed = (res?.contacts || []).filter((c) => !c.emailSent).length;
+      if (res?.portalLive === false) {
+        // The team switched this board's link off. The service was still
+        // created — that is ordinary internal work — but nothing about the
+        // client's access changed, and saying otherwise would be a lie.
+        toastSuccess(
+          `“${name}” added. This board's client link is switched off, so the client cannot see it yet.`
+        );
+      } else if (res?.portalActivated) {
+        toastSuccess(
+          `“${name}” added. Your client portal is now live${
+            invited ? ` and ${invited === 1 ? 'the invitation is' : 'invitations are'} on the way` : ''
+          }.`
+        );
+      } else {
+        toastSuccess(
+          `“${name}” added${invited ? ` — ${invited} ${invited === 1 ? 'person' : 'people'} invited` : ''}.`
+        );
+      }
+      // Reported separately, not folded into the line above: the service exists
+      // either way, and a failed send is fixed with Resend on the People tab
+      // rather than by adding the service again.
+      if (failed) {
+        toastError(
+          `${failed} invitation${failed === 1 ? '' : 's'} could not be emailed. Resend from the People tab.`
+        );
+      }
+      (res?.warnings || []).forEach((w) => toastError(w));
+      return res;
     } finally {
       setCreatingGroup(false);
     }
@@ -3201,7 +3301,7 @@ const BoardDetailPage = () => {
             activeKey={svcParam}
             onSelect={(k) => selectService(k, k === svcParam ? svcTab : undefined)}
             canManage={canManageAccess}
-            onAddService={() => setGroupModalOpen(true)}
+            onAddService={handleOpenGroupModal}
           />
 
           <div className="flex-1 min-w-0 w-full">
@@ -3212,7 +3312,7 @@ const BoardDetailPage = () => {
                 canManage={canManageAccess}
                 onOpen={(id, tab) => selectService(id, tab)}
                 onSetUpRooms={(id) => selectService(id, 'talk')}
-                onInvite={() => selectService('people')}
+                onAddService={handleOpenGroupModal}
               />
             )}
 
@@ -3221,7 +3321,14 @@ const BoardDetailPage = () => {
                 boardId={boardId}
                 services={clientServices}
                 canManage={canManageAccess}
-                onServicesChanged={() => refreshBoardTasks(boardId)}
+                onServicesChanged={async () => {
+                  // The batch invite creates SERVICES as well as contacts, and
+                  // the rail reads the store's group list — which
+                  // `refreshBoardTasks` does not refetch. Groups first, for the
+                  // same reason as `handleSubmitNewService`.
+                  await refreshBoardGroups(boardId);
+                  await refreshBoardTasks(boardId);
+                }}
               />
             )}
 
@@ -3633,9 +3740,33 @@ const BoardDetailPage = () => {
         </p>
       </Modal>
 
-      {/* New group modal */}
+      {/* ------------------------------------------------------------------
+          ADD A SERVICE — client boards only.
+
+          A client board's groups are that client's SERVICES, and adding one is
+          also what brings the portal to life: the board is created with no link
+          at all, so the first service is what mints one and sends the client
+          their invitation. That is why this is a different modal and a
+          different endpoint from the plain "New group" below — inviting somebody
+          needs `canManageAccess` on top of `group.manage`, and the group
+          endpoint only holds the second.
+          ------------------------------------------------------------------ */}
+      {isClientBoard && groupModalOpen && (
+        <AddServiceModal
+          isOpen
+          onClose={handleCloseGroupModal}
+          boardName={board?.portalClientName || board?.name || ''}
+          existingServices={clientServices}
+          canInvite={canManageAccess}
+          submitting={creatingGroup}
+          onSubmit={handleSubmitNewService}
+        />
+      )}
+
+      {/* New group modal — every board type EXCEPT client, which has the
+          add-a-service modal above. */}
       <Modal
-        isOpen={groupModalOpen}
+        isOpen={groupModalOpen && !isClientBoard}
         onClose={handleCloseGroupModal}
         title="New Group"
         footer={
@@ -3652,34 +3783,20 @@ const BoardDetailPage = () => {
               onClick={handleSubmitNewGroup}
               disabled={creatingGroup}
             >
-              {creatingGroup
-                ? 'Creating…'
-                : isClientBoard
-                ? 'Add service'
-                : 'Create Group'}
+              {creatingGroup ? 'Creating…' : 'Create Group'}
             </Button>
           </>
         }
       >
         <form onSubmit={handleSubmitNewGroup} className="flex flex-col gap-3">
           <Input
-            label={isClientBoard ? 'Service name' : 'Group Name'}
+            label="Group Name"
             required
-            placeholder={isClientBoard ? 'e.g. SEO, Ads, Web Development' : 'e.g. To Do'}
+            placeholder="e.g. To Do"
             value={newGroupName}
             onChange={(e) => setNewGroupName(e.target.value)}
             autoFocus
           />
-          {isClientBoard && (
-            <p
-              className="font-body text-xs"
-              style={{ color: 'var(--color-text-muted)', marginTop: -4 }}
-            >
-              A service is one of the things you deliver for this client.
-              They see all of them in their portal, and can raise a request
-              against any one. The portal link is managed from “Client portal”.
-            </p>
-          )}
           {groupModalError && (
             <p
               className="font-body text-xs"
@@ -3906,7 +4023,8 @@ const BoardDetailPage = () => {
       {portalModalOpen && (
         <ClientPortalModal
           boardId={boardId}
-          boardName={board?.name || ''}
+          boardName={board?.portalClientName || board?.name || ''}
+          onAddService={handleOpenGroupModal}
           onClose={() => setPortalModalOpen(false)}
         />
       )}

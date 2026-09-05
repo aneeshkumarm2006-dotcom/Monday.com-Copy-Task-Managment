@@ -126,8 +126,15 @@ export const getGroups = async (boardId, { month } = {}) => {
 
 /**
  * POST /api/boards/:boardId/groups — create a new group (admin only).
- * Returns the full payload: { group, inviteSent } (inviteSent is only meaningful
- * on client boards where a clientEmail was supplied).
+ *
+ * Returns `{ group, portalActivated }`. `portalActivated` is meaningful only on
+ * a CLIENT board, where a group is a SERVICE and the first one to land is what
+ * mints that board's portal link and switches the portal on — a client board is
+ * created with neither. It is true exactly once per board.
+ *
+ * This endpoint cannot invite anybody: `group.manage` is not permission to hand
+ * out portal access. Use `boardService.createBoardPortalService` for the
+ * add-a-service-and-invite flow, which holds both gates.
  */
 export const createGroup = async (boardId, payload) => {
   const { data } = await api.post(`/api/boards/${boardId}/groups`, payload);

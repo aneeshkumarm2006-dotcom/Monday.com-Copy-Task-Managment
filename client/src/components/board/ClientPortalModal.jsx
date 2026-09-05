@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Copy, Check, Link2, RefreshCw, Loader2, Mail, Send, KeyRound, Users } from 'lucide-react';
+import { X, Copy, Check, Link2, RefreshCw, Loader2, Mail, Send, KeyRound, Users, AlertCircle, Plus } from 'lucide-react';
 import {
   getBoardPortalConfig,
   saveBoardPortalConfig,
@@ -12,14 +12,34 @@ import ClientSignInMethodField from './ClientSignInMethodField';
 
 /**
  * ClientPortalModal — manage the shareable client link for a Client Portal
- * BOARD. The board IS the client company (its groups are that client's
- * workstreams), and the link is minted when the board is created — so this modal
- * is about SHARING it: copy the link, or email an invitation. Only rendered for
- * board managers (BoardDetailPage gates on canManageAccess); the server enforces
- * it too.
+ * BOARD. The board IS the client company, and its groups are that client's
+ * SERVICES. Only rendered for board managers (BoardDetailPage gates on
+ * canManageAccess); the server enforces it too.
+ *
+ * ---- THERE IS NOT ALWAYS A LINK TO SHARE ----------------------------------
+ *
+ * A client board used to mint its link at creation, so this modal could assume
+ * one existed. It no longer does: a board with no SERVICES has nothing for a
+ * client to look at — the portal renders "Your portal is being set up" and there
+ * is no request to raise — so the link is minted by the FIRST SERVICE instead.
+ *
+ * That gives this modal a third state, which `config.hasServices` is what
+ * distinguishes:
+ *
+ *   hasServices: false  — no link yet. Show what to do, hide the link and the
+ *                         invite box. The server refuses both anyway (409
+ *                         `PORTAL_NO_SERVICES`); hiding them means nobody has to
+ *                         hit that to find out.
+ *   portalEnabled: true — live. The ordinary case.
+ *   portalEnabled: false — a link exists and was deliberately switched off.
+ *
+ * Conflating the first two is what would put a dead link back on somebody's
+ * clipboard, which is the entire point of the change.
  *
  * Props:
  *   boardId, boardName — the client board being configured
+ *   onAddService       — optional; opens the add-a-service modal from the
+ *                        empty state, so the fix is one click from the problem
  *   onClose            — () => void
  */
 const label = {
@@ -71,7 +91,7 @@ const contactState = (c) => {
   return { label: 'Invited', color: 'var(--color-text-muted)' };
 };
 
-const ClientPortalModal = ({ boardId, boardName, onClose }) => {
+const ClientPortalModal = ({ boardId, boardName, onAddService, onClose }) => {
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState(null);
   const [clientName, setClientName] = useState('');
@@ -185,6 +205,11 @@ const ClientPortalModal = ({ boardId, boardName, onClose }) => {
   };
 
   const enabled = !!config?.portalEnabled;
+  // The server is the authority. `hasServices` comes back on every portal
+  // payload precisely so this modal never has to guess from `link` being null —
+  // which cannot tell "no service yet" apart from a board loaded without the
+  // token projection.
+  const hasServices = !!config?.hasServices;
 
   return createPortal(
     <div
@@ -216,7 +241,8 @@ const ClientPortalModal = ({ boardId, boardName, onClose }) => {
           </button>
         </div>
         <p className="font-body" style={{ fontSize: 13, color: 'var(--color-text-secondary)', margin: '0 0 20px' }}>
-          Share the portal for <strong>{boardName}</strong> so this client can raise issues — copy the link or email an invitation.
+          The portal for <strong>{boardName}</strong> — what the client sees, and who
+          can get in. The link exists once this board has a service on it.
         </p>
 
         {loading ? (
@@ -241,10 +267,93 @@ const ClientPortalModal = ({ boardId, boardName, onClose }) => {
               />
             </div>
 
+            {/* ---- No services yet: there is no link, and that is the point ----
+                Shown INSTEAD of the link and the invite box, with the one action
+                that fixes it. */}
+            {!hasServices && (
+              <div
+                style={{
+                  marginBottom: 16,
+                  padding: 14,
+                  border: '1px dashed var(--color-border-strong, #C8C5BE)',
+                  borderRadius: 'var(--radius-md)',
+                  background: 'var(--color-bg-subtle)',
+                }}
+              >
+                <div className="flex items-center gap-1.5" style={{ marginBottom: 6 }}>
+                  <AlertCircle size={14} color="var(--color-text-muted)" aria-hidden="true" />
+                  <span
+                    className="font-body"
+                    style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-text-primary)' }}
+                  >
+                    No link yet
+                  </span>
+                </div>
+                <p
+                  className="font-body"
+                  style={{
+                    fontSize: 12.5,
+                    lineHeight: 1.55,
+                    color: 'var(--color-text-secondary)',
+                    margin: 0,
+                  }}
+                >
+                  This board has no services, so there is nothing for {boardName} to
+                  open. Adding the first service creates their portal link and sends
+                  their invitation.
+                </p>
+                {onAddService && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onAddService();
+                    }}
+                    className="font-body flex items-center gap-1.5"
+                    style={{
+                      marginTop: 10,
+                      height: 32,
+                      padding: '0 12px',
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      color: '#FFFFFF',
+                      background: 'var(--color-accent)',
+                      border: 'none',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Plus size={13} aria-hidden="true" />
+                    Add a service
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Shareable link */}
-            {config?.link && (
+            {hasServices && config?.link && (
               <div style={{ marginBottom: 16 }}>
-                <label style={label}>Shareable link</label>
+                <label style={label}>
+                  Shareable link
+                  {/* A disabled portal still HAS a link, and it is still
+                      copyable — the team may want it on file. But copying it
+                      without knowing it is switched off is how a client gets
+                      sent a URL that answers 404, so the state is named right
+                      where the Copy button is. */}
+                  {!enabled && (
+                    <span
+                      style={{
+                        marginLeft: 6,
+                        textTransform: 'none',
+                        letterSpacing: 0,
+                        fontWeight: 600,
+                        color: 'var(--color-status-stuck, #dc2626)',
+                      }}
+                    >
+                      · switched off, this link will not open
+                    </span>
+                  )}
+                </label>
                 <div style={{ ...field, display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Link2 size={14} color="var(--color-text-muted)" />
                   <span className="truncate select-all" style={{ flex: 1, fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
@@ -262,7 +371,11 @@ const ClientPortalModal = ({ boardId, boardName, onClose }) => {
               </div>
             )}
 
-            {/* Email an invitation */}
+            {/* Email an invitation. Hidden until there is a portal to invite
+                somebody INTO — the server answers 409 PORTAL_NO_SERVICES
+                otherwise, and a form whose only outcome is that error is worse
+                than no form. */}
+            {hasServices && (
             <div style={{ marginBottom: 16 }}>
               <label style={label}>Email an invitation</label>
               <div style={{ marginBottom: 10 }}>
@@ -304,6 +417,7 @@ const ClientPortalModal = ({ boardId, boardName, onClose }) => {
                   : "They'll get the portal link and sign in with Google."}
               </p>
             </div>
+            )}
 
             {/* Who's been invited, and how far they've got */}
             {contacts.length > 0 && (
@@ -457,7 +571,11 @@ const ClientPortalModal = ({ boardId, boardName, onClose }) => {
               </p>
             )}
 
-            {/* Link controls */}
+            {/* Link controls. Rotating or enabling a portal with nothing in it
+                is refused server-side (409 PORTAL_NO_SERVICES), so the whole row
+                waits for the first service. Everything above — the client name,
+                the announcement, the FAQ — stays editable meanwhile. */}
+            {hasServices && (
             <div className="flex items-center gap-2" style={{ marginTop: 4 }}>
               <button
                 type="button" onClick={() => save({ regenerateLink: true }, 'New link generated.')} disabled={saving}
@@ -484,6 +602,7 @@ const ClientPortalModal = ({ boardId, boardName, onClose }) => {
                 </button>
               )}
             </div>
+            )}
           </>
         )}
       </div>

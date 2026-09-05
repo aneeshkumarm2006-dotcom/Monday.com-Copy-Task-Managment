@@ -16,6 +16,7 @@ const ClientContact = require('../models/ClientContact');
 const { deleteSurfacesForGroup, createSurfaces } = require('../services/workstreamSurfaces');
 const { isClientBoard } = require('../utils/clientBoard');
 const { recordServiceUse } = require('../services/serviceCatalogService');
+const { ensurePortalLive } = require('../utils/portalActivation');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { requireFeature } = require('../utils/userFeatures');
 const { setOwnerForMonth } = require('../utils/groupOwner');
@@ -223,7 +224,14 @@ const createGroup = async (req, res) => {
       return res.status(400).json({ error: 'Group name is required' });
     }
 
-    const ctx = await loadBoardContext(boardId, userId);
+    // `+portalToken` because a group on a CLIENT board is a service, and the
+    // first service on a board is what mints that board's portal link (see the
+    // block further down). Without the projection `!board.portalToken` reads
+    // true on a board that has one and `ensurePortalLive` would ROTATE A LIVE
+    // CLIENT LINK on every service create - the trap `loadManageContext` and
+    // `Board.portalToken` both write down. The token is never serialized out of
+    // here: this endpoint returns groups, not the board.
+    const ctx = await loadBoardContext(boardId, userId, { select: '+portalToken' });
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
     const denied = requireCapability(
       ctx,
@@ -251,15 +259,22 @@ const createGroup = async (req, res) => {
     }
 
     // A group on a client board is a SERVICE (SEO, Meta Ads, Web Development),
-    // not a client. The portal link belongs to the board, is minted when the
-    // board is created, and is not this function's business — creating a group
-    // here is exactly what it is on every other board type.
+    // not a client.
     //
-    // What IS different on a client board: the group is recorded against the
-    // organisation's service catalog, so the next client board's invite table
-    // offers this name in its dropdown. `serviceKey` is a slug and may be null —
-    // a name made only of punctuation slugs to nothing, and a group with no
-    // service key is simply a group with a name, which is what it always was.
+    // Two things are different on a client board. First, the group is recorded
+    // against the organisation's service catalog, so the next client board's
+    // invite table offers this name in its dropdown. `serviceKey` is a slug and
+    // may be null — a name made only of punctuation slugs to nothing, and a
+    // group with no service key is simply a group with a name, which is what it
+    // always was.
+    //
+    // Second, and this one used to be the opposite: THE PORTAL LINK IS THIS
+    // FUNCTION'S BUSINESS NOW. A client board is created without a token and
+    // with the portal off, because a portal with no services opens on "Your
+    // portal is being set up" and a link handed over in that state is worth
+    // nothing. The first service to land is what makes the board's link real.
+    // See `utils/portalActivation.js`, which is the only implementation of
+    // that rule.
     const isClient = isClientBoard(ctx.board);
     let serviceKey = null;
     if (isClient) {
@@ -279,21 +294,63 @@ const createGroup = async (req, res) => {
       serviceKey,
     });
 
-    // Every service can be talked about from the day it exists. See
-    // services/workstreamSurfaces.js for why this reverses that file's original
-    // "a client workstream starts with NOTHING" position.
-    //
-    // BEST-EFFORT AND SWALLOWED, deliberately. A channel that failed to mint is
-    // healable — reopen the setup modal, or run the migration's
-    // --backfill-surfaces — whereas a group create that 500s because a chat room
-    // could not be made is a worse outcome than the missing room. Idempotent
-    // under Channel's unique index, so a retry converges rather than duplicating.
+    let portalActivated = false;
     if (isClient) {
+      // ---- THE PORTAL GOES LIVE, AND IT MUST HAPPEN BEFORE THE ROOMS -----
+      //
+      // AFTER the group exists: minting a link and then failing to create the
+      // service would leave exactly the dead link this change removes.
+      //
+      // BEFORE `createSurfaces`, and that ORDER IS LOAD-BEARING.
+      // `workstreamSurfaces.createSurfaces` gates client-facing rooms on
+      // `isLiveClientBoard(board)`, which is `boardType === 'client' &&
+      // portalEnabled === true`. A client board is now born with `portalEnabled`
+      // unset, so calling it first would silently REFUSE the client chat and the
+      // client mailbox on the very first service of every new board — the team
+      // room would be made, the two client rooms would not, and the only sign
+      // would be `refusals` nobody reads. Activating first is what makes the
+      // gate answer honestly.
+      //
+      // Idempotent: every service after the first finds both already true and
+      // this writes nothing.
+      //
+      // BEST-EFFORT AND SWALLOWED, on the same argument as the surfaces below:
+      // a service that exists without its link is healable (open portal
+      // settings, or add the next service), whereas a group create that 500s
+      // because `board.save()` raced is a worse outcome than the missing link.
+      let portalLive = false;
+      try {
+        const portal = await ensurePortalLive(ctx.board);
+        portalActivated = portal.changed;
+        portalLive = portal.live;
+      } catch (portalErr) {
+        console.error('createGroup portal activation error:', portalErr);
+      }
+
+      // Every service can be talked about from the day it exists. See
+      // services/workstreamSurfaces.js for why this reverses that file's
+      // original "a client workstream starts with NOTHING" position.
+      //
+      // BEST-EFFORT AND SWALLOWED, deliberately. A channel that failed to mint
+      // is healable — reopen the setup modal, or run the migration's
+      // --backfill-surfaces — whereas a group create that 500s because a chat
+      // room could not be made is a worse outcome than the missing room.
+      // Idempotent under Channel's unique index, so a retry converges rather
+      // than duplicating.
+      //
+      // ASK ONLY FOR WHAT THE BOARD CAN HAVE. `planSurfaces` refuses the WHOLE
+      // selection when a client-facing room is requested on a board that is not
+      // live — the private team room along with it. On a board whose portal was
+      // deliberately DISABLED that is exactly the situation, so requesting the
+      // client pair unconditionally would leave a new service with no rooms at
+      // all rather than with the one it is entitled to. The client chat and
+      // mailbox are minted later by `SetUpCommunicationModal` or the
+      // migration's --backfill-surfaces, once somebody turns the portal back on.
       try {
         await createSurfaces(
           ctx.board,
           group,
-          { clientChat: true, clientMail: true, team: true },
+          { clientChat: portalLive, clientMail: portalLive, team: true },
           { createdBy: userId }
         );
       } catch (surfaceErr) {
@@ -335,7 +392,10 @@ const createGroup = async (req, res) => {
       org: ctx.org,
       monthKey: resolveGroupMonth(ctx.board, null),
     });
-    return res.status(201).json({ group: serialized });
+    // `portalActivated` is true exactly once per client board: on the service
+    // that brought its portal to life. The UI says "the client link is now
+    // live" on the back of it, and says nothing on every service after.
+    return res.status(201).json({ group: serialized, portalActivated });
   } catch (err) {
     console.error('createGroup error:', err);
     return res.status(500).json({ error: 'Server error' });
