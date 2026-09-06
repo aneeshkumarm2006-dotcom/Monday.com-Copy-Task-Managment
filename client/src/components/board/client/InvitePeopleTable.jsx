@@ -4,6 +4,7 @@ import { SegmentedControl } from '../../ui/FormControls';
 import SignInMethodInfoModal from '../SignInMethodInfoModal';
 import {
   MAX_ROWS,
+  isBlankRow,
   newRow,
   parsePastedInvites,
   planInvites,
@@ -29,6 +30,11 @@ import {
  *   2. THE TABLE IS NEVER CLEARED ON SUBMIT. Results are painted onto the rows
  *      by index; successes go read-only and failures stay editable, because the
  *      fix for a failure is almost always a typo in the row that failed.
+ *
+ *      The corollary is `pending`: a row that succeeded is on screen but out of
+ *      the batch. Nothing downstream refuses a second invitation for someone
+ *      already invited — the server mails them again — so the only thing
+ *      standing between a success and a re-send is this table not offering it.
  */
 
 /**
@@ -39,8 +45,13 @@ import {
  * would cost, and, importantly, it CANNOT BE CLIPPED: the invite table sits in a
  * card with its own overflow, where an absolutely-positioned panel would be cut
  * off at the card's edge.
+ *
+ * The `<datalist>` itself is rendered ONCE for the whole table, below, and every
+ * row only points at it by id. One element per row is one DOM id repeated N
+ * times, and `list=` resolves to whichever copy comes first — so per-row option
+ * filtering would silently serve row one's list to all of them.
  */
-const ServiceInput = ({ value, onChange, catalog, listId, isNew, disabled }) => (
+const ServiceInput = ({ value, onChange, listId, isNew, disabled, error }) => (
   <div className="relative flex items-center gap-1.5 min-w-0">
     <input
       type="text"
@@ -56,16 +67,11 @@ const ServiceInput = ({ value, onChange, catalog, listId, isNew, disabled }) => 
         padding: '0 8px',
         fontSize: 13,
         borderRadius: 'var(--radius-md)',
-        border: '1px solid var(--color-border)',
+        border: `1px solid ${error ? '#DC2626' : 'var(--color-border)'}`,
         background: disabled ? 'var(--color-bg-subtle)' : 'var(--color-bg-input)',
         color: 'var(--color-text-primary)',
       }}
     />
-    <datalist id={listId}>
-      {catalog.map((c) => (
-        <option key={c} value={c} />
-      ))}
-    </datalist>
     {isNew && (
       <span
         className="font-body shrink-0"
@@ -113,10 +119,24 @@ const InvitePeopleTable = ({
     [services]
   );
 
+  /**
+   * AN INVITED ROW IS OUT OF THE BATCH. It is still on screen — that is how you
+   * see what worked — but it is not in the plan, not in the button's count and
+   * not in the payload. Sending the whole table again after a success re-mails
+   * every client who was just invited: the server has no idempotence guard, it
+   * reports an existing contact as `invited` and posts the email a second time.
+   */
+  const pending = useMemo(() => rows.filter((r) => r.status !== 'done'), [rows]);
+
   const plan = useMemo(
-    () => planInvites(rows, { services, existingEmails }),
-    [rows, services, existingEmails]
+    () => planInvites(pending, { services, existingEmails }),
+    [pending, services, existingEmails]
   );
+
+  // Rows planInvites folded into an earlier row's single email. Legitimate — one
+  // person, several services — but the summary names the address and not the
+  // rows, which is no help at all in a table of 25.
+  const dupeIds = useMemo(() => new Set(plan.duplicateRowIds), [plan]);
 
   const patch = (id, p) => setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...p } : r)));
   const remove = (id) => setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.id !== id) : prev));
@@ -125,13 +145,15 @@ const InvitePeopleTable = ({
   const hasResults = rows.some((r) => r.status);
 
   const submit = async (subset = null) => {
-    const target = subset || rows;
+    const target = subset || pending.filter((r) => !isBlankRow(r));
+    if (!target.length) return;
     const payload = target.map((r) => ({
       service: r.service,
       email: r.email,
       authMethod: r.authMethod,
     }));
     setBanner('');
+    setSkipped([]);
     try {
       const res = await onSubmit(payload);
       // Index-aligned with what we just sent, so paint onto THOSE rows.
@@ -160,10 +182,20 @@ const InvitePeopleTable = ({
       defaultService: services[0]?.name || '',
     });
     if (parsed.length) {
-      setRows((prev) => {
-        const kept = prev.filter((r) => r.service.trim() || r.email.trim());
-        return [...kept, ...parsed].slice(0, MAX_ROWS);
-      });
+      // The cap has to REPORT what it removed, for the same reason a line with
+      // no address is reported rather than dropped: pasting 40 people, getting
+      // 25 rows and no word about the other 15 means sending the batch believing
+      // the whole list went out.
+      const kept = rows.filter((r) => r.service.trim() || r.email.trim());
+      const merged = [...kept, ...parsed];
+      const dropped = Math.max(0, merged.length - MAX_ROWS);
+      setRows(merged.slice(0, MAX_ROWS));
+      setBanner(
+        dropped > 0
+          ? `${dropped} more row${dropped === 1 ? '' : 's'} would not fit — this table holds `
+            + `${MAX_ROWS}. Send this batch, then paste the rest.`
+          : ''
+      );
     }
     setSkipped(bad);
     setPasteText('');
@@ -275,6 +307,13 @@ const InvitePeopleTable = ({
         </p>
       )}
 
+      {/* One list for every row's `list=`. See the note on ServiceInput. */}
+      <datalist id={`${idPrefix}-svc`}>
+        {options.map((c) => (
+          <option key={c} value={c} />
+        ))}
+      </datalist>
+
       {/* The table. Header hidden below sm, where each row stacks. */}
       <div
         className="flex flex-col"
@@ -305,6 +344,10 @@ const InvitePeopleTable = ({
           const key = serviceKeyOf(row.service);
           const isNew = !!key && !existingKeys.has(key);
           const error = plan.rowErrors[row.id];
+          // One message under the row, but the red border goes on the field the
+          // message is actually about.
+          const errorIn = plan.rowErrorFields[row.id] || {};
+          const dupe = dupeIds.has(row.id);
           const done = row.status === 'done';
           return (
             <div
@@ -319,10 +362,10 @@ const InvitePeopleTable = ({
               <ServiceInput
                 value={row.service}
                 onChange={(v) => patch(row.id, { service: v, status: null, message: '' })}
-                catalog={options}
                 listId={`${idPrefix}-svc`}
                 isNew={isNew}
                 disabled={done}
+                error={!!errorIn.service}
               />
 
               <input
@@ -338,7 +381,9 @@ const InvitePeopleTable = ({
                   padding: '0 8px',
                   fontSize: 13,
                   borderRadius: 'var(--radius-md)',
-                  border: `1px solid ${error ? '#DC2626' : 'var(--color-border)'}`,
+                  border: `1px solid ${
+                    errorIn.email ? '#DC2626' : dupe ? '#B45309' : 'var(--color-border)'
+                  }`,
                   background: done ? 'var(--color-bg-subtle)' : 'var(--color-bg-input)',
                 }}
               />
@@ -375,15 +420,22 @@ const InvitePeopleTable = ({
                 )}
               </span>
 
-              {(error || row.message) && (
+              {(error || row.message || dupe) && (
                 <p
                   className="font-body sm:col-span-5"
                   style={{
                     fontSize: 11.5,
-                    color: row.status === 'failed' || error ? '#DC2626' : 'var(--color-text-muted)',
+                    color:
+                      row.status === 'failed' || error
+                        ? '#DC2626'
+                        : dupe && !row.message
+                          ? '#B45309'
+                          : 'var(--color-text-muted)',
                   }}
                 >
-                  {error || row.message}
+                  {error
+                    || row.message
+                    || 'Same person as a row above — they get one email listing every service.'}
                 </p>
               )}
             </div>
@@ -435,9 +487,11 @@ const InvitePeopleTable = ({
         >
           {submitting
             ? 'Sending…'
-            : `Send ${plan.uniqueEmails.length || ''} invitation${
-              plan.uniqueEmails.length === 1 ? '' : 's'
-            }`}
+            : plan.uniqueEmails.length
+              ? `Send ${plan.uniqueEmails.length} invitation${
+                plan.uniqueEmails.length === 1 ? '' : 's'
+              }`
+              : 'Send invitations'}
         </button>
 
         {failedRows.length > 0 && (
@@ -464,7 +518,15 @@ const InvitePeopleTable = ({
         {hasResults && (
           <button
             type="button"
-            onClick={() => setRows([newRow(), newRow()])}
+            onClick={() => {
+              // Everything the last batch put on screen goes with it. Leaving
+              // "Could not send the invitations." above two blank rows reads as
+              // a failure of the batch that has not been sent yet, and there is
+              // no other way to clear it.
+              setRows([newRow(), newRow()]);
+              setBanner('');
+              setSkipped([]);
+            }}
             className="font-body"
             style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}
           >

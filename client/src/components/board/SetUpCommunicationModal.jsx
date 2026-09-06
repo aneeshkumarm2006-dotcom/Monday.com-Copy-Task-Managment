@@ -44,7 +44,14 @@ import {
  *   groupName, clientName   — for the title and the question
  *   existingKeys            — surfaces already on this workstream; shown on and
  *                             disabled, and never counted by the button
- *   allowClientSurfaces     — false on a board with no live client portal
+ *   allowClientSurfaces     — false on a board with no live client portal. It
+ *                             must mirror the server's `isLiveClientBoard`:
+ *                             `boardType:'client'` AND `portalEnabled`. The
+ *                             board type alone is not that answer — a client
+ *                             board whose link was switched off still has the
+ *                             type — and the server refuses the WHOLE plan for
+ *                             asking, taking the private team room down with
+ *                             the client rooms.
  *   onCreate(selection)     — returns a promise; the parent closes on success
  */
 
@@ -305,9 +312,23 @@ const SetUpCommunicationModal = ({
    * endpoint is idempotent and would happily accept it, but the button counts
    * this object, and "Create 2 surfaces" when one of them has been there for
    * months is a claim about what is about to happen that is not true.
+   *
+   * A client surface is forced off the same way while `allowClientSurfaces` is
+   * false. The cards are disabled, so it normally cannot be picked at all — but
+   * the prop can arrive late (the caller has to ask the server whether the
+   * portal is live), and a tick made in that window would otherwise be stuck:
+   * `planSurfaces` refuses the whole plan for it, and the card it lives on is
+   * now disabled, so there is no way to untick it and the team room the person
+   * also chose cannot be created either. Dropping it here keeps the legal half
+   * of the selection submittable.
    */
   const selection = Object.fromEntries(
-    SURFACE_KEYS.map((key) => [key, !existing.has(key) && !!picked[key]])
+    SURFACE_KEYS.map((key) => [
+      key,
+      !existing.has(key) &&
+        !!picked[key] &&
+        (allowClientSurfaces || !CARD_KEYS.includes(key)),
+    ])
   );
 
   const plan = planSurfaces(selection, { allowClientSurfaces });

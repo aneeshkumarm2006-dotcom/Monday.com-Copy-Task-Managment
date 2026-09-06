@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Info, Loader2, Plus, Trash2 } from 'lucide-react';
 import Modal from '../../ui/Modal';
 import Button from '../../ui/Button';
@@ -95,6 +95,21 @@ const AddServiceModal = ({
   const [error, setError] = useState('');
   const [rowErrors, setRowErrors] = useState({});
   const [infoOpen, setInfoOpen] = useState(false);
+  const nameRef = useRef(null);
+
+  /**
+   * Modal moves focus to the first focusable thing in its panel 10ms after it
+   * opens, and that is the header's close button — so `autoFocus` on the name
+   * field is set and then undone before anyone sees it, leaving Enter or Space
+   * on an opened modal dismissing it instead of typing a name. Focusing after
+   * Modal has had its turn is the fix available from this side; the durable one
+   * is an `initialFocusRef` prop on Modal itself.
+   */
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const t = window.setTimeout(() => nameRef.current?.focus(), 40);
+    return () => window.clearTimeout(t);
+  }, [isOpen]);
 
   const existingKeys = useMemo(
     () => new Set(existingServices.map((s) => serviceKeyOf(s.name)).filter(Boolean)),
@@ -115,7 +130,9 @@ const AddServiceModal = ({
     [canInvite, invites]
   );
   const invalid = filled.filter((i) => !EMAIL_RE.test(i.email.trim()));
-  // The server dedupes too; this is so the person typing can see it coming.
+  // The server dedupes too, but a red line under a row that the button then
+  // ignores is worse than no line: two red states, one blocking and one not,
+  // and no way to tell which is holding the form. So this blocks as well.
   const duplicates = useMemo(() => {
     const seen = new Set();
     const dupes = new Set();
@@ -149,6 +166,17 @@ const AddServiceModal = ({
       setRowErrors(Object.fromEntries(invalid.map((i) => [i.id, true])));
       return;
     }
+    if (duplicates.size) {
+      setError('The same address is on more than one row. Remove the duplicates.');
+      setRowErrors(
+        Object.fromEntries(
+          filled
+            .filter((i) => duplicates.has(i.email.trim().toLowerCase()))
+            .map((i) => [i.id, true])
+        )
+      );
+      return;
+    }
 
     setError('');
     setRowErrors({});
@@ -178,7 +206,17 @@ const AddServiceModal = ({
     <>
       <Modal
         isOpen={isOpen}
-        onClose={submitting ? () => {} : onClose}
+        /*
+         * No `onClose` at all while the request is in flight, rather than a
+         * no-op standing in for it. A no-op is still a truthy function, so Modal
+         * kept rendering the X at full opacity with its hover state while
+         * Escape, the overlay and the button all did nothing — for up to the 30s
+         * the create-and-email request is allowed. Dropping the prop removes the
+         * control instead of faking it, which is what the disabled Cancel button
+         * next to it has always done.
+         */
+        onClose={submitting ? undefined : onClose}
+        closeOnOverlayClick={!submitting}
         title="Add a service"
         footer={
           <>
@@ -208,7 +246,7 @@ const AddServiceModal = ({
               placeholder="e.g. SEO, Meta Ads, Web Development"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              autoFocus
+              ref={nameRef}
             />
             <p
               className="font-body"
@@ -428,7 +466,7 @@ const AddServiceModal = ({
         </form>
       </Modal>
 
-      <SignInMethodInfoModal isOpen={infoOpen} onClose={() => setInfoOpen(false)} />
+      {infoOpen && <SignInMethodInfoModal onClose={() => setInfoOpen(false)} />}
     </>
   );
 };

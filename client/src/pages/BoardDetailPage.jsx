@@ -148,6 +148,50 @@ const GROUP_DOT_CYCLE = [
 const GROUP_SORT_KEY = 'board:groupSortCompletedLast:';
 
 /**
+ * A SERVICE's colour on a client board, derived here rather than fetched.
+ *
+ * The client sees colour-coded services (PortalServiceTable) because
+ * `getPortalHome` resolves them; the team side had `color: null` hardcoded and
+ * every dot and progress bar came out grey — on the one screen whose job is
+ * telling four services apart at a glance.
+ *
+ * There is nowhere to read the colour FROM: `TaskGroup` has no colour field, so
+ * the group the rail reads never carries one. What it does carry is
+ * `serviceKey`, the catalog slug — and the server's own fallback for a slug is
+ * a deterministic hash into the same eight-colour palette
+ * (utils/serviceCatalog.js `colorForSlug`). Repeating that hash here therefore
+ * lands on THE SAME COLOUR the portal shows, for as long as nothing sets a
+ * per-entry colour in the catalog — and nothing does: the catalog's `color` is
+ * only ever written from an API field no UI sends. If a colour picker is ever
+ * added, this stops agreeing with the portal and the group payload has to start
+ * carrying a resolved colour instead.
+ *
+ * Groups with no serviceKey (a client board's group created before services, or
+ * through the plain group modal) fall back to the group id, which keeps the
+ * colour stable for that group rather than leaving it grey.
+ */
+const SERVICE_PALETTE = [
+  '#2563EB', // blue
+  '#059669', // green
+  '#7C3AED', // violet
+  '#EA580C', // orange
+  '#0891B2', // cyan
+  '#DC2626', // red
+  '#B45309', // amber
+  '#DB2777', // pink
+];
+
+const serviceColor = (group) => {
+  const key = String(group?.serviceKey || group?._id || '');
+  if (!key) return SERVICE_PALETTE[0];
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  return SERVICE_PALETTE[hash % SERVICE_PALETTE.length];
+};
+
+/**
  * Board views. `board` is the default and renders exactly what this page always
  * rendered; `delivery` swaps the filter bar and group list for the tracker grid,
  * and `goals` for the monthly goals tables.
@@ -1329,25 +1373,32 @@ const BoardDetailPage = () => {
       const tasks = tasksByGroup[g._id] || [];
       const ws = wsById.get(String(g._id));
       const surfaces = ws?.surfaces || [];
-      const unreadOf = (mode) =>
-        surfaces
-          .filter((c) => c.mode === mode && c.audience === 'client')
-          .reduce((n, c) => n + (c.unread || 0), 0);
+      // One unread total per service, not one per mode. The overview used to
+      // split it into chat and mail counts behind two buttons that opened the
+      // same room — see the comment on the Conversations control in
+      // ClientOverview.
       return {
         id: String(g._id),
         name: g.name,
-        color: null,
-        owner: g.owner || null,
+        color: serviceColor(g),
+        // No `owner`. It was `g.owner || null` and could never be anything but
+        // null: groupController.serializeGroups resolves an owner for TRACKER
+        // boards only, and TaskGroup has no owner field to fall back on.
         taskCount: tasks.length,
         doneCount: tasks.filter(isDone).length,
         // "Open request" = raised by the CLIENT and not finished. Counted here
         // rather than fetched: the task store already holds every row.
         openRequests: tasks.filter((t) => t.source === 'client' && !isDone(t)).length,
         sharedCount: tasks.filter((t) => t.portalShared).length,
-        unreadChat: unreadOf('chat'),
-        unreadMail: unreadOf('mail'),
         unread: surfaces.reduce((n, c) => n + (c.unread || 0), 0),
-        hasRooms: surfaces.length > 0,
+        // THREE-STATE ON PURPOSE: null until the channel list has loaded, then
+        // true/false. `clientChannels` starts null and is filled by a request,
+        // so a plain `surfaces.length > 0` reported "no rooms" for every
+        // service on every load — the overview flashed an amber "set up"
+        // prompt on each card, the rail flashed a "!" on each row, and the
+        // Needs-you list filled with false alarms before snapping to the truth.
+        // Consumers must test `=== false`, never `!hasRooms`.
+        hasRooms: clientChannels ? surfaces.length > 0 : null,
       };
     });
   }, [isClientBoard, orderedGroups, tasksByGroup, board, clientChannels]);
@@ -1388,7 +1439,9 @@ const BoardDetailPage = () => {
       }
     }
     for (const s of clientServices) {
-      if (!s.hasRooms) {
+      // `=== false`, not `!`: null means the channel list has not arrived yet,
+      // and "No chat or mailbox set up yet" is an accusation, not a spinner.
+      if (s.hasRooms === false) {
         out.push({
           id: `n-${s.id}`,
           serviceId: s.id,
@@ -3332,7 +3385,15 @@ const BoardDetailPage = () => {
               />
             )}
 
-            {svcParam === 'settings' && (
+            {/* Manager-only, matching the rail row that reaches it and the
+                server, which refuses `/portal/boards/:id/config` for anyone
+                else. Left ungated, the modal below read that refusal as "no
+                config" and rendered "this board has no services, so there is
+                nothing for the client to open" — a flat lie about the client's
+                access, complete with an "Add a service" button. A URL carrying
+                ?svc=settings therefore lands a contributor on nothing, and the
+                rail is still there to click. */}
+            {svcParam === 'settings' && canManageAccess && (
               <div className="flex flex-col items-start gap-3" style={{ maxWidth: 620 }}>
                 <p className="font-body" style={{ fontSize: 13.5, fontWeight: 600 }}>
                   Portal settings
@@ -4019,8 +4080,11 @@ const BoardDetailPage = () => {
         />
       )}
 
-      {/* Client Portal link management (client boards, managers only) */}
-      {portalModalOpen && (
+      {/* Client Portal link management (client boards, managers only) — the
+          `canManageAccess` here is what the modal's own docblock has always
+          claimed was in place. Without it a contributor could open it, get a
+          403 on every read, and be told the board has no services. */}
+      {portalModalOpen && canManageAccess && (
         <ClientPortalModal
           boardId={boardId}
           boardName={board?.portalClientName || board?.name || ''}

@@ -44,6 +44,17 @@ export const serviceKeyOf = (name) => {
   return slug || null;
 };
 
+/**
+ * A row nobody has filled in yet — no service, no address.
+ *
+ * The table seeds two of these and appends one on every "Add row", so treating
+ * them as errors means greeting the user in red for rows they have never
+ * touched. The server takes the same view (`createServiceWithInvites` drops a
+ * blank row rather than 400-ing on it), so the preview agreeing with it is the
+ * point.
+ */
+export const isBlankRow = (row) => !norm(row?.service) && !norm(row?.email);
+
 let seq = 0;
 export const newRow = (patch = {}) => ({
   id: `r${(seq += 1)}`,
@@ -118,23 +129,47 @@ export const parsePastedInvites = (text, { catalog = [], defaultService = '' } =
  * The dedupe is made VISIBLE here on purpose. "One email for four services" is
  * the single most surprising thing about this feature, and a person who
  * discovers it only after sending has already worried about spamming a client.
+ *
+ * Two things the caller depends on:
+ *
+ *   - BLANK ROWS ARE NOT ERRORS. See `isBlankRow`. They are also not counted
+ *     towards `ok`, so inviting exactly one person does not mean first deleting
+ *     the spare row the table seeded.
+ *
+ *   - `rowErrors` is ONE message per row (there is one message line under a
+ *     row), but `rowErrorFields` says WHICH FIELDS that row got wrong, because
+ *     the red border has to land on the field that is actually empty. A missing
+ *     service used to paint the email box red.
  */
 export const planInvites = (rows, { services = [], existingEmails = [] } = {}) => {
   const rowErrors = {};
+  const rowErrorFields = {};
   const existingKeys = new Set(services.map((s) => serviceKeyOf(s.name)).filter(Boolean));
   const known = new Set(existingEmails.map((e) => String(e).toLowerCase()));
 
   const serviceOrder = [];
   const seenServices = new Map();
   const emails = new Map();
+  let filledRows = 0;
 
   rows.forEach((row) => {
+    if (isBlankRow(row)) return;
+    filledRows += 1;
+
     const email = norm(row.email).toLowerCase();
     const key = serviceKeyOf(row.service);
 
-    if (!email) rowErrors[row.id] = 'Add an email address.';
-    else if (!EMAIL_RE.test(email)) rowErrors[row.id] = 'That is not an email address.';
-    else if (!key) rowErrors[row.id] = 'Name the service this person looks after.';
+    const emailError = !email
+      ? 'Add an email address.'
+      : !EMAIL_RE.test(email)
+        ? 'That is not an email address.'
+        : null;
+    const serviceError = key ? null : 'Name the service this person looks after.';
+
+    if (emailError || serviceError) {
+      rowErrors[row.id] = emailError || serviceError;
+      rowErrorFields[row.id] = { email: !!emailError, service: !!serviceError };
+    }
 
     if (!email || !key) return;
 
@@ -179,8 +214,9 @@ export const planInvites = (rows, { services = [], existingEmails = [] } = {}) =
   if (summary) summary += ' Everyone invited can see every service.';
 
   return {
-    ok: Object.keys(rowErrors).length === 0 && rows.length > 0 && rows.length <= MAX_ROWS,
+    ok: Object.keys(rowErrors).length === 0 && filledRows > 0 && rows.length <= MAX_ROWS,
     rowErrors,
+    rowErrorFields,
     servicesToCreate: toCreate,
     servicesReused: reused,
     uniqueEmails: uniqueEmails.map((e) => e.email),

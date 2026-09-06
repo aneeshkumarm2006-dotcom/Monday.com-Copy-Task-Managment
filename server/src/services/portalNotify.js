@@ -42,7 +42,16 @@ const { sendPortalNewMessageEmail } = require('./emailService');
  * action, and the copy says so.
  *
  * Fire-and-forget: every failure is logged and swallowed. A message that is
- * already stored must not fail because the mailer did.
+ * already stored must not fail because the mailer did. SWALLOWED, NOT HIDDEN —
+ * see the per-send catch below, which exists because a `Promise.allSettled`
+ * whose results nobody reads turns a broken mailer into silence.
+ *
+ * ---- THE ORDER OF THE QUERIES IS PART OF THE DESIGN -----------------------
+ *
+ * This runs on the hot path: every message and every thread post in a client
+ * room. The overwhelmingly common answer is "nobody is due" — that is what the
+ * three layers above are FOR — so everything only a SEND needs (the board, the
+ * organisation, the copy) is loaded AFTER that decision, not before it.
  */
 
 const PRESENCE_MS = 3 * 60 * 1000;
@@ -89,53 +98,77 @@ const notifyClientsOfTeamMessage = async (channel, message, { authorName = '' } 
     const audience = await channelAudience(channel);
     if (!audience.contactIds.length) return;
 
-    const contacts = await ClientContact.find({
-      _id: { $in: audience.contactIds },
-      notifyEmail: { $ne: false },
-    }).select('email name notifyEmail');
+    // Both halves of the throttle decision, in one round trip. The read rows are
+    // fetched by CHANNEL rather than by (channel, contact) so they need not wait
+    // for the contact list; there is one row per contact who has ever opened the
+    // room, and the extras are simply never looked up.
+    const [contacts, reads] = await Promise.all([
+      ClientContact.find({
+        _id: { $in: audience.contactIds },
+        notifyEmail: { $ne: false },
+      }).select('email name notifyEmail'),
+      ChannelContactRead.find({ channel: channel._id }),
+    ]);
     if (!contacts.length) return;
 
-    const [board, org] = await Promise.all([
-      Board.findById(channel.board).select('+portalToken portalClientName name organisation portalEnabled'),
-      Organisation.findById(channel.organisation).select('name'),
-    ]);
-    if (!board || !board.portalToken || !board.portalEnabled) return;
-
-    const reads = await ChannelContactRead.find({
-      channel: channel._id,
-      contact: { $in: contacts.map((c) => c._id) },
-    });
     const readByContact = new Map(reads.map((r) => [String(r.contact), r]));
 
     const now = new Date();
     const due = contacts.filter((c) => shouldNotify(readByContact.get(String(c._id)), now));
     if (!due.length) return;
 
+    // Only now, with somebody actually to write to.
+    const [board, org] = await Promise.all([
+      Board.findById(channel.board).select('+portalToken portalClientName name organisation portalEnabled'),
+      Organisation.findById(channel.organisation).select('name'),
+    ]);
+    // `portalEnabled` is NOT re-checked here: `channelAudience` returns an empty
+    // contact list for a board that is not live (`isLiveClientBoard`), so getting
+    // this far already means it is. The token is a different question — it IS
+    // the link, and there is nothing to send without one.
+    if (!board || !board.portalToken) return;
+
     const clientName = (board.portalClientName || '').trim() || board.name;
     const snippet = (message?.bodyText || '').replace(/\s+/g, ' ').trim().slice(0, 140);
 
     await Promise.allSettled(
       due.map(async (contact) => {
-        await sendPortalNewMessageEmail({
-          to: contact.email,
-          orgName: org?.name || '',
-          clientName,
-          serviceName: channel.name || 'your portal',
-          mode: channel.mode === 'mail' ? 'mail' : 'chat',
-          authorName,
-          subject: message?.subject || null,
-          snippet,
-          link: `${process.env.CLIENT_URL || 'http://localhost:5173'}/portal/${board.portalToken}`,
-        });
+        try {
+          await sendPortalNewMessageEmail({
+            to: contact.email,
+            orgName: org?.name || '',
+            clientName,
+            serviceName: channel.name || 'your portal',
+            mode: channel.mode === 'mail' ? 'mail' : 'chat',
+            authorName,
+            subject: message?.subject || null,
+            snippet,
+            link: `${process.env.CLIENT_URL || 'http://localhost:5173'}/portal/${board.portalToken}`,
+          });
 
-        // Stamp AFTER a successful send. Stamping first would silently swallow
-        // the notification when the mailer is down — the client would be marked
-        // as told about something they were never told about.
-        await ChannelContactRead.updateOne(
-          { channel: channel._id, contact: contact._id },
-          { $set: { lastNotifiedAt: now }, $setOnInsert: { lastReadAt: new Date(0) } },
-          { upsert: true }
-        );
+          // Stamp AFTER a successful send. Stamping first would silently swallow
+          // the notification when the mailer is down — the client would be
+          // marked as told about something they were never told about.
+          await ChannelContactRead.updateOne(
+            { channel: channel._id, contact: contact._id },
+            { $set: { lastNotifiedAt: now }, $setOnInsert: { lastReadAt: new Date(0) } },
+            { upsert: true }
+          );
+        } catch (err) {
+          // `allSettled` catches this and nobody reads its results, so without
+          // this line a misconfigured transporter produces NOTHING: no email, no
+          // log, and — because the stamp above never runs — the same doomed send
+          // retried on every subsequent message forever. Indistinguishable from
+          // the throttle correctly staying quiet, which is the one failure this
+          // whole module exists to prevent.
+          console.error(
+            'notifyClientsOfTeamMessage send failed for',
+            contact.email,
+            'in channel',
+            String(channel._id),
+            err
+          );
+        }
       })
     );
   } catch (err) {

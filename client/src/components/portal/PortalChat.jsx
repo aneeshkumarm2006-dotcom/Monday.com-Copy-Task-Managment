@@ -22,6 +22,8 @@ import { mergeMessages } from '../../utils/portalChatRows';
  * messages in instantly when the SSE connection is up, and this poll is what
  * makes the room CORRECT when it isn't (the server registry is in-memory and
  * single-process, so frames are simply lost across a restart or a second node).
+ * The same interval runs for an open thread panel, which is reachable over SSE
+ * alone and just as wrong without it.
  */
 const CHAT_POLL = 12000;
 
@@ -143,7 +145,10 @@ const ChatMessage = ({ message, onOpenThread }) => {
       <div className="mcp-msg-foot">
         <span className="mcp-msg-time">{formatClock(message.createdAt)}</span>
         {onOpenThread && (
-          <button type="button" className="mcp-msg-reply" onClick={() => onOpenThread(message)}>
+          // The button hands itself to the opener, so closing the panel can put
+          // focus back exactly where the client left it.
+          <button type="button" className="mcp-msg-reply"
+            onClick={(e) => onOpenThread(message, e.currentTarget)}>
             <CornerUpLeft size={11} />
             {message.replyCount > 0 ? replyLabel(message.replyCount) : 'Reply'}
           </button>
@@ -168,11 +173,15 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
   // The open thread: { parent, replies } — null when the room is showing.
   const [thread, setThread] = useState(null);
   const [threadLoading, setThreadLoading] = useState(false);
+  const [threadError, setThreadError] = useState('');
 
   const scrollRef = useRef(null);
   const atBottomRef = useRef(true);
   const markedRef = useRef('');
   const landedRef = useRef(false);
+  const threadHeadRef = useRef(null);
+  // The button a thread was opened from, so closing gives focus back to it.
+  const threadOpenerRef = useRef(null);
 
   /* ---- loading ---- */
   const refresh = useCallback(async ({ initial = false } = {}) => {
@@ -181,7 +190,12 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
       const data = await getPortalMessages(channelId);
       // The API answers newest-first; the room reads oldest-first.
       setMessages((prev) => mergeMessages(initial ? [] : prev, data.messages || []));
-      setNextBefore(data.nextBefore || null);
+      // ONLY the first load owns the cursor. `refresh` always asks for the
+      // newest page, so its `nextBefore` is that page's oldest message: letting
+      // the poll write it would rewind past every page `loadOlder` fetched and,
+      // once new messages have arrived, skip the ones in between. The poll needs
+      // no cursor of its own — it merges into what is already loaded.
+      if (initial) setNextBefore(data.nextBefore || null);
       if (typeof data.canPost === 'boolean') setCanPost(data.canPost);
       setError('');
     } catch (err) {
@@ -196,9 +210,11 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
   useEffect(() => {
     setMessages([]);
     setThread(null);
+    setThreadError('');
     setNextBefore(null);
     setLoading(true);
     setError('');
+    threadOpenerRef.current = null;
     markedRef.current = '';
     atBottomRef.current = true;
     landedRef.current = false;
@@ -280,6 +296,8 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
     try {
       const data = await getPortalMessages(channelId, { before: nextBefore });
       setMessages((prev) => mergeMessages(prev, data.messages || []));
+      // Paging is the other half of the cursor's ownership: this is the only
+      // response whose `nextBefore` points further back than the one we hold.
       setNextBefore(data.nextBefore || null);
       // Hold the reading position: without this, prepending a page throws the
       // client back to a message they had already read.
@@ -291,18 +309,77 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
   };
 
   /* ---- threads ---- */
-  const openThread = async (parent) => {
-    setThread({ parent, replies: [] });
-    setThreadLoading(true);
+  const loadThread = useCallback(async (parentId, { initial = false } = {}) => {
+    if (!parentId) return;
     try {
-      const data = await getPortalMessages(channelId, { thread: parent.id });
-      setThread({ parent: data.parent || parent, replies: data.replies || [] });
-    } catch {
-      setThread({ parent, replies: [] });
+      const data = await getPortalMessages(channelId, { thread: parentId });
+      // Guarded on the id: a poll that lands after the client has moved to
+      // another thread must not repaint the one they are now reading.
+      setThread((t) => (t && t.parent?.id === parentId
+        ? {
+          parent: data.parent || t.parent,
+          replies: mergeMessages(initial ? [] : t.replies, data.replies || []),
+        }
+        : t));
+      setThreadError('');
+    } catch (err) {
+      // A failed FIRST load must not read as "No replies yet" — that tells the
+      // client there is no conversation here and invites them to reply into a
+      // thread they cannot see. A failed poll keeps what is on screen.
+      if (initial) setThreadError(err.response?.data?.error || 'Couldn’t load this thread.');
     } finally {
-      setThreadLoading(false);
+      if (initial) setThreadLoading(false);
     }
+  }, [channelId]);
+
+  const openThread = (parent, opener) => {
+    threadOpenerRef.current = opener || null;
+    setThread({ parent, replies: [] });
+    setThreadError('');
+    setThreadLoading(true);
+    loadThread(parent.id, { initial: true });
   };
+
+  const closeThread = useCallback(() => {
+    setThread(null);
+    setThreadError('');
+    const opener = threadOpenerRef.current;
+    threadOpenerRef.current = null;
+    // The room stays mounted underneath, so the button we came from is still
+    // there to take focus back.
+    if (opener && document.contains(opener)) opener.focus();
+  }, []);
+
+  const openThreadId = thread?.parent?.id || '';
+
+  // The same backstop the room has, for the same reason: SSE is the only other
+  // way a reply reaches an open thread, and frames are lost across a restart or
+  // a second node. Without this the panel says "No replies yet" indefinitely
+  // while the team is answering.
+  useEffect(() => {
+    if (!openThreadId) return undefined;
+    const tick = () => { if (document.visibilityState === 'visible') loadThread(openThreadId); };
+    const id = setInterval(tick, CHAT_POLL);
+    document.addEventListener('visibilitychange', tick);
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', tick); };
+  }, [openThreadId, loadThread]);
+
+  // Under 900px the panel stacks BELOW the room, so opening one can move nothing
+  // into view at all. Scroll it up and put focus on its heading.
+  useEffect(() => {
+    if (!openThreadId) return;
+    const el = threadHeadRef.current;
+    if (!el) return;
+    el.scrollIntoView({ block: 'nearest' });
+    el.focus({ preventScroll: true });
+  }, [openThreadId]);
+
+  useEffect(() => {
+    if (!openThreadId) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') closeThread(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [openThreadId, closeThread]);
 
   const send = async ({ bodyText, attachments }) => {
     const { message } = await sendPortalMessage(channelId, { bodyText, attachments });
@@ -405,16 +482,18 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
       </div>
 
       {thread && (
-        <aside className="mcp-chat-thread">
+        <aside className="mcp-chat-thread" aria-label="Thread">
           <div className="mcp-chat-head">
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="mcp-chat-title">Thread</div>
+              <div className="mcp-chat-title" ref={threadHeadRef} tabIndex={-1}>Thread</div>
               <div className="mcp-chat-sub">
-                {thread.replies.length ? replyLabel(thread.replies.length) : 'No replies yet'}
+                {threadError
+                  ? 'Couldn’t load the replies'
+                  : thread.replies.length ? replyLabel(thread.replies.length) : 'No replies yet'}
               </div>
             </div>
             <button type="button" className="mcp-linkbtn" style={{ padding: 4 }}
-              onClick={() => setThread(null)} aria-label="Close thread">
+              onClick={closeThread} aria-label="Close thread">
               <X size={17} />
             </button>
           </div>
@@ -436,21 +515,48 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
 
             {threadLoading ? (
               <div className="mcp-chat-center"><Loader2 size={18} color="#2563EB" className="mcp-spin" /></div>
+            ) : threadError ? (
+              <div className="mcp-chat-center">
+                <p className="mcp-chat-empty-text">{threadError}</p>
+                <button
+                  type="button"
+                  className="mcp-btn mcp-btn--ghost"
+                  style={{ height: 32, fontSize: 12.5 }}
+                  onClick={() => {
+                    setThreadError('');
+                    setThreadLoading(true);
+                    loadThread(openThreadId, { initial: true });
+                  }}
+                >
+                  Try again
+                </button>
+              </div>
             ) : (
               thread.replies.map((r) => <ChatMessage key={r.id} message={r} />)
             )}
           </div>
 
-          {canPost && (
+          {canPost ? (
             <div className="mcp-chat-foot">
               <PortalComposer
+                // Remounted per thread so the draft below is read for THIS one,
+                // and so a half-written reply never follows the client into
+                // another thread.
+                key={openThreadId}
                 channelId={channelId}
                 placeholder="Reply in thread…"
                 submitLabel="Reply"
                 minHeight={58}
+                // Escape and the close button both take this panel away mid
+                // sentence; the draft is what makes that recoverable.
+                draftKey={`chatThread:${openThreadId}`}
+                // Replying into a thread we failed to read means replying blind.
+                disabled={!!threadError}
                 onSubmit={sendReply}
               />
             </div>
+          ) : (
+            <p className="mcp-chat-readonly"><Lock size={13} /> This conversation is read-only.</p>
           )}
         </aside>
       )}

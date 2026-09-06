@@ -125,6 +125,56 @@ test('authMethod defaults to google when absent', () => {
   assert.strictEqual(plan.contacts[0].authMethod, 'google');
 });
 
+/**
+ * A DEFAULT IS NOT A CHOICE.
+ *
+ * The write side uses this flag to decide whether it may change how somebody
+ * already signs in. Getting it wrong is not a cosmetic bug: a defaulted 'google'
+ * landing on a client who has set a password locks them out of the portal
+ * permanently, and every recovery path answers reassuringly while doing nothing.
+ * See `upsertContactRow`.
+ */
+test('a row that names no sign-in method is DEFAULTED, not chosen', () => {
+  const plan = planInvites([{ service: 'SEO', email: asha }]);
+  assert.strictEqual(plan.contacts[0].authMethodExplicit, false);
+});
+
+test('a row that names one IS a choice, whichever one it names', () => {
+  assert.strictEqual(
+    planInvites([{ service: 'SEO', email: asha, authMethod: 'google' }]).contacts[0]
+      .authMethodExplicit,
+    true
+  );
+  assert.strictEqual(
+    planInvites([{ service: 'SEO', email: asha, authMethod: 'password' }]).contacts[0]
+      .authMethodExplicit,
+    true
+  );
+});
+
+test('one explicit row among several makes the whole person a choice', () => {
+  const plan = planInvites([
+    { service: 'SEO', email: asha },
+    { service: 'Meta Ads', email: asha, authMethod: 'password' },
+  ]);
+  assert.strictEqual(plan.contacts[0].authMethodExplicit, true);
+  assert.strictEqual(plan.contacts[0].authMethod, 'password');
+
+  // ...and the other order, so it is not an artefact of which row came first.
+  const reversed = planInvites([
+    { service: 'SEO', email: asha, authMethod: 'password' },
+    { service: 'Meta Ads', email: asha },
+  ]);
+  assert.strictEqual(reversed.contacts[0].authMethodExplicit, true);
+});
+
+test('a sign-in method nobody can use is not a choice either', () => {
+  const plan = planInvites([{ service: 'SEO', email: asha, authMethod: 'carrier-pigeon' }]);
+  assert.strictEqual(plan.ok, false, 'the batch is refused whole');
+  assert.strictEqual(plan.contacts[0].authMethodExplicit, false);
+  assert.strictEqual(plan.contacts[0].authMethod, 'google');
+});
+
 test('a bad row reports its INDEX, so the UI can mark that table row', () => {
   const plan = planInvites([
     { service: 'SEO', email: asha },

@@ -18,11 +18,19 @@ const buckets = new Map();
 
 const clientKey = (req) => {
   // Prefer the authenticated identity when we have one (portal contact / user),
-  // else fall back to IP. `trust proxy` is not set, so req.ip is the socket peer.
+  // else fall back to IP.
+  //
+  // THE IP COMES FROM `req.ip` AND NOTHING ELSE. This used to read the first
+  // value of X-Forwarded-For, which is a header the CALLER writes: a different
+  // value per request put every request in its own bucket, so every brake on the
+  // unauthenticated portal surface — login, forgot-password, setup, the public
+  // reads — could be walked straight past. `req.ip` is whatever `trust proxy`
+  // says to believe, and app.js sets that from TRUST_PROXY as a hop count or a
+  // subnet list, never `true` (which would only re-trust the same forged header
+  // one level down). See the comment there.
   if (req.portal?.contactId) return `c:${req.portal.contactId}`;
   if (req.user?.userId) return `u:${req.user.userId}`;
-  const fwd = (req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return `ip:${fwd || req.ip || req.socket?.remoteAddress || 'unknown'}`;
+  return `ip:${req.ip || req.socket?.remoteAddress || 'unknown'}`;
 };
 
 const rateLimit = ({

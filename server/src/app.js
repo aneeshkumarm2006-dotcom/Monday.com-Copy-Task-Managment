@@ -4,6 +4,47 @@ const passport = require('./config/passport');
 
 const app = express();
 
+/**
+ * TRUST PROXY — the deployment assumption, written down.
+ *
+ * `req.ip` and `X-Forwarded-For` are the only things standing between the
+ * portal's rate limiters (middleware/rateLimit.js) and an attacker who wants a
+ * fresh bucket per request. Express decides which of them to believe from this
+ * setting, so the setting IS the security control:
+ *
+ *   0 (the default here) — nothing of ours sits in front. `req.ip` is the socket
+ *       peer and the header is ignored entirely. Correct for a directly exposed
+ *       process and for local development.
+ *   n — exactly n reverse proxies of OURS are in front (a single nginx or a
+ *       platform load balancer is 1). Express then takes the n-th address from
+ *       the RIGHT of X-Forwarded-For: the one our own proxy appended, which a
+ *       caller cannot forge by prepending values of their own.
+ *   a comma list of IPs/CIDRs (or 'loopback') — trust hops by address rather
+ *       than by count, for a deployment whose chain length varies.
+ *
+ * DELIBERATELY NEVER `true`. `true` trusts the LEFT-most value in the header,
+ * which is whatever the caller typed — it re-trusts the exact input this setting
+ * exists to distrust, and hands every unauthenticated portal limiter straight
+ * back to them. Set TRUST_PROXY to the real hop count in production instead.
+ */
+const parseTrustProxy = (raw) => {
+  const v = (raw || '').trim();
+  if (!v) return 0;
+  if (/^\d+$/.test(v)) return Number(v);
+  if (v === 'true' || v === 'false') {
+    console.warn(
+      `TRUST_PROXY="${v}" ignored — it must be a hop count (e.g. 1) or a list of ` +
+        'proxy IPs/subnets. Falling back to 0 (trust nothing).'
+    );
+    return 0;
+  }
+  return v
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+};
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
+
 // CORS — allow the frontend client
 app.use(
   cors({

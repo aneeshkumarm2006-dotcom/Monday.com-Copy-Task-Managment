@@ -7,6 +7,7 @@ const { recordServiceUse } = require('./serviceCatalogService');
 const { issueSetupToken, sendInviteEmail } = require('./portalInviteService');
 const { ensurePortalLive } = require('../utils/portalActivation');
 const { normaliseServiceName, serviceSlug } = require('../utils/serviceCatalog');
+const { keyForSurface } = require('../utils/chatSurfaces');
 const eventBus = require('./eventBus');
 
 /**
@@ -89,9 +90,16 @@ const AUTH_METHODS = ['google', 'password'];
  *   ok: boolean,
  *   errors: Array<{index: number|null, field: string, message: string}>,
  *   services: Array<{name: string, slug: string, color: string|null, rowIndexes: number[]}>,
- *   contacts: Array<{email: string, authMethod: string, slugs: string[], rowIndexes: number[]}>,
+ *   contacts: Array<{email: string, authMethod: string, authMethodExplicit: boolean,
+ *                    slugs: string[], rowIndexes: number[]}>,
  *   warnings: string[],
  * }}
+ *
+ * `authMethodExplicit` is the difference between "the team chose Google" and
+ * "nobody said anything, so this is the default". It is carried rather than
+ * re-derived because the write side cannot tell those apart afterwards, and
+ * treating a default as a choice is what silently locked password clients out
+ * of their own portal — see `upsertContactRow`.
  */
 const planInvites = (rows) => {
   const errors = [];
@@ -139,11 +147,16 @@ const planInvites = (rows) => {
       errors.push({ index, field: 'service', message: 'Service is required.' });
     }
 
-    let authMethod = row.authMethod == null ? 'google' : String(row.authMethod);
+    // An absent (or unusable) value is a DEFAULT, not a decision. A row that
+    // never named a method must not be able to change how somebody already
+    // signs in.
+    const askedFor = row.authMethod == null ? null : String(row.authMethod);
+    let authMethod = askedFor == null ? 'google' : askedFor;
     if (!AUTH_METHODS.includes(authMethod)) {
       errors.push({ index, field: 'authMethod', message: 'That is not a sign-in method.' });
       authMethod = 'google';
     }
+    const explicit = askedFor != null && AUTH_METHODS.includes(askedFor);
 
     if (!email || !slug) return;
 
@@ -167,6 +180,8 @@ const planInvites = (rows) => {
       const c = contacts.get(email);
       c.rowIndexes.push(index);
       if (!c.slugs.includes(slug)) c.slugs.push(slug);
+      // One row naming a method is enough to make the person's method a choice.
+      if (explicit) c.authMethodExplicit = true;
       // PASSWORD WINS on a conflict. Someone whose address is not a Google
       // account needs a password regardless of which row happened to ask for
       // one, and the opposite default would send them a link they cannot use.
@@ -180,6 +195,7 @@ const planInvites = (rows) => {
       contacts.set(email, {
         email,
         authMethod,
+        authMethodExplicit: explicit,
         slugs: [slug],
         rowIndexes: [index],
         mixedAuth: false,
@@ -323,9 +339,18 @@ const recordCatalogFor = async (entry, board, actorId) => {
  * PHASE 4 — every service can be talked about from the day it exists, reused
  * ones included. Idempotent under Channel's (board, group, mode, audience)
  * index, and swallowed for the same reason phase 3 is.
+ *
+ * `skipped` is the honest half of the report. On a board whose portal is
+ * switched OFF the client chat and mailbox are not created, and NOTHING EVER
+ * BACKFILLS THEM: `createSurfaces` runs at service-creation time only, and
+ * re-enabling the link writes `portalEnabled` without minting a channel. A
+ * service added during an offboarded period therefore stays without its client
+ * rooms until somebody re-creates them by hand (SetUpCommunicationModal), and
+ * saying so in the response is the only way the team can find that out.
  */
 const ensureSurfacesFor = async (entry, board, actorId, portalLive = true) => {
   if (!entry.group) return entry;
+  const skipped = portalLive ? [] : ['clientChat', 'clientMail'];
   try {
     const made = await createSurfaces(
       board,
@@ -336,13 +361,23 @@ const ensureSurfacesFor = async (entry, board, actorId, portalLive = true) => {
       { clientChat: portalLive, clientMail: portalLive, team: true },
       { createdBy: actorId }
     );
+    // `created` and `existing` hold CHANNEL DOCUMENTS, and a Channel has no
+    // `key` path — the surface key is DERIVED from its (mode, audience) pair,
+    // which is what `keyForSurface` is for and what `chatController` already
+    // uses. Reading `.key` off the document reported `[null, null, null]` for
+    // every service this file has ever created.
     entry.surfaces = {
-      created: (made.created || []).map((c) => c.key),
-      existing: (made.existing || []).map((c) => c.key),
+      created: (made.created || []).map((c) => keyForSurface(c.mode, c.audience)).filter(Boolean),
+      existing: (made.existing || []).map((c) => keyForSurface(c.mode, c.audience)).filter(Boolean),
+      skipped,
+      // A REFUSED plan is not an empty one: `planSurfaces` refuses the whole
+      // selection rather than part of it, so without this the two cases —
+      // "nothing to do" and "nothing was allowed" — read identically.
+      refusals: made.ok ? [] : made.refusals || [],
     };
   } catch (err) {
     console.error('portalBatchInvite surfaces error:', err);
-    entry.surfaces = { created: [], existing: [] };
+    entry.surfaces = { created: [], existing: [], skipped, refusals: [] };
   }
   return entry;
 };
@@ -354,17 +389,75 @@ const ensureSurfacesFor = async (entry, board, actorId, portalLive = true) => {
  * no-op: a contact already on SEO and Meta Ads does not gain them twice.
  * `services` is LABELLING ONLY — read the field comment on the model before
  * reaching for it as a filter.
+ *
+ * ---- WHY authMethod IS NOT AN UNCONDITIONAL $set --------------------------
+ *
+ * This upsert mostly runs for people who are ALREADY CLIENTS — putting a known
+ * contact on another service is the ordinary second-invite case this whole file
+ * is built around. The invite table sends a sign-in method on every row whether
+ * or not anybody chose one, and it is never shown what an existing contact
+ * already uses, so `$set: { authMethod }` rewrote a password client to 'google'
+ * the next time the team added them anywhere. From then on their password login
+ * is refused as "Incorrect email or password" and the recovery path answers with
+ * the deliberately quiet response while sending nothing: a permanent lock-out,
+ * produced by a routine action, invisible in the roster.
+ *
+ * Two narrow rules:
+ *
+ *   1. A DEFAULTED method only ever lands on a NEW row ($setOnInsert). If nobody
+ *      chose, nobody is changed.
+ *   2. An explicit choice is honoured, EXCEPT that a contact who has already set
+ *      a password is not moved to Google here. That is the one direction that
+ *      destroys a working credential, and it is reported as a warning instead.
+ *
+ * `portalInviteService.inviteContact` DOES switch the method on every invite,
+ * and that difference is deliberate: it is the single-address invite box, where
+ * a human picked a method for one named person and can see what they picked.
+ * Here the method is a column in a table about services.
+ *
+ * @returns {Promise<{contact: object, switchedFrom: string|null, refusedSwitchTo: string|null}>}
  */
-const upsertContactRow = ({ board, email, authMethod, groupIds }) =>
-  ClientContact.findOneAndUpdate(
+const upsertContactRow = async ({
+  board,
+  email,
+  authMethod,
+  authMethodExplicit = false,
+  groupIds,
+}) => {
+  // Read before writing: an upsert cannot say "only if this row is new" or "only
+  // if they have no password" on its own, and the alternative — a pipeline
+  // update — cannot express `$setOnInsert` or `$addToSet` at all. One indexed
+  // lookup on (board, email), at most MAX_ROWS times per submission.
+  const existing = await ClientContact.findOne({ board: board._id, email }).select(
+    'authMethod +passwordHash'
+  );
+
+  const switching = !!existing && authMethodExplicit && existing.authMethod !== authMethod;
+  const wouldStrandPassword = switching && authMethod === 'google' && !!existing.passwordHash;
+  const apply = switching && !wouldStrandPassword;
+
+  // Never both: Mongo rejects the same path appearing in $set and $setOnInsert.
+  const set = { invitedAt: new Date() };
+  const setOnInsert = { board: board._id, organisation: board.organisation, email };
+  if (apply) set.authMethod = authMethod;
+  else setOnInsert.authMethod = authMethod;
+
+  const contact = await ClientContact.findOneAndUpdate(
     { board: board._id, email },
     {
-      $setOnInsert: { board: board._id, organisation: board.organisation, email },
-      $set: { authMethod, invitedAt: new Date() },
+      $setOnInsert: setOnInsert,
+      $set: set,
       $addToSet: { services: { $each: groupIds } },
     },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   ).select('+passwordHash +setupTokenHash');
+
+  return {
+    contact,
+    switchedFrom: apply ? existing.authMethod : null,
+    refusedSwitchTo: wouldStrandPassword ? authMethod : null,
+  };
+};
 
 /**
  * PHASE 6 — the ONE non-idempotent step, and therefore always last.
@@ -378,9 +471,20 @@ const mailContact = async ({ board, orgName, contact, email, authMethod, service
     let setupToken = null;
     let purpose = 'setup';
     if (authMethod === 'password') {
-      // Exactly the rule inviteContact already implements: someone who has a
-      // password gets a RESET link, someone who does not gets a SETUP one.
-      purpose = contact.passwordHash ? 'reset' : 'setup';
+      // THE PURPOSE FOLLOWS THE CALLER'S INTENT, NOT THE PASSWORD COLUMN.
+      //
+      // "Someone who has a password gets a RESET link" is right for the invite
+      // box and for forgot-password, and wrong here. This message's news is the
+      // SERVICES — and `sendInviteEmail` deliberately drops the service list
+      // from a reset, because the reset copy is worded so that an unrequested
+      // one is obviously safe to ignore. So an existing client added to three
+      // services got an email inviting them to ignore it, naming none of the
+      // three, while the results table showed three ticks reading "invited".
+      //
+      // With services to announce, this is an invitation. With none (a resend
+      // carrying no service) the old rule still holds.
+      purpose =
+        serviceLinks && serviceLinks.length ? 'setup' : contact.passwordHash ? 'reset' : 'setup';
       setupToken = await issueSetupToken(contact, purpose);
     }
     const sent = await sendInviteEmail({
@@ -418,17 +522,29 @@ const inviteServiceContacts = async ({
   const plan = planInvites(rows);
   if (!plan.ok) return { ok: false, status: 400, errors: plan.errors };
 
-  // ---- a switched-off portal is refused BEFORE anything is written -------
-  // This batch always has people to email, and mailing a link that
-  // `loadPortalBoard` refuses would tell a client to visit a page that does not
-  // load. `sendPortalInvite` answers the same way. It is checked HERE, ahead of
-  // every phase, because the e2e pins "one bad row creates nothing at all" and
-  // a refusal issued after phase 2 would have created services.
+  // ---- a switched-off portal refuses the INVITATIONS, not the services ---
+  //
+  // Only when there is actually mail to send. `notify: false` is a first-class,
+  // exercised path (`src/e2e/clientPortalV2.e2e.js` posts one) that writes rows
+  // and sends nothing, so it cannot mail a dead link. Restructuring an
+  // offboarded client's services internally is ordinary work and must keep
+  // working — `createServiceWithInvites` says exactly that, in those words, and
+  // refusing it here while allowing it one service at a time through Add Service
+  // was a contradiction between two halves of one feature.
+  //
+  // What must not happen is an email carrying a link `loadPortalBoard` refuses,
+  // telling a client to visit a page that does not load. `sendPortalInvite`
+  // answers the same way.
+  //
+  // Raised BEFORE any write: the e2e pins "one bad row creates nothing at all",
+  // and a refusal issued after phase 2 would have created services.
   //
   // A board with no token has never been live, so `portalEnabled: false` there
   // is the birth state, not the kill switch — see `utils/portalActivation.js`.
-  const disabled = refusalIfPortalDisabled(board);
-  if (disabled) return disabled;
+  if (notify && plan.contacts.length) {
+    const disabled = refusalIfPortalDisabled(board);
+    if (disabled) return disabled;
+  }
 
   // ---- phase 2 runs FIRST, and phase 1 has moved below it ----------------
   //
@@ -475,21 +591,44 @@ const inviteServiceContacts = async ({
   }
 
   // ---- phase 5: one contact per unique address ---------------------------
+  // The plan's warnings are the batch's warnings, and phase 5 adds to them: a
+  // sign-in method that changed, or one that deliberately did not, is something
+  // the team has to be told in the same breath as the result.
+  const warnings = plan.warnings;
   const contactResults = [];
   for (const c of plan.contacts) {
     const groupIds = c.slugs.map((slug) => bySlug.get(slug)?.group?._id).filter(Boolean);
 
-    const contact = await upsertContactRow({
+    const { contact, switchedFrom, refusedSwitchTo } = await upsertContactRow({
       board,
       email: c.email,
       authMethod: c.authMethod,
+      authMethodExplicit: !!c.authMethodExplicit,
       groupIds,
     });
+    if (switchedFrom) {
+      warnings.push(
+        c.email +
+          ' was already a contact on this board and has been switched from ' +
+          switchedFrom +
+          ' sign-in to ' +
+          c.authMethod +
+          '.'
+      );
+    }
+    if (refusedSwitchTo) {
+      warnings.push(
+        c.email +
+          ' already has a portal password, so they were left on password sign-in rather than moved to Google. Use the invite box on the People tab to change that deliberately.'
+      );
+    }
 
     contactResults.push({
       email: c.email,
       contactId: String(contact._id),
-      authMethod: c.authMethod,
+      // What they ACTUALLY sign in with now, which is not always what the row
+      // asked for — see `upsertContactRow`.
+      authMethod: contact.authMethod || c.authMethod,
       slugs: c.slugs,
       services: c.slugs.map((s) => bySlug.get(s)?.service?.name).filter(Boolean),
       serviceLinks: c.slugs
@@ -542,12 +681,22 @@ const inviteServiceContacts = async ({
     if (entry && entry.error) outcome = 'failed';
     else if (!notify) outcome = 'added';
     else if (contact && !contact.emailSent) outcome = 'failed';
+    // ONE service is created ONCE, however many rows named it. `entry` is the
+    // deduped entry SHARED by every row for that slug, so a flat `entry.created`
+    // painted "Service created" on all three of Asha's SEO rows for the single
+    // group that was made — contradicting the preview line ("This creates 1
+    // service") the same feature works hard to keep honest. The first row that
+    // named the service is the one that created it; the rest reuse it, which is
+    // exactly what a row naming an already-existing service does.
+    const firstRowForService = entry ? entry.service.rowIndexes[0] : null;
+    const serviceCreated = !!(entry && entry.created && firstRowForService === index);
     return {
       index,
       email,
       service: (entry && entry.service.name) || normaliseServiceName(raw && raw.service),
       groupId: entry && entry.group ? String(entry.group._id) : null,
-      serviceCreated: !!(entry && entry.created),
+      serviceCreated,
+      serviceReused: !!(entry && entry.group && !serviceCreated),
       outcome,
       error: (entry && entry.error) || (contact && contact.error) || null,
     };
@@ -561,12 +710,12 @@ const inviteServiceContacts = async ({
       groupId: e.group ? String(e.group._id) : null,
       color: e.color || null,
       created: !!e.created,
-      surfaces: e.surfaces || { created: [], existing: [] },
+      surfaces: e.surfaces || { created: [], existing: [], skipped: [], refusals: [] },
       error: e.error || null,
     })),
     contacts: contactResults.map(({ contact, serviceLinks, ...rest }) => rest),
     rows: rowOutcomes,
-    warnings: plan.warnings,
+    warnings,
   };
 };
 
@@ -656,14 +805,20 @@ const createServiceWithInvites = async ({
       errors.push({ index, field: 'email', message: 'That is not an email address.' });
       return;
     }
-    let authMethod = row.authMethod == null ? 'google' : String(row.authMethod);
+    // The same explicit-versus-defaulted distinction `planInvites` carries, for
+    // the same reason: `upsertContactRow` must not let an untouched toggle
+    // rewrite how an existing contact signs in.
+    const askedFor = row.authMethod == null ? null : String(row.authMethod);
+    let authMethod = askedFor == null ? 'google' : askedFor;
     if (!AUTH_METHODS.includes(authMethod)) {
       errors.push({ index, field: 'authMethod', message: 'That is not a sign-in method.' });
       authMethod = 'google';
     }
+    const explicit = askedFor != null && AUTH_METHODS.includes(askedFor);
     const seen = byEmail.get(email);
     if (seen) {
       seen.rowIndexes.push(index);
+      if (explicit) seen.authMethodExplicit = true;
       // PASSWORD WINS on a conflict, exactly as in `planInvites`: someone whose
       // address is not a Google account needs a password regardless of which
       // row happened to ask for one.
@@ -675,7 +830,13 @@ const createServiceWithInvites = async ({
       }
       return;
     }
-    byEmail.set(email, { email, authMethod, rowIndexes: [index], mixed: false });
+    byEmail.set(email, {
+      email,
+      authMethod,
+      authMethodExplicit: explicit,
+      rowIndexes: [index],
+      mixed: false,
+    });
   });
 
   for (const c of byEmail.values()) {
@@ -763,16 +924,34 @@ const createServiceWithInvites = async ({
   // ---- phase 5: one contact per unique address ---------------------------
   const contactResults = [];
   for (const c of byEmail.values()) {
-    const contact = await upsertContactRow({
+    const { contact, switchedFrom, refusedSwitchTo } = await upsertContactRow({
       board,
       email: c.email,
       authMethod: c.authMethod,
+      authMethodExplicit: !!c.authMethodExplicit,
       groupIds: [entry.group._id],
     });
+    if (switchedFrom) {
+      warnings.push(
+        c.email +
+          ' was already a contact on this board and has been switched from ' +
+          switchedFrom +
+          ' sign-in to ' +
+          c.authMethod +
+          '.'
+      );
+    }
+    if (refusedSwitchTo) {
+      warnings.push(
+        c.email +
+          ' already has a portal password, so they were left on password sign-in rather than moved to Google. Use the invite box on the People tab to change that deliberately.'
+      );
+    }
     contactResults.push({
       email: c.email,
       contactId: String(contact._id),
-      authMethod: c.authMethod,
+      // What they actually sign in with now — see `upsertContactRow`.
+      authMethod: contact.authMethod || c.authMethod,
       rowIndexes: c.rowIndexes,
       contact,
       emailSent: false,
@@ -807,7 +986,7 @@ const createServiceWithInvites = async ({
       groupId: String(entry.group._id),
       color: entry.color || null,
       created: true,
-      surfaces: entry.surfaces || { created: [], existing: [] },
+      surfaces: entry.surfaces || { created: [], existing: [], skipped: [], refusals: [] },
     },
     // True exactly once per board: the submission that brought the portal to
     // life. The UI says "the client link is now live" on the back of this.

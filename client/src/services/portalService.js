@@ -6,6 +6,8 @@ import axios from 'axios';
  * (`macan_portal_token`), and a 401 here must not drop the app user's session or
  * bounce to /login — it just clears the portal token so the dashboard can show a
  * "session expired" state. Same origin/baseURL as the app, so no CORS change.
+ * The one exception is the public sign-in endpoints, whose 401 means "wrong
+ * password", not "your session died" — see PUBLIC_AUTH_PATH below.
  */
 const PORTAL_TOKEN_KEY = 'macan_portal_token';
 // The last group link this browser opened. Kept SEPARATELY from the session
@@ -14,11 +16,28 @@ const PORTAL_TOKEN_KEY = 'macan_portal_token';
 // way back in instead of telling the client to go dig out their email.
 const PORTAL_LINK_KEY = 'macan_portal_link';
 
+/**
+ * Fired on `window` whenever the portal token changes IN THIS TAB. The `storage`
+ * event only reaches OTHER tabs, so without this a hook watching the token would
+ * never learn about the sign-in or the expiry that happened right here — see
+ * usePortalStream, which keeps a live EventSource keyed on it.
+ */
+export const PORTAL_TOKEN_EVENT = 'macan:portal-token';
+const announceToken = () => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(PORTAL_TOKEN_EVENT));
+  }
+};
+
 export const getPortalToken = () => localStorage.getItem(PORTAL_TOKEN_KEY);
-export const setPortalToken = (token) =>
+export const setPortalToken = (token) => {
   localStorage.setItem(PORTAL_TOKEN_KEY, token);
-export const clearPortalToken = () =>
+  announceToken();
+};
+export const clearPortalToken = () => {
   localStorage.removeItem(PORTAL_TOKEN_KEY);
+  announceToken();
+};
 
 export const getLastPortalLink = () => localStorage.getItem(PORTAL_LINK_KEY);
 export const rememberPortalLink = (portalToken) => {
@@ -37,10 +56,18 @@ portalApi.interceptors.request.use((config) => {
   return config;
 });
 
+// The PUBLIC, pre-sign-in endpoints. They answer a wrong password (and a
+// spent/none-of-your-business setup token) with a 401 that says nothing about
+// the session the browser may already hold — the emailed /portal/<token> link is
+// the client's bookmark, so a signed-in client fumbling a password here used to
+// log themselves out of the session they arrived with.
+const PUBLIC_AUTH_PATH = /\/auth\/(password|setup)(\/|$)/;
+
 portalApi.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const url = error.config?.url || '';
+    if (error.response?.status === 401 && !PUBLIC_AUTH_PATH.test(url)) {
       // Portal session expired/invalid — drop it; the dashboard reacts.
       clearPortalToken();
     }
@@ -256,7 +283,15 @@ export const createPortalThread = (channelId, payload) =>
 export const markPortalThreadRead = (threadId) =>
   portalApi.post(`${CHAT}/threads/${threadId}/read`).then((r) => r.data);
 
-/** Team members this contact may @mention — names only, no addresses. */
+/**
+ * Team members this contact may @mention — names only, no addresses.
+ *
+ * NOTHING CALLS THIS YET. The route, the handler and the write-path validation
+ * for `mentions` are all built, but PortalComposer is a plain textarea with no
+ * mention affordance, so a client cannot produce one. Kept (rather than deleted
+ * with its route) because the missing half is the composer, not this: wire the
+ * autocomplete and the whole path works. Don't delete one end without the other.
+ */
 export const getPortalMentions = () =>
   portalApi.get(`${CHAT}/mentions`).then((r) => r.data);
 

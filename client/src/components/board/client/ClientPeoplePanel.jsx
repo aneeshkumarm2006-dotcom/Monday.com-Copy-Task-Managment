@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Mail, RefreshCw } from 'lucide-react';
+import { Mail, RefreshCw, RotateCw, UserMinus } from 'lucide-react';
 import InvitePeopleTable from './InvitePeopleTable';
 import {
   getBoardPortalContacts,
   resendPortalInvite,
+  revokePortalContact,
   sendBoardPortalInvites,
 } from '../../../services/boardService';
 import { getServiceCatalog } from '../../../services/orgService';
@@ -40,17 +41,32 @@ const ClientPeoplePanel = ({ boardId, services = [], canManage, onServicesChange
   const [contacts, setContacts] = useState([]);
   const [catalog, setCatalog] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [resendingId, setResendingId] = useState(null);
+  const [revokingId, setRevokingId] = useState(null);
   const currentOrg = useOrgStore((s) => s.currentOrg);
   const toast = useToastStore.getState();
 
+  // A FAILED roster load is not an empty roster. The two used to collapse into
+  // one another here, so a 403 — which is what this endpoint answers for
+  // everyone without manage access, and the People row is reachable by anyone —
+  // rendered as "Nobody has been invited yet". That is a factual lie about who
+  // can open the client's portal, and the reasonable response to it is to
+  // re-invite people who are already there.
   const load = useCallback(async () => {
+    setLoading(true);
     try {
       const res = await getBoardPortalContacts(boardId);
       setContacts(res?.contacts || res || []);
-    } catch {
+      setLoadError('');
+    } catch (err) {
       setContacts([]);
+      setLoadError(
+        err?.response?.status === 403
+          ? 'Only board managers can see who has access to this portal.'
+          : err?.response?.data?.error || 'Could not load who has access to this portal.'
+      );
     } finally {
       setLoading(false);
     }
@@ -74,6 +90,9 @@ const ClientPeoplePanel = ({ boardId, services = [], canManage, onServicesChange
     try {
       const res = await sendBoardPortalInvites(boardId, rows);
       setContacts(res?.roster || []);
+      // A successful send proves the roster is readable, so an error left over
+      // from a failed load must not keep covering it.
+      setLoadError('');
       const created = (res?.services || []).filter((s) => s.created).length;
       if (created) {
         toast.success(`${created} service${created === 1 ? '' : 's'} added to this board.`);
@@ -95,6 +114,31 @@ const ClientPeoplePanel = ({ boardId, services = [], canManage, onServicesChange
       toast.error(err?.response?.data?.error || 'Could not resend that invitation.');
     } finally {
       setResendingId(null);
+    }
+  };
+
+  // Removing a contact ENDS THEIR ACCESS — the contact row is what the portal
+  // matches a returning Google account against, so deleting it signs them out
+  // and refuses the next sign-in. The confirm names the address because the
+  // mistake this fixes is a typo, and a typo is only visible when you read it.
+  const revoke = async (contact) => {
+    const ok = window.confirm(
+      `Remove ${contact.email} from this client's portal?\n\n`
+      + 'They lose access immediately — any session they have open stops working '
+      + 'and their invitation link will no longer sign them in. Inviting them '
+      + 'again later is the only way back.'
+    );
+    if (!ok) return;
+    setRevokingId(contact.id);
+    try {
+      const roster = await revokePortalContact(boardId, contact.id);
+      setContacts(roster || []);
+      setLoadError('');
+      toast.success(`${contact.email} no longer has access.`);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not remove that person.');
+    } finally {
+      setRevokingId(null);
     }
   };
 
@@ -120,13 +164,53 @@ const ClientPeoplePanel = ({ boardId, services = [], canManage, onServicesChange
             color: 'var(--color-text-muted)',
           }}
         >
-          People with access ({contacts.length})
+          {/* No number while the list is unread or unreadable: "(0)" beside a
+              heading is read as a fact, and it is the same false fact the empty
+              state used to tell. */}
+          People with access{loading || loadError ? '' : ` (${contacts.length})`}
         </h2>
 
         {loading ? (
           <p className="font-body" style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}>
             Loading…
           </p>
+        ) : loadError ? (
+          <div
+            className="flex flex-col items-start gap-2 p-4 bg-surface"
+            style={{
+              border: '1px solid var(--color-border)',
+              borderRadius: 'var(--radius-lg)',
+            }}
+          >
+            <p className="font-body" style={{ fontSize: 12.5, fontWeight: 600 }}>
+              {loadError}
+            </p>
+            <p
+              className="font-body"
+              style={{ fontSize: 11.5, color: 'var(--color-text-muted)', lineHeight: 1.55 }}
+            >
+              This is not the same as nobody having access &mdash; the list could not
+              be read, so do not invite anyone again on the strength of it.
+            </p>
+            <button
+              type="button"
+              onClick={load}
+              className="font-body flex items-center gap-1.5"
+              style={{
+                height: 28,
+                padding: '0 9px',
+                fontSize: 11.5,
+                fontWeight: 600,
+                color: 'var(--color-text-secondary)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-md)',
+                background: 'transparent',
+              }}
+            >
+              <RotateCw size={11} aria-hidden="true" />
+              Try again
+            </button>
+          </div>
         ) : contacts.length === 0 ? (
           <p className="font-body" style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}>
             Nobody has been invited yet.
@@ -196,29 +280,51 @@ const ClientPeoplePanel = ({ boardId, services = [], canManage, onServicesChange
                   />
 
                   {canManage && (
-                    <button
-                      type="button"
-                      onClick={() => resend(c.id)}
-                      disabled={resendingId === c.id}
-                      className="font-body flex items-center gap-1.5 shrink-0 disabled:opacity-40"
-                      style={{
-                        height: 28,
-                        padding: '0 9px',
-                        fontSize: 11.5,
-                        fontWeight: 600,
-                        color: 'var(--color-text-secondary)',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: 'var(--radius-md)',
-                        background: 'transparent',
-                      }}
-                    >
-                      {c.authMethod === 'password' && c.hasPassword ? (
-                        <RefreshCw size={11} aria-hidden="true" />
-                      ) : (
-                        <Mail size={11} aria-hidden="true" />
-                      )}
-                      {c.authMethod === 'password' && c.hasPassword ? 'Reset' : 'Resend'}
-                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => resend(c.id)}
+                        disabled={resendingId === c.id || revokingId === c.id}
+                        className="font-body flex items-center gap-1.5 shrink-0 disabled:opacity-40"
+                        style={{
+                          height: 28,
+                          padding: '0 9px',
+                          fontSize: 11.5,
+                          fontWeight: 600,
+                          color: 'var(--color-text-secondary)',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 'var(--radius-md)',
+                          background: 'transparent',
+                        }}
+                      >
+                        {c.authMethod === 'password' && c.hasPassword ? (
+                          <RefreshCw size={11} aria-hidden="true" />
+                        ) : (
+                          <Mail size={11} aria-hidden="true" />
+                        )}
+                        {c.authMethod === 'password' && c.hasPassword ? 'Reset' : 'Resend'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => revoke(c)}
+                        disabled={revokingId === c.id}
+                        title={`Remove ${c.email} — they lose access immediately`}
+                        className="font-body flex items-center gap-1.5 shrink-0 disabled:opacity-40"
+                        style={{
+                          height: 28,
+                          padding: '0 9px',
+                          fontSize: 11.5,
+                          fontWeight: 600,
+                          color: 'var(--color-status-stuck, #DC2626)',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 'var(--radius-md)',
+                          background: 'transparent',
+                        }}
+                      >
+                        <UserMinus size={11} aria-hidden="true" />
+                        {revokingId === c.id ? 'Removing…' : 'Remove'}
+                      </button>
+                    </div>
                   )}
                 </div>
               );

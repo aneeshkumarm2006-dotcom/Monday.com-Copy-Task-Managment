@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Plus, Paperclip, Send, ArrowLeft, LogOut, Loader2, CheckCircle2,
   CircleDot, MessageSquare, X, Inbox, Timer, Building2, ChevronRight,
-  Bug, Sparkles, ClipboardList, HelpCircle, Star, RotateCcw, Hand,
+  ChevronLeft, Bug, Sparkles, ClipboardList, HelpCircle, Star, RotateCcw, Hand,
   Search, Megaphone, ChevronDown, Clock, Mail, Code2,
-  FileText, Check, AlertCircle, UploadCloud,
+  FileText, Check, AlertCircle, UploadCloud, RefreshCw,
 } from 'lucide-react';
 import {
   getMyIssues, createMyIssue, uploadIssueAttachment,
@@ -106,13 +107,22 @@ const TYPE_FORM = {
 
 const LIST_POLL = 20000;
 const THREAD_POLL = 9000;
+// EVERY one of these buckets is keyed per contact, for the same reason: one
+// browser gets shared (an office machine, a laptop two people sign in on), and
+// what one person has read, dismissed or last looked at is not what the next
+// person has. An unscoped read-state bucket is the worst of the three — person
+// A opening a request would clear person B's "New reply" dot and B would never
+// know the team had answered.
 const SEEN_KEY = 'macan_portal_seen';
 const WELCOME_KEY = 'macan_portal_welcomed';
 // Which of Tasks / Chat / Mail this contact was last on, so a client who lives
-// in the mailbox doesn't land on the task list every single visit. Keyed per
-// contact because one browser can be shared (an office machine, a shared login
-// on a laptop) and the tabs a person has are not the tabs the next person has.
+// in the mailbox doesn't land on the task list every single visit.
 const TAB_KEY = 'macan_portal_tab';
+// Written by PortalLandingPage before it hands over to this page, so the
+// `?service=` on an invitation link survives sign-in (which is a full page
+// navigation through Google, and takes the query string with it). Read exactly
+// once here and removed immediately — see the effect that consumes it.
+const PENDING_SERVICE_KEY = 'macan_portal_pending_service';
 
 /* ---- helpers -------------------------------------------------------------- */
 const formatShortDate = (iso) => {
@@ -141,29 +151,40 @@ const formatBytes = (n) => {
 };
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-const getSeen = () => { try { return JSON.parse(localStorage.getItem(SEEN_KEY) || '{}'); } catch { return {}; } };
-const markSeen = (id) => {
+// Every bucket below is `{ [contactKey]: value }`. `who` is empty until we know
+// which contact this is, and writing under an empty key would put one person's
+// state where the next person picks it up — so an empty key reads as nothing and
+// writes nothing.
+const readBucket = (key, who) => {
+  if (!who) return null;
+  try { return JSON.parse(localStorage.getItem(key) || '{}')[who] ?? null; }
+  catch { return null; }
+};
+const writeBucket = (key, who, value) => {
+  if (!who) return;
   try {
-    const s = getSeen();
-    s[id] = new Date().toISOString();
-    localStorage.setItem(SEEN_KEY, JSON.stringify(s));
+    const all = JSON.parse(localStorage.getItem(key) || '{}');
+    all[who] = value;
+    localStorage.setItem(key, JSON.stringify(all));
   } catch { /* ignore quota/private-mode */ }
+};
+
+const getSeen = (who) => readBucket(SEEN_KEY, who) || {};
+const markSeen = (who, id) => {
+  if (!who || !id) return;
+  const s = getSeen(who);
+  s[id] = new Date().toISOString();
+  writeBucket(SEEN_KEY, who, s);
 };
 const isUnread = (issue, seen) =>
   issue.lastReplyFromTeam &&
   (!seen[issue.id] || new Date(issue.lastActivityAt) > new Date(seen[issue.id]));
 
-const readTabPref = (who) => {
-  try { return JSON.parse(localStorage.getItem(TAB_KEY) || '{}')[who] || ''; }
-  catch { return ''; }
-};
-const writeTabPref = (who, tab) => {
-  try {
-    const all = JSON.parse(localStorage.getItem(TAB_KEY) || '{}');
-    all[who] = tab;
-    localStorage.setItem(TAB_KEY, JSON.stringify(all));
-  } catch { /* ignore quota/private-mode */ }
-};
+const readWelcomed = (who) => readBucket(WELCOME_KEY, who) === true;
+const writeWelcomed = (who) => writeBucket(WELCOME_KEY, who, true);
+
+const readTabPref = (who) => readBucket(TAB_KEY, who) || '';
+const writeTabPref = (who, tab) => writeBucket(TAB_KEY, who, tab);
 
 
 /* ---- small presentational bits -------------------------------------------- */
@@ -415,11 +436,23 @@ const PortalDashboardPage = () => {
   const [context, setContext] = useState({ orgName: '', companyName: '', contactName: '', categories: [] });
   const [issues, setIssues] = useState([]);
   const [filter, setFilter] = useState('all');
-  const [seen, setSeen] = useState(getSeen);
-  const [showWelcome, setShowWelcome] = useState(() => localStorage.getItem(WELCOME_KEY) !== '1');
+  // Both start empty and are filled in once we know WHO this is — see the
+  // effect below. Reading them before that would read a bucket that belongs to
+  // whoever used this browser last.
+  const [seen, setSeen] = useState({});
+  const [showWelcome, setShowWelcome] = useState(false);
+  // The two reads behind this screen fail independently, and a failure that
+  // renders as an empty portal is worse than one that says so: the empty state
+  // reads "your portal is being set up", which is a lie told to a paying
+  // client whose account is fine and whose network isn't.
+  const [issuesError, setIssuesError] = useState('');
+  const [homeError, setHomeError] = useState('');
+  // `loading` only ever tracked the issue read. The service table is fed by the
+  // home read, so the skeleton has to wait for that one too or the table
+  // renders its "being set up" panel in the gap between the two responses.
+  const [homeLoaded, setHomeLoaded] = useState(false);
 
   const [composerOpen, setComposerOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState(null);
   // Post-submit receipt: { ref, uploaded, failed }
   const [flash, setFlash] = useState(null);
 
@@ -430,18 +463,48 @@ const PortalDashboardPage = () => {
   // The board IS the client and its groups are the service lines, so this is
   // the primary axis — the state counts below recount within it.
   /**
-   * WHICH SERVICE the client is looking at, or null for the service table.
+   * WHICH SERVICE the client is looking at (null = the service table), WHICH
+   * TAB inside it, and WHICH REQUEST is open. All three live in the URL rather
+   * than in `useState`.
    *
-   * This is the spine of the portal now. A client company buys several things —
-   * SEO, Meta Ads, Google Ads, web development — and each is run by a different
-   * person on their side; one flat list made all of it look like a single pile.
-   * The table picks a service, and requests, chat and mail are all scoped to it
-   * from then on.
+   * The service is the spine of the portal. A client company buys several
+   * things — SEO, Meta Ads, Google Ads, web development — and each is run by a
+   * different person on their side; one flat list made all of it look like a
+   * single pile. The table picks a service, and requests, chat and mail are all
+   * scoped to it from then on. `serviceId` doubles as the old `workstream`
+   * filter, which is why the request list and the intake form needed no rework.
    *
-   * It doubles as the old `workstream` filter, which is why the request list and
-   * the intake form needed no rework: they already filtered on exactly this.
+   * WHY THE URL: table → service → open request is three levels deep, and as
+   * plain component state it created no history entries at all. On a phone,
+   * where Back is a system gesture rather than a button on the page, that threw
+   * the client clean out of the portal — usually back into their email client —
+   * from three screens in. In the URL, Back walks request → service → table,
+   * reload lands where they were, and the `?service=` on an invitation link is
+   * a bookmarkable address instead of something to strip on arrival.
    */
-  const [serviceId, setServiceId] = useState(null);
+  const [params, setParams] = useSearchParams();
+  const serviceId = params.get('service') || null;
+  const tab = params.get('tab') || 'tasks';
+  const selectedId = params.get('request') || null;
+
+  /**
+   * The one writer for those three. `null`/`''` removes a param, so the URL
+   * only ever carries the screen you are actually on. `replace` is for
+   * normalisation (consuming a deep link, dropping a service the client can no
+   * longer see) — those must not become a history entry the Back button walks
+   * the client back into.
+   */
+  const navigateTo = useCallback((changes, { replace = false } = {}) => {
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      Object.entries(changes).forEach(([k, v]) => {
+        if (v === null || v === undefined || v === '') next.delete(k);
+        else next.set(k, String(v));
+      });
+      return next;
+    }, { replace });
+  }, [setParams]);
+
   const [home, setHome] = useState(null);
   // null until known, so the switch never renders in a guessed position.
   const [notifyEmail, setNotifyEmail] = useState(null);
@@ -452,7 +515,6 @@ const PortalDashboardPage = () => {
   /* ---- chat & mail ------------------------------------------------------ */
   // null until asked for; `{ workstreams: [] }` once we know there is nothing.
   const [channels, setChannels] = useState(null);
-  const [tab, setTab] = useState('tasks');
   const [unread, setUnread] = useState({}); // channelId -> count
   const [chatWs, setChatWs] = useState('');
   const [mailWs, setMailWs] = useState('');
@@ -468,8 +530,13 @@ const PortalDashboardPage = () => {
       const data = await getMyIssues();
       setContext(data.context || { orgName: '', companyName: '', contactName: '', categories: [] });
       setIssues(data.issues || []);
+      setIssuesError('');
     } catch (err) {
+      // Only a 401 means "sign in again". Everything else — a 500, the 20s
+      // axios timeout, a phone that dropped off the network — used to fall
+      // through to an empty list rendered as a healthy, empty portal.
       if (err.response?.status === 401) setExpired(true);
+      else setIssuesError(err.response?.data?.error || "We couldn't load your portal.");
     } finally {
       setLoading(false);
     }
@@ -531,8 +598,12 @@ const PortalDashboardPage = () => {
   const loadHome = useCallback(async () => {
     try {
       setHome(await getPortalHome());
+      setHomeError('');
     } catch (err) {
       if (err?.response?.status === 401) setExpired(true);
+      else setHomeError(err?.response?.data?.error || "We couldn't load your services.");
+    } finally {
+      setHomeLoaded(true);
     }
   }, []);
 
@@ -545,22 +616,48 @@ const PortalDashboardPage = () => {
   }, [expired, loadHome]);
 
   /**
-   * The invitation email deep-links straight at a service (`?service=<groupId>`),
-   * so somebody invited for Meta Ads lands on Meta Ads rather than on a table
-   * they have to read first.
+   * The invitation email deep-links straight at a service
+   * (`/portal/<token>?service=<groupId>`), so somebody invited for Meta Ads
+   * lands on Meta Ads rather than on a table they have to read first.
    *
-   * Consumed once and stripped from the URL: leaving it there would re-select
-   * that service every time the client navigated back to the table.
+   * That query string cannot ride through sign-in — Google is a full page
+   * navigation off this origin and back — so PortalLandingPage stashes the id
+   * in `sessionStorage` before it redirects and this reads it. Read on mount
+   * and REMOVED IMMEDIATELY, before we know whether it names anything: a key
+   * left behind would re-select that service on every later visit in this tab,
+   * which is exactly the bug the old `replaceState` strip existed to avoid.
+   *
+   * `undefined` means "not read yet" and `''` means "read, nothing pending",
+   * which is also what makes a second run (React's development double-mount)
+   * a no-op rather than a read of an already-deleted key.
    */
+  const pendingService = useRef(undefined);
+  useEffect(() => {
+    if (pendingService.current !== undefined) return;
+    let want = '';
+    try {
+      want = sessionStorage.getItem(PENDING_SERVICE_KEY) || '';
+      sessionStorage.removeItem(PENDING_SERVICE_KEY);
+    } catch { /* private mode — no deep link, no crash */ }
+    pendingService.current = want;
+  }, []);
+
+  // Applied once the roster has arrived, because a service the client cannot
+  // see must not be selected. The same pass drops a `?service=` that is
+  // bookmarked, stale, or simply wrong — without it the client would sit on a
+  // nameless, empty service screen with no way to tell why.
   useEffect(() => {
     if (!home) return;
-    const want = new URLSearchParams(window.location.search).get('service');
-    if (!want) return;
-    window.history.replaceState({}, '', window.location.pathname);
-    if ((home.services || []).some((x) => String(x.id) === String(want))) {
-      setServiceId(String(want));
+    const known = (id) => (home.services || []).some((x) => String(x.id) === String(id));
+    const want = pendingService.current;
+    if (want) {
+      pendingService.current = '';
+      if (known(want)) { navigateTo({ service: String(want), request: null }, { replace: true }); return; }
     }
-  }, [home]);
+    if (serviceId && !known(serviceId)) {
+      navigateTo({ service: null, tab: null, request: null }, { replace: true });
+    }
+  }, [home, serviceId, navigateTo]);
 
   useEffect(() => {
     if (expired) return;
@@ -572,54 +669,85 @@ const PortalDashboardPage = () => {
 
   const services = home?.services || [];
   const activeService = serviceId ? services.find((x) => String(x.id) === String(serviceId)) : null;
+  // Either read failing leaves this screen unable to say anything true about
+  // the account, so the two share one message.
+  const loadError = homeError || issuesError;
 
   const chatStreams = useMemo(() => streamsOfMode(channels, 'chat'), [channels]);
   const mailStreams = useMemo(() => streamsOfMode(channels, 'mail'), [channels]);
   const hasChat = chatStreams.length > 0;
   const hasMail = mailStreams.length > 0;
 
-  // Keep each picker on a workstream that still exists.
-  // Locked to the SERVICE the client picked. The old per-tab workstream
-  // pickers are gone: choosing the service already answered that question, and
-  // asking again on every tab was the duplication this redesign removes.
+  // Locked to the SERVICE the client picked, and to NOTHING when that service
+  // has no room of this mode. The old per-tab workstream pickers are gone:
+  // choosing the service already answered that question, and asking again on
+  // every tab was the duplication this redesign removes.
+  //
+  // There is deliberately no "first stream" fallback. A service can genuinely
+  // lack a surface — it was created while the portal was off, or the team
+  // archived the channel — and falling back put the client in ANOTHER
+  // service's room under this service's heading: they read the wrong team's
+  // history and posted into the wrong team's thread with nothing on screen
+  // saying so. Resolving to nothing renders the "isn't switched on yet" panel,
+  // which is what that panel was written for.
   useEffect(() => {
-    setChatWs(
-      serviceId && chatStreams.some((w) => w.id === serviceId)
-        ? serviceId
-        : chatStreams[0]?.id || ''
-    );
+    setChatWs(serviceId && chatStreams.some((w) => w.id === serviceId) ? serviceId : '');
   }, [chatStreams, serviceId]);
   useEffect(() => {
-    setMailWs(
-      serviceId && mailStreams.some((w) => w.id === serviceId)
-        ? serviceId
-        : mailStreams[0]?.id || ''
-    );
+    setMailWs(serviceId && mailStreams.some((w) => w.id === serviceId) ? serviceId : '');
   }, [mailStreams, serviceId]);
 
-  // One identity per contact per company — there is no contact id in the
-  // dashboard payload, and this pair is what distinguishes two people sharing
-  // a browser.
   // The contact id when the home payload has arrived, falling back to the old
   // company|name pair until it does. That pair COLLIDES for two people with the
   // same name at one company — they share a browser bucket — which is why the
-  // home endpoint carries an id at all.
+  // home endpoint carries an id at all. Empty until at least one of the two has
+  // landed: an "|" key is nobody, and every bucket helper treats it as such
+  // rather than parking one person's state where the next one reads it.
   const contactKey =
-    home?.contact?.id || `${context.companyName || ''}|${context.contactName || ''}`;
+    home?.contact?.id
+    || ((context.companyName || context.contactName)
+      ? `${context.companyName || ''}|${context.contactName || ''}`
+      : '');
 
-  // Restore the remembered tab once we know which tabs actually exist. Only
-  // ever moves off Tasks — never overrides a tab the client just picked.
+  // Read state and the welcome hero belong to the CONTACT, not the browser, so
+  // they can only be loaded once we know who is looking.
+  const welcomeDismissed = useRef(false);
   useEffect(() => {
-    if (!channels) return;
+    if (!contactKey) return;
+    setSeen(getSeen(contactKey));
+    // Never re-show a hero this session's client has already waved away, even
+    // if `contactKey` sharpens from the name pair to the real contact id.
+    if (!welcomeDismissed.current) setShowWelcome(!readWelcomed(contactKey));
+  }, [contactKey]);
+
+  /**
+   * Restore the remembered tab once we know which tabs actually exist.
+   *
+   * EXACTLY ONCE per visit, and that is the whole point of the ref. `channels` is a
+   * brand-new object on every 20-second poll, so an unguarded effect re-fired
+   * every 20 seconds — and anything that had put the client back on Requests
+   * without writing a preference (opening a service, the "All services" button)
+   * was silently undone mid-read, over and over, for anyone who had ever
+   * opened Mail.
+   */
+  const tabRestored = useRef(false);
+  useEffect(() => {
+    // `homeLoaded` first: `contactKey` sharpens from the name pair to the real
+    // contact id when the home payload lands, and restoring against the coarse
+    // key would spend the one shot on the wrong bucket.
+    if (!channels || !homeLoaded || !contactKey || tabRestored.current) return;
+    tabRestored.current = true;
     const modes = new Set();
     (channels.workstreams || []).forEach((w) => (w.surfaces || []).forEach((s) => modes.add(s.mode)));
     const pref = readTabPref(contactKey);
     if (pref !== 'chat' && pref !== 'mail') return;
     if (!modes.has(pref)) return;
-    setTab((cur) => (cur === 'tasks' ? pref : cur));
-  }, [channels, contactKey]);
+    // `replace`: restoring a remembered tab is not a place the client navigated
+    // to, so Back should not walk them through it.
+    if (tab === 'tasks') navigateTo({ tab: pref }, { replace: true });
+  }, [channels, contactKey, homeLoaded, tab, navigateTo]);
 
-  const selectTab = (next) => { setTab(next); writeTabPref(contactKey, next); };
+  const selectTab = (next) => { navigateTo({ tab: next }); writeTabPref(contactKey, next); };
 
   const onLiveMessage = useCallback(({ channelId, message }) => {
     liveSeq.current += 1;
@@ -633,14 +761,20 @@ const PortalDashboardPage = () => {
 
   usePortalStream(!expired && (hasChat || hasMail), onLiveMessage);
 
-  const chatUnread = chatStreams.reduce((n, w) => n + (unread[w.surface.id] || 0), 0);
-  const mailUnread = mailStreams.reduce((n, w) => n + (unread[w.surface.id] || 0), 0);
-
   // A tab can vanish between renders (the team turns a surface off), so what
   // actually renders is always re-checked against what exists.
   const activeTab = (tab === 'chat' && hasChat) || (tab === 'mail' && hasMail) ? tab : 'tasks';
-  const activeChat = chatStreams.find((w) => w.id === chatWs) || chatStreams[0] || null;
-  const activeMail = mailStreams.find((w) => w.id === mailWs) || mailStreams[0] || null;
+  const activeChat = chatStreams.find((w) => w.id === chatWs) || null;
+  const activeMail = mailStreams.find((w) => w.id === mailWs) || null;
+
+  // The badges on the tab bar count THIS service's room and nothing else. The
+  // tab bar only ever renders inside one service, so an account-wide total sat
+  // next to that service's name claiming unread the client could not find —
+  // and opening the room cleared none of it, because the messages were in a
+  // different service. The service table already shows the per-service counts;
+  // these two now agree with it.
+  const chatUnread = activeChat ? (unread[activeChat.surface.id] || 0) : 0;
+  const mailUnread = activeMail ? (unread[activeMail.surface.id] || 0) : 0;
 
   const setChannelUnread = useCallback((channelId, count) => {
     setUnread((u) => (u[channelId] === count ? u : { ...u, [channelId]: count }));
@@ -654,9 +788,20 @@ const PortalDashboardPage = () => {
     [activeMail, setChannelUnread]
   );
 
-  const openIssue = (id) => { markSeen(id); setSeen(getSeen()); setSelectedId(id); };
-  const dismissWelcome = () => { localStorage.setItem(WELCOME_KEY, '1'); setShowWelcome(false); };
+  const openIssue = (id) => {
+    markSeen(contactKey, id);
+    setSeen(getSeen(contactKey));
+    navigateTo({ request: id });
+  };
+  const dismissWelcome = () => {
+    welcomeDismissed.current = true;
+    writeWelcomed(contactKey);
+    setShowWelcome(false);
+  };
   const logout = () => { clearPortalToken(); setExpired(true); };
+  // Stable identity: IssueDetail keeps this in a ref, and a fresh arrow on
+  // every render would be a fresh `load` on every render.
+  const handleExpired = useCallback(() => setExpired(true), []);
 
   const selected = issues.find((i) => i.id === selectedId) || null;
 
@@ -688,7 +833,13 @@ const PortalDashboardPage = () => {
     return sort === 'oldest' ? da - db : db - da;
   });
 
-  if (loading) return <DashboardSkeleton />;
+  // Both reads, not just the issue list. Dismissing the skeleton the moment the
+  // ISSUES arrived handed the service table an empty `services` array, and it
+  // rendered "Your portal is being set up" — a false statement about a working
+  // account — until the second response landed. `homeError` is in the condition
+  // so a failed home read falls through to the error card rather than spinning
+  // forever.
+  if (loading || (!homeLoaded && !homeError)) return <DashboardSkeleton />;
 
   if (expired) {
     return (
@@ -771,7 +922,9 @@ const PortalDashboardPage = () => {
               key={selected.id}
               issue={selected}
               orgName={context.orgName}
-              onBack={() => { setSelectedId(null); loadIssues(); }}
+              contactKey={contactKey}
+              onExpired={handleExpired}
+              onBack={() => { navigateTo({ request: null }); loadIssues(); }}
             />
           </div>
         ) : !serviceId ? (
@@ -823,11 +976,37 @@ const PortalDashboardPage = () => {
               Your services
             </h2>
 
-            <PortalServiceTable
-              services={services}
-              serverTime={home?.serverTime}
-              onOpen={(id, tab) => { setServiceId(String(id)); setTab(tab || 'tasks'); }}
-            />
+            {/* A read that failed must never be dressed up as an empty account:
+                the table's own empty state says the portal is being set up,
+                which is the one thing a client with a live account must not be
+                told because the network hiccuped. */}
+            {loadError && !services.length ? (
+              <div className="mcp-card mcp-card-lg" style={{ textAlign: 'center' }}>
+                <p style={{ fontWeight: 700, marginBottom: 6 }}>We couldn&rsquo;t load your portal</p>
+                <p className="mcp-note" style={{ margin: '0 0 14px' }}>
+                  {loadError} Your requests are safe &mdash; this is a connection problem, not your account.
+                </p>
+                <button
+                  type="button"
+                  className="mcp-btn mcp-btn--primary"
+                  style={{ margin: '0 auto' }}
+                  onClick={() => { loadIssues(); loadHome(); loadChannels(); }}
+                >
+                  <RefreshCw size={15} /> Try again
+                </button>
+              </div>
+            ) : (
+              <PortalServiceTable
+                services={services}
+                serverTime={home?.serverTime}
+                onOpen={(id, next) => {
+                  // A chip is an explicit tab choice, so it is remembered the
+                  // same way clicking the tab itself would be.
+                  navigateTo({ service: String(id), tab: next || 'tasks', request: null });
+                  writeTabPref(contactKey, next || 'tasks');
+                }}
+              />
+            )}
 
             {(context.faqs || []).length > 0 && (
               <div style={{ marginTop: 26 }}>
@@ -853,11 +1032,15 @@ const PortalDashboardPage = () => {
           </div>
         ) : (
           <>
-            {/* Back to the table, then the service's own three interfaces. */}
+            {/* Back to the table, then the service's own three interfaces.
+                Deliberately NOT routed through `selectTab`: leaving a service
+                is not a statement about which tab this client prefers, and
+                writing 'tasks' here would wipe the remembered mailbox of
+                anyone who ever used this button. */}
             <button
               type="button"
               className="mcp-svc-back"
-              onClick={() => { setServiceId(null); setTab('tasks'); }}
+              onClick={() => navigateTo({ service: null, tab: null, request: null })}
             >
               <ChevronLeft size={14} /> All services
             </button>
@@ -1000,7 +1183,6 @@ const PortalDashboardPage = () => {
 
             {composerOpen && (
               <NewIssueForm
-                categories={context.categories}
                 workstreams={workstreams}
                 defaultWorkstream={workstream !== 'all' ? workstream : ''}
                 serviceName={activeService?.name || ''}
@@ -1017,7 +1199,11 @@ const PortalDashboardPage = () => {
                 TABLE picks the service before this screen renders, and asking
                 again — on every tab — was the duplication the redesign removes. */}
 
-            {issues.length > 0 && (
+            {/* Gated on THIS SERVICE's requests, not the account's. A brand new
+                service used to inherit the heading, the search box and the sort
+                dropdown from requests filed under a different service — chrome
+                for a list that does not exist here. */}
+            {inWorkstream.length > 0 && (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 13 }}>
                 <h2 style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', margin: 0, color: '#334155' }}>
                   {filter === 'all' ? 'All requests' : BUCKETS[filter].label}
@@ -1034,7 +1220,7 @@ const PortalDashboardPage = () => {
             )}
 
             {/* Search / type filter / sort toolbar */}
-            {issues.length > 0 && (
+            {inWorkstream.length > 0 && (
               <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
                 <div style={{ position: 'relative', flex: '1 1 220px', minWidth: 180 }}>
                   <Search size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8' }} />
@@ -1044,11 +1230,11 @@ const PortalDashboardPage = () => {
                 {/* Only for requests raised BEFORE types were dropped. New
                     ones carry none, so on a portal with no legacy rows this
                     filter would match nothing and read as broken. */}
-                {issues.some((i) => i.type) && (
+                {inWorkstream.some((i) => i.type) && (
                   <select className="mcp-field" style={{ width: 'auto', cursor: 'pointer' }} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
                     <option value="all">All types</option>
                     {Object.entries(TYPES)
-                      .filter(([k]) => issues.some((i) => i.type === k))
+                      .filter(([k]) => inWorkstream.some((i) => i.type === k))
                       .map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
                   </select>
                 )}
@@ -1060,7 +1246,11 @@ const PortalDashboardPage = () => {
               </div>
             )}
 
-            {issues.length === 0 && !composerOpen ? (
+            {/* Also this service's count: a client with a full SEO list opening
+                a brand new Google Ads service got the bare "Nothing here right
+                now." card instead of the first-request onboarding, which is
+                exactly the moment that onboarding is for. */}
+            {inWorkstream.length === 0 && !composerOpen ? (
               <div className="mcp-card-lg" style={{ padding: '48px 32px', textAlign: 'center' }}>
                 <div style={{ width: 60, height: 60, borderRadius: 16, margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#eff4ff', color: '#2563eb' }}>
                   <Inbox size={28} />
@@ -1227,7 +1417,6 @@ const DashboardSkeleton = () => (
 
 /* ---- New issue form ------------------------------------------------------- */
 const NewIssueForm = ({
-  categories,
   workstreams = [],
   defaultWorkstream = '',
   serviceName = '',
@@ -1246,12 +1435,18 @@ const NewIssueForm = ({
   const [note, setNote] = useState('');
   const [priority, setPriority] = useState('medium');
   const [dueDate, setDueDate] = useState('');
-  const [category, setCategory] = useState('');
   // idle → creating → uploading → (partial | done)
   const [phase, setPhase] = useState('idle');
   const [error, setError] = useState('');
   // 'request' — these files are part of the request itself, and stay pinned to it.
   const tray = useAttachmentTray('request');
+  // The "Submitted" beat below is a timer, and the close button stays live
+  // through it. Closing the form during that beat calls `onCreated` and
+  // unmounts us; an uncleared timer then called it a SECOND time with a
+  // different payload — replacing the receipt banner the client was reading,
+  // with different upload counts on it, and re-fetching the list behind it.
+  const doneTimer = useRef(null);
+  useEffect(() => () => clearTimeout(doneTimer.current), []);
   // Set once the issue exists, so retrying a failed upload never re-creates it.
   const [created, setCreated] = useState(null);
 
@@ -1305,7 +1500,10 @@ const NewIssueForm = ({
     // Hold for a beat so the green "Uploaded" ticks are actually seen — the
     // whole point is that the client knows their files landed.
     setPhase('done');
-    setTimeout(() => onCreated({ ref: issueInfo.ref, uploaded: uploaded.length }), 950);
+    doneTimer.current = setTimeout(
+      () => onCreated({ ref: issueInfo.ref, uploaded: uploaded.length }),
+      950
+    );
   };
 
   const finishWithoutFailed = () =>
@@ -1377,15 +1575,12 @@ const NewIssueForm = ({
         value={dueDate} onChange={(e) => setDueDate(e.target.value)}
         onClick={(e) => { try { e.currentTarget.showPicker?.(); } catch { /* not supported / not allowed */ } }} />
 
-      {Array.isArray(categories) && categories.length > 0 && (
-        <>
-          <label style={label}>Category <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-          <select className="mcp-field" style={{ marginBottom: 16, cursor: 'pointer' }} disabled={locked} value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="">Select a category</option>
-            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </>
-      )}
+      {/* The Category picker was REMOVED, not wired up. Its value was never
+          put in the create payload and `createMyIssue` does not accept the
+          field — a client picked "Billing", submitted, and the choice went
+          nowhere while nothing on screen said so. There is no server field to
+          route it to, so the honest fix is to stop asking. Requests raised
+          before categories were dropped still show theirs on the list card. */}
 
       {/* Attachments */}
       <label style={label}>
@@ -1451,7 +1646,7 @@ const NewIssueForm = ({
 };
 
 /* ---- Issue detail + thread ------------------------------------------------ */
-const IssueDetail = ({ issue, onBack, orgName = '' }) => {
+const IssueDetail = ({ issue, onBack, orgName = '', contactKey = '', onExpired }) => {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -1460,12 +1655,23 @@ const IssueDetail = ({ issue, onBack, orgName = '' }) => {
   const [postError, setPostError] = useState('');
   const [sentAt, setSentAt] = useState(0);
   const [busy, setBusy] = useState('');
+  // Why the conversation is not on screen, when it is not. Distinct from
+  // `postError`: that one belongs to the composer, this one replaces the thread.
+  const [threadError, setThreadError] = useState('');
+  // Reopen and Rate change nothing visible on this panel until `load()` comes
+  // back, so a refusal has to say so here or success and failure look identical.
+  const [actionError, setActionError] = useState('');
   const [hoverStar, setHoverStar] = useState(0);
   // 'thread' — files sent mid-conversation belong to their message, not to the
   // original request block above it.
   const tray = useAttachmentTray('thread');
   const scrollAnchor = useRef(null);
   const seenIds = useRef(new Set());
+  // `load` is the dependency of both the initial fetch and the 9s poll, so it
+  // must not change identity when the parent re-renders. The callback goes
+  // through a ref rather than into the dependency list.
+  const onExpiredRef = useRef(onExpired);
+  useEffect(() => { onExpiredRef.current = onExpired; });
 
   const applyMessages = useCallback((incoming) => {
     setMessages(incoming.map((m) => ({ ...m, _fresh: !seenIds.current.has(m.id) })));
@@ -1477,7 +1683,17 @@ const IssueDetail = ({ issue, onBack, orgName = '' }) => {
       const data = await getIssueThread(issue.id);
       if (data.issue) setDetail(data.issue);
       applyMessages(data.messages || []);
-    } catch { /* keep what we have */ }
+      setThreadError('');
+    } catch (err) {
+      // "Keep what we have" only holds for the poll. On the FIRST load there is
+      // nothing to keep, and staying quiet rendered the empty state — "No
+      // messages yet" — over replies the team had already sent, with no retry
+      // and nothing saying the request had failed. A 401 in here was swallowed
+      // too, and the list poll is paused while a request is open, so this was
+      // the one place an expired session could go unnoticed.
+      if (err?.response?.status === 401) { onExpiredRef.current?.(); return; }
+      if (opts.initial) setThreadError(err?.response?.data?.error || "We couldn't load this conversation.");
+    }
     finally { if (opts.initial) setLoading(false); }
   }, [issue.id, applyMessages]);
 
@@ -1523,7 +1739,7 @@ const IssueDetail = ({ issue, onBack, orgName = '' }) => {
       setMessages((m) => [...m, { ...message, _fresh: true }]);
       setText(''); tray.reset();
       setSentAt(Date.now());
-      markSeen(issue.id);
+      markSeen(contactKey, issue.id);
     } catch (err) {
       setPostError(err.response?.data?.error || 'Couldn’t send your message. Please try again.');
     } finally { setPosting(false); }
@@ -1536,14 +1752,23 @@ const IssueDetail = ({ issue, onBack, orgName = '' }) => {
     return () => clearTimeout(t);
   }, [sentAt]);
 
+  // Both of these are refusable — already open, a rating out of range, the
+  // 30/min thread limit — and both used to swallow the refusal, so the button
+  // spun, came back, and the panel looked exactly as it had before. A client
+  // who cannot tell whether it worked clicks again, which is how they meet the
+  // rate limiter.
   const doReopen = async () => {
     setBusy('reopen');
-    try { await reopenIssue(issue.id); await load(); } catch { /* ignore */ }
+    setActionError('');
+    try { await reopenIssue(issue.id); await load(); }
+    catch (err) { setActionError(err?.response?.data?.error || "We couldn't reopen this request. Please try again."); }
     finally { setBusy(''); }
   };
   const doRate = async (n) => {
     setBusy('rate');
-    try { await rateIssue(issue.id, n); await load(); } catch { /* ignore */ }
+    setActionError('');
+    try { await rateIssue(issue.id, n); await load(); }
+    catch (err) { setActionError(err?.response?.data?.error || "We couldn't save your rating. Please try again."); }
     finally { setBusy(''); }
   };
 
@@ -1660,7 +1885,22 @@ const IssueDetail = ({ issue, onBack, orgName = '' }) => {
               )
             ))}
 
-            {!hasRequestBlock && messages.length === 0 && (
+            {threadError && !detail ? (
+              <div style={{ textAlign: 'center', padding: '10px 0 22px' }}>
+                <div style={{ width: 46, height: 46, borderRadius: 12, margin: '0 auto 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fef2f2', color: '#dc2626' }}>
+                  <AlertCircle size={22} />
+                </div>
+                <p style={{ fontSize: 13.5, color: '#64748B', margin: '0 0 14px', lineHeight: 1.5 }}>
+                  {threadError} Nothing has been lost &mdash; your messages are still here.
+                </p>
+                <button type="button" className="mcp-btn mcp-btn--ghost" style={{ height: 36, fontSize: 13, margin: '0 auto' }}
+                  onClick={() => { setLoading(true); load({ initial: true }); }}>
+                  <RefreshCw size={14} /> Try again
+                </button>
+              </div>
+            ) : null}
+
+            {!threadError && !hasRequestBlock && messages.length === 0 && (
               <div style={{ textAlign: 'center', padding: '10px 0 22px' }}>
                 <div style={{ width: 46, height: 46, borderRadius: 12, margin: '0 auto 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#eff4ff', color: '#2563eb' }}>
                   <MessageSquare size={22} />
@@ -1702,6 +1942,7 @@ const IssueDetail = ({ issue, onBack, orgName = '' }) => {
                 {busy === 'reopen' ? <><Loader2 size={14} className="mcp-spin" /> Reopening…</> : <><RotateCcw size={14} /> Reopen request</>}
               </button>
             </div>
+            {actionError && <p className="mcp-inline-error"><AlertCircle size={13} /> {actionError}</p>}
           </div>
         )}
 

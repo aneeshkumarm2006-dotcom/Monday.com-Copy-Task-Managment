@@ -107,6 +107,16 @@ const sendInviteEmail = async ({
     // URL that already carries the portal credential leaks nothing new, and the
     // group id is validated against the token's board before anything trusts it
     // (exactly as createMyIssue already does with a submitted workstream).
+    //
+    // THE PARAM HAS TO SURVIVE SIGN-IN, AND THAT IS THE CLIENT'S HALF.
+    // `/portal/<token>?service=<groupId>` lands on PortalLandingPage, which then
+    // leaves the page entirely — a full-page nav to the Google strategy, or a
+    // `navigate('/portal')` after a password login — and a query string does not
+    // survive either. So the landing page stashes the id under
+    // `sessionStorage['macan_portal_pending_service']` BEFORE redirecting, and
+    // PortalDashboardPage reads it once on mount and removes it. Both sides
+    // tolerate it being absent or naming a service that client cannot see.
+    // Without that hand-off every link in this email is just the front door.
     const serviceList = (services || []).map((s) => ({
       name: s.name,
       color: s.color || null,
@@ -121,7 +131,17 @@ const sendInviteEmail = async ({
       const link = setupLink(board, setupToken);
 
       // A reset is about the password, not about services — someone who has
-      // forgotten their password does not need their service list recited.
+      // forgotten their password does not need their service list recited, and
+      // the reset copy is deliberately worded so an unrequested one is safe to
+      // ignore.
+      //
+      // WHICH MEANS THE CALLER, NOT THIS FUNCTION, DECIDES WHAT THE MESSAGE IS
+      // ABOUT. `purpose: 'reset'` now means "the client asked for a password
+      // link" — portalRequestPasswordLink and the resend action. Being added to
+      // services is an INVITATION even for somebody who already has a password,
+      // so `portalBatchInvite.mailContact` passes 'setup' whenever it has
+      // services to name; it used to pass 'reset' on the strength of the
+      // password column alone, and the services were then dropped right here.
       if (serviceList.length && purpose !== 'reset') {
         await sendPortalPasswordServicesInviteEmail({
           ...common,

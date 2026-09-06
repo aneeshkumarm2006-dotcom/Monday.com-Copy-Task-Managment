@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowRight, Mail, MessageCircle, Plus } from 'lucide-react';
+import { AlertCircle, ArrowRight, MessageCircle, Plus } from 'lucide-react';
 
 /**
  * The client workspace's landing screen: every service at a glance, and a short
@@ -50,15 +50,12 @@ const ServiceCard = ({ service, onOpen, onSetUpRooms, canManage }) => {
         >
           {service.name}
         </button>
-        {service.owner?.name && (
-          <span
-            className="font-body truncate shrink-0"
-            style={{ fontSize: 11, color: 'var(--color-text-muted)', maxWidth: 90 }}
-            title={service.owner.name}
-          >
-            {service.owner.name}
-          </span>
-        )}
+        {/* There is no owner slot here. A per-service owner would have to come
+            from the group, and `owner` is resolved server-side for TRACKER
+            boards only (groupController.serializeGroups) — TaskGroup has no
+            owner field at all, just the tracker's ownerTimeline. The block that
+            used to render `service.owner.name` could therefore never fire, and
+            read as a working feature to anyone maintaining this. */}
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">
@@ -88,7 +85,24 @@ const ServiceCard = ({ service, onOpen, onSetUpRooms, canManage }) => {
         />
       </div>
 
-      {service.hasRooms ? (
+      {/* ONE control, not a Chat button and a Mail button.
+          `onOpen(id, 'talk')` can only choose the service's TAB; the room
+          inside it is picked by BoardChatTab, which lands on the first
+          client-facing surface every time. Two buttons with two different
+          unread counts therefore led to the same room, and "Mail 3" put you in
+          the chat with the mail still unread. One label that matches where the
+          click goes is honest; two that don't are not. */}
+      {service.hasRooms == null ? (
+        // Rooms are still loading. NOT the same as having none — the amber
+        // "set up" prompt below is a real problem report and must not flash on
+        // every service on every load.
+        <span
+          className="font-body"
+          style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+        >
+          Loading conversations…
+        </span>
+      ) : service.hasRooms ? (
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
@@ -97,24 +111,10 @@ const ServiceCard = ({ service, onOpen, onSetUpRooms, canManage }) => {
             style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}
           >
             <MessageCircle size={12} aria-hidden="true" />
-            Chat
-            {service.unreadChat > 0 && (
+            Conversations
+            {service.unread > 0 && (
               <span style={{ color: 'var(--color-accent)', fontWeight: 700 }}>
-                {service.unreadChat}
-              </span>
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={() => onOpen(service.id, 'talk')}
-            className="font-body flex items-center gap-1"
-            style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}
-          >
-            <Mail size={12} aria-hidden="true" />
-            Mail
-            {service.unreadMail > 0 && (
-              <span style={{ color: 'var(--color-accent)', fontWeight: 700 }}>
-                {service.unreadMail}
+                {service.unread}
               </span>
             )}
           </button>

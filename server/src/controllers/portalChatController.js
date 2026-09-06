@@ -139,8 +139,15 @@ const getPortalChannels = async (req, res) => {
     // This used to be a countDocuments per channel, which cost nothing while the
     // portal tier meant no board had client channels at all, and costs two
     // queries per service now that every service has a chat and a mailbox.
+    //
+    // Mail is read one THREAD at a time, so its badge counts CONVERSATIONS —
+    // the same number the home screen and the digest email show for the same
+    // mailbox, and the only one the mailbox UI can actually clear.
     const unreadMap = await unreadByChannel({ channelIds: ids, contactId });
-    const counts = channels.map((ch) => unreadMap.get(String(ch._id))?.unread || 0);
+    const counts = channels.map((ch) => {
+      const u = unreadMap.get(String(ch._id));
+      return (ch.mode === 'mail' ? u?.unreadThreads : u?.unread) || 0;
+    });
 
     // Preview author names. Team members are named, never emailed.
     const ClientContact = require('../models/ClientContact');
@@ -352,10 +359,43 @@ const notifyTeamOfClientMessage = async ({ channel, message, req, audience }) =>
   }
 };
 
-/** Attachment descriptors the client may set. Never trust `publicId` from a body. */
+/**
+ * The delivery host our own uploader hands back, and the only one an attachment
+ * descriptor may name. Same allowlist `routes/proxy.js` enforces, for the same
+ * reason: it is the one host we know serves our files and nothing else.
+ */
+const CLOUDINARY_HOST = 'res.cloudinary.com';
+
+const isDeliveryUrl = (raw) => {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.hostname !== CLOUDINARY_HOST) return false;
+    // Anyone can get a res.cloudinary.com URL from a free account of their own,
+    // and every delivery URL starts `/<cloud name>/`. Skipped when the cloud is
+    // unconfigured (tests, a bare dev box) rather than failing every upload.
+    const cloud = (process.env.CLOUDINARY_CLOUD_NAME || '').trim();
+    return !cloud || url.pathname.startsWith(`/${cloud}/`);
+  } catch (err) {
+    return false;
+  }
+};
+
+/**
+ * Attachment descriptors the client may set. Never trust `publicId` from a body
+ * — and never trust `url` either, which is what the host check is for.
+ *
+ * This body is written by an EXTERNAL contact, and its `url` is rendered as an
+ * `<img src>` on BOTH planes — `PortalChat` and, in the team's Chat tab,
+ * `AttachmentList`. An arbitrary url therefore turns every team member who opens
+ * the channel into a silent request to a server the client picked, labelled with
+ * a filename and size the client also picked. Only an upload that actually went
+ * through `uploadPortalChatAttachment` can name a URL that survives this; the
+ * rest are dropped without comment, because there is no legitimate way to arrive
+ * here with one.
+ */
 const cleanAttachments = (raw) =>
   (Array.isArray(raw) ? raw : [])
-    .filter((a) => a && typeof a.url === 'string' && a.url)
+    .filter((a) => a && typeof a.url === 'string' && isDeliveryUrl(a.url))
     .slice(0, 10)
     .map((a) => ({
       url: a.url,
@@ -400,11 +440,32 @@ const writeClientMessage = async (req, channel, { subject = null, replyTo = null
     // there is no legitimate client request that carries one.
   });
 
+  // WRITING IS READING — but of the unit you wrote in.
+  //
+  // The channel marker moves on every send because `services/portalNotify.js`
+  // reads it as a PRESENCE stamp ("they were here a moment ago, don't email
+  // them about the reply they are watching arrive"), and a send is the strongest
+  // presence signal this plane has.
+  //
+  // For a mailbox that stamp is the only thing it is: `services/portalUnread.js`
+  // scores a mail surface against `MailThreadRead`, one marker per conversation,
+  // precisely so that composing one message cannot mark four unopened threads
+  // read. So mail also marks the thread it landed in — the root for a new
+  // thread, the parent for a reply, which is what stops a client's own reply
+  // coming back at them as an unread dot on the conversation they are reading.
   await markChannelRead({
     channelId: channel._id,
     contactId: req.portal.contactId,
     at: message.createdAt,
   });
+  if (channel.mode === 'mail') {
+    await markThreadRead({
+      threadId: replyTo || message._id,
+      channelId: channel._id,
+      contactId: req.portal.contactId,
+      at: message.createdAt,
+    });
+  }
 
   try {
     eventBus.emit('chat.message', {
@@ -501,6 +562,12 @@ const uploadPortalChatAttachment = async (req, res) => {
       },
     });
   } catch (err) {
+    // Same rule as the refusal above, and it reaches here more often than it
+    // looks: a malformed `:channelId` makes `loadClientChannel` throw a
+    // CastError with the file already sitting in Cloudinary. Without this, every
+    // failure on this route bills an asset nothing will ever reference.
+    // `destroyCloudinaryAssets` swallows its own per-asset errors.
+    await discard();
     console.error('uploadPortalChatAttachment error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
@@ -593,15 +660,11 @@ const createPortalThread = async (req, res) => {
         .json({ error: `Subject must be ${MAX_SUBJECT} characters or fewer.` });
     }
 
+    // The new thread is marked read for its author inside `writeClientMessage`,
+    // which is now the one place that decides which marker a client's own post
+    // moves — the reply path needs exactly the same line and had it missing.
     const result = await writeClientMessage(req, channel, { subject, replyTo: null });
     if (result.error) return res.status(result.status).json({ error: result.error });
-
-    await markThreadRead({
-      threadId: result.message._id,
-      channelId: channel._id,
-      contactId: req.portal.contactId,
-      at: result.message.createdAt,
-    });
 
     const populated = await Message.findById(result.message._id).populate(
       PORTAL_MESSAGE_POPULATE

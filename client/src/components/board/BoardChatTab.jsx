@@ -9,6 +9,7 @@ import useAuthStore from '../../store/authStore';
 import useToastStore from '../../store/toastStore';
 import useBoardMembers from '../../hooks/useBoardMembers';
 import * as chatService from '../../services/chatService';
+import { getBoardPortalConfig } from '../../services/boardService';
 import { keyForSurface, surfaceByKey } from '../../utils/chatSurfaces';
 import useChatStore from '../../store/chatStore';
 
@@ -215,6 +216,25 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
   const [composeOpen, setComposeOpen] = useState(false);
   const [subject, setSubject] = useState('');
   const [setupGroup, setSetupGroup] = useState(null);
+  /**
+   * Is this board's client portal actually LIVE? `null` means "not known".
+   *
+   * The server refuses client-facing surfaces on anything that is not a live
+   * client board — `isLiveClientBoard` is `boardType:'client'` AND
+   * `portalEnabled` — and it refuses the WHOLE plan when one is asked for,
+   * private team room included. So the setup modal has to be told the same
+   * thing or it offers a choice that cannot succeed, and takes a legal choice
+   * down with it.
+   *
+   * `boardType` alone is not that answer: a client board whose link was
+   * switched off is still `boardType:'client'`. The channels payload does not
+   * carry `portalEnabled`, so this reads it from the portal config endpoint,
+   * which does. That endpoint is board-MANAGER only, a stricter bar than the
+   * `group.manage` that opens the setup modal, so a refusal here leaves this
+   * `null` — unknown, and the modal stays exactly as permissive as it was
+   * before, with the server as the enforcement it always was.
+   */
+  const [portalLive, setPortalLive] = useState(null);
 
   const feedRef = useRef(null);
   const stickToBottom = useRef(true);
@@ -270,6 +290,35 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
   useEffect(() => {
     loadChannels({ select: true });
   }, [loadChannels]);
+
+  const isClientBoard = data?.board?.boardType === 'client';
+  // If the channels payload ever grows `portalEnabled`, it wins and no second
+  // request is made. Today it carries only `_id, name, boardType,
+  // portalClientName`, so this is `null` and the fetch below runs.
+  const portalLiveFromPayload =
+    typeof data?.board?.portalEnabled === 'boolean' ? data.board.portalEnabled : null;
+
+  // One small read, only for the person who can act on the answer, and only on
+  // a client board. Nothing else on this tab needs it: `allowClientSurfaces` is
+  // the single consumer.
+  useEffect(() => {
+    setPortalLive(null);
+    if (!isClientBoard || !data?.canManage || portalLiveFromPayload !== null) {
+      return undefined;
+    }
+    let cancelled = false;
+    getBoardPortalConfig(boardId)
+      .then((cfg) => {
+        if (!cancelled) setPortalLive(!!cfg?.portalEnabled);
+      })
+      .catch(() => {
+        // 403 for a group manager who is not a board manager, or a blip.
+        // Either way this stays unknown, never "off" — see `portalLive`.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [boardId, isClientBoard, data?.canManage, portalLiveFromPayload]);
 
   // ---- Live delivery -------------------------------------------------------
   //
@@ -612,6 +661,12 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
   /* --- Render ------------------------------------------------------------- */
 
   const canManage = !!data?.canManage;
+  // Mirrors the server's `isLiveClientBoard` (utils/clientBoard.js): a client
+  // board AND a portal that is switched on. Unknown counts as allowed, because
+  // hiding a legal choice from someone we simply could not ask is worse than
+  // the round trip the server would refuse anyway.
+  const allowClientSurfaces =
+    isClientBoard && (portalLiveFromPayload ?? portalLive) !== false;
   const canPost = paneReady ? pane.canPost !== false : false;
   const composerProps = {
     uploadFile,
@@ -1138,7 +1193,7 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
             workstreams.find((w) => String(w.group._id) === String(setupGroup._id))
               ?.surfaceKeys || []
           }
-          allowClientSurfaces={data.board?.boardType === 'client'}
+          allowClientSurfaces={allowClientSurfaces}
           onCreate={handleCreateSurfaces}
         />
       )}

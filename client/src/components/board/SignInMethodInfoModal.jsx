@@ -33,22 +33,79 @@ const block = {
   marginBottom: 10,
 };
 
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'textarea:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
 const SignInMethodInfoModal = ({ onClose }) => {
   const panelRef = useRef(null);
 
-  // Both parents that open this are themselves dialogs listening for Escape on
-  // `document` in the BUBBLE phase. Capturing here means we see the key first,
-  // so Escape closes this popup instead of the modal underneath it.
+  // Every parent that opens this is itself a dialog listening on `document` in
+  // the BUBBLE phase. Capturing here means we see the key first, so Escape
+  // closes this popup instead of the modal underneath it — and Tab is trapped
+  // here rather than by the parent, whose own trap measures against ITS panel:
+  // this popup lives in a different portal subtree, so the parent's first/last
+  // checks never match and Tab would walk into the form its overlay is hiding.
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key !== 'Escape') return;
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const panel = panelRef.current;
+      if (!panel) return;
       e.stopPropagation();
-      onClose();
+      // getClientRects() is the display:none filter — a hidden control must not
+      // become a trap boundary, or Tab silently escapes through it.
+      const focusable = Array.from(panel.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+        (el) => el.getClientRects().length > 0
+      );
+      if (focusable.length === 0) {
+        e.preventDefault();
+        panel.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      // The panel itself holds focus on open (tabIndex -1), and Shift+Tab from
+      // there would walk backwards into the dialog this overlay is covering, so
+      // it counts as outside.
+      if (!panel.contains(active) || active === panel) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKey, true);
-    panelRef.current?.focus();
     return () => document.removeEventListener('keydown', onKey, true);
   }, [onClose]);
+
+  // Focus in on mount, back to the (i) button on unmount. Kept in its own
+  // mount-only effect: every caller passes an inline `onClose`, so the effect
+  // above re-runs on each parent render and restoring focus there would yank it
+  // out of this popup mid-read.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement;
+    panelRef.current?.focus();
+    return () => {
+      if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+        previouslyFocused.focus();
+      }
+    };
+  }, []);
 
   return createPortal(
     <div

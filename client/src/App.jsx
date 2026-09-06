@@ -7,6 +7,7 @@ import {
   Outlet,
   useLocation,
 } from 'react-router-dom';
+import { AlertCircle } from 'lucide-react';
 import useAuthStore from './store/authStore';
 import useOrgStore from './store/orgStore';
 import useNotificationStore from './store/notificationStore';
@@ -36,6 +37,54 @@ import ToastContainer from './components/ui/Toast';
 import useNotificationPoll from './hooks/useNotificationPoll';
 import useNotificationStream from './hooks/useNotificationStream';
 import { syncSubscription } from './services/pushService';
+import { getLastPortalLink } from './services/portalService';
+import './styles/portal.css';
+
+/**
+ * PortalNotFound — the catch-all for anything under /portal that isn't one of
+ * the four real portal routes.
+ *
+ * Without it those URLs fell through to the app's own NotFoundPage, whose only
+ * button sends an unauthenticated visitor to /login — the TEAM's login. A
+ * ClientContact is never a User, so that is a door they can never walk through,
+ * and it invites them to try creating an account on the internal app. Reachable
+ * on ordinary paths: a mail client that wrapped the URL, an old group-scoped
+ * link, a typo. So: portal chrome, portal wording, and the remembered link id as
+ * the way back when we have one.
+ */
+const PortalNotFound = () => {
+  const lastLink = getLastPortalLink();
+  return (
+    <div className="mcp mcp-page mcp-shell">
+      <div className="mcp-card-lg mcp-pop" style={{ maxWidth: 420, padding: 36, textAlign: 'center' }}>
+        <div
+          style={{
+            width: 52, height: 52, borderRadius: 14, margin: '0 auto 16px',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: '#FEF2F2', color: '#DC2626',
+          }}
+        >
+          <AlertCircle size={26} />
+        </div>
+        <p style={{ fontSize: 17, fontWeight: 700, margin: '0 0 8px' }}>Page not found</p>
+        <p style={{ fontSize: 14, color: '#64748B', margin: 0, lineHeight: 1.55 }}>
+          {lastLink
+            ? "That address isn't part of your portal. You can go back to the sign-in page."
+            : "That address isn't part of your portal. Please open the invitation link from your email again — some mail apps split long links across two lines."}
+        </p>
+        {lastLink && (
+          <a
+            href={`/portal/${lastLink}`}
+            className="mcp-btn mcp-btn--primary mcp-btn--block"
+            style={{ marginTop: 20, textDecoration: 'none' }}
+          >
+            Back to sign in
+          </a>
+        )}
+      </div>
+    </div>
+  );
+};
 
 /**
  * ProtectedRoute — redirects to /login when not authenticated.
@@ -209,6 +258,10 @@ function App() {
         <Route path="/portal/verify" element={<PortalVerifyPage />} />
         <Route path="/portal/:portalToken" element={<PortalLandingPage />} />
         <Route path="/portal/:portalToken/set-password" element={<PortalSetPasswordPage />} />
+        {/* Anything else under /portal is a mangled portal URL, not an app 404:
+            keep the external client inside the portal instead of handing them
+            the team's login page. */}
+        <Route path="/portal/*" element={<PortalNotFound />} />
 
         {/* Protected */}
         <Route element={<ProtectedRoute />}>

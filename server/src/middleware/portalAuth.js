@@ -110,8 +110,26 @@ const portalAuth = async (req, res, next) => {
     };
 
     // Best-effort presence stamp; never block the request on it.
-    contact.lastSeenAt = new Date();
-    contact.save().catch(() => {});
+    //
+    // THROTTLED, because the portal dashboard fires five reads on load and again
+    // on focus, and stamping every one of them turned a page view into a burst
+    // of writes on ClientContact — for a field whose only consumer is the "last
+    // seen" column in the team's roster, which needs minute-level resolution at
+    // best.
+    //
+    // `updateOne` rather than `contact.save()`: this document was loaded without
+    // its `select: false` credential fields, and a targeted $set cannot be
+    // talked into touching them. The failure is LOGGED rather than swallowed — a
+    // contact row that has become unsaveable used to vanish into a bare
+    // `.catch(() => {})`, taking "last seen" silently dead with it.
+    const STALE_MS = 5 * 60 * 1000;
+    const seenAt = contact.lastSeenAt ? contact.lastSeenAt.getTime() : 0;
+    if (Date.now() - seenAt > STALE_MS) {
+      ClientContact.updateOne(
+        { _id: contact._id },
+        { $set: { lastSeenAt: new Date() } }
+      ).catch((stampErr) => console.error('portalAuth lastSeenAt error:', stampErr));
+    }
 
     return next();
   } catch (err) {

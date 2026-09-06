@@ -26,6 +26,11 @@ import '../styles/portal.css';
  */
 
 const MIN_LENGTH = 8;
+// The other two rules the server enforces (portalController `validatePassword`).
+// They used to exist only there, so a client met them as a 400 after a round
+// trip on a link that only works once.
+const MAX_LENGTH = 200;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const PortalSetPasswordPage = () => {
   const { portalToken } = useParams();
@@ -42,14 +47,17 @@ const PortalSetPasswordPage = () => {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
-  // Re-request panel, shown on the dead-link screen.
+  // Re-request panel, shown on the dead-link screen. Success and failure are
+  // kept APART: they render in different colours and a failure must never look
+  // like "your link is on its way" — this panel is the only recovery path a
+  // client has once a one-time link is spent.
   const [resendEmail, setResendEmail] = useState('');
   const [resending, setResending] = useState(false);
   const [resendMsg, setResendMsg] = useState('');
+  const [resendError, setResendError] = useState('');
 
   useEffect(() => {
     let alive = true;
-    rememberPortalLink(portalToken);
     if (!token) {
       setLoadError('This link is missing its code. Please open the link from your email again.');
       setLoading(false);
@@ -58,7 +66,15 @@ const PortalSetPasswordPage = () => {
       };
     }
     checkPortalSetupToken(portalToken, token)
-      .then((data) => alive && setInfo(data))
+      .then((data) => {
+        if (!alive) return;
+        setInfo(data);
+        // Only NOW is this link known to be live. Remembering it before the
+        // check would let an old email overwrite a good remembered link with a
+        // dead one, and that value is what the dashboard's expired screen uses
+        // to offer a way back in.
+        rememberPortalLink(portalToken);
+      })
       .catch((err) => {
         if (!alive) return;
         const status = err.response?.status;
@@ -85,6 +101,14 @@ const PortalSetPasswordPage = () => {
       setFormError(`Please choose a password of at least ${MIN_LENGTH} characters.`);
       return;
     }
+    if (password.length > MAX_LENGTH) {
+      setFormError(`Passwords can be at most ${MAX_LENGTH} characters.`);
+      return;
+    }
+    if (info?.email && password.toLowerCase() === info.email.toLowerCase()) {
+      setFormError('Please choose a password that is not your email address.');
+      return;
+    }
     if (password !== confirm) {
       setFormError("Those two passwords don't match.");
       return;
@@ -108,13 +132,27 @@ const PortalSetPasswordPage = () => {
 
   const handleResend = async () => {
     const addr = resendEmail.trim();
+    setResendError('');
+    setResendMsg('');
     if (!addr) return;
+    // Catch the typo here rather than round-tripping to the server's 400 — a
+    // malformed address is the most common way this request fails, and its
+    // answer used to be painted as a confirmation.
+    if (!EMAIL_RE.test(addr)) {
+      setResendError("That address doesn't look right. Check it and try again.");
+      return;
+    }
     setResending(true);
     try {
       const { message } = await requestPortalPasswordLink(portalToken, addr);
       setResendMsg(message);
     } catch (err) {
-      setResendMsg(err.response?.data?.error || 'Could not send the link. Please try again.');
+      setResendError(
+        err.response?.data?.error ||
+          (err.response
+            ? 'Could not send the link. Please try again.'
+            : 'Could not reach the server. Check your connection and try again.')
+      );
     } finally {
       setResending(false);
     }
@@ -146,30 +184,40 @@ const PortalSetPasswordPage = () => {
             {loadError}
           </p>
 
-          {resendMsg ? (
-            <p className="mcp-note">{resendMsg}</p>
-          ) : (
-            <div style={{ textAlign: 'left' }}>
-              <label className="mcp-label" htmlFor="resend-email">Send me a new link</label>
-              <input
-                id="resend-email"
-                className="mcp-field"
-                type="email"
-                placeholder="you@company.com"
-                value={resendEmail}
-                onChange={(e) => setResendEmail(e.target.value)}
-                style={{ marginBottom: 10 }}
-              />
-              <button
-                type="button"
-                onClick={handleResend}
-                disabled={resending || !resendEmail.trim()}
-                className="mcp-btn mcp-btn--primary mcp-btn--block"
-              >
-                {resending ? <><Loader2 size={17} className="mcp-spin" /> Sending…</> : 'Email me a new link'}
-              </button>
-            </div>
-          )}
+          {/* The field and the button stay mounted whatever happens: a client
+              who mistyped their address needs to correct it and press again,
+              and a page reload is not a recovery step anyone should have to
+              guess at. */}
+          <div style={{ textAlign: 'left' }}>
+            <label className="mcp-label" htmlFor="resend-email">Send me a new link</label>
+            <input
+              id="resend-email"
+              className="mcp-field"
+              type="email"
+              placeholder="you@company.com"
+              value={resendEmail}
+              onChange={(e) => {
+                setResendEmail(e.target.value);
+                setResendError('');
+                setResendMsg('');
+              }}
+              style={{ marginBottom: 10 }}
+            />
+            {resendMsg && (
+              <p className="mcp-note" role="status" style={{ marginBottom: 10 }}>{resendMsg}</p>
+            )}
+            {resendError && (
+              <p className="mcp-error" role="alert" style={{ marginBottom: 10 }}>{resendError}</p>
+            )}
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={resending || !resendEmail.trim()}
+              className="mcp-btn mcp-btn--primary mcp-btn--block"
+            >
+              {resending ? <><Loader2 size={17} className="mcp-spin" /> Sending…</> : 'Email me a new link'}
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -226,7 +274,18 @@ const PortalSetPasswordPage = () => {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               autoFocus
+              aria-describedby="new-password-rules"
             />
+            {/* Persistent, not a placeholder: the rules have to stay readable
+                while they type, and the "not your email address" one is easy to
+                trip when a password manager fills the username into both
+                fields — on a link that only works once. */}
+            <p
+              id="new-password-rules"
+              style={{ fontSize: 12.5, color: '#64748B', margin: '7px 0 0', lineHeight: 1.5 }}
+            >
+              At least {MIN_LENGTH} characters, and not your email address.
+            </p>
           </div>
           <div style={{ marginBottom: 16 }}>
             <label className="mcp-label" htmlFor="confirm-password">Confirm password</label>
@@ -241,7 +300,7 @@ const PortalSetPasswordPage = () => {
             />
           </div>
 
-          {formError && <p className="mcp-error" style={{ marginBottom: 14 }}>{formError}</p>}
+          {formError && <p className="mcp-error" role="alert" style={{ marginBottom: 14 }}>{formError}</p>}
 
           <button
             type="submit"

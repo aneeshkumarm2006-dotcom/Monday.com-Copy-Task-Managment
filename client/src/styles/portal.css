@@ -94,12 +94,19 @@
   }
 }
 
-/* ---- cards ---------------------------------------------------------------- */
+/* ---- cards ----------------------------------------------------------------
+ * The padding is part of the class, not something every call site remembers.
+ * Most already set their own `padding` inline, which wins over this; the ones
+ * that never did (the "your portal is being set up" panel, the two "not
+ * switched on yet" panels, the FAQ list) were rendering text flush against the
+ * border. The two cards that are deliberately full-bleed are reset below.
+ * -------------------------------------------------------------------------- */
 .mcp-card {
   background: var(--p-card);
   border: 1px solid var(--p-border);
   border-radius: var(--p-r);
   box-shadow: var(--p-shadow-sm);
+  padding: 18px 20px;
 }
 
 .mcp-card-lg {
@@ -107,6 +114,20 @@
   border: 1px solid var(--p-border);
   border-radius: var(--p-r-lg);
   box-shadow: var(--p-shadow);
+  padding: 22px 24px;
+}
+
+/* Full-bleed exceptions: the mail list's rows run edge to edge and paint their
+   own hover band, so an outer pad would leave a dead strip of card around them. */
+.mcp-card-lg.mcp-mail {
+  padding: 0;
+}
+/* Same reason for a card whose first child is the full-width button that opens
+   it (the FAQ accordion): the button owns its own padding and its hover must
+   reach the card's edges. Kept in its own rule so a browser without `:has()`
+   still gets the `.mcp-mail` reset above. */
+.mcp-card-lg:has(> button:first-child) {
+  padding: 0;
 }
 
 /* clickable list card */
@@ -1226,14 +1247,30 @@ textarea.mcp-field {
   .mcp-stats {
     gap: 9px;
   }
+  /* Three cards stay three across — they are the state filter, and stacking
+     them would push the request list off the first screen. What has to give is
+     the ROW inside each card: at 360px a card is ~103px wide, and a 48px icon
+     sitting beside the number left the label a sliver that `overflow: hidden`
+     then clipped. Icon over text instead, which is what the `margin-bottom`
+     below always assumed. */
   .mcp-stat {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
     padding: 13px 11px;
   }
   .mcp-stat-ico {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
     margin-bottom: 9px;
   }
   .mcp-stat-num {
     font-size: 22px;
+  }
+  .mcp-stat-label {
+    font-size: 12px;
+    margin-top: 4px;
   }
   .mcp-greet-name {
     font-size: 23px;
@@ -2058,11 +2095,41 @@ textarea.mcp-field {
     box-shadow: none !important;
   }
 
+  /* The header each cell lost, put back from `data-label`. Without it a card is
+     a service name, a bare "3d ago" and two unlabelled icon buttons — the
+     `aria-label`s cover screen readers, sighted phone users got nothing.
+     Service is deliberately left unlabelled: it is the card's title, and an
+     eyebrow above it would read as a form field rather than a heading. */
+  .mcp .mcp-svc-table td[data-label]:not([data-label='Service'])::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--p-muted-text, #64748b);
+    margin-bottom: 2px;
+  }
+
+  .mcp .mcp-svc-table td[data-label='Requests'],
+  .mcp .mcp-svc-table td[data-label='Last activity'] {
+    padding-top: 8px;
+  }
+
+  /* Chat and Mail sit side by side on one line, so their label goes BESIDE the
+     chip — above it the two would drift out of vertical alignment. */
   .mcp .mcp-svc-table td[data-label='Chat'],
   .mcp .mcp-svc-table td[data-label='Mail'] {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     width: auto;
+    vertical-align: top;
     margin: 6px 6px 0 0;
+  }
+  .mcp .mcp-svc-table td[data-label='Chat']::before,
+  .mcp .mcp-svc-table td[data-label='Mail']::before {
+    margin-bottom: 0;
   }
 
   .mcp .mcp-svc-table td:last-child { display: none; }

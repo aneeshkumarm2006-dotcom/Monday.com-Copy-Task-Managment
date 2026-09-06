@@ -1,9 +1,13 @@
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 const Board = require('../models/Board');
 const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
 const Update = require('../models/Update');
 const ClientContact = require('../models/ClientContact');
+const ChannelContactRead = require('../models/ChannelContactRead');
+const MailThreadRead = require('../models/MailThreadRead');
+const PortalDigest = require('../models/PortalDigest');
 const Organisation = require('../models/Organisation');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const {
@@ -29,11 +33,16 @@ const {
   sendInviteEmail,
   inviteContact,
   issueSetupToken,
+  // The TTLs, so the forgot-password cooldown can date a token from its expiry
+  // rather than storing an issued-at nobody else needs.
+  SETUP_TTL_MS,
+  RESET_TTL_MS,
 } = require('../services/portalInviteService');
 const {
   loadRequestAttachments,
   isClientVisibleAttachment,
 } = require('../utils/portalAttachments');
+const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const { portalTaskFilter, isTeamAuthoredIssue } = require('../utils/portalVisibility');
 const { isClientBoard } = require('../utils/clientBoard');
 const portalStream = require('../services/portalStream');
@@ -215,16 +224,71 @@ const serializeIssue = (task, board, workstreams = null) => {
   };
 };
 
-const cleanAttachments = (attachments) =>
-  (Array.isArray(attachments) ? attachments : [])
-    .filter((a) => a && typeof a.url === 'string' && a.url.length > 0)
-    .map((a) => ({
-      url: a.url,
-      name: a.name || '',
-      mime: a.mime || '',
-      size: Number.isFinite(a.size) ? a.size : 0,
-      publicId: a.publicId || '',
-    }));
+/**
+ * Turn the attachments a client REPLAYED onto a thread message into the real
+ * ones, taken from that task's own file drawer.
+ *
+ * ---- NONE OF THE POSTED METADATA IS KEPT, AND THAT IS THE POINT ------------
+ *
+ * This used to copy `url`, `mime`, `size` and `publicId` straight out of the
+ * request body. Both of those fields leave the portal and get acted on by the
+ * team's side: `updateController` hands `publicId` to
+ * `cloudinary.uploader.destroy()` when a team member edits or deletes the
+ * message, and the team's app renders `url` as an `<img src>`. One Cloudinary
+ * account serves the whole workspace, so a forged `publicId` names a real asset
+ * belonging to another board — another CLIENT — and an ordinary tidy-up by the
+ * team destroys it. A forged `url` points the team's browser wherever the client
+ * chose, under a filename they also chose.
+ *
+ * So a client's entries are treated as REFERENCES, not as data: each is looked
+ * up in `task.attachments` by the subdocument id `uploadIssueAttachment` handed
+ * back, or by url (what an older bundle sends), and the STORED copy is what gets
+ * persisted. An entry matching nothing is dropped silently — there is nothing
+ * legitimate it could have been.
+ *
+ * Only files the client can actually see are eligible
+ * (`isClientVisibleAttachment`), so the team's own Files-tab uploads on the same
+ * task cannot be pulled into a client-visible message either.
+ *
+ * MAX_THREAD_ATTACHMENTS caps the array. Nothing bounded it before, and an
+ * Update document is not the place to find that out.
+ */
+const MAX_THREAD_ATTACHMENTS = 10;
+
+const cleanAttachments = (attachments, task) => {
+  const drawer = Array.isArray(task?.attachments) ? task.attachments : [];
+  const byId = new Map();
+  const byUrl = new Map();
+  drawer.forEach((a) => {
+    if (!a || !isClientVisibleAttachment(a)) return;
+    if (a._id) byId.set(String(a._id), a);
+    if (a.url) byUrl.set(String(a.url), a);
+  });
+
+  const seen = new Set();
+  const out = [];
+  for (const posted of Array.isArray(attachments) ? attachments : []) {
+    if (!posted) continue;
+    const found =
+      (posted.id && byId.get(String(posted.id))) ||
+      (posted._id && byId.get(String(posted._id))) ||
+      (typeof posted.url === 'string' && byUrl.get(posted.url)) ||
+      null;
+    if (!found) continue;
+    const key = String(found._id || found.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      url: found.url,
+      name: found.name || '',
+      mime: found.mime || '',
+      size: Number.isFinite(found.size) ? found.size : 0,
+      publicId: found.publicId || '',
+    });
+    if (out.length >= MAX_THREAD_ATTACHMENTS) break;
+  }
+  return out;
+};
 
 // ============================================================================
 // PUBLIC (no auth) — the client hasn't signed in yet.
@@ -421,7 +485,40 @@ const portalPasswordLogin = async (req, res) => {
  * Always answers identically, whatever the address turns out to be. Unlike the
  * login endpoint this is unauthenticated and unthrottled by any prior knowledge,
  * so it's the one an attacker would actually use to enumerate clients.
+ *
+ * ---- THE IDENTICAL BODY WAS NOT ENOUGH ------------------------------------
+ *
+ * An unknown address used to return after one indexed `findOne` — milliseconds.
+ * A known one wrote a document and then AWAITED a Gmail SMTP round trip —
+ * seconds. Anyone holding the portal link (it is in every invitation email, so a
+ * forwarded invite is enough) could read that difference off a stopwatch and
+ * enumerate exactly who at the client has portal access. A failing send made it
+ * cruder still: only a real contact ever reached the send, so its 500 named the
+ * address outright.
+ *
+ * Both branches now return at the same moment — the token and the email happen
+ * OFF the response path, and nothing only a real contact can reach is allowed to
+ * change the status code. That is the property `portalPasswordLogin` buys with
+ * `verifyDummyPassword`.
+ *
+ * ---- AND A PER-CONTACT COOLDOWN -------------------------------------------
+ *
+ * The route's IP limiter is the only other brake, and one accepted call both
+ * mails the client and INVALIDATES the setup link they may already be holding.
+ * So a contact whose one-time token was issued moments ago is left alone: same
+ * QUIET answer, no second email. The issue time is derived from
+ * `setupTokenExpires` minus the TTL for its purpose rather than stored — the
+ * same two fields the token already needs.
  */
+const RESEND_COOLDOWN_MS = 2 * 60 * 1000;
+
+const setupTokenIsFresh = (contact) => {
+  if (!contact?.setupTokenExpires) return false;
+  const ttl = contact.setupTokenPurpose === 'reset' ? RESET_TTL_MS : SETUP_TTL_MS;
+  const issuedAt = contact.setupTokenExpires.getTime() - ttl;
+  return Date.now() - issuedAt < RESEND_COOLDOWN_MS;
+};
+
 const portalRequestPasswordLink = async (req, res) => {
   const QUIET = {
     message: "If that email has portal access, we've sent it a link. Check your inbox.",
@@ -438,17 +535,24 @@ const portalRequestPasswordLink = async (req, res) => {
     const contact = await ClientContact.findOne({ board: ctx.board._id, email }).select(
       '+passwordHash'
     );
-    if (!contact || contact.authMethod !== 'password') return res.json(QUIET);
-
-    const purpose = contact.passwordHash ? 'reset' : 'setup';
-    const raw = await issueSetupToken(contact, purpose);
-    await sendInviteEmail({
-      board: ctx.board,
-      email,
-      authMethod: 'password',
-      setupToken: raw,
-      purpose,
-    });
+    if (contact && contact.authMethod === 'password' && !setupTokenIsFresh(contact)) {
+      const purpose = contact.passwordHash ? 'reset' : 'setup';
+      // Deliberately NOT awaited — see the docblock. Every failure is logged
+      // here and none of them reaches the response, which has already gone.
+      issueSetupToken(contact, purpose)
+        .then((raw) =>
+          sendInviteEmail({
+            board: ctx.board,
+            email,
+            authMethod: 'password',
+            setupToken: raw,
+            purpose,
+          })
+        )
+        .catch((sendErr) =>
+          console.error('portalRequestPasswordLink send error:', sendErr)
+        );
+    }
 
     return res.json(QUIET);
   } catch (err) {
@@ -594,14 +698,16 @@ const updatePortalPreferences = async (req, res) => {
  *
  * ---- SIX ROUND TRIPS, NO N+1 -----------------------------------------------
  *
- *   1  board          5  requests + last activity, ONE $facet aggregate
+ *   1  board          5  requests + last activity, ONE grouped aggregate
  *   2  organisation   6  chat/mail unread, ONE aggregate (services/portalUnread)
  *   3  groups         +  colours resolved for every slug in ONE catalog query
  *   4  channels
  *
  * The `$match` reuses `portalTaskFilter` verbatim, including the throw that
  * refuses to build an unscoped filter, and the `$lookup` is served by Update's
- * existing `{ task, visibility, createdAt }` index — no new index.
+ * existing `{ task, visibility, createdAt }` index — no new index. Step 5
+ * returns one row per (service, status) rather than one per task, so nothing
+ * here grows with the length of the client's history.
  *
  * Bucketing into open / in-progress / resolved happens in JS, NOT in Mongo.
  * `utils/doneStatus.js` owns what "resolved" means for a board, and re-encoding
@@ -626,26 +732,67 @@ const getPortalHome = async (req, res) => {
     ]);
 
     // ---- requests, per service, plus last activity ------------------------
-    const tasks = await Task.find(portalTaskFilter({ boardId, contactId }))
-      .select('group status updatedAt createdAt')
-      .lean();
+    //
+    // COUNTS COME BACK AS COUNTS. This used to fetch every task the contact can
+    // see and tally them in JS, which on a board that has been running a year is
+    // the client's entire shared history pulled over the wire to produce nine
+    // numbers — and then every one of those ids fed into a second `$in`
+    // aggregate. Both steps are one grouped pipeline now, whose result is
+    // (services x statuses) rows, so the cost stops tracking that history.
+    //
+    // Bucketing into open / in-progress / resolved still happens in JS below,
+    // for the reason in this handler's header: `utils/doneStatus.js` owns what
+    // "resolved" means for a board and must not be re-encoded in a pipeline.
+    //
+    // The `$match` reuses `portalTaskFilter` verbatim — including the throw that
+    // refuses an unscoped filter — but the two id fields are re-cast by hand:
+    // `find()` casts a string id against the schema and `aggregate()` does NOT,
+    // so handing the token's string board id straight to a pipeline matches
+    // nothing and reports an empty portal.
+    const toObjectId = (v) => new mongoose.Types.ObjectId(String(v));
+    const taskMatch = {
+      ...portalTaskFilter({ boardId, contactId }),
+      board: toObjectId(boardId),
+      $or: [{ portalSubmitter: toObjectId(contactId) }, { portalShared: true }],
+    };
 
-    const lastByTask = new Map();
-    if (tasks.length) {
-      const rows = await Update.aggregate([
-        {
-          $match: {
-            task: { $in: tasks.map((t) => t._id) },
-            // Written as a NEGATION on purpose: rows that predate the field
-            // carry no `visibility` at all, so an inclusive match would silently
-            // report every existing thread as empty.
-            visibility: { $ne: 'internal' },
+    const rows = await Task.aggregate([
+      { $match: taskMatch },
+      {
+        // Newest client-visible message per task.
+        $lookup: {
+          from: Update.collection.name,
+          let: { taskId: '$_id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $eq: ['$task', '$$taskId'] },
+                // Written as a NEGATION on purpose: rows that predate the field
+                // carry no `visibility` at all, so an inclusive match would
+                // silently report every existing thread as empty.
+                visibility: { $ne: 'internal' },
+              },
+            },
+            { $group: { _id: null, lastAt: { $max: '$createdAt' } } },
+          ],
+          as: 'lastUpdate',
+        },
+      },
+      {
+        $group: {
+          _id: { group: '$group', status: '$status' },
+          count: { $sum: 1 },
+          lastAt: {
+            $max: {
+              $ifNull: [
+                { $arrayElemAt: ['$lastUpdate.lastAt', 0] },
+                { $ifNull: ['$updatedAt', '$createdAt'] },
+              ],
+            },
           },
         },
-        { $group: { _id: '$task', lastAt: { $max: '$createdAt' } } },
-      ]);
-      rows.forEach((r) => lastByTask.set(String(r._id), r.lastAt));
-    }
+      },
+    ]);
 
     const perGroup = new Map();
     const bucketFor = (gid) => {
@@ -655,13 +802,12 @@ const getPortalHome = async (req, res) => {
       }
       return perGroup.get(key);
     };
-    for (const t of tasks) {
-      const b = bucketFor(t.group);
-      const { state } = classifyIssue(board, t.status);
-      b[state] += 1;
-      b.total += 1;
-      const at = lastByTask.get(String(t._id)) || t.updatedAt || t.createdAt;
-      if (at && (!b.lastAt || at > b.lastAt)) b.lastAt = at;
+    for (const r of rows) {
+      const b = bucketFor(r._id?.group);
+      const { state } = classifyIssue(board, r._id?.status);
+      b[state] += r.count;
+      b.total += r.count;
+      if (r.lastAt && (!b.lastAt || r.lastAt > b.lastAt)) b.lastAt = r.lastAt;
     }
 
     // ---- conversations, per service ---------------------------------------
@@ -773,7 +919,24 @@ const getPortalHome = async (req, res) => {
  * the same check `createMyIssue` makes, and the only security property either
  * needs, since a contact may see every service on their own board but none on
  * anyone else's.
+ *
+ * ---- IT IS PAGED NOW ------------------------------------------------------
+ *
+ * This used to be `Task.find(filter).sort(...)` with no limit, no projection and
+ * full hydration — every task the contact can see, notes, whole attachment
+ * arrays and every custom field, and then every one of those ids into an `$in`
+ * aggregate. On a client board with a year of shared work behind it the request
+ * hit the portal's own 20s axios timeout, and there was no way to ask for less.
+ *
+ * `?limit=` (capped at MAX_ISSUE_PAGE) and `?before=` (a `createdAt` cursor,
+ * matching the newest-first sort) page it. The default is deliberately generous
+ * rather than small: the portal has no "load more" control yet, and a tight
+ * default would silently hide requests from a client with no way to reveal them.
+ * The response carries `page.nextCursor` for the day it grows one.
  */
+const DEFAULT_ISSUE_PAGE = 100;
+const MAX_ISSUE_PAGE = 200;
+
 const getMyIssues = async (req, res) => {
   try {
     const { contactId, boardId } = req.portal;
@@ -798,7 +961,29 @@ const getMyIssues = async (req, res) => {
       filter.group = group._id;
     }
 
-    const tasks = await Task.find(filter).sort({ createdAt: -1 });
+    const rawLimit = Number(req.query?.limit);
+    const limit =
+      Number.isFinite(rawLimit) && rawLimit > 0
+        ? Math.min(Math.trunc(rawLimit), MAX_ISSUE_PAGE)
+        : DEFAULT_ISSUE_PAGE;
+    // The cursor is the `createdAt` of the last row the caller already holds.
+    // Ignored when it isn't a date rather than 400'd — a stale bookmarked query
+    // string should show the first page, not an error.
+    const before = new Date((req.query?.before || '').toString());
+    if (!Number.isNaN(before.getTime())) filter.createdAt = { $lt: before };
+
+    // One extra row, fetched purely to answer "is there more?" without a second
+    // count query. It is dropped before anything is serialized.
+    const page = await Task.find(filter)
+      .select(
+        'name note status priority dueDate createdAt updatedAt group portalRef portalType ' +
+          'portalCategory portalRating portalShared portalSharedAt portalSubmitter attachments'
+      )
+      .sort({ createdAt: -1 })
+      .limit(limit + 1)
+      .lean();
+    const hasMore = page.length > limit;
+    const tasks = hasMore ? page.slice(0, limit) : page;
 
     const org = await Organisation.findById(board.organisation).select('name');
 
@@ -845,6 +1030,12 @@ const getMyIssues = async (req, res) => {
 
     return res.json({
       issues,
+      // Additive: a caller that only reads `issues` behaves exactly as before.
+      page: {
+        limit,
+        hasMore,
+        nextCursor: hasMore ? tasks[tasks.length - 1]?.createdAt || null : null,
+      },
       context: {
         orgName: org?.name || '',
         companyName: company,
@@ -893,7 +1084,12 @@ const createMyIssue = async (req, res) => {
     const requestedGroup = (req.body?.workstream || req.body?.groupId || '').toString().trim();
     let groupId = null;
     if (requestedGroup) {
-      const group = await TaskGroup.findOne({ _id: requestedGroup, board: boardId }).select('_id');
+      // `.catch(() => null)` for the same reason getMyIssues has one: a
+      // workstream id that isn't a valid ObjectId is a bad REQUEST, and letting
+      // the CastError out turns it into a 500 the client can do nothing with.
+      const group = await TaskGroup.findOne({ _id: requestedGroup, board: boardId })
+        .select('_id')
+        .catch(() => null);
       if (!group) {
         return res.status(400).json({ error: 'That workstream is not available.' });
       }
@@ -1026,7 +1222,11 @@ const createMyIssue = async (req, res) => {
  * shared task the same rights as the client's own: reply, attach, reopen, rate.
  */
 const loadVisibleIssue = async (req, taskId) => {
-  if (!taskId) return null;
+  // A malformed id is "no such issue", not a server fault. Without this the
+  // CastError escapes into each caller's outer catch, every one of which answers
+  // 500 "Server error" — so a mangled bookmark or a stale/empty id in page state
+  // showed the client a red failure instead of "Issue not found".
+  if (!taskId || !mongoose.isValidObjectId(taskId)) return null;
   const task = await Task.findOne({
     _id: taskId,
     ...portalTaskFilter(req.portal),
@@ -1046,10 +1246,33 @@ const loadVisibleIssue = async (req, taskId) => {
  * Attach a file/screenshot to one of the contact's own issues.
  */
 const uploadIssueAttachment = async (req, res) => {
+  // The route runs `updateUpload.single('file')` BEFORE this handler, so by the
+  // time authorization is checked the file is already in Cloudinary and already
+  // being paid for. Every early return that skips cleanup strands a paid asset
+  // in the bucket with nothing referencing it — and nothing on the team's side
+  // ever lists these, so they surface only on the bill. Mirrors
+  // updateController's `discardUpload()`, for the same reason.
+  const discardUpload = async () => {
+    if (!req.file) return;
+    try {
+      await destroyCloudinaryAssets([
+        {
+          publicId: req.file.filename || req.file.public_id || '',
+          mime: req.file.mimetype || '',
+        },
+      ]);
+    } catch (cleanupErr) {
+      console.error('uploadIssueAttachment cleanup error:', cleanupErr);
+    }
+  };
+
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const task = await loadVisibleIssue(req, req.params.id);
-    if (!task) return res.status(404).json({ error: 'Issue not found' });
+    if (!task) {
+      await discardUpload();
+      return res.status(404).json({ error: 'Issue not found' });
+    }
 
     const context = (req.body?.context || '').toString().trim();
     const attachment = {
@@ -1080,6 +1303,8 @@ const uploadIssueAttachment = async (req, res) => {
     });
   } catch (err) {
     console.error('uploadIssueAttachment error:', err);
+    // A save that failed leaves exactly the orphan a 404 would.
+    await discardUpload();
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -1103,7 +1328,11 @@ const getIssueThread = async (req, res) => {
     const board = await Board.findById(task.board).select('statuses organisation');
     const updates = await Update.find({ task: task._id, visibility: { $ne: 'internal' } })
       .sort({ createdAt: 1 })
-      .populate('author', 'name profilePic');
+      .populate('author', 'name profilePic')
+      // The CLIENT-side author. A shared task is readable and postable by every
+      // contact on the board (utils/portalVisibility.js), so "a client wrote
+      // this" says nothing about WHICH client — see the mapping below.
+      .populate('portalAuthor', 'name');
     const org = await Organisation.findById(req.portal.orgId).select('name');
     const orgName = org?.name || 'Support team';
     const myName = req.portal.contact?.name || 'You';
@@ -1113,16 +1342,26 @@ const getIssueThread = async (req, res) => {
       if (u.authorType === 'system') {
         return { id: String(u._id), system: true, bodyText: u.bodyText || '', createdAt: u.createdAt };
       }
-      const mine = u.authorType === 'client';
+      // WHICH client, not merely "a client". `authorType === 'client'` was being
+      // used as `mine`, so on any board with two contacts — the ordinary case,
+      // and the one the batch invite exists for — a colleague's reply rendered
+      // on the right-hand side under the READER's own name, and the reader's own
+      // replies were shown to their colleague as theirs. Identity is compared
+      // against the signed-in contact instead; a post with no portalAuthor
+      // (legacy rows) reads as a colleague, never as the reader.
+      const isClient = u.authorType === 'client';
+      const authorId = String(u.portalAuthor?._id || u.portalAuthor || '');
+      const mine = isClient && authorId === String(req.portal.contactId);
+      const clientName = u.portalAuthor?.name || 'A colleague';
       // Team replies show the actual team member who replied (falls back to the
       // org name for legacy posts with no stored author).
       const teamName = u.author?.name || orgName;
       return {
         id: String(u._id),
         mine,
-        authorLabel: mine ? myName : teamName,
-        authorTeam: mine ? '' : orgName,
-        authorAvatar: mine ? '' : (u.author?.profilePic || ''),
+        authorLabel: mine ? myName : isClient ? clientName : teamName,
+        authorTeam: isClient ? '' : orgName,
+        authorAvatar: isClient ? '' : u.author?.profilePic || '',
         bodyText: u.bodyText || '',
         attachments: (u.attachments || []).map((a) => ({
           url: a.url,
@@ -1188,7 +1427,9 @@ const postIssueThreadMessage = async (req, res) => {
     if (!task) return res.status(404).json({ error: 'Issue not found' });
 
     const bodyText = (req.body?.bodyText || '').toString().trim();
-    const attachments = cleanAttachments(req.body?.attachments);
+    // Rebuilt from THIS task's drawer — see cleanAttachments. Nothing the client
+    // posted about a file is stored.
+    const attachments = cleanAttachments(req.body?.attachments, task);
     if (!bodyText && attachments.length === 0) {
       return res.status(400).json({ error: 'Message cannot be empty' });
     }
@@ -1322,6 +1563,18 @@ const reopenIssue = async (req, res) => {
 /**
  * POST /api/portal/me/issues/:id/rating   Body: { rating: 1..5 }
  * Client rates their satisfaction once an issue is resolved.
+ *
+ * "Once resolved" is now ENFORCED, not just described. A score on a ticket
+ * nobody has finished means nothing, and `reopenIssue` nulls a rating when the
+ * request comes back — so a rating accepted early was quietly deleted later and
+ * the team's satisfaction data lost rows without saying so. The precondition is
+ * checked the same way reopenIssue checks its own.
+ *
+ * CHANGING a rating stays allowed and is SILENT. Re-submitting used to fan a
+ * fresh `clientReplied` notification out to every board member, so one ticket
+ * could put thirty rows in everyone's bell inside a minute — each a real
+ * Notification document plus an email evaluation. The team is told once, when a
+ * score first arrives.
  */
 const rateIssue = async (req, res) => {
   try {
@@ -1333,16 +1586,26 @@ const rateIssue = async (req, res) => {
       return res.status(400).json({ error: 'Rating must be between 1 and 5.' });
     }
 
+    const board = await Board.findById(task.board).select('statuses');
+    if (!board || !isResolvedStatus(board, task.status)) {
+      return res
+        .status(400)
+        .json({ error: 'You can rate a request once it has been resolved.' });
+    }
+
+    const wasRated = task.portalRating != null;
     task.portalRating = rating;
     await task.save();
 
-    await notifyTeam({
-      orgId: req.portal.orgId,
-      type: 'clientReplied',
-      message: `${req.portal.clientName} rated "${task.name}" ${rating}/5`,
-      taskId: task._id,
-      boardId: task.board,
-    });
+    if (!wasRated) {
+      await notifyTeam({
+        orgId: req.portal.orgId,
+        type: 'clientReplied',
+        message: `${req.portal.clientName} rated "${task.name}" ${rating}/5`,
+        taskId: task._id,
+        boardId: task.board,
+      });
+    }
 
     return res.json({ rating });
   } catch (err) {

@@ -15,6 +15,7 @@ const { loadBoardContext } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 const { buildTaskDeepLink } = require('../utils/taskDeepLink');
 const { sendPortalReplyEmailForTask } = require('./portalController');
+const { isClientVisibleTask } = require('../utils/portalVisibility');
 
 /**
  * Access rules:
@@ -226,10 +227,19 @@ const addUpdate = async (req, res) => {
     });
 
     // Client Portal: this is the authenticated (team) post path, so when the
-    // task was raised by an external client, email that client their reply.
+    // task is one the client can actually read, email that client the reply.
     // Fire-and-forget — the helper swallows its own errors.
     // An internal note is precisely the thing that must NOT reach them.
-    if (!isInternal && task.source === 'client' && task.portalSubmitter) {
+    //
+    // The condition is `isClientVisibleTask`, never a hand-rolled
+    // `source === 'client'`: a task reaches the client through TWO doors, and
+    // the second one — `portalShared`, the team publishing a task of their own —
+    // is the case where the client is least likely to be watching the portal and
+    // most needs telling. See utils/portalVisibility.js, which says so first.
+    // (The helper re-asserts the old check on its own side and has to be
+    // repointed at the same rule — and at "who do I send to when there is no
+    // portalSubmitter" — before a shared task's reply actually leaves.)
+    if (!isInternal && isClientVisibleTask(task)) {
       sendPortalReplyEmailForTask(task, bodyText);
     }
 

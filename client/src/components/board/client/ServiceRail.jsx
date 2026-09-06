@@ -85,13 +85,19 @@ const Row = ({ icon: Icon, dot, label, active, unread, requests, warn, onClick }
   </button>
 );
 
+// There is no `peopleCount` prop. It existed, defaulted to 0 and was never
+// passed by the one call site, so the badge could not render; and it was fed to
+// `requests`, whose amber the legend below reserves for OPEN CLIENT REQUESTS —
+// so a roster of four would have read as four unanswered requests. Reading the
+// roster also costs a manage-gated request that 403s for most people who can
+// open this rail. If the count is wanted here later it needs its own neutral
+// tone, not a borrowed one.
 const ServiceRail = ({
   services = [],
   activeKey,
   onSelect,
   canManage,
   onAddService,
-  peopleCount = 0,
 }) => (
   <nav
     aria-label="Services"
@@ -133,6 +139,9 @@ const ServiceRail = ({
         active={String(activeKey) === String(s.id)}
         unread={s.unread}
         requests={s.openRequests}
+        // `=== false` is load-bearing. `hasRooms` is null until the channel
+        // list has loaded, and a plain `!s.hasRooms` painted a "!" on every
+        // service on every load before snapping to the truth.
         warn={s.hasRooms === false}
         onClick={() => onSelect(s.id)}
       />
@@ -168,15 +177,20 @@ const ServiceRail = ({
       icon={Users}
       label="People"
       active={activeKey === 'people'}
-      requests={peopleCount}
       onClick={() => onSelect('people')}
     />
-    <Row
-      icon={Settings}
-      label="Settings"
-      active={activeKey === 'settings'}
-      onClick={() => onSelect('settings')}
-    />
+    {/* Settings is manager-only: everything behind it — the shareable link, the
+        announcement, rotating or switching the link off — is refused by the
+        server for anyone else, and the modal renders that refusal as "this
+        board has no services", which is a lie about the client's access. */}
+    {canManage && (
+      <Row
+        icon={Settings}
+        label="Settings"
+        active={activeKey === 'settings'}
+        onClick={() => onSelect('settings')}
+      />
+    )}
 
     {/* The legend is not decoration. Two differently-coloured numbers with no
         key is a puzzle, and a puzzle in navigation gets ignored. */}

@@ -271,6 +271,28 @@ export const resendPortalInvite = async (boardId, contactId) => {
 };
 
 /**
+ * DELETE /api/portal/boards/:boardId/contacts/:contactId — take a client
+ * contact's portal access away.
+ *
+ * This is a REVOCATION, not a tidy-up of a list. A `ClientContact` is what the
+ * `google-portal` strategy matches an incoming Google account against before it
+ * mints a portal JWT, so the row IS the access — deleting it ends that person's
+ * live sessions as well as stopping the next sign-in. Until this existed the
+ * only way to undo a mistyped invite was switching the whole board's link off,
+ * which cut every legitimate contact off with it.
+ *
+ * Board-manager only, same gate as invite and resend. Returns the refreshed
+ * roster, in the same shape `getBoardPortalContacts` returns.
+ */
+export const revokePortalContact = async (boardId, contactId) => {
+  const { data } = await api.delete(
+    `/api/portal/boards/${boardId}/contacts/${contactId}`,
+    { timeout: 20000 }
+  );
+  return data.contacts || [];
+};
+
+/**
  * There is no portal TIER any more, and so no `getBoardPortalTier` /
  * `upgradeBoardPortalTier`. Both existed here with ZERO call sites for their
  * whole life: no UI ever offered the upgrade, so every client board stayed on

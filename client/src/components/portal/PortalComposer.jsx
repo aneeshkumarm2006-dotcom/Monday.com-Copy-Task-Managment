@@ -21,12 +21,81 @@ import { uploadPortalChatFile } from '../../services/portalService';
  * `uploadPortalChatFile` with the same tray + progress-bar treatment the
  * request form uses, so an attachment looks and behaves identically wherever
  * the client attaches one.
+ *
+ * `draftKey` opts one instance into draft persistence — see the draft block
+ * below. Without it the composer behaves exactly as it always has.
  */
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024; // mirrors the server's multer limit
 const MAX_FILES = 6;
 export const SUBJECT_MAX = 200; // the server refuses longer; we stop it here first
 let attachSeq = 0;
+
+/* ---- drafts ----------------------------------------------------------------
+ * A client who clicks "Back to messages" halfway through writing must not lose
+ * what they wrote. Everything that survives a JSON round-trip is written here
+ * as they type and restored the next time the same composer mounts: the
+ * subject, the body, and the ALREADY-UPLOADED attachments — those are on the
+ * server the moment the file finishes, so the draft only carries a descriptor.
+ *
+ * sessionStorage, NOT the localStorage the team's `utils/updateDrafts` uses: a
+ * portal is opened on whatever machine the client happens to be at, and there
+ * is no user id here to key on. Per-tab-and-gone is the only version of this
+ * that cannot show one contact what another was writing on a shared browser.
+ *
+ * A file still sitting in the tray unuploaded is the one thing that cannot be
+ * saved. `onPendingFilesChange` is how the caller learns to ask before leaving.
+ * -------------------------------------------------------------------------- */
+const DRAFT_PREFIX = 'macan_portal_draft:';
+
+const readDraft = (key) => {
+  if (!key) return null;
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(DRAFT_PREFIX + key) || 'null');
+    if (!parsed || typeof parsed !== 'object') return null;
+    return {
+      subject: typeof parsed.subject === 'string' ? parsed.subject : '',
+      text: typeof parsed.text === 'string' ? parsed.text : '',
+      attachments: Array.isArray(parsed.attachments)
+        ? parsed.attachments.filter((a) => a && a.url)
+        : [],
+    };
+  } catch { return null; }
+};
+
+const writeDraft = (key, draft) => {
+  if (!key) return;
+  try {
+    const empty = !draft.subject.trim() && !draft.text.trim() && !draft.attachments.length;
+    if (empty) sessionStorage.removeItem(DRAFT_PREFIX + key);
+    else sessionStorage.setItem(DRAFT_PREFIX + key, JSON.stringify(draft));
+  } catch { /* storage off or full: drafting is a nicety, never a blocker */ }
+};
+
+const clearDraft = (key) => {
+  if (!key) return;
+  try { sessionStorage.removeItem(DRAFT_PREFIX + key); } catch { /* see above */ }
+};
+
+/**
+ * Tray rows for the attachments a restored draft carries. They have no `File` —
+ * only the two fields of one the tray reads — and they are already `done`, so
+ * `uploadAll` hands them straight back rather than uploading anything twice.
+ */
+const draftItems = (attachments) => (attachments || []).map((a) => {
+  attachSeq += 1;
+  return {
+    key: `pc-${attachSeq}`,
+    file: { name: a.name || 'Attachment', size: a.size || 0 },
+    // The stored URL doubles as the thumbnail. It is not an object URL, so it
+    // must not join `previews` to be revoked.
+    previewUrl: (a.mime || '').startsWith('image/') ? a.url : '',
+    status: 'done',
+    progress: 100,
+    error: '',
+    attachment: a,
+  };
+});
 
 const formatBytes = (n) => {
   const b = Number(n);
@@ -50,10 +119,13 @@ const PortalComposer = ({
   onSubmit,
   onCancel,
   cancelLabel = 'Cancel',
+  draftKey = '',
+  onPendingFilesChange,
 }) => {
-  const [subject, setSubject] = useState('');
-  const [text, setText] = useState('');
-  const [items, setItems] = useState([]);
+  const [initialDraft] = useState(() => readDraft(draftKey));
+  const [subject, setSubject] = useState(initialDraft?.subject || '');
+  const [text, setText] = useState(initialDraft?.text || '');
+  const [items, setItems] = useState(() => draftItems(initialDraft?.attachments));
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -68,6 +140,26 @@ const PortalComposer = ({
   // Object URLs are released only on unmount: revoking on remove would blank a
   // thumbnail that is still on screen mid-animation.
   useEffect(() => () => previews.current.forEach((u) => URL.revokeObjectURL(u)), []);
+
+  // Keep the draft current on every keystroke. An emptied composer removes its
+  // own entry, so a sent message leaves nothing behind to come back.
+  useEffect(() => {
+    if (!draftKey) return;
+    writeDraft(draftKey, {
+      subject,
+      text,
+      attachments: items
+        .filter((it) => it.status === 'done' && it.attachment)
+        .map((it) => it.attachment),
+    });
+  }, [draftKey, subject, text, items]);
+
+  // The files a draft cannot carry. Reported through a ref so a caller may pass
+  // an inline arrow without turning this into a render loop.
+  const pendingCb = useRef(onPendingFilesChange);
+  useEffect(() => { pendingCb.current = onPendingFilesChange; });
+  const pendingFiles = items.filter((it) => it.status !== 'done').length;
+  useEffect(() => { pendingCb.current?.(pendingFiles); }, [pendingFiles]);
 
   const addFiles = useCallback((fileList) => {
     const picked = Array.from(fileList || []);
@@ -183,6 +275,14 @@ const PortalComposer = ({
     if (files?.length) { e.preventDefault(); addFiles(files); }
   };
 
+  // Cancel is the one exit that means "I don't want this", so the draft goes
+  // with it. Every other way out leaves the draft to be restored.
+  const cancel = () => { clearDraft(draftKey); onCancel?.(); };
+
+  // Any edit invalidates a failure message about the previous attempt: the send
+  // it complained about is no longer the send this form would make.
+  const clearError = () => { if (error) setError(''); };
+
   return (
     <form
       className="mcp-composer"
@@ -199,7 +299,7 @@ const PortalComposer = ({
             maxLength={SUBJECT_MAX}
             disabled={busy || disabled}
             autoFocus={autoFocus}
-            onChange={(e) => setSubject(e.target.value)}
+            onChange={(e) => { setSubject(e.target.value); clearError(); }}
           />
           <span className="mcp-composer-count" data-near={subject.length > SUBJECT_MAX - 20 || undefined}>
             {subject.length}/{SUBJECT_MAX}
@@ -214,7 +314,7 @@ const PortalComposer = ({
         value={text}
         disabled={busy || disabled}
         autoFocus={autoFocus && !withSubject}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => { setText(e.target.value); clearError(); }}
         onPaste={catchFiles}
         onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit(e); }}
       />
@@ -247,7 +347,13 @@ const PortalComposer = ({
                   type="button"
                   className="mcp-tray-x"
                   aria-label={`Remove ${it.file.name}`}
-                  onClick={() => { setItems((p) => p.filter((x) => x.key !== it.key)); setNotice(''); }}
+                  onClick={() => {
+                    // "Try again, or remove it" is the advice the error gives;
+                    // taking that advice has to clear the error with it.
+                    setItems((p) => p.filter((x) => x.key !== it.key));
+                    setNotice('');
+                    setError('');
+                  }}
                 >
                   <X size={14} />
                 </button>
@@ -291,7 +397,7 @@ const PortalComposer = ({
         <div className="mcp-composer-actions">
           {onCancel && (
             <button type="button" className="mcp-btn mcp-btn--ghost" style={{ height: 38 }}
-              disabled={busy} onClick={onCancel}>
+              disabled={busy} onClick={cancel}>
               {cancelLabel}
             </button>
           )}

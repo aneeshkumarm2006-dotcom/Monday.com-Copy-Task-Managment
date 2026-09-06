@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2, ShieldCheck, MessagesSquare, ListChecks, AlertCircle } from 'lucide-react';
 import {
   getPortalMeta,
@@ -23,7 +23,19 @@ import '../styles/portal.css';
  *   - Email + password — a plain XHR that answers with the session token. Only
  *     works for addresses the team invited as password clients; everyone else is
  *     refused with the same wording as a wrong password.
+ *
+ * `?service=<groupId>` on the invitation link is stashed in sessionStorage on
+ * mount, BEFORE anything can navigate: neither the sign-in XHR nor the full-page
+ * bounce out to Google and back through /portal/verify can carry a query param,
+ * and PortalDashboardPage reads the stash once to open on the right service.
  */
+
+// Shared with PortalDashboardPage, which reads this key ONCE on mount and
+// removes it. Both ends tolerate it being absent or naming a service the
+// contact cannot see.
+const PENDING_SERVICE_KEY = 'macan_portal_pending_service';
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const GoogleIcon = () => (
   <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -42,9 +54,14 @@ const FEATURES = [
 
 const PortalLandingPage = () => {
   const { portalToken } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [meta, setMeta] = useState(null);
   const [loadError, setLoadError] = useState('');
+  // A connection blip is worth a "Try again" button; a link the team turned off
+  // is not, so the failure card only offers one for the branch that can recover.
+  const [retryable, setRetryable] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [accepting, setAccepting] = useState(false);
 
@@ -58,12 +75,43 @@ const PortalLandingPage = () => {
   const [helpOpen, setHelpOpen] = useState(false);
   const [helpSending, setHelpSending] = useState(false);
   const [helpMsg, setHelpMsg] = useState('');
+  // The panel's own failure slot. It used to write into `formError`, which
+  // renders inside the sign-in form several controls higher up — a client
+  // pressed a button at the bottom of the card and the answer appeared above a
+  // different button, off-screen on a phone.
+  const [helpError, setHelpError] = useState('');
+  // Neutral, not-an-error, not-a-confirmation: the address is a Google contact,
+  // so no mail was sent and none is coming.
+  const [helpHint, setHelpHint] = useState('');
+
+  // Stash the per-service deep link first thing, so it survives whichever way
+  // this page leaves — the Google redirect, or the password XHR + navigate.
+  useEffect(() => {
+    const service = searchParams.get('service');
+    if (!service) return;
+    try {
+      sessionStorage.setItem(PENDING_SERVICE_KEY, service);
+    } catch {
+      // Storage refused (private mode, blocked cookies). The deep link is a
+      // nicety; the portal still opens on its default service.
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     let alive = true;
-    rememberPortalLink(portalToken);
+    setLoading(true);
+    setLoadError('');
+    setRetryable(false);
     getPortalMeta(portalToken)
-      .then((data) => alive && setMeta(data))
+      .then((data) => {
+        if (!alive) return;
+        setMeta(data);
+        // Remembered only once the server has confirmed this link is live.
+        // Doing it unconditionally let an old invitation email overwrite a good
+        // remembered link with a rotated, dead one — and that value is the only
+        // thing the dashboard's expired screen has to offer a way back in.
+        rememberPortalLink(portalToken);
+      })
       .catch((err) => {
         if (!alive) return;
         const status = err.response?.status;
@@ -72,18 +120,37 @@ const PortalLandingPage = () => {
         } else if (status) {
           const msg = err.response?.data?.error || 'server error';
           setLoadError(`Could not load this portal (error ${status}: ${msg}).`);
+          setRetryable(status >= 500);
         } else {
           setLoadError('Could not reach the server. Check your connection and try again.');
+          setRetryable(true);
         }
       })
       .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
     };
-  }, [portalToken]);
+  }, [portalToken, reloadKey]);
+
+  // "Continue with Google" is a full-page navigation, and `accepting` disables
+  // the button for it. Pressing Back from Google's account chooser restores this
+  // page from bfcache with React state intact, which left the button greyed out
+  // reading "Redirecting…" forever — and a Google-invited contact has no
+  // password, so that is the only control they have.
+  useEffect(() => {
+    const onShow = (e) => {
+      if (e.persisted) setAccepting(false);
+    };
+    window.addEventListener('pageshow', onShow);
+    return () => window.removeEventListener('pageshow', onShow);
+  }, []);
 
   const handleAccept = () => {
     setAccepting(true);
+    // Belt and braces for the bfcache reset above: a navigation that never
+    // happens (blocked popup blocker rules, an extension, an offline blip)
+    // otherwise leaves the button dead with nothing to un-stick it.
+    window.setTimeout(() => setAccepting(false), 8000);
     window.location.href = portalGoogleSignInUrl(portalToken);
   };
 
@@ -97,6 +164,8 @@ const PortalLandingPage = () => {
     setSigningIn(true);
     setFormError('');
     setHelpMsg('');
+    setHelpError('');
+    setHelpHint('');
     try {
       const { token } = await portalPasswordLogin(portalToken, addr, password);
       setPortalToken(token);
@@ -121,18 +190,43 @@ const PortalLandingPage = () => {
 
   const handleSendLink = async () => {
     const addr = email.trim();
-    if (!addr) {
-      setFormError('Enter your email address first.');
+    setHelpMsg('');
+    setHelpHint('');
+    setHelpError('');
+    if (!addr || !EMAIL_RE.test(addr)) {
+      setHelpError(
+        addr
+          ? "That address doesn't look right. Check it and try again."
+          : 'Enter your email address first.'
+      );
+      document.getElementById('portal-email')?.focus();
       return;
     }
     setHelpSending(true);
     setFormError('');
     try {
-      const { message } = await requestPortalPasswordLink(portalToken, addr);
-      setHelpMsg(message);
+      const data = await requestPortalPasswordLink(portalToken, addr);
+      // The answer is deliberately the same for an address that has access and
+      // one that doesn't — with one exception the server can name without
+      // leaking anything, because the team chose the address themselves: a
+      // contact set up to sign in WITH GOOGLE. Nothing is mailed to those, so a
+      // green "check your inbox" would be a permanent stall.
+      if (data?.sent === false && data?.hint === 'google') {
+        setHelpHint(
+          data.message ||
+            'This address signs in with Google — use Continue with Google above.'
+        );
+      } else {
+        setHelpMsg(
+          data?.message || "If that email has portal access, we've sent it a link."
+        );
+      }
     } catch (err) {
-      setFormError(
-        err.response?.data?.error || 'Could not send the link. Please try again.'
+      setHelpError(
+        err.response?.data?.error ||
+          (err.response
+            ? 'Could not send the link. Please try again.'
+            : 'Could not reach the server. Check your connection and try again.')
       );
     } finally {
       setHelpSending(false);
@@ -162,6 +256,19 @@ const PortalLandingPage = () => {
           </div>
           <p style={{ fontSize: 17, fontWeight: 700, margin: '0 0 8px' }}>Portal unavailable</p>
           <p style={{ fontSize: 14, color: '#64748B', margin: 0, lineHeight: 1.55 }}>{loadError}</p>
+          {/* Only for the branches that can actually recover — telling someone
+              to try again while giving them nothing to press is worse than
+              saying nothing. */}
+          {retryable && (
+            <button
+              type="button"
+              onClick={() => setReloadKey((k) => k + 1)}
+              className="mcp-btn mcp-btn--primary mcp-btn--block"
+              style={{ marginTop: 20 }}
+            >
+              Try again
+            </button>
+          )}
         </div>
       </div>
     );
@@ -253,7 +360,14 @@ const PortalLandingPage = () => {
                 autoComplete="username"
                 placeholder="you@company.com"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  // A confirmation for the previous address must not sit under
+                  // a sentence that now names a different one.
+                  setHelpMsg('');
+                  setHelpHint('');
+                  setHelpError('');
+                }}
               />
             </div>
             <div style={{ marginBottom: 16 }}>
@@ -269,7 +383,9 @@ const PortalLandingPage = () => {
               />
             </div>
 
-            {formError && <p className="mcp-error" style={{ marginBottom: 14 }}>{formError}</p>}
+            {formError && (
+              <p className="mcp-error" role="alert" style={{ marginBottom: 14 }}>{formError}</p>
+            )}
 
             <button
               type="submit"
@@ -289,24 +405,45 @@ const PortalLandingPage = () => {
                   We'll email <strong style={{ color: '#0F172A' }}>{email.trim() || 'your address'}</strong> a
                   link to set a password. It only works if your address has portal access.
                 </p>
-                {helpMsg ? (
-                  <p className="mcp-note">{helpMsg}</p>
-                ) : (
-                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                    <button
-                      type="button"
-                      onClick={handleSendLink}
-                      disabled={helpSending}
-                      className="mcp-btn mcp-btn--primary"
-                      style={{ height: 38, flex: 1 }}
-                    >
-                      {helpSending ? <><Loader2 size={16} className="mcp-spin" /> Sending…</> : 'Email me a link'}
-                    </button>
-                    <button type="button" className="mcp-linkbtn" onClick={() => setHelpOpen(false)}>
-                      Cancel
-                    </button>
-                  </div>
+                {/* Every answer lands HERE, next to the button that asked for
+                    it, and the buttons stay mounted: correcting a mistyped
+                    address has to be one edit and one press, not a reload. */}
+                {helpMsg && (
+                  <p className="mcp-note" role="status" style={{ marginBottom: 10 }}>{helpMsg}</p>
                 )}
+                {helpHint && (
+                  <p
+                    role="status"
+                    style={{ fontSize: 13, color: '#475569', margin: '0 0 10px', lineHeight: 1.5 }}
+                  >
+                    {helpHint}
+                  </p>
+                )}
+                {helpError && (
+                  <p className="mcp-error" role="alert" style={{ marginBottom: 10 }}>{helpError}</p>
+                )}
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={handleSendLink}
+                    disabled={helpSending}
+                    className="mcp-btn mcp-btn--primary"
+                    style={{ height: 38, flex: 1 }}
+                  >
+                    {helpSending ? <><Loader2 size={16} className="mcp-spin" /> Sending…</> : 'Email me a link'}
+                  </button>
+                  <button type="button" className="mcp-linkbtn" onClick={() => setHelpOpen(false)}>
+                    Cancel
+                  </button>
+                </div>
+                {/* Said plainly and always, because the send itself cannot say
+                    it: a contact the team invited through Google is never
+                    mailed a password link, and the reply reads like one is on
+                    its way. */}
+                <p style={{ fontSize: 12.5, color: '#64748B', margin: '10px 0 0', lineHeight: 1.5 }}>
+                  Were you invited to sign in with Google? No link is sent for those accounts —
+                  use Continue with Google above.
+                </p>
               </div>
             ) : (
               <button
@@ -315,6 +452,8 @@ const PortalLandingPage = () => {
                 onClick={() => {
                   setHelpOpen(true);
                   setHelpMsg('');
+                  setHelpHint('');
+                  setHelpError('');
                 }}
               >
                 First time here, or forgot your password?

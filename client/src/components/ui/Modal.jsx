@@ -9,9 +9,13 @@ import { X } from 'lucide-react';
  * Props: isOpen, onClose, title, children, footer, maxWidth (default 480)
  *
  * Behaviour:
- *   - ESC closes
+ *   - ESC closes — the TOPMOST open Modal only, so a stacked pair does not
+ *     collapse on one press
  *   - Click on overlay closes
  *   - Focus trap within the panel
+ *   - Initial focus goes to `[data-autofocus]`, or to whatever inside the panel
+ *     already claimed focus (an `autoFocus` field), before it falls back to the
+ *     first control
  *   - Scroll lock on <body> while open
  *   - Scale (0.95 → 1) + fade-in 200ms on open
  */
@@ -25,6 +29,28 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+/**
+ * The selector matches controls that are not on screen — a `className="hidden"`
+ * submit button, anything inside a collapsed section. Left in, one of those
+ * becomes the trap's `first`/`last` boundary and Tab escapes past a boundary the
+ * user can never reach. getClientRects() is empty for display:none, present for
+ * everything that is actually laid out (fixed positioning included, which is why
+ * this is not an offsetParent check).
+ */
+const visibleFocusable = (panel) =>
+  Array.from(panel.querySelectorAll(FOCUSABLE_SELECTOR)).filter(
+    (el) => el.getClientRects().length > 0
+  );
+
+/**
+ * Open modals, oldest first. Escape is handled on `document` in the bubble
+ * phase, and stopPropagation there cannot stop a sibling listener on the same
+ * node — that needs stopImmediatePropagation, which would also silence unrelated
+ * app-level keydown listeners. So stacked modals agree among themselves instead:
+ * only the last one opened answers Escape, and only it traps Tab.
+ */
+const openModalStack = [];
+
 const Modal = ({
   isOpen,
   onClose,
@@ -37,12 +63,31 @@ const Modal = ({
 }) => {
   const panelRef = useRef(null);
   const previouslyFocusedRef = useRef(null);
+  const stackTokenRef = useRef(null);
+
+  // Take a place on the stack for as long as this modal is open. Keyed on
+  // `isOpen` alone: the ESC effect below re-runs whenever `onClose` changes
+  // identity (most callers pass an inline arrow), and re-pushing there would let
+  // a re-rendering modal underneath claim the top spot.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const token = {};
+    stackTokenRef.current = token;
+    openModalStack.push(token);
+    return () => {
+      const i = openModalStack.indexOf(token);
+      if (i !== -1) openModalStack.splice(i, 1);
+      stackTokenRef.current = null;
+    };
+  }, [isOpen]);
 
   // ESC to close
   useEffect(() => {
     if (!isOpen) return undefined;
 
     const handleKey = (e) => {
+      // Only the topmost modal answers the keyboard; see openModalStack.
+      if (openModalStack[openModalStack.length - 1] !== stackTokenRef.current) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
         onClose?.();
@@ -50,7 +95,7 @@ const Modal = ({
         // Simple focus trap
         const panel = panelRef.current;
         if (!panel) return;
-        const focusable = panel.querySelectorAll(FOCUSABLE_SELECTOR);
+        const focusable = visibleFocusable(panel);
         if (focusable.length === 0) return;
         const first = focusable[0];
         const last = focusable[focusable.length - 1];
@@ -76,11 +121,23 @@ const Modal = ({
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    // Move focus inside the modal
+    // Move focus inside the modal — unless something in there already asked for
+    // it. The header renders before the body, so `focusable[0]` is the close X
+    // whenever `onClose` is passed; taking it unconditionally blurred any
+    // autoFocus'd field 10ms after it was focused and opened the dialog with the
+    // caret on its own dismiss control. A field that claimed focus keeps it;
+    // `[data-autofocus]` is the way to name one explicitly.
     const t = window.setTimeout(() => {
       const panel = panelRef.current;
       if (!panel) return;
-      const focusable = panel.querySelectorAll(FOCUSABLE_SELECTOR);
+      const requested = panel.querySelector('[data-autofocus]');
+      if (requested) {
+        requested.focus();
+        return;
+      }
+      const active = document.activeElement;
+      if (active && active !== panel && panel.contains(active)) return;
+      const focusable = visibleFocusable(panel);
       (focusable[0] || panel).focus();
     }, 10);
 

@@ -98,6 +98,17 @@ router.post(
 );
 router.get('/boards/:boardId/contacts', authMiddleware, portal.listPortalContacts);
 router.post('/boards/:boardId/contacts/:contactId/resend', authMiddleware, inviteLimit, portal.resendPortalInvite);
+// REVOKE one person's access. The other half of invite, and it had none: without
+// it the only way to cut off a departed client contact was to rotate the board's
+// link, which drops every OTHER contact's session too. Same gate as the two
+// routes above (canManageAccess, applied inside the handler via
+// loadManageContext); no limiter, matching the read above, because it sends
+// nothing and is keyed to a signed-in team manager.
+router.delete(
+  '/boards/:boardId/contacts/:contactId',
+  authMiddleware,
+  portal.removePortalContact
+);
 
 // ---- Portal-authenticated client ----
 // rateLimit runs AFTER portalAuth so it keys on the signed-in contact, not IP.

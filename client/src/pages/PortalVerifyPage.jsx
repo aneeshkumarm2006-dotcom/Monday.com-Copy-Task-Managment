@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2, AlertCircle } from 'lucide-react';
-import { setPortalToken } from '../services/portalService';
+import { setPortalToken, getLastPortalLink } from '../services/portalService';
 import '../styles/portal.css';
 
 /**
@@ -9,20 +9,27 @@ import '../styles/portal.css';
  * The API's OAuth callback redirects here with `?ptoken=<scoped portal JWT>`
  * (already minted server-side); we just store it and route to the dashboard.
  * `?error=1` means sign-in failed. Mirrors AuthCallbackPage for the portal plane.
+ *
+ * Both failure paths are ordinary, not exotic: cancelling at Google's consent
+ * screen lands here, and so does a portal the team disabled mid-flow. So the
+ * failure card carries the way back — the remembered link id, the same one the
+ * dashboard's expired screen uses — because "reopen your invitation link" is
+ * not something a client can act on from this page.
  */
 const PortalVerifyPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [error, setError] = useState('');
+  const [lastLink] = useState(getLastPortalLink);
 
   useEffect(() => {
     if (searchParams.get('error')) {
-      setError("We couldn't sign you in. Please reopen your invitation link and try again.");
+      setError("We couldn't sign you in. Please try again.");
       return;
     }
     const ptoken = searchParams.get('ptoken');
     if (!ptoken) {
-      setError('This sign-in link is missing its access token. Please reopen your invitation link.');
+      setError('This sign-in link is missing its access token, so we could not finish signing you in.');
       return;
     }
     setPortalToken(ptoken);
@@ -44,7 +51,21 @@ const PortalVerifyPage = () => {
             <AlertCircle size={26} />
           </div>
           <p style={{ fontSize: 17, fontWeight: 700, margin: '0 0 8px' }}>Sign-in failed</p>
-          <p style={{ fontSize: 14, color: '#64748B', margin: 0, lineHeight: 1.55 }}>{error}</p>
+          <p style={{ fontSize: 14, color: '#64748B', margin: 0, lineHeight: 1.55 }}>
+            {error}{' '}
+            {lastLink
+              ? 'You can go straight back to the sign-in page.'
+              : 'Please open your invitation link from your email again.'}
+          </p>
+          {lastLink && (
+            <a
+              href={`/portal/${lastLink}`}
+              className="mcp-btn mcp-btn--primary mcp-btn--block"
+              style={{ marginTop: 20, textDecoration: 'none' }}
+            >
+              Back to sign in
+            </a>
+          )}
         </div>
       </div>
     );
