@@ -2151,6 +2151,71 @@ const resendPortalInvite = async (req, res) => {
   }
 };
 
+/**
+ * DELETE /api/portal/boards/:boardId/contacts/:contactId
+ *
+ * REVOKE one client contact's portal access. The other half of invite, and the
+ * route existed before the handler did — which is why this file's exports were
+ * short one function and `portal.js` crashed the process on boot.
+ *
+ * A hard delete, deliberately. The `ClientContact` row IS the access: portalAuth
+ * resolves the token's `contactId` against it on EVERY request and the
+ * `google-portal` strategy matches a returning Google account against it, so
+ * removing the row ends the person's live sessions and refuses their next
+ * sign-in. A `revoked: true` flag would have to be re-checked in both of those
+ * places plus the SSE stream, and the one that got missed would be a live
+ * session that never noticed.
+ *
+ * Same gate as invite and resend (canManageAccess, inside loadManageContext),
+ * and the lookup is scoped to `board` so a manager on one client board cannot
+ * name a contact id belonging to another.
+ *
+ * WHAT IS NOT DELETED: `Task.portalSubmitter` and `Message.portalAuthor` keep
+ * pointing here. Their tickets and messages are the client company's history,
+ * not this person's property, and every reader already degrades a missing
+ * contact to "Client" rather than throwing (see `contactLabel` in
+ * utils/portalMessage.js). Cascading into them would delete the work.
+ *
+ * WHAT IS: the three per-contact state rows that mean nothing without them —
+ * both read markers and the digest receipts. Best-effort, after the contact is
+ * gone: access is already revoked at that point, so a failure here leaves index
+ * noise rather than a person who still has a way in.
+ */
+const removePortalContact = async (req, res) => {
+  try {
+    const ctx = await loadManageContext(req.params.boardId, req.user.userId);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+    const { board } = ctx;
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.contactId)) {
+      return res.status(404).json({ error: 'Contact not found' });
+    }
+    const contact = await ClientContact.findOneAndDelete({
+      _id: req.params.contactId,
+      board: board._id,
+    });
+    if (!contact) return res.status(404).json({ error: 'Contact not found' });
+
+    try {
+      await Promise.all([
+        ChannelContactRead.deleteMany({ contact: contact._id }),
+        MailThreadRead.deleteMany({ contact: contact._id }),
+        PortalDigest.deleteMany({ contact: contact._id }),
+      ]);
+    } catch (err) {
+      console.error('removePortalContact cleanup error:', err);
+    }
+
+    return res.json({
+      message: `${contact.email} no longer has access.`,
+      contacts: await listBoardContacts(board._id),
+    });
+  } catch (err) {
+    console.error('removePortalContact error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   // public
   getPortalMeta,
@@ -2178,6 +2243,7 @@ module.exports = {
   createPortalService,
   listPortalContacts,
   resendPortalInvite,
+  removePortalContact,
   // reused by updateController for the "team replied on a client task" email hook
   sendPortalReplyEmailForTask: async (task, snippet = '') => {
     try {
