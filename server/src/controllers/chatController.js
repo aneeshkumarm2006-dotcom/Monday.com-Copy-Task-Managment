@@ -16,6 +16,7 @@ const { keyForSurface } = require('../utils/chatSurfaces');
 const { isClientBoard } = require('../utils/clientBoard');
 const { createNotificationsForUsers } = require('../services/notificationService');
 const { monthKeyOf } = require('../utils/monthKey');
+const { distinctIds } = require('../utils/ids');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 
 /**
@@ -302,7 +303,9 @@ const listChannels = async (req, res) => {
     );
 
     const User = require('../models/User');
-    const authorIds = [...new Set(latest.map((l) => String(l.lastAuthor)).filter(Boolean))];
+    // `distinctIds`, never `String(x).filter(Boolean)`: a system post has a
+    // null `lastAuthor`, and `String(null)` is the uncastable string "null".
+    const authorIds = distinctIds(latest, 'lastAuthor');
     const authors = await User.find({ _id: { $in: authorIds } }).select('name');
     const authorName = new Map(authors.map((u) => [String(u._id), u.name]));
 
@@ -584,6 +587,17 @@ const markChannelRead = async (req, res) => {
 
 const MESSAGE_POPULATE = [
   { path: 'author', select: 'name profilePic email' },
+  /**
+   * The CLIENT who wrote it, on a client-facing surface. Without this every
+   * message a client posted reached the team's Chat tab as `author: null` and
+   * rendered as "Unknown" — the room's whole purpose is knowing who said what,
+   * and the one participant we could not name was the one the room is for.
+   *
+   * Safe in the direction it travels: this payload goes to a TEAM member, who
+   * invited the contact and already sees their address on the portal roster.
+   * The reverse is not true and is why `utils/portalMessage.js` exists.
+   */
+  { path: 'portalAuthor', select: 'name email' },
   { path: 'mentions', select: 'name' },
   { path: 'task', select: 'name status board group monthKey parent' },
   { path: 'goal', select: 'name board group monthKey type' },
@@ -992,7 +1006,14 @@ const makeTaskFromMessage = async (req, res) => {
     const message = await Message.findOne({
       _id: req.params.messageId,
       channel: channel._id,
-    }).populate('author', 'name');
+    }).populate([
+      { path: 'author', select: 'name' },
+      // The client, on a client-facing room — where this action is at its most
+      // useful, because turning "can we raise the daily cap?" into a task is
+      // most of what that room is for. Without it the note credited the client's
+      // own words to "someone".
+      { path: 'portalAuthor', select: 'name email' },
+    ]);
     if (!message) return res.status(404).json({ error: 'Message not found' });
     if (message.task) {
       return res.status(400).json({ error: 'This message already has a task' });
@@ -1021,7 +1042,12 @@ const makeTaskFromMessage = async (req, res) => {
     const name = ((req.body?.name || '').trim() || firstLine || 'Task from chat').slice(0, 200);
 
     const authorName =
-      message.authorType === 'system' ? 'Macan' : message.author?.name || 'someone';
+      message.authorType === 'system'
+        ? 'Macan'
+        : (message.portalAuthor?.name || '').trim()
+          || message.portalAuthor?.email
+          || message.author?.name
+          || 'someone';
     const note = [
       `From #${channel.name} — posted by ${authorName}:`,
       '',
@@ -1161,10 +1187,12 @@ const listBoardChannels = async (req, res) => {
     // room's newest message is as likely to be the client's as ours.
     const User = require('../models/User');
     const ClientContact = require('../models/ClientContact');
-    const userIds = [...new Set(latest.map((l) => String(l.lastAuthor)).filter(Boolean))];
-    const contactIds = [
-      ...new Set(latest.map((l) => String(l.lastPortalAuthor)).filter(Boolean)),
-    ];
+    // BOTH fields are null on ordinary rows — `lastAuthor` on anything a client
+    // or the system posted, `lastPortalAuthor` on anything the team posted —
+    // so both must be collected with the null-safe helper. Stringifying them
+    // inline is what made this endpoint 500 the moment a client said anything.
+    const userIds = distinctIds(latest, 'lastAuthor');
+    const contactIds = distinctIds(latest, 'lastPortalAuthor');
     const [users, contacts] = await Promise.all([
       userIds.length ? User.find({ _id: { $in: userIds } }).select('name') : [],
       contactIds.length

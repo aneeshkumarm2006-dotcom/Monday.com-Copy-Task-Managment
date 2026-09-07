@@ -502,12 +502,26 @@ li.macan-task-highlight {
    Board tabs and header buttons wrap into a wall on phones;
    the design draws them as a single scrolling line instead.
    Desktop keeps whatever the row already did.
+
+   The cutoff is 1023px, not the phone breakpoint: a tracker
+   board carries seven tabs and up to six header buttons, and
+   both still wrapped into two stacked rows on a tablet in
+   portrait (~800px). Tablet landscape and up (>=1024px) has
+   the room for one line and is left exactly as it was.
+
+   `justify-content` must be flex-start here — an overflowing
+   flex row aligned to flex-end scrolls its first items out of
+   reach, so the right-aligned header row is re-anchored while
+   it scrolls. `min-width: 0` lets the row shrink below its
+   content when it is itself a flex child, which is what makes
+   `overflow-x` fire at all.
    ========================================================== */
 
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .macan-mobile-scroll-row {
     flex-wrap: nowrap !important;
     justify-content: flex-start !important;
+    min-width: 0;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;

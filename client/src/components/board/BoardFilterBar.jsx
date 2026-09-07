@@ -145,13 +145,16 @@ const BoardFilterBar = ({
       role="region"
       aria-label="Filter tasks"
     >
-      {/* Phones: the pills live behind this one toggle — a four-row wall of
-          filter buttons was half the screen before anyone saw a task. */}
+      {/* Phones AND tablets in portrait: the pills live behind this one
+          toggle — a four-row wall of filter buttons was half the screen
+          before anyone saw a task. The cutoff is `lg` (1024px) rather than
+          `md`: seven pills plus the search box need ~800px of their own, so
+          on a tablet they still wrapped into three rows. */}
       <button
         type="button"
         onClick={() => setMobileExpanded((v) => !v)}
         aria-expanded={mobileExpanded}
-        className="md:hidden inline-flex items-center gap-1.5 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
+        className="lg:hidden inline-flex items-center gap-1.5 font-body transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)]"
         style={{
           height: 34,
           padding: '0 12px',
@@ -193,11 +196,11 @@ const BoardFilterBar = ({
       <div
         className={[
           mobileExpanded ? 'flex' : 'hidden',
-          'md:flex items-center gap-2 flex-wrap mt-2 md:mt-0',
+          'lg:flex items-center gap-2 flex-wrap mt-2 lg:mt-0',
         ].join(' ')}
       >
       <span
-        className="hidden md:inline-flex items-center gap-1.5 font-body shrink-0"
+        className="hidden lg:inline-flex items-center gap-1.5 font-body shrink-0"
         style={{ fontSize: 13, fontWeight: 600, color: 'var(--color-text-secondary)' }}
       >
         <SlidersHorizontal size={15} aria-hidden="true" />

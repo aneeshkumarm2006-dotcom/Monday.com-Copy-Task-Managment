@@ -578,8 +578,25 @@ const PortalDashboardPage = () => {
       setChannels(data || { workstreams: [] });
       setUnread(fresh);
     } catch {
-      // 403 (basic tier / chat off) or a blip — either way, no tabs.
-      setChannels({ workstreams: [] });
+      /**
+       * A FAILED READ IS NOT AN EMPTY ACCOUNT, and conflating the two is how a
+       * server-side blip became a portal the client could not use.
+       *
+       * `channels` decides `hasChat`/`hasMail`, which decide `activeTab` —
+       * so answering a failure with `{ workstreams: [] }` did more than blank
+       * the pane. It threw the client out of the room they were reading and
+       * then made the Chat and Mail tab buttons inert: every click set
+       * `?tab=chat` on a page that re-derived `activeTab` back to 'tasks',
+       * with nothing on screen changing and nothing saying why. Clicking
+       * buttons that visibly do nothing is exactly what "the screen froze"
+       * looks like from the client's side.
+       *
+       * So a failure KEEPS the last good answer and lets the next poll fix it,
+       * twelve seconds later. Only the first load has nothing to keep, and
+       * that one settles on empty — which is the honest answer when we have
+       * never successfully asked.
+       */
+      setChannels((prev) => prev || { workstreams: [] });
     }
   }, []);
 

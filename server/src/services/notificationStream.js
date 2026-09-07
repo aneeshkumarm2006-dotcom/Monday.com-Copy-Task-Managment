@@ -141,6 +141,11 @@ const handleChatMessage = async ({
     if (users.length) {
       const message = await Message.findById(messageId).populate([
         { path: 'author', select: 'name profilePic email' },
+        // Kept in step with MESSAGE_POPULATE — a client message delivered live
+        // without this arrives as an unattributable "Unknown" that only names
+        // itself after a refresh, which is the exact drift this comment warns
+        // about one paragraph up.
+        { path: 'portalAuthor', select: 'name email' },
         { path: 'mentions', select: 'name' },
         { path: 'task', select: 'name status board group monthKey parent' },
         { path: 'goal', select: 'name board group monthKey type' },

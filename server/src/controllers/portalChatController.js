@@ -21,6 +21,7 @@ const {
   contactLabel,
 } = require('../utils/portalMessage');
 const { describeSurface } = require('../utils/chatSurfaces');
+const { distinctIds } = require('../utils/ids');
 
 /**
  * Chat and mail for the EXTERNAL CLIENT.
@@ -151,10 +152,13 @@ const getPortalChannels = async (req, res) => {
 
     // Preview author names. Team members are named, never emailed.
     const ClientContact = require('../models/ClientContact');
-    const userIds = [...new Set(latest.map((l) => String(l.lastAuthor)).filter(Boolean))];
-    const contactIds = [
-      ...new Set(latest.map((l) => String(l.lastPortalAuthor)).filter(Boolean)),
-    ];
+    // Null-safe on BOTH sides: `lastAuthor` is null on every message the client
+    // or the system posted, `lastPortalAuthor` on every message the team
+    // posted. `String(null)` is the uncastable string "null", and passing one
+    // into `$in` throws a CastError that this handler would answer as a 500 —
+    // which is precisely what took the client's own channel list down.
+    const userIds = distinctIds(latest, 'lastAuthor');
+    const contactIds = distinctIds(latest, 'lastPortalAuthor');
     const [users, contacts] = await Promise.all([
       userIds.length ? User.find({ _id: { $in: userIds } }).select('name') : [],
       contactIds.length

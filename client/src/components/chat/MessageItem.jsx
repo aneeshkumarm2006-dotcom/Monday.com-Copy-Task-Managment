@@ -103,6 +103,25 @@ export const NewDivider = () => (
   </div>
 );
 
+/** "This was written by the client", next to their name. Same treatment as the
+ *  rail's `ClientPill` in `BoardChatTab`, because it says the same thing. */
+const ClientTag = () => (
+  <span
+    className="font-body font-semibold shrink-0"
+    style={{
+      fontSize: 9,
+      letterSpacing: '0.04em',
+      color: '#1E40AF',
+      background: '#EFF6FF',
+      border: '1px solid #BFDBFE',
+      borderRadius: 999,
+      padding: '1px 6px',
+    }}
+  >
+    Client
+  </span>
+);
+
 const SystemGlyph = () => (
   <span
     className="flex items-center justify-center shrink-0"
@@ -129,7 +148,20 @@ const MessageItem = ({
   onOpenChip,
 }) => {
   const isSystem = message.authorType === 'system';
-  const isOwn = !isSystem && String(message.author?._id) === String(currentUserId);
+  /**
+   * A message the CLIENT wrote, on a client-facing surface. It has no `author`
+   * at all — a ClientContact is deliberately not a User — so everything below
+   * that reaches for `message.author` has to be told about this case or the
+   * outside company shows up as "Unknown" with a blank circle, which is the
+   * one participant a client room cannot afford to leave unnamed.
+   *
+   * `mine` never applies: a team member is never the client.
+   */
+  const isClient = message.authorType === 'client';
+  const clientName =
+    (message.portalAuthor?.name || '').trim() || message.portalAuthor?.email || 'Client';
+  const isOwn =
+    !isSystem && !isClient && String(message.author?._id) === String(currentUserId);
   const mentionsMe = (message.mentions || []).some(
     (m) => String(m?._id || m) === String(currentUserId)
   );
@@ -150,7 +182,14 @@ const MessageItem = ({
       }
     >
       <span className="mt-0.5 shrink-0">
-        {isSystem ? <SystemGlyph /> : <Avatar user={message.author} size={30} />}
+        {isSystem ? (
+          <SystemGlyph />
+        ) : (
+          // A contact has no profile picture — `Avatar` falls back to the
+          // initial of the name we pass, which is the same flat accent circle
+          // every other person in the product gets.
+          <Avatar user={isClient ? { name: clientName } : message.author} size={30} />
+        )}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
@@ -158,8 +197,12 @@ const MessageItem = ({
             className="font-body font-bold truncate"
             style={{ fontSize: 13, color: 'var(--color-text-primary)' }}
           >
-            {isSystem ? 'Macan' : message.author?.name || 'Unknown'}
+            {isSystem ? 'Macan' : isClient ? clientName : message.author?.name || 'Unknown'}
           </span>
+          {/* Named as the client, every time. The team room and the client room
+              differ by nothing a reader can see, so who is on the other side of
+              a message is the signal that decides what may be typed back. */}
+          {isClient && <ClientTag />}
           <span className="font-body shrink-0" style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>
             {timeShort(message.createdAt)}
             {message.editedAt ? ' · edited' : ''}

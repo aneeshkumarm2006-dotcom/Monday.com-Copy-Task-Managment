@@ -159,7 +159,17 @@ const useChatStore = create((set, get) => ({
               lastMessage: {
                 at: message.createdAt,
                 text: (message.bodyText || '').slice(0, 140),
-                authorName: message.author?.name || '',
+                // Three kinds of author, same rule the server's own preview
+                // builder uses: the product for a system post, the contact for
+                // a client's, the user for ours. `author` alone left the newest
+                // line in the rail nameless until the next channels fetch.
+                authorName:
+                  message.authorType === 'system'
+                    ? 'Macan'
+                    : message.portalAuthor?.name
+                      || message.portalAuthor?.email
+                      || message.author?.name
+                      || '',
               },
             }
           : c
@@ -294,7 +304,17 @@ const useChatStore = create((set, get) => ({
               lastMessage: {
                 at: message.createdAt,
                 text: (message.bodyText || '').slice(0, 140),
-                authorName: message.author?.name || '',
+                // Three kinds of author, same rule the server's own preview
+                // builder uses: the product for a system post, the contact for
+                // a client's, the user for ours. `author` alone left the newest
+                // line in the rail nameless until the next channels fetch.
+                authorName:
+                  message.authorType === 'system'
+                    ? 'Macan'
+                    : message.portalAuthor?.name
+                      || message.portalAuthor?.email
+                      || message.author?.name
+                      || '',
               },
             }
           : c

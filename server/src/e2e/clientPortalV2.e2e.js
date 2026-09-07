@@ -383,6 +383,81 @@ const main = async () => {
   });
   check('…but allowed in the team room', r.status === 201, `${r.status} ${JSON.stringify(r.body)}`);
 
+  /* ----------------------------------------------------------------------
+   * 5b. THE POLYMORPHIC AUTHOR SURVIVES BOTH CHANNEL LISTS.
+   *
+   * Both listings build a "who said the newest thing" preview, and a chat
+   * room's newest message is as likely to be the client's as ours. Each row
+   * therefore carries a NULL in one of the two author fields — `author` on
+   * anything a client or the system posted, `portalAuthor` on anything the
+   * team posted — and `String(null)` is the four-character string "null",
+   * which is truthy, survives `filter(Boolean)`, and throws an uncastable
+   * CastError the moment it reaches `{ _id: { $in } }`.
+   *
+   * That is not a hypothetical. It shipped, and it took BOTH planes down at
+   * once from the two opposite halves of the same expression: the team's
+   * board Chat tab answered 500 the moment a client said anything, and the
+   * client's own channel list answered 500 the moment we replied — which on
+   * the portal read as chat and mail simply ceasing to exist.
+   *
+   * Both directions are asserted because fixing one is what fixing the other
+   * looks like until somebody checks. `check`ing the status alone would pass
+   * against a handler that silently dropped the preview, so the NAME is
+   * asserted too — that is the thing the query was for.
+   * -------------------------------------------------------------------- */
+  r = await team('GET', `/api/chat/boards/${B}/channels`);
+  check('THE TEAM BOARD CHAT TAB SURVIVES a client-authored newest message',
+    r.status === 200, `${r.status} ${JSON.stringify(r.body)}`);
+  let adsPreview = (r.body?.workstreams || [])
+    .find((w) => w.group?.name === 'Ads')?.surfaces
+    ?.find((c) => String(c._id) === String(adsChat._id));
+  check('…and names the TEAM MEMBER who posted last',
+    adsPreview?.lastMessage?.authorName === 'Priya S',
+    JSON.stringify(adsPreview?.lastMessage));
+
+  r = await client('POST', `/api/portal/me/chat/channels/${adsChat._id}/messages`, {
+    bodyText: 'Thanks — one more thing.',
+  });
+  check('the client posts again, making THEIR message the newest', r.status === 201, `${r.status}`);
+
+  r = await team('GET', `/api/chat/boards/${B}/channels`);
+  check('the team board Chat tab STILL loads',
+    r.status === 200, `${r.status} ${JSON.stringify(r.body)}`);
+  adsPreview = (r.body?.workstreams || [])
+    .find((w) => w.group?.name === 'Ads')?.surfaces
+    ?.find((c) => String(c._id) === String(adsChat._id));
+  check('…and names the CLIENT CONTACT, not a blank',
+    adsPreview?.lastMessage?.authorName === 'Dana Q',
+    JSON.stringify(adsPreview?.lastMessage));
+
+  r = await client('GET', '/api/portal/me/chat/channels');
+  check('THE CLIENT CHANNEL LIST SURVIVES a team-authored message in the same room',
+    r.status === 200, `${r.status} ${JSON.stringify(r.body)}`);
+  const clientAdsRow = (r.body?.workstreams || [])
+    .find((w) => w.name === 'Ads')?.surfaces
+    ?.find((sfc) => String(sfc.id) === String(adsChat._id));
+  check('…and the client sees who spoke last',
+    clientAdsRow?.lastMessage?.authorName === 'Dana Q',
+    JSON.stringify(clientAdsRow?.lastMessage));
+
+  // The team plane must be able to NAME the client on the message itself, or
+  // every client post renders as "Unknown" on the tab this section just fixed.
+  r = await team('GET', `/api/chat/channels/${adsChat._id}/messages`);
+  const clientPost = (r.body?.messages || []).find((m) => m.authorType === 'client');
+  check('a client message reaches the TEAM with its contact populated',
+    !!clientPost?.portalAuthor?.name,
+    JSON.stringify(clientPost && { author: clientPost.author, portalAuthor: clientPost.portalAuthor }));
+
+  // Turning a client's ask into a task is most of what a client room is for,
+  // and the note it writes is what the team reads afterwards. Crediting it to
+  // "someone" loses the only attribution the row will ever carry.
+  r = await team('POST', `/api/chat/channels/${adsChat._id}/messages/${clientPost._id}/task`, {});
+  check('a CLIENT message can be turned into a task', r.status === 201,
+    `${r.status} ${JSON.stringify(r.body)}`);
+  check('…and the task note credits the CLIENT by name, not "someone"',
+    /posted by Dana Q/.test(r.body?.task?.note || ''),
+    JSON.stringify(r.body?.task?.note));
+
   // ======================================================================
   console.log('\n--- 6. the bell: one unread row per (recipient, channel) -----');
   // ======================================================================
