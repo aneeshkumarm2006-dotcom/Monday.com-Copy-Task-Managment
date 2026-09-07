@@ -12,10 +12,11 @@ import macanMark from '../../assets/macan-mark.svg';
  *
  * ---- Two skins, and why they are in one file -------------------------------
  *
- * The team sees the same two interfaces the client does: mail is GMAIL and chat
- * is WHATSAPP, on both sides. That is the whole brief — a client writes in
- * something that looks exactly like WhatsApp and the person answering them is
- * looking at exactly the same bubble. Splitting the two renderers into separate
+ * The team sees the same two interfaces the client does: mail is GMAIL, and
+ * chat is the room in styles/conversations.css — WhatsApp's structure in the
+ * product's own paint. That is the whole brief on both sides: a client writes
+ * in one and the person answering them is looking at exactly the same bubble.
+ * Splitting the two renderers into separate
  * files would have separated them from the things that must not diverge: who a
  * message is FROM (a User, a ClientContact, or the system — three shapes, two
  * of which leave `author` null), whether the reader may delete it, and the task
@@ -23,7 +24,7 @@ import macanMark from '../../assets/macan-mark.svg';
  * the bottom.
  *
  * `variant` is required at every call site rather than defaulted, because a
- * message rendered in the wrong skin is not a styling slip — a WhatsApp bubble
+ * message rendered in the wrong skin is not a styling slip — a chat bubble
  * in a mailbox reads as a different product.
  *
  * System messages (automations, alerts) render as "Macan" with the brand mark —
@@ -141,7 +142,7 @@ const Actions = ({ message, canManage, canMakeTask, isOwn, onReply, onDelete, on
   if (!anything) return null;
   const base = {
     fontSize: 11.5,
-    color: tone === 'wa' ? '#667781' : '#5f6368',
+    color: tone === 'wa' ? 'var(--color-text-secondary)' : '#5f6368',
   };
   const hidden =
     'inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100 transition-opacity';
@@ -154,7 +155,7 @@ const Actions = ({ message, canManage, canMakeTask, isOwn, onReply, onDelete, on
             type="button"
             onClick={() => onReply(message)}
             className="transition-colors hover:underline"
-            style={{ ...base, fontWeight: 600, color: tone === 'wa' ? '#008069' : '#0b57d0' }}
+            style={{ ...base, fontWeight: 600, color: tone === 'wa' ? 'var(--color-accent)' : '#0b57d0' }}
           >
             {message.replyCount} {message.replyCount === 1 ? 'reply' : 'replies'} →
           </button>

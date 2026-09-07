@@ -16,20 +16,20 @@ import { waClock, waDayLabel, dayKey, initialOf } from '../../utils/conversation
 import { WhatsAppAttachments } from '../chat/conversationSkins';
 
 /**
- * The client's chat room — WHATSAPP, as closely as a web app can copy it.
+ * The client's chat room.
  *
- * The brief was not "make chat feel casual", it was "make it WhatsApp", so the
- * things that are actually WhatsApp are all here and measured: the doodled
- * wallpaper, the 7.5px bubbles at #d9fdd3 and white, the little tail on the
- * first bubble of a run, the timestamp that floats INTO the last line of text
- * rather than sitting under it, the capsule date dividers, the flat grey
- * composer bar with a green disc on the end, and Enter to send.
+ * It borrows WhatsApp's STRUCTURE, because that shape is what makes a chat
+ * readable at a glance and a client already knows how to read it: the tail on
+ * the first bubble of a run, the timestamp that floats INTO the last line of
+ * text rather than sitting under it, the capsule date dividers, a bar of chrome
+ * top and bottom with a round send on the end, and Enter to send. The paint is
+ * ours — the product's palette and type, no green and no wallpaper. See the
+ * header of styles/conversations.css.
  *
- * What is deliberately NOT copied: the blue double tick. We know a message
- * reached the server and nothing more — there is no per-message read receipt in
- * this data model — so every outgoing message gets ONE grey tick, which is
- * exactly what that state means in WhatsApp. Inventing the blue one would be
- * telling a client their message had been read when we have no idea.
+ * There is deliberately NO read receipt. We know a message reached the server
+ * and nothing more — this data model has no per-message read state — so every
+ * outgoing message gets ONE tick, meaning sent. A second one would be telling a
+ * client their message had been read when we have no idea.
  *
  * Delivery is deliberately belt-and-braces: `usePortalStream` pushes new
  * messages in instantly when the SSE connection is up, and this poll is what
@@ -419,7 +419,7 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
           </div>
 
           {query !== null && (
-            <div style={{ padding: '8px 16px', background: '#f0f2f5' }}>
+            <div style={{ padding: '8px 16px', background: 'var(--color-bg-surface)', borderBottom: '1px solid var(--color-border)' }}>
               <div className="wa-input">
                 <input
                   type="search"

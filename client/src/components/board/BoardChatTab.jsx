@@ -690,13 +690,11 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
 
   /**
    * The rich composer keeps its own body in every skin; only the box around it
-   * changes. WhatsApp's is a white pill sitting on the grey bar. Gmail's two
-   * boxes — the reply card and the docked window — draw their own chrome in
+   * changes. The chat's is a recessed field on the white composer bar. Gmail's
+   * two boxes — the reply card and the docked window — draw their own chrome in
    * `conversations.css`, so this is the only shell that needs a helper.
    */
-  const waShell = (children) => (
-    <div style={{ background: '#ffffff', borderRadius: 8, overflow: 'visible' }}>{children}</div>
-  );
+  const waShell = (children) => <div className="wa-composer-shell">{children}</div>;
   /** Gmail's "to" line. The message knows who wrote it; only the room knows who
    *  it went to, which is why this is resolved here and passed down. */
   const clientLabel =

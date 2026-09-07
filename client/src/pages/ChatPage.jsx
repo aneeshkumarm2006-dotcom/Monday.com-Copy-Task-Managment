@@ -287,10 +287,10 @@ const ChatPage = () => {
     </>
   ) : null;
 
-  // WhatsApp's composer is a white pill on the flat grey bar — no border, no
-  // cream. The bar itself is `.wa-foot`, at the call sites below.
+  // The composer is a recessed field on the white bar. The bar itself is
+  // `.wa-foot`, at the call sites below.
   const composerFor = (key, submit, ph) => (
-    <div style={{ background: '#FFFFFF', borderRadius: 8, overflow: 'visible' }}>
+    <div className="wa-composer-shell">
       <UpdateComposer
         key={key}
         draftKey={key}
@@ -331,16 +331,16 @@ const ChatPage = () => {
           />
         </div>
 
-        {/* Conversation. `wa` scopes the WhatsApp skin to the room and the
-            thread beside it — the channel rail on the left keeps the app's own
-            chrome, because it is our navigation and not part of the copy. */}
+        {/* Conversation. `wa` scopes the chat skin to the room and the thread
+            beside it — the channel rail on the left keeps the app's own chrome,
+            because it is navigation and not part of the room. */}
         <div
           className={[
             'wa flex-1 min-w-0 flex-col',
             conversationOpen ? 'flex' : 'hidden md:flex',
             threadOpen ? 'hidden lg:flex' : '',
           ].join(' ')}
-          style={{ background: '#FFFFFF', minHeight: 0 }}
+          style={{ background: 'var(--color-bg-surface)', minHeight: 0 }}
         >
           {!conversationOpen ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8">
@@ -367,11 +367,11 @@ const ChatPage = () => {
             </div>
           ) : (
             <>
-              {/* Header — WhatsApp's flat grey bar, with the back chevron,
+              {/* Header — the room's bar of chrome, with the back chevron,
                   the mark or the other person's avatar, and the board pill. */}
               <div
                 className="flex items-center gap-2 px-3 shrink-0"
-                style={{ height: 59, borderBottom: '1px solid rgba(0,0,0,.08)', background: '#F0F2F5' }}
+                style={{ height: 59, borderBottom: '1px solid var(--color-border)', background: 'var(--color-bg-surface)' }}
               >
                 <button
                   type="button"
@@ -560,14 +560,14 @@ const ChatPage = () => {
           <div
             className="wa macan-chat-thread flex flex-col shrink-0"
             style={{
-              borderLeft: '1px solid rgba(0,0,0,.08)',
-              background: '#F0F2F5',
+              borderLeft: '1px solid var(--color-border)',
+              background: 'var(--color-bg-surface)',
               minHeight: 0,
             }}
           >
             <div
               className="flex items-center gap-2 px-3 shrink-0"
-              style={{ height: 59, borderBottom: '1px solid rgba(0,0,0,.08)' }}
+              style={{ height: 59, borderBottom: '1px solid var(--color-border)' }}
             >
               <button
                 type="button"

@@ -1,9 +1,19 @@
 /* =============================================================================
- * Conversations — two borrowed visual languages, verbatim
+ * Conversations — mail and chat, on both planes
  * -----------------------------------------------------------------------------
- * `.gm` is Gmail. `.wa` is WhatsApp. Both are deliberate, high-fidelity copies
- * of interfaces our users already know by heart, because the brief was not
- * "make mail feel familiar" — it was "make it Gmail".
+ * `.gm` is Gmail: a deliberate, high-fidelity copy of an interface our users
+ * already know by heart, because the brief was not "make mail feel familiar" —
+ * it was "make it Gmail". Every value under `.gm` is Google's, verbatim, and
+ * naming them after our palette would invite the next edit to "harmonise" them,
+ * which is the one change that breaks the point.
+ *
+ * `.wa` is the chat room. It KEEPS WhatsApp's structure — the two bars of
+ * chrome, the recessed field, the tailed bubble, the timestamp floating into
+ * the last line — because that shape is the reason a chat is legible at a
+ * glance. It does NOT keep WhatsApp's paint: no green, no warm grey, no doodle
+ * wallpaper. Its colours, type and radii all come from the product's own tokens
+ * (globals.css `:root`, which is loaded on both planes), so the same room reads
+ * as part of the app on a board and part of the portal for a client.
  *
  * WHY ONE FILE FOR BOTH PLANES
  * Mail and chat each exist twice: once for the external client (the portal,
@@ -11,12 +21,7 @@
  * planes have separate design systems on purpose — portal.css is scoped under
  * `.mcp` so nothing leaks into the admin chrome. A skin that must be IDENTICAL
  * on both sides cannot live in either, so it lives here, keyed on its own root
- * class and depending on neither plane's tokens. Every value below is declared
- * on `.gm` / `.wa` themselves.
- *
- * Nothing here is a token alias. `#0b57d0` is Gmail's primary and `#d9fdd3` is
- * WhatsApp's outgoing bubble; naming them after our palette would invite the
- * next edit to "harmonise" them, which is the one change that breaks the point.
+ * class and reading from `:root` rather than from either plane.
  * ========================================================================== */
 
 /* =============================================================================
@@ -899,28 +904,38 @@
 }
 
 /* =============================================================================
- * WHATSAPP
+ * CHAT
+ * -----------------------------------------------------------------------------
+ * The chat room keeps the shape people already read fluently — a bar of chrome
+ * top and bottom, a recessed field of bubbles between them, your own messages
+ * hugging the right edge with a tail on the first of a run, and the timestamp
+ * floating into the last line of text. Only the paint changed: the green, the
+ * warm grey and the doodle wallpaper are gone, and every colour now comes from
+ * the product's own tokens, so the room reads as part of the app on the board
+ * tab and part of the portal for a client.
  * ========================================================================== */
 
 .wa {
-  --wa-panel: #f0f2f5;        /* header and composer bars */
-  --wa-wall: #efeae2;         /* the chat wallpaper */
-  --wa-out: #d9fdd3;          /* my bubble */
-  --wa-in: #ffffff;           /* their bubble */
-  --wa-ink: #111b21;
-  --wa-meta: #667781;         /* names, statuses, dividers */
-  --wa-bubble-meta: rgba(17, 27, 33, 0.45);  /* the time inside a bubble */
-  --wa-green: #00a884;        /* send, and every affirmative */
-  --wa-green-deep: #008069;
-  --wa-line: #e9edef;
-  --wa-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
+  /* Three bands, the same ones the product is built from everywhere else:
+     white chrome, a warm off-white field, white cards on top of it. */
+  --wa-panel: var(--color-bg-surface, #ffffff);   /* header and composer bars */
+  --wa-wall: var(--color-bg-base, #f5f4f0);       /* the conversation field */
+  --wa-out: var(--color-accent-light, #eff6ff);   /* my bubble */
+  --wa-in: var(--color-bg-surface, #ffffff);      /* their bubble */
+  --wa-ink: var(--color-text-primary, #1a1a1a);
+  --wa-meta: var(--color-text-secondary, #6b6b6b);      /* names, statuses, dividers */
+  --wa-bubble-meta: var(--color-text-muted, #a0a0a0);   /* the time inside a bubble */
+  --wa-accent: var(--color-accent, #2563eb);      /* send, and every affirmative */
+  --wa-accent-deep: var(--color-accent-hover, #1d4ed8);
+  --wa-accent-text: var(--color-accent-text, #1e40af);
+  --wa-line: var(--color-border, #e2e0db);
+  --wa-hover: var(--color-bg-subtle, #eeecea);
+  --wa-shadow: 0 1px 2px rgba(26, 26, 26, 0.07);
 
-  /* WhatsApp Web's own stack — no webfont to load. */
-  font-family: 'Segoe UI', 'Helvetica Neue', Helvetica, 'Lucida Grande', Arial,
-    Ubuntu, Cantarell, 'Fira Sans', sans-serif;
+  font-family: var(--font-body, 'DM Sans', sans-serif);
   color: var(--wa-ink);
-  font-size: 14.2px;
-  line-height: 19px;
+  font-size: 14px;
+  line-height: 20px;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -931,10 +946,10 @@
 /**
  * `:where()` contributes NOTHING to specificity, and that is the whole point.
  * Written as `.wa button` this reset scores 0,1,1 — one class and one element —
- * which beats every single-class rule below it, so `.wa-compose-btn`'s tonal
- * pill, `.wa-send`'s green disc and `.wa-morebtn`'s outline all silently lost
- * their background to `background: none`. Wrapped like this it scores 0,1,0 and
- * loses to anything later, which is what a reset should do.
+ * which beats every single-class rule below it, so `.wa-send`'s accent disc and
+ * every tonal pill silently lost their background to `background: none`.
+ * Wrapped like this it scores 0,1,0 and loses to anything later, which is what
+ * a reset should do.
  */
 .wa :where(button) {
   font: inherit;
@@ -947,7 +962,7 @@
 }
 
 .wa :focus-visible {
-  outline: 2px solid var(--wa-green-deep);
+  outline: 2px solid var(--wa-accent);
   outline-offset: 2px;
 }
 
@@ -957,7 +972,7 @@
   min-height: 0;
   height: min(74vh, 720px);
   border: 1px solid var(--wa-line);
-  border-radius: 6px;
+  border-radius: var(--radius-lg, 14px);
   overflow: hidden;
   background: var(--wa-panel);
 }
@@ -970,68 +985,72 @@
 }
 
 /* ---- header ---------------------------------------------------------------
- * 59px, flat grey, avatar then name over a status line. WhatsApp's status line
+ * 59px of white chrome: avatar, then the room's name over a status line that
  * says something true about the room and nothing else.
  * -------------------------------------------------------------------------- */
 .wa-head {
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 12px;
   height: 59px;
   flex-shrink: 0;
   padding: 0 16px;
   background: var(--wa-panel);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid var(--wa-line);
 }
 .wa-head-av {
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   object-fit: cover;
-  background: #8696a0;
-  color: #fff;
-  font-size: 16px;
-  font-weight: 500;
+  background: var(--wa-accent);
+  color: var(--color-text-inverse, #fff);
+  font-size: 15px;
+  font-weight: 600;
 }
 .wa-head-t { min-width: 0; flex: 1 1 auto; }
 .wa-head-name {
-  font-size: 16px;
-  line-height: 21px;
+  font-family: var(--font-display, 'Bricolage Grotesque', sans-serif);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+  letter-spacing: var(--tracking-tight, -0.02em);
   color: var(--wa-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .wa-head-sub {
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 12.5px;
+  line-height: 18px;
   color: var(--wa-meta);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .wa-head-btn {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md, 10px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #54656f;
+  color: var(--wa-meta);
   flex-shrink: 0;
-  transition: background 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease;
 }
-.wa-head-btn:hover { background: rgba(0, 0, 0, 0.05); }
+.wa-head-btn:hover {
+  background: var(--wa-hover);
+  color: var(--wa-ink);
+}
 
-/* ---- the wallpaper --------------------------------------------------------
- * A doodle field on WhatsApp's warm grey. The tile is ours — drawn to the same
- * sparse, thin-stroke register rather than lifted from their asset — and sits
- * under the messages as a background layer so nothing above it inherits the
- * opacity.
+/* ---- the conversation field -----------------------------------------------
+ * Flat warm off-white — the same ground every page in the product sits on, so
+ * the bubbles read as cards on a page rather than as a separate application.
  * -------------------------------------------------------------------------- */
 .wa-scroll {
   flex: 1 1 auto;
@@ -1042,13 +1061,11 @@
   display: flex;
   flex-direction: column;
   background-color: var(--wa-wall);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='280' viewBox='0 0 280 280'%3E%3Cg fill='none' stroke='%23000' stroke-opacity='.055' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M34 44c-9-7-14-12-14-18a7 7 0 0113-4 7 7 0 0113 4c0 6-5 11-12 18z'/%3E%3Cpath d='M96 22h18v13a9 9 0 01-18 0z'/%3E%3Cpath d='M114 25h4a5 5 0 010 10h-4'/%3E%3Cpath d='M93 42h24'/%3E%3Cpath d='M176 27h7l3-5h11l3 5h7a4 4 0 014 4v16a4 4 0 01-4 4h-31a4 4 0 01-4-4V31a4 4 0 014-4z'/%3E%3Ccircle cx='192' cy='39' r='7'/%3E%3Cpath d='M248 54V20l16-5v34'/%3E%3Cellipse cx='243' cy='55' rx='6' ry='5'/%3E%3Cellipse cx='259' cy='50' rx='6' ry='5'/%3E%3Ccircle cx='38' cy='108' r='15'/%3E%3Cpath d='M33 104v1M44 104v1'/%3E%3Cpath d='M31 113a9 9 0 0014 0'/%3E%3Cpath d='M112 96l-14 14a8 8 0 0011 11l17-17a13 13 0 00-18-18l-18 18a18 18 0 0025 25l13-13'/%3E%3Cpath d='M196 92l6 12 13 2-9 9 2 13-12-6-12 6 2-13-9-9 13-2z'/%3E%3Cpath d='M250 122c-18 0-26-10-24-24 16-2 27 4 28 14'/%3E%3Cpath d='M228 122c8-8 14-12 24-14'/%3E%3Cpath d='M14 132h30a4 4 0 014 4v14a4 4 0 01-4 4H30l-10 8v-8h-6a4 4 0 01-4-4v-14a4 4 0 014-4z'/%3E%3Cpath d='M142 156l4-11 22-22 7 7-22 22z'/%3E%3Cpath d='M164 130l7 7'/%3E%3Cpath d='M204 152h4M230 152h4'/%3E%3Crect x='212' y='145' width='14' height='14' rx='2'/%3E%3Crect x='24' y='176' width='26' height='42' rx='5'/%3E%3Cpath d='M33 182h8'/%3E%3Ccircle cx='104' cy='196' r='11'/%3E%3Cpath d='M104 176v-6M104 222v-6M84 196h-6M130 196h-6M89 181l-4-4M123 215l-4-4M119 181l4-4M85 215l4-4'/%3E%3Cpath d='M176 206a13 14 0 1026 0c0-8-6-16-13-16s-13 8-13 16z'/%3E%3Cpath d='M189 222v6l-4 4'/%3E%3Crect x='236' y='184' width='34' height='24' rx='3'/%3E%3Cpath d='M236 187l17 12 17-12'/%3E%3Cpath d='M52 258a10 10 0 010-20 15 15 0 0129-4 9 9 0 01-2 24z'/%3E%3Crect x='130' y='244' width='30' height='22' rx='2'/%3E%3Cpath d='M130 252h30M145 244v22'/%3E%3Cpath d='M145 244c-6-8-14-4-11 1 2 4 11-1 11-1zM145 244c6-8 14-4 11 1-2 4-11-1-11-1z'/%3E%3Cpath d='M204 254a18 18 0 0136 0z'/%3E%3Cpath d='M222 254v16a5 5 0 01-10 0'/%3E%3C/g%3E%3C/svg%3E");
-  background-repeat: repeat;
 }
 
 /* ---- date divider and system notices --------------------------------------
- * Both are the same centred capsule. WhatsApp uses the pale amber one for
- * anything the system says, which is exactly what our automated posts are.
+ * Both are the same centred capsule; the system one carries the product's own
+ * amber, the colour it already uses everywhere for "in progress, take note".
  * -------------------------------------------------------------------------- */
 /* `width: fit-content` and the auto margins, not just `align-self`: each row is
    wrapped in a per-message <div> so the capsule is usually a BLOCK inside a
@@ -1062,29 +1079,31 @@
   /* `auto` on both sides, and it must stay in the shorthand: written as
      separate margin-left/right above a `margin: 10px 0` the shorthand silently
      resets them and every capsule sits hard left. */
-  margin: 10px auto;
-  padding: 5px 12px 6px;
-  border-radius: 7.5px;
-  box-shadow: var(--wa-shadow);
-  font-size: 12.5px;
-  line-height: 21px;
+  margin: 12px auto;
+  padding: 4px 12px 5px;
+  border-radius: var(--radius-full, 9999px);
+  font-size: 11.5px;
+  line-height: 18px;
   text-align: center;
   color: var(--wa-meta);
 }
 .wa-day {
-  background: var(--wa-in);
+  background: var(--wa-panel);
+  border: 1px solid var(--wa-line);
+  font-weight: 500;
+  letter-spacing: var(--tracking-wide, 0.04em);
   text-transform: uppercase;
 }
 .wa-sys {
-  background: #ffeecd;
-  color: #54656f;
+  background: var(--color-status-working-bg, #fffbeb);
+  border: 1px solid rgba(217, 119, 6, 0.22);
+  color: var(--color-status-working, #d97706);
 }
 
 /* ---- bubbles --------------------------------------------------------------
- * 7.5px radius, a hard shadow, and the tail — a right triangle hung off the top
- * corner of the FIRST bubble in a run. The tail is what makes a bubble read as
- * WhatsApp rather than as any other chat, so runs after the first go without it
- * and tuck in tighter, exactly as they do there.
+ * The tail hangs off the top corner of the FIRST bubble in a run: it is what
+ * tells you a new person started talking, so runs after the first go without it
+ * and tuck in tighter.
  * -------------------------------------------------------------------------- */
 .wa-row {
   display: flex;
@@ -1100,11 +1119,11 @@
   position: relative;
   max-width: min(65%, 500px);
   min-width: 88px;
-  padding: 6px 7px 8px 9px;
-  border-radius: 7.5px;
+  padding: 7px 8px 8px 10px;
+  border-radius: var(--radius-md, 10px);
   box-shadow: var(--wa-shadow);
-  font-size: 14.2px;
-  line-height: 19px;
+  font-size: 14px;
+  line-height: 20px;
   color: var(--wa-ink);
   white-space: pre-wrap;
   word-break: break-word;
@@ -1133,14 +1152,14 @@
   clip-path: polygon(0 0, 100% 0, 0 100%);
 }
 
-/* The sender's name above their text in a group — WhatsApp colours it per
-   person; here every teammate is one company, so one colour is the truth. */
+/* The sender's name above their text in a group. Every teammate is one company,
+   so one colour is the truth. */
 .wa-name {
   display: block;
-  font-size: 12.8px;
-  line-height: 22px;
-  font-weight: 500;
-  color: #027eb5;
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--wa-accent-text);
   margin-bottom: -1px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1149,8 +1168,8 @@
 
 /**
  * The time floats INTO the last line of text, and the text flows around it.
- * That is the whole trick behind WhatsApp's bubbles being as tight as they are:
- * a short message sits beside its timestamp instead of above it, and a long one
+ * That is the whole trick behind the bubbles being as tight as they are: a
+ * short message sits beside its timestamp instead of above it, and a long one
  * wraps under. `float` is what does it — no grid, no measuring.
  */
 .wa-meta {
@@ -1160,7 +1179,7 @@
   gap: 3px;
   height: 15px;
   margin: -10px 0 -5px 4px;
-  padding-left: 4px;
+  padding-left: 6px;
   position: relative;
   top: 6px;
   font-size: 11px;
@@ -1168,7 +1187,7 @@
   color: var(--wa-bubble-meta);
   white-space: nowrap;
 }
-.wa-tick { color: #667781; flex-shrink: 0; }
+.wa-tick { color: var(--wa-accent); flex-shrink: 0; }
 
 /* attachments inside a bubble */
 .wa-img {
@@ -1177,7 +1196,7 @@
   max-width: 330px;
   max-height: 340px;
   object-fit: cover;
-  border-radius: 6px;
+  border-radius: var(--radius-sm, 6px);
   margin-bottom: 4px;
 }
 .wa-doc {
@@ -1185,14 +1204,14 @@
   align-items: center;
   gap: 10px;
   margin-bottom: 4px;
-  padding: 10px 12px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.04);
+  padding: 9px 11px;
+  border-radius: var(--radius-sm, 6px);
+  background: rgba(26, 26, 26, 0.04);
   text-decoration: none;
   color: inherit;
   transition: background 0.12s ease;
 }
-.wa-doc:hover { background: rgba(0, 0, 0, 0.07); }
+.wa-doc:hover { background: rgba(26, 26, 26, 0.07); }
 .wa-doc-ico {
   display: inline-flex;
   align-items: center;
@@ -1201,13 +1220,14 @@
   height: 32px;
   border-radius: 3px;
   flex-shrink: 0;
-  color: #fff;
-  background: #d13438;
+  color: var(--color-text-inverse, #fff);
+  background: var(--wa-accent);
 }
 .wa-doc-meta { min-width: 0; overflow: hidden; }
 .wa-doc-name {
   display: block;
-  font-size: 13.5px;
+  font-size: 13px;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1218,6 +1238,7 @@
   color: var(--wa-bubble-meta);
   margin-top: 2px;
   text-transform: uppercase;
+  letter-spacing: var(--tracking-wide, 0.04em);
 }
 .wa-att-link {
   display: block;
@@ -1225,15 +1246,15 @@
   color: inherit;
 }
 
-/* the reply affordance, revealed on hover like WhatsApp's chevron */
+/* the reply affordance, revealed on hover */
 .wa-reply {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   margin: 2px 4px 0;
   font-size: 11.5px;
-  font-weight: 500;
-  color: var(--wa-green-deep);
+  font-weight: 600;
+  color: var(--wa-accent);
   opacity: 0;
   transition: opacity 0.12s ease;
 }
@@ -1244,7 +1265,7 @@
   .wa-reply { opacity: 1; }
 }
 
-/* the bar itself: icons, a white pill, a green disc */
+/* the bar itself: icons, a recessed field, an accent disc */
 .wa-bar {
   display: flex;
   align-items: flex-end;
@@ -1254,9 +1275,15 @@
 .wa-input {
   flex: 1 1 auto;
   min-width: 0;
-  background: var(--wa-in);
-  border-radius: 8px;
-  padding: 9px 12px;
+  background: var(--color-bg-input, #f9f8f6);
+  border: 1px solid var(--wa-line);
+  border-radius: var(--radius-md, 10px);
+  padding: 8px 12px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.wa-input:focus-within {
+  border-color: var(--wa-accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 .wa-input textarea {
   display: block;
@@ -1268,27 +1295,13 @@
   resize: none;
   overflow-y: auto;
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 20px;
   color: var(--wa-ink);
 }
-.wa-input textarea::placeholder { color: #8696a0; }
+.wa-input textarea::placeholder { color: var(--color-text-muted, #a0a0a0); }
 .wa-input textarea:disabled { opacity: 0.6; }
 .wa-send {
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  background: var(--wa-green);
-  transition: background 0.12s ease, opacity 0.12s ease;
-}
-.wa-send:hover:not(:disabled) { background: var(--wa-green-deep); }
-.wa-send:disabled { opacity: 0.45; cursor: default; }
-.wa-icon {
   width: 40px;
   height: 40px;
   border-radius: 50%;
@@ -1296,10 +1309,27 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #54656f;
-  transition: background 0.12s ease;
+  color: var(--color-text-inverse, #fff);
+  background: var(--wa-accent);
+  transition: background 0.12s ease, opacity 0.12s ease;
 }
-.wa-icon:hover:not(:disabled) { background: rgba(0, 0, 0, 0.05); }
+.wa-send:hover:not(:disabled) { background: var(--wa-accent-deep); }
+.wa-send:disabled { opacity: 0.45; cursor: default; }
+.wa-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md, 10px);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--wa-meta);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.wa-icon:hover:not(:disabled) {
+  background: var(--wa-hover);
+  color: var(--wa-ink);
+}
 .wa-icon:disabled { opacity: 0.45; cursor: default; }
 .wa-err,
 .wa-warn {
@@ -1310,35 +1340,39 @@
   font-size: 12.5px;
   line-height: 17px;
 }
-.wa-err { color: #ea0038; }
-.wa-warn { color: #b06000; }
+.wa-err { color: var(--color-status-stuck, #dc2626); }
+.wa-warn { color: var(--color-status-working, #d97706); }
 
 /* ---- the round jump button ------------------------------------------------ */
 .wa-jump {
   position: sticky;
   bottom: 8px;
   align-self: flex-end;
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #54656f;
-  background: var(--wa-in);
-  box-shadow: 0 1px 3px rgba(11, 20, 26, 0.26);
-  transition: background 0.12s ease;
+  color: var(--wa-meta);
+  background: var(--wa-panel);
+  border: 1px solid var(--wa-line);
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(26, 26, 26, 0.1));
+  transition: background 0.12s ease, color 0.12s ease;
 }
-.wa-jump:hover { background: #f5f6f6; }
+.wa-jump:hover {
+  background: var(--wa-hover);
+  color: var(--wa-ink);
+}
 
 /* ---- composer -------------------------------------------------------------
- * The flat grey bar with a white pill in it and a green circular send. Nothing
- * on WhatsApp's composer is a rectangle.
+ * White chrome, a recessed field in it, and a round accent send.
  * -------------------------------------------------------------------------- */
 .wa-foot {
   flex-shrink: 0;
-  padding: 5px 16px;
+  padding: 6px 16px 8px;
   background: var(--wa-panel);
+  border-top: 1px solid var(--wa-line);
 }
 .wa-readonly {
   display: flex;
@@ -1346,9 +1380,10 @@
   justify-content: center;
   gap: 8px;
   padding: 14px;
-  font-size: 13.5px;
+  font-size: 13px;
   color: var(--wa-meta);
   background: var(--wa-panel);
+  border-top: 1px solid var(--wa-line);
   flex-shrink: 0;
 }
 
@@ -1357,14 +1392,15 @@
   text-align: center;
   padding: 20px;
   color: var(--wa-meta);
-  font-size: 13.5px;
+  font-size: 13px;
 }
 .wa-center-card {
   display: inline-block;
-  padding: 10px 16px;
-  border-radius: 7.5px;
-  background: #ffeecd;
-  color: #54656f;
+  padding: 9px 16px;
+  border-radius: var(--radius-md, 10px);
+  background: var(--wa-panel);
+  border: 1px solid var(--wa-line);
+  color: var(--wa-meta);
   box-shadow: var(--wa-shadow);
 }
 .wa-older {
@@ -1375,17 +1411,24 @@
 .wa-older button {
   height: 30px;
   padding: 0 16px;
-  border-radius: 15px;
-  background: var(--wa-in);
+  border-radius: var(--radius-full, 9999px);
+  background: var(--wa-panel);
+  border: 1px solid var(--wa-line);
   box-shadow: var(--wa-shadow);
-  font-size: 12.5px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--wa-meta);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.wa-older button:hover:not(:disabled) {
+  background: var(--wa-hover);
+  color: var(--wa-ink);
 }
 .wa-older button:disabled { opacity: 0.6; cursor: default; }
 
 /* ---- the right drawer (threads) -------------------------------------------
- * WhatsApp Web opens contact info and search as a panel to the right of the
- * room, with a taller header of its own. A thread is the same shape of thing.
+ * A thread opens as a panel to the right of the room, with a header of its own
+ * at the same height as the room's.
  * -------------------------------------------------------------------------- */
 .wa-panel {
   flex: 0 0 380px;
@@ -1394,32 +1437,36 @@
   flex-direction: column;
   min-height: 0;
   background: var(--wa-panel);
-  border-left: 1px solid rgba(0, 0, 0, 0.08);
+  border-left: 1px solid var(--wa-line);
 }
 .wa-panel-head {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 16px;
   height: 59px;
   flex-shrink: 0;
-  padding: 0 22px;
+  padding: 0 20px;
   background: var(--wa-panel);
+  border-bottom: 1px solid var(--wa-line);
   color: var(--wa-ink);
-  font-size: 16px;
+  font-family: var(--font-display, 'Bricolage Grotesque', sans-serif);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight, -0.02em);
 }
 .wa-panel-quoted {
   margin: 12px 8px 4px;
-  padding: 6px 10px;
-  border-left: 4px solid var(--wa-green);
-  border-radius: 4px;
-  background: rgba(11, 20, 26, 0.05);
-  font-size: 13px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--wa-accent);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-accent-light, #eff6ff);
+  font-size: 12.5px;
   color: var(--wa-meta);
 }
 .wa-panel-quoted b {
   display: block;
-  color: var(--wa-green-deep);
-  font-weight: 500;
+  color: var(--wa-accent-text);
+  font-weight: 600;
   margin-bottom: 2px;
 }
 
@@ -1429,7 +1476,7 @@
     flex: 1 1 auto;
     max-width: none;
     border-left: 0;
-    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    border-top: 1px solid var(--wa-line);
     height: min(52vh, 440px);
   }
 }
@@ -1441,10 +1488,12 @@
 /* ---- rich bodies ----------------------------------------------------------
  * `ReadOnlyRichBody` ships its own <style> block that pins the text to
  * `--color-text-primary` and mentions to `--color-accent`. Neither token exists
- * under `.gm`/`.wa`, and on the team plane both resolve to the APP's palette —
- * which would put a blue-on-blue mention inside a green WhatsApp bubble. These
- * rules out-specify it (three classes to its two) and hand the colour back to
- * the skin.
+ * under `.gm`, and on the team plane both resolve to the APP's palette — which
+ * would put a blue-on-blue mention inside a Gmail-blue link. These rules
+ * out-specify it (three classes to its two) and hand the colour back to the
+ * skin. The chat now shares the app's palette, so its job there is narrower:
+ * match the bubble's own metrics, and keep a mention legible on the accent
+ * tint an outgoing bubble is painted with.
  * -------------------------------------------------------------------------- */
 .gm .macan-rich-readonly .ProseMirror {
   font-size: 14px;
@@ -1459,28 +1508,45 @@
   font-weight: 500;
 }
 .wa .macan-rich-readonly .ProseMirror {
-  font-size: 14.2px;
-  line-height: 19px;
+  font-size: 14px;
+  line-height: 20px;
   color: inherit;
 }
 .wa .macan-rich-readonly .ProseMirror .macan-mention {
-  color: #027eb5;
-  background: rgba(2, 126, 181, 0.1);
+  color: var(--wa-accent-text);
+  background: rgba(37, 99, 235, 0.1);
   border-radius: 4px;
   padding: 1px 4px;
-  font-weight: 500;
+  font-weight: 600;
 }
 .wa .wa-b.out .macan-rich-readonly .ProseMirror .macan-mention {
-  background: rgba(0, 128, 105, 0.14);
-  color: var(--wa-green-deep);
+  background: rgba(37, 99, 235, 0.16);
 }
 
-/* ---- the team's rich composer, wearing WhatsApp's pill --------------------
+/**
+ * The team's rich composer sits in the same recessed field the plain textarea
+ * gets, rather than in a white box that would vanish against the white chrome.
+ * Not `.wa-input` itself: that one is a flex child of the icon row and would
+ * fight the editor's own padding.
+ */
+.wa-composer-shell {
+  background: var(--color-bg-input, #f9f8f6);
+  border: 1px solid var(--wa-line);
+  border-radius: var(--radius-md, 10px);
+  overflow: visible;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.wa-composer-shell:focus-within {
+  border-color: var(--wa-accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+/* ---- the team's rich composer, wearing the chat's field -------------------
  * `RichEditor` ships an inline <style> giving its content area an 80px floor,
  * which is right for a task update and wrong for a chat bar: it turns a 52px
  * strip into a 142px slab with a placeholder floating at the top of it. Three
- * classes out-specifies that rule's two, and WhatsApp's box grows from one line
- * as you type, so the floor comes down and a cap goes on.
+ * classes out-specifies that rule's two, and a chat box grows from one line as
+ * you type, so the floor comes down and a cap goes on.
  * -------------------------------------------------------------------------- */
 .wa-foot .macan-rich-editor .macan-rich-content {
   min-height: 22px;
@@ -1488,9 +1554,9 @@
 }
 
 /* ---- scrollbars -----------------------------------------------------------
- * Both apps use a thin, low-contrast bar that only reads as one when there is
- * something to scroll. The chat wallpaper in particular is ruined by a 15px
- * platform bar cutting the doodles off down the right edge.
+ * A thin, low-contrast bar that only reads as one when there is something to
+ * scroll. The chat field in particular is broken up by a 15px platform bar
+ * running down the right edge of it.
  * -------------------------------------------------------------------------- */
 .gm-list,
 .gm-thread,
