@@ -12,6 +12,7 @@ import PageWrapper from '../components/layout/PageWrapper';
 import UpdateComposer from '../components/board/UpdateComposer';
 import ChannelSidebar from '../components/chat/ChannelSidebar';
 import MessageItem, { NewDivider } from '../components/chat/MessageItem';
+import { waDayLabel, dayKey } from '../utils/conversationFormat';
 import SharePicker from '../components/chat/SharePicker';
 import Avatar from '../components/ui/Avatar';
 import Modal from '../components/ui/Modal';
@@ -286,15 +287,10 @@ const ChatPage = () => {
     </>
   ) : null;
 
+  // WhatsApp's composer is a white pill on the flat grey bar — no border, no
+  // cream. The bar itself is `.wa-foot`, at the call sites below.
   const composerFor = (key, submit, ph) => (
-    <div
-      style={{
-        border: '1.5px solid var(--color-border)',
-        borderRadius: 12,
-        background: '#FBFAF8',
-        overflow: 'visible',
-      }}
-    >
+    <div style={{ background: '#FFFFFF', borderRadius: 8, overflow: 'visible' }}>
       <UpdateComposer
         key={key}
         draftKey={key}
@@ -335,10 +331,12 @@ const ChatPage = () => {
           />
         </div>
 
-        {/* Conversation */}
+        {/* Conversation. `wa` scopes the WhatsApp skin to the room and the
+            thread beside it — the channel rail on the left keeps the app's own
+            chrome, because it is our navigation and not part of the copy. */}
         <div
           className={[
-            'flex-1 min-w-0 flex-col',
+            'wa flex-1 min-w-0 flex-col',
             conversationOpen ? 'flex' : 'hidden md:flex',
             threadOpen ? 'hidden lg:flex' : '',
           ].join(' ')}
@@ -369,10 +367,11 @@ const ChatPage = () => {
             </div>
           ) : (
             <>
-              {/* Header — back chevron, mark, name, board pill */}
+              {/* Header — WhatsApp's flat grey bar, with the back chevron,
+                  the mark or the other person's avatar, and the board pill. */}
               <div
                 className="flex items-center gap-2 px-3 shrink-0"
-                style={{ height: 50, borderBottom: '1px solid var(--color-border)', background: '#FFFFFF' }}
+                style={{ height: 59, borderBottom: '1px solid rgba(0,0,0,.08)', background: '#F0F2F5' }}
               >
                 <button
                   type="button"
@@ -436,57 +435,68 @@ const ChatPage = () => {
                 )}
               </div>
 
-              {/* Feed */}
-              <div
-                ref={feedRef}
-                onScroll={handleFeedScroll}
-                className="flex-1 overflow-y-auto py-2 px-2"
-                style={{ minHeight: 0, background: '#FFFFFF' }}
-              >
+              {/* Feed — WHATSAPP: doodled wallpaper, tailed bubbles, capsule
+                  date dividers. Same room the client sees on a client board. */}
+              <div ref={feedRef} onScroll={handleFeedScroll} className="wa-scroll" style={{ minHeight: 0 }}>
                 {messagesLoading ? (
-                  <p className="font-body text-center py-8 text-[13px] text-[color:var(--color-text-muted)]">
-                    Loading messages…
-                  </p>
+                  <div className="wa-center"><span className="wa-center-card">Loading messages…</span></div>
                 ) : messages.length === 0 ? (
-                  <p className="font-body text-center py-10 text-[13px] text-[color:var(--color-text-muted)]">
-                    Nothing here yet — say hello.
-                  </p>
+                  <div className="wa-center"><span className="wa-center-card">Nothing here yet — say hello.</span></div>
                 ) : (
-                  <div className="flex flex-col gap-0.5">
+                  <>
                     {nextBefore && (
-                      <button
-                        type="button"
-                        onClick={loadOlder}
-                        className="font-body self-center py-2 text-[12px] font-semibold text-[color:var(--color-accent)]"
-                      >
-                        Load earlier messages
-                      </button>
-                    )}
-                    {messages.map((m, i) => (
-                      <div key={m._id}>
-                        {i === newDividerIndex && <NewDivider />}
-                        <MessageItem
-                          message={m}
-                          currentUserId={currentUser?._id}
-                          canManage={canManage}
-                          canMakeTask={isBoardChannel && canPost}
-                          onReply={openThread}
-                          onDelete={handleDelete}
-                          onMakeTask={handleMakeTask}
-                          onOpenChip={handleOpenChip}
-                        />
+                      <div className="wa-older">
+                        <button type="button" onClick={loadOlder}>Load earlier messages</button>
                       </div>
-                    ))}
-                  </div>
+                    )}
+                    {(() => {
+                      let lastDay = '';
+                      let previous = null;
+                      return messages.map((m, i) => {
+                        const key = dayKey(m.createdAt);
+                        const divider = key && key !== lastDay;
+                        lastDay = key || lastDay;
+
+                        // A run is the same person within five minutes,
+                        // uninterrupted by a divider or the NEW marker. Only its
+                        // first bubble gets the tail and the name.
+                        const run =
+                          !divider &&
+                          i !== newDividerIndex &&
+                          previous &&
+                          previous.authorType === m.authorType &&
+                          m.authorType !== 'system' &&
+                          String(previous.author?._id || '') === String(m.author?._id || '') &&
+                          new Date(m.createdAt) - new Date(previous.createdAt) < 5 * 60 * 1000;
+                        previous = m;
+
+                        return (
+                          <div key={m._id}>
+                            {divider && <div className="wa-day">{waDayLabel(m.createdAt)}</div>}
+                            {i === newDividerIndex && <NewDivider />}
+                            <MessageItem
+                              variant="whatsapp"
+                              tail={!run}
+                              message={m}
+                              currentUserId={currentUser?._id}
+                              canManage={canManage}
+                              canMakeTask={isBoardChannel && canPost}
+                              onReply={openThread}
+                              onDelete={handleDelete}
+                              onMakeTask={handleMakeTask}
+                              onOpenChip={handleOpenChip}
+                            />
+                          </div>
+                        );
+                      });
+                    })()}
+                  </>
                 )}
               </div>
 
               {/* Composer — one bordered container, docked to the bottom */}
               {canPost && (
-                <div
-                  className="shrink-0 px-3 pb-3 pt-2 relative"
-                  style={{ borderTop: '1px solid var(--color-bg-subtle)', background: '#FFFFFF' }}
-                >
+                <div className="wa-foot shrink-0 relative" style={{ padding: '6px 16px' }}>
                   {sharePicker && isBoardChannel && (
                     <SharePicker
                       kind={sharePicker}
@@ -548,16 +558,16 @@ const ChatPage = () => {
         {/* Thread panel */}
         {threadOpen && (
           <div
-            className="macan-chat-thread flex flex-col shrink-0"
+            className="wa macan-chat-thread flex flex-col shrink-0"
             style={{
-              borderLeft: '1px solid var(--color-border)',
-              background: '#FFFFFF',
+              borderLeft: '1px solid rgba(0,0,0,.08)',
+              background: '#F0F2F5',
               minHeight: 0,
             }}
           >
             <div
               className="flex items-center gap-2 px-3 shrink-0"
-              style={{ height: 50, borderBottom: '1px solid var(--color-border)' }}
+              style={{ height: 59, borderBottom: '1px solid rgba(0,0,0,.08)' }}
             >
               <button
                 type="button"
@@ -585,9 +595,10 @@ const ChatPage = () => {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto py-2 px-2" style={{ minHeight: 0 }}>
-              <div style={{ borderBottom: '1px solid var(--color-bg-subtle)', paddingBottom: 4, marginBottom: 4 }}>
+            <div className="wa-scroll" style={{ minHeight: 0 }}>
+              <div style={{ borderBottom: '1px dashed rgba(0,0,0,.12)', paddingBottom: 8, marginBottom: 6 }}>
                 <MessageItem
+                  variant="whatsapp"
                   message={thread.parent}
                   currentUserId={currentUser?._id}
                   canManage={canManage}
@@ -599,22 +610,18 @@ const ChatPage = () => {
                 />
               </div>
               {threadLoading ? (
-                <p className="font-body text-center py-4 text-[12.5px] text-[color:var(--color-text-muted)]">
-                  Loading replies…
-                </p>
+                <div className="wa-center"><span className="wa-center-card">Loading replies…</span></div>
               ) : (
                 <>
                   {thread.replies.length > 0 && (
-                    <p
-                      className="font-body font-bold uppercase px-3 pt-1 pb-1"
-                      style={{ fontSize: 10, letterSpacing: '0.08em', color: 'var(--color-text-muted)' }}
-                    >
+                    <div className="wa-day">
                       {thread.replies.length} {thread.replies.length === 1 ? 'reply' : 'replies'}
-                    </p>
+                    </div>
                   )}
                   {thread.replies.map((r) => (
                     <MessageItem
                       key={r._id}
+                      variant="whatsapp"
                       message={r}
                       currentUserId={currentUser?._id}
                       canManage={canManage}
@@ -630,7 +637,7 @@ const ChatPage = () => {
             </div>
 
             {canPost && (
-              <div className="shrink-0 px-3 pb-3 pt-2" style={{ borderTop: '1px solid var(--color-bg-subtle)' }}>
+              <div className="wa-foot shrink-0" style={{ padding: '6px 16px' }}>
                 {composerFor(
                   `chat-thread:${thread.parent?._id}`,
                   submitReply(thread.parent?._id),

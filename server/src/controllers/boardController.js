@@ -18,6 +18,11 @@ const ConnectorFieldMapping = require('../models/ConnectorFieldMapping');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
 const Organisation = require('../models/Organisation');
 const ClientContact = require('../models/ClientContact');
+const PortalDigest = require('../models/PortalDigest');
+const ActivityLog = require('../models/ActivityLog');
+const BoardConnection = require('../models/BoardConnection');
+const NotificationPreference = require('../models/NotificationPreference');
+const ConnectorBudget = require('../models/ConnectorBudget');
 const User = require('../models/User');
 const { isBoardCreator } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
@@ -829,6 +834,11 @@ const deleteBoard = async (req, res) => {
       await Update.deleteMany({ task: { $in: taskIds } });
       await Notification.deleteMany({ task: { $in: taskIds } });
       await ItemFollow.deleteMany({ task: { $in: taskIds } });
+      // Task history. Deleted by task id here AND by board below, because
+      // `logActivity` only fills `board` when the caller hands it a task
+      // DOCUMENT — callers that pass a bare id write a row with `board: null`,
+      // which the board-scoped sweep can never reach.
+      await ActivityLog.deleteMany({ task: { $in: taskIds } });
     }
     // Board-scoped notifications (e.g. `invited`) carry no task ref.
     await Notification.deleteMany({ board: id });
@@ -874,6 +884,29 @@ const deleteBoard = async (req, res) => {
       { board: id },
       { $set: { group: null, board: null, boundBy: null, boundAt: null } }
     );
+    // Board-scoped budget allocations for the external-data connectors. An
+    // `org` row repeats the org id in `scopeId`, so the `scope` clause is what
+    // stops this reaching the workspace's own ledger.
+    await ConnectorBudget.deleteMany({ scope: 'board', scopeId: id });
+    // The rest of the activity feed — goal, adsBudget and group rows, which
+    // carry no `task` and so survived the task-scoped delete above. Scoped by
+    // board rather than by subject id: it is the same set (each subject belongs
+    // to exactly one board) and it also collects rows whose subject was already
+    // deleted, which an id list no longer contains.
+    await ActivityLog.deleteMany({ board: id });
+    // Connect-column edges in either direction. A row pointing at a board that
+    // no longer exists is a dangling reference the mirror-invalidation lookup
+    // keeps paying for on every task change; one pointing FROM this board names
+    // a `fromColumnId` on a document that is about to go.
+    await BoardConnection.deleteMany({
+      $or: [{ fromBoardId: id }, { toBoardId: id }],
+    });
+    // Stale mutes. Harmless if left, but they accumulate on every user forever
+    // and there is no screen that could ever clear one.
+    await NotificationPreference.updateMany(
+      { mutedBoards: id },
+      { $pull: { mutedBoards: id } }
+    );
     // The board vault: key material, item ciphertexts, the audit trail, and the
     // encrypted blobs behind any file items. See services/vaultCascade.js for
     // why a surviving vault is worse than the usual orphan.
@@ -884,6 +917,12 @@ const deleteBoard = async (req, res) => {
     // place a deleted client board's roster can be cleaned up — group deletion
     // deliberately no longer touches it. These rows carry email addresses and
     // scrypt password hashes; they must not outlive the board.
+    // The "digest already sent" markers key on the CONTACT, so they have to be
+    // collected before the contacts they name disappear.
+    const contactIds = await ClientContact.distinct('_id', { board: id });
+    if (contactIds.length > 0) {
+      await PortalDigest.deleteMany({ contact: { $in: contactIds } });
+    }
     await ClientContact.deleteMany({ board: id });
     // Conversations — channels, messages, and both kinds of read marker. These
     // were missing from this cascade entirely: `Channel` was only ever deleted

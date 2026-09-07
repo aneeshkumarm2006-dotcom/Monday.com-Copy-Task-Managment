@@ -1,30 +1,36 @@
-import { CheckSquare, ClipboardPlus, MessageSquare, Trash2 } from 'lucide-react';
-import AttachmentList from '../board/AttachmentList';
+import { CheckSquare, ClipboardPlus, MessageSquare, Trash2, Check } from 'lucide-react';
 import ReadOnlyRichBody from '../board/ReadOnlyRichBody';
 import Avatar from '../ui/Avatar';
-import { monthLabel, timeShort } from './chatFormat';
+import { monthLabel } from './chatFormat';
+import { GmailAttachments, WhatsAppAttachments } from './conversationSkins';
+import { gmailStamp, gmailStampLong, gmailAgo, gmailListDate, waClock } from '../../utils/conversationFormat';
 import macanMark from '../../assets/macan-mark.svg';
 
 /**
- * One message, wherever a conversation is drawn — the global /chat page, a
- * thread panel, or a client board's Chat tab.
+ * One message, wherever the TEAM reads a conversation — the global /chat page,
+ * a thread panel, or a client board's Chat tab.
  *
- * Extracted from `ChatPage.jsx` unchanged when the board tab arrived. The
- * markup is the mobile design mock's, and the two share it so a message looks
- * the same in both places: avatar, name, short time, rich body, then the
- * share chips, attachments, and the hover row of actions.
+ * ---- Two skins, and why they are in one file -------------------------------
  *
- * `ReadOnlyRichBody` is imported from its OWN file rather than through
- * `UpdatesTab`'s re-export, and that matters more than it looks: `UpdatesTab`
- * pulls in `updateService`, `taskAttachmentService` and `authStore`, so the
- * convenient import dragged the whole task-panel module graph into every screen
- * that renders a message. See the header of `board/ReadOnlyRichBody.jsx`.
+ * The team sees the same two interfaces the client does: mail is GMAIL and chat
+ * is WHATSAPP, on both sides. That is the whole brief — a client writes in
+ * something that looks exactly like WhatsApp and the person answering them is
+ * looking at exactly the same bubble. Splitting the two renderers into separate
+ * files would have separated them from the things that must not diverge: who a
+ * message is FROM (a User, a ClientContact, or the system — three shapes, two
+ * of which leave `author` null), whether the reader may delete it, and the task
+ * and goal chips. Those are resolved once at the top and the skin is chosen at
+ * the bottom.
+ *
+ * `variant` is required at every call site rather than defaulted, because a
+ * message rendered in the wrong skin is not a styling slip — a WhatsApp bubble
+ * in a mailbox reads as a different product.
  *
  * System messages (automations, alerts) render as "Macan" with the brand mark —
  * never as a person.
  */
 
-/** Task reference: a compact blue pill, per the mock. */
+/** Task reference: a compact blue pill. */
 const TaskChip = ({ task, onClick }) => (
   <button
     type="button"
@@ -42,52 +48,47 @@ const TaskChip = ({ task, onClick }) => (
     }}
   >
     <CheckSquare size={12} aria-hidden="true" className="shrink-0" />
-    <span className="font-body truncate">{task.name}</span>
+    <span className="truncate">{task.name}</span>
   </button>
 );
 
-/** Goal reference: the mock's left-accented card with an Open affordance. */
+/** Goal reference: a left-accented card with an Open affordance. */
 const GoalCard = ({ goal, onClick }) => (
   <button
     type="button"
     onClick={onClick}
-    className="block w-full max-w-[360px] text-left transition-colors duration-100 hover:bg-[color:var(--color-bg-subtle)]"
+    className="block w-full max-w-[360px] text-left transition-colors duration-100 hover:bg-[#f6f8fc]"
     style={{
-      border: '1px solid var(--color-border)',
-      borderLeft: '3px solid var(--color-accent)',
-      borderRadius: 'var(--radius-md)',
-      background: 'var(--color-bg-base)',
+      border: '1px solid #dadce0',
+      borderLeft: '3px solid #0b57d0',
+      borderRadius: 8,
+      background: '#ffffff',
       padding: '8px 12px',
       cursor: 'pointer',
     }}
   >
-    <span
-      className="font-body block font-bold uppercase"
-      style={{ fontSize: 9.5, letterSpacing: '0.07em', color: 'var(--color-text-muted)' }}
-    >
+    <span className="block font-bold uppercase" style={{ fontSize: 9.5, letterSpacing: '0.07em', color: '#5f6368' }}>
       Goal{goal.monthKey ? ` · ${monthLabel(goal.monthKey)}` : ''}
     </span>
-    <span
-      className="font-body block truncate mt-0.5"
-      style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--color-text-primary)' }}
-    >
+    <span className="block truncate mt-0.5" style={{ fontSize: 12.5, fontWeight: 600, color: '#202124' }}>
       {goal.name}
     </span>
-    <span
-      className="font-body block mt-1"
-      style={{ fontSize: 11, fontWeight: 600, color: 'var(--color-accent)' }}
-    >
+    <span className="block mt-1" style={{ fontSize: 11, fontWeight: 600, color: '#0b57d0' }}>
       Open →
     </span>
   </button>
 );
 
-/** The red NEW divider, exactly as the mock draws it. */
+/**
+ * The red NEW divider. Kept in both skins: neither Gmail nor WhatsApp has an
+ * exact equivalent, and "everything below this arrived since you last looked"
+ * is worth more to the person answering than the last 1% of the imitation.
+ */
 export const NewDivider = () => (
   <div className="flex items-center my-2 px-2" aria-label="New messages">
     <span className="flex-1" style={{ borderTop: '1px solid #F0D4D2' }} />
     <span
-      className="font-body font-extrabold text-white"
+      className="font-extrabold text-white"
       style={{
         background: '#DC2626',
         fontSize: 9,
@@ -103,11 +104,10 @@ export const NewDivider = () => (
   </div>
 );
 
-/** "This was written by the client", next to their name. Same treatment as the
- *  rail's `ClientPill` in `BoardChatTab`, because it says the same thing. */
+/** "This was written by the client", next to their name. */
 const ClientTag = () => (
   <span
-    className="font-body font-semibold shrink-0"
+    className="font-semibold shrink-0"
     style={{
       fontSize: 9,
       letterSpacing: '0.04em',
@@ -116,26 +116,75 @@ const ClientTag = () => (
       border: '1px solid #BFDBFE',
       borderRadius: 999,
       padding: '1px 6px',
+      marginLeft: 6,
+      verticalAlign: '1px',
+      display: 'inline-block',
     }}
   >
     Client
   </span>
 );
 
-const SystemGlyph = () => (
+const SystemGlyph = ({ size = 36 }) => (
   <span
     className="flex items-center justify-center shrink-0"
-    style={{
-      width: 30,
-      height: 30,
-      borderRadius: 'var(--radius-full)',
-      background: 'var(--color-accent-light)',
-    }}
+    style={{ width: size, height: size, borderRadius: 999, background: '#e8f0fe' }}
     aria-hidden="true"
   >
-    <img src={macanMark} alt="" width={16} height={16} />
+    <img src={macanMark} alt="" width={Math.round(size * 0.45)} height={Math.round(size * 0.45)} />
   </span>
 );
+
+/* ---- the actions, in whichever skin asked for them ------------------------ */
+const Actions = ({ message, canManage, canMakeTask, isOwn, onReply, onDelete, onMakeTask, tone }) => {
+  const anything = onReply || (canMakeTask && !message.task) || isOwn || canManage;
+  if (!anything) return null;
+  const base = {
+    fontSize: 11.5,
+    color: tone === 'wa' ? '#667781' : '#5f6368',
+  };
+  const hidden =
+    'inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100 transition-opacity';
+
+  return (
+    <div className="flex items-center gap-3 mt-1">
+      {onReply &&
+        (message.replyCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => onReply(message)}
+            className="transition-colors hover:underline"
+            style={{ ...base, fontWeight: 600, color: tone === 'wa' ? '#008069' : '#0b57d0' }}
+          >
+            {message.replyCount} {message.replyCount === 1 ? 'reply' : 'replies'} →
+          </button>
+        ) : (
+          <button type="button" onClick={() => onReply(message)} className={hidden} style={base}>
+            <MessageSquare size={11} aria-hidden="true" />
+            Reply
+          </button>
+        ))}
+      {canMakeTask && !message.task && (
+        <button type="button" onClick={() => onMakeTask(message)} className={hidden} style={base}>
+          <ClipboardPlus size={11} aria-hidden="true" />
+          Make a task
+        </button>
+      )}
+      {(isOwn || canManage) && (
+        <button
+          type="button"
+          onClick={() => onDelete(message)}
+          aria-label="Delete message"
+          className={`${hidden} hover:text-[#d93025]`}
+          style={base}
+        >
+          <Trash2 size={11} aria-hidden="true" />
+          Delete
+        </button>
+      )}
+    </div>
+  );
+};
 
 const MessageItem = ({
   message,
@@ -146,16 +195,27 @@ const MessageItem = ({
   onDelete,
   onMakeTask,
   onOpenChip,
+  /** 'gmail' inside a mailbox, 'whatsapp' inside a room. Always pass it. */
+  variant = 'whatsapp',
+  /** Gmail only: who this went to, e.g. "to Acme Ltd". The team plane knows
+   *  the room's audience; the message does not. */
+  recipient = '',
+  /** Gmail only: folded messages render as one line. */
+  collapsed = false,
+  onToggle,
+  /** WhatsApp only: false when this continues a run from the same person, which
+   *  is what drops the tail and the repeated name. */
+  tail = true,
 }) => {
   const isSystem = message.authorType === 'system';
   /**
    * A message the CLIENT wrote, on a client-facing surface. It has no `author`
    * at all — a ClientContact is deliberately not a User — so everything below
    * that reaches for `message.author` has to be told about this case or the
-   * outside company shows up as "Unknown" with a blank circle, which is the
-   * one participant a client room cannot afford to leave unnamed.
+   * outside company shows up as "Unknown" with a blank circle, which is the one
+   * participant a client room cannot afford to leave unnamed.
    *
-   * `mine` never applies: a team member is never the client.
+   * `isOwn` never applies: a team member is never the client.
    */
   const isClient = message.authorType === 'client';
   const clientName =
@@ -165,118 +225,114 @@ const MessageItem = ({
   const mentionsMe = (message.mentions || []).some(
     (m) => String(m?._id || m) === String(currentUserId)
   );
+  const name = isSystem ? 'Macan' : isClient ? clientName : message.author?.name || 'Unknown';
+  const avatarUser = isClient ? { name: clientName } : message.author;
 
-  return (
-    <div
-      className="group flex items-start gap-2.5 px-3 py-2"
-      style={
-        mentionsMe
-          ? {
-              // The amber mention wash from the mock — the whole surface says
-              // "someone called your name", without a rail in sight.
-              background: '#FFFBEB',
-              border: '1px solid #F1DCA8',
-              borderRadius: 12,
-            }
-          : undefined
-      }
-    >
-      <span className="mt-0.5 shrink-0">
-        {isSystem ? (
-          <SystemGlyph />
-        ) : (
-          // A contact has no profile picture — `Avatar` falls back to the
-          // initial of the name we pass, which is the same flat accent circle
-          // every other person in the product gets.
-          <Avatar user={isClient ? { name: clientName } : message.author} size={30} />
-        )}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span
-            className="font-body font-bold truncate"
-            style={{ fontSize: 13, color: 'var(--color-text-primary)' }}
-          >
-            {isSystem ? 'Macan' : isClient ? clientName : message.author?.name || 'Unknown'}
+  const actions = (
+    <Actions
+      message={message}
+      canManage={canManage}
+      canMakeTask={canMakeTask}
+      isOwn={isOwn}
+      onReply={onReply}
+      onDelete={onDelete}
+      onMakeTask={onMakeTask}
+      tone={variant === 'whatsapp' ? 'wa' : 'gm'}
+    />
+  );
+
+  const chips = (message.task || message.goal) && (
+    <div className="flex flex-col items-start gap-1.5 mt-1.5">
+      {message.task && <TaskChip task={message.task} onClick={() => onOpenChip('task', message.task)} />}
+      {message.goal && <GoalCard goal={message.goal} onClick={() => onOpenChip('goal', message.goal)} />}
+    </div>
+  );
+
+  /* ---- Gmail ------------------------------------------------------------- */
+  if (variant === 'gmail') {
+    if (collapsed) {
+      return (
+        <button type="button" className="gm-fold-msg" onClick={onToggle}>
+          <span className="gm-fold-av" style={{ background: 'none' }}>
+            {isSystem ? <SystemGlyph size={24} /> : <Avatar user={avatarUser} size={24} />}
           </span>
-          {/* Named as the client, every time. The team room and the client room
-              differ by nothing a reader can see, so who is on the other side of
-              a message is the signal that decides what may be typed back. */}
-          {isClient && <ClientTag />}
-          <span className="font-body shrink-0" style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>
-            {timeShort(message.createdAt)}
-            {message.editedAt ? ' · edited' : ''}
+          <span className="gm-fold-who">{isOwn ? 'me' : name}</span>
+          <span className="gm-fold-peek">
+            {(message.bodyText || '').replace(/\s+/g, ' ').trim() || 'Attachment'}
+          </span>
+          <span className="gm-fold-when">{gmailListDate(message.createdAt)}</span>
+        </button>
+      );
+    }
+
+    const ago = gmailAgo(message.createdAt);
+    return (
+      <div
+        className="gm-msg group"
+        style={mentionsMe ? { background: '#FFFBEB', borderRadius: 8 } : undefined}
+      >
+        <div className="gm-msg-head">
+          {isSystem ? <SystemGlyph /> : <Avatar user={avatarUser} size={36} />}
+          <div className="gm-msg-who">
+            <div className="gm-msg-from">
+              {isOwn ? 'me' : name}
+              {isClient && <ClientTag />}
+            </div>
+            <div className="gm-msg-to">
+              {recipient || 'to the team'}
+              {message.editedAt ? ' · edited' : ''}
+            </div>
+          </div>
+          <span className="gm-msg-when" title={gmailStampLong(message.createdAt)}>
+            {gmailStamp(message.createdAt)}{ago ? ` (${ago})` : ''}
           </span>
         </div>
 
-        <div className="font-body text-[13px] text-[color:var(--color-text-primary)]">
+        <div className="gm-msg-body gm-msg-body--rich">
           <ReadOnlyRichBody body={message.body} fallbackText={message.bodyText} />
+          {chips}
         </div>
 
-        {(message.task || message.goal) && (
-          <div className="flex flex-col items-start gap-1.5 mt-1.5">
-            {message.task && (
-              <TaskChip task={message.task} onClick={() => onOpenChip('task', message.task)} />
-            )}
-            {message.goal && (
-              <GoalCard goal={message.goal} onClick={() => onOpenChip('goal', message.goal)} />
-            )}
-          </div>
-        )}
-
-        {message.attachments?.length > 0 && (
-          <div className="mt-1.5">
-            <AttachmentList attachments={message.attachments} compact />
-          </div>
-        )}
-
-        <div className="flex items-center gap-3 mt-1">
-          {onReply &&
-            (message.replyCount > 0 ? (
-              <button
-                type="button"
-                onClick={() => onReply(message)}
-                className="font-body transition-colors hover:underline"
-                style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--color-accent)' }}
-              >
-                {message.replyCount} {message.replyCount === 1 ? 'reply' : 'replies'} →
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => onReply(message)}
-                className="font-body inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100 transition-opacity hover:text-[color:var(--color-accent)]"
-                style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
-              >
-                <MessageSquare size={11} aria-hidden="true" />
-                Reply
-              </button>
-            ))}
-          {canMakeTask && !message.task && (
-            <button
-              type="button"
-              onClick={() => onMakeTask(message)}
-              className="font-body inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100 transition-opacity hover:text-[color:var(--color-accent)]"
-              style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
-            >
-              <ClipboardPlus size={11} aria-hidden="true" />
-              Make a task
-            </button>
-          )}
-          {(isOwn || canManage) && (
-            <button
-              type="button"
-              onClick={() => onDelete(message)}
-              aria-label="Delete message"
-              className="font-body inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100 transition-opacity hover:text-[color:var(--color-status-stuck)]"
-              style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
-            >
-              <Trash2 size={11} aria-hidden="true" />
-              Delete
-            </button>
-          )}
-        </div>
+        <GmailAttachments items={message.attachments} />
+        <div style={{ marginLeft: 48 }}>{actions}</div>
       </div>
+    );
+  }
+
+  /* ---- WhatsApp ---------------------------------------------------------- */
+  if (isSystem) {
+    return <div className="wa-sys">{message.bodyText}</div>;
+  }
+
+  const side = isOwn ? 'out' : 'in';
+  return (
+    <div className={`wa-row group ${side} ${tail ? 'wa-row--new' : ''}`}>
+      <div
+        className={['wa-b', side, tail ? 'wa-b--tail' : '', 'wa-b--rich'].filter(Boolean).join(' ')}
+        // "Someone called your name", in the one place WhatsApp leaves free.
+        style={mentionsMe ? { boxShadow: '0 0 0 2px #f0b429' } : undefined}
+      >
+        {!isOwn && tail && (
+          <span className="wa-name">
+            {name}
+            {isClient && <ClientTag />}
+          </span>
+        )}
+        <WhatsAppAttachments items={message.attachments} />
+        <ReadOnlyRichBody body={message.body} fallbackText={message.bodyText} />
+        {chips}
+        {/* AFTER the body, always: the float only lands on the last line if the
+            text is already there. Move it above and every bubble grows a row. */}
+        <span className="wa-meta">
+          {message.editedAt && <span>edited</span>}
+          {waClock(message.createdAt)}
+          {/* One tick means sent, which is all we know — there is no per-message
+              read receipt in this data model, so the blue double tick would be
+              telling someone their message had been read on no evidence. */}
+          {isOwn && <Check size={14} className="wa-tick" aria-label="Sent" />}
+        </span>
+      </div>
+      {actions}
     </div>
   );
 };

@@ -28,6 +28,7 @@ const BoardConnector = require('../models/BoardConnector');
 const ConnectorFieldMapping = require('../models/ConnectorFieldMapping');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
 const ClientContact = require('../models/ClientContact');
+const PortalDigest = require('../models/PortalDigest');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const VaultEscrow = require('../models/VaultEscrow');
 const { cascadeDeleteVaults } = require('./vaultCascade');
@@ -74,6 +75,14 @@ const cascadeDeleteOrg = async (orgId) => {
   // The org-wide half of the ClientContact cleanup — see the board-scoped
   // delete below. A contact whose board was already deleted has no board to be
   // found by, and would otherwise survive its whole workspace.
+  //
+  // The daily-digest markers key on the CONTACT, so they are collected here,
+  // once, before the first of the two contact deletes runs — after it there is
+  // nothing left to resolve them against.
+  const contactIds = await ClientContact.distinct('_id', { organisation: orgId });
+  if (contactIds.length) {
+    await PortalDigest.deleteMany({ contact: { $in: contactIds } });
+  }
   await ClientContact.deleteMany({ organisation: orgId });
 
   if (boardIds.length) {
@@ -89,16 +98,15 @@ const cascadeDeleteOrg = async (orgId) => {
     // Same omission as the board cascade had: notes are only otherwise removed
     // when their GROUP is deleted, so tearing down an org left them behind.
     await Note.deleteMany({ board: { $in: boardIds } });
-    // Goal activity rows carry `goal`, not `task`, so the task-scoped delete
-    // above cannot reach them. Scoped by BOARD rather than by goal id: it is
-    // the same set (a goal belongs to exactly one board) and it also collects
-    // rows for goals already deleted, which the id list no longer contains.
-    await ActivityLog.deleteMany({ board: { $in: boardIds }, goal: { $ne: null } });
-    // Ads budgets, and their activity, for exactly the same two reasons as the
-    // goal rows above: they hang off the board rather than off a task, and the
-    // board-scoped delete also collects rows for budgets already deleted.
     await AdsBudget.deleteMany({ board: { $in: boardIds } });
-    await ActivityLog.deleteMany({ board: { $in: boardIds }, adsBudget: { $ne: null } });
+    // Everything else in the activity feed. Goal, adsBudget and group rows
+    // carry their own subject and no `task`, so the task-scoped delete above
+    // cannot reach any of them. Scoped by BOARD rather than by subject id: it
+    // is the same set (each subject belongs to exactly one board) and it also
+    // collects rows whose subject was already deleted, which an id list no
+    // longer contains. Previously this filtered on `goal`/`adsBudget`, which
+    // silently left every GROUP row behind once groups joined the collection.
+    await ActivityLog.deleteMany({ board: { $in: boardIds } });
     await TaskGroup.deleteMany({ board: { $in: boardIds } });
     // Client Portal contacts. These carry email addresses, scrypt password
     // hashes and one-time setup-token hashes, so they must not outlive the

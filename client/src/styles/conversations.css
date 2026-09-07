@@ -1,0 +1,1525 @@
+/* =============================================================================
+ * Conversations — two borrowed visual languages, verbatim
+ * -----------------------------------------------------------------------------
+ * `.gm` is Gmail. `.wa` is WhatsApp. Both are deliberate, high-fidelity copies
+ * of interfaces our users already know by heart, because the brief was not
+ * "make mail feel familiar" — it was "make it Gmail".
+ *
+ * WHY ONE FILE FOR BOTH PLANES
+ * Mail and chat each exist twice: once for the external client (the portal,
+ * `.mcp`) and once for the team (a board's Chat tab, the /chat page). Those two
+ * planes have separate design systems on purpose — portal.css is scoped under
+ * `.mcp` so nothing leaks into the admin chrome. A skin that must be IDENTICAL
+ * on both sides cannot live in either, so it lives here, keyed on its own root
+ * class and depending on neither plane's tokens. Every value below is declared
+ * on `.gm` / `.wa` themselves.
+ *
+ * Nothing here is a token alias. `#0b57d0` is Gmail's primary and `#d9fdd3` is
+ * WhatsApp's outgoing bubble; naming them after our palette would invite the
+ * next edit to "harmonise" them, which is the one change that breaks the point.
+ * ========================================================================== */
+
+/* =============================================================================
+ * GMAIL
+ * ========================================================================== */
+
+.gm {
+  /* Material 3 Gmail, light. */
+  --gm-ink: #202124;          /* subject, sender, body */
+  --gm-ink-2: #5f6368;        /* snippet, dates, icons */
+  --gm-blue: #0b57d0;         /* links, Send, the unread accent */
+  --gm-tonal: #c2e7ff;        /* the Compose pill */
+  --gm-tonal-ink: #001d35;
+  --gm-read: #f2f6fc;         /* a conversation already opened */
+  --gm-surface: #ffffff;      /* an unread conversation, and every pane */
+  --gm-line: rgba(100, 121, 143, 0.122);
+  --gm-hairline: #dadce0;
+  --gm-field: #eaf1fb;        /* the search bar */
+  --gm-hover: rgba(32, 33, 36, 0.059);
+  --gm-selected: #c2dbff;
+
+  /* Gmail is Roboto. Google Sans is not public, so headings fall to Roboto
+     Medium, which is what a Google Sans miss renders as in Gmail itself. */
+  --gm-font: 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+  --gm-display: 'Google Sans', 'Product Sans', 'Roboto', Arial, sans-serif;
+
+  font-family: var(--gm-font);
+  color: var(--gm-ink);
+  font-size: 14px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.gm *,
+.gm *::before,
+.gm *::after { box-sizing: border-box; }
+
+/**
+ * `:where()` contributes NOTHING to specificity, and that is the whole point.
+ * Written as `.gm button` this reset scores 0,1,1 — one class and one element —
+ * which beats every single-class rule below it, so `.gm-compose-btn`'s tonal
+ * pill, `.gm-send`'s green disc and `.gm-morebtn`'s outline all silently lost
+ * their background to `background: none`. Wrapped like this it scores 0,1,0 and
+ * loses to anything later, which is what a reset should do.
+ */
+.gm :where(button) {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.gm :focus-visible {
+  outline: 2px solid var(--gm-blue);
+  outline-offset: -2px;
+}
+
+/* ---- the pane -------------------------------------------------------------
+ * Gmail's list and reading pane are one rounded white surface on a grey page.
+ * -------------------------------------------------------------------------- */
+.gm-pane {
+  background: var(--gm-surface);
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ---- search ---------------------------------------------------------------
+ * Client-side over the threads already paged in — which is why it says
+ * "Search this mailbox" and not "Search mail". It never promises a server it
+ * cannot ask.
+ * -------------------------------------------------------------------------- */
+.gm-search {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 48px;
+  padding: 0 16px;
+  margin: 0 0 8px;
+  border-radius: 8px;
+  background: var(--gm-field);
+  color: var(--gm-ink-2);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.gm-search:focus-within {
+  background: var(--gm-surface);
+  box-shadow: 0 1px 1px 0 rgba(65, 69, 73, 0.3), 0 1px 3px 1px rgba(65, 69, 73, 0.15);
+}
+.gm-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  background: none;
+  outline: none;
+  font: inherit;
+  font-size: 16px;
+  color: var(--gm-ink);
+}
+.gm-search input::placeholder { color: var(--gm-ink-2); }
+
+/* ---- toolbar --------------------------------------------------------------
+ * Gmail's row of round icon buttons, with the count pushed to the right. It
+ * swaps to the SELECTION toolbar when rows are ticked — the same swap Gmail
+ * does, and the reason the checkboxes below are not decoration.
+ * -------------------------------------------------------------------------- */
+.gm-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 4px 16px 4px 10px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.gm-iconbtn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--gm-ink-2);
+  flex-shrink: 0;
+  transition: background 0.12s ease;
+}
+.gm-iconbtn:hover { background: var(--gm-hover); }
+.gm-iconbtn:disabled { opacity: 0.38; cursor: default; background: none; }
+
+.gm-bar-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--gm-ink-2);
+  white-space: nowrap;
+  padding-left: 12px;
+}
+.gm-bar-sel {
+  font-size: 14px;
+  color: var(--gm-ink);
+  padding-left: 6px;
+  white-space: nowrap;
+}
+.gm-textbtn {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gm-blue);
+  transition: background 0.12s ease;
+}
+.gm-textbtn:hover { background: rgba(11, 87, 208, 0.08); }
+
+/* Compose. Gmail's tonal pill, verbatim. */
+.gm-compose-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  height: 48px;
+  padding: 0 22px 0 16px;
+  border-radius: 16px;
+  background: var(--gm-tonal);
+  color: var(--gm-tonal-ink);
+  font-family: var(--gm-display);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+  transition: box-shadow 0.15s ease, background 0.15s ease;
+}
+.gm-compose-btn:hover {
+  background: #b6e0fb;
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+}
+
+/* ---- the conversation list ------------------------------------------------
+ * The row IS the Gmail tell: 40px tall, sender in a fixed column, subject and
+ * snippet sharing one clipped line, date hard right. Unread is white and bold;
+ * read is the blue-grey wash. There is no unread dot — Gmail has never had one,
+ * and adding one would announce that this is an imitation.
+ * -------------------------------------------------------------------------- */
+.gm-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--gm-line);
+}
+.gm-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 16px 0 6px;
+  text-align: left;
+  background: var(--gm-read);
+  color: var(--gm-ink-2);
+  font-weight: 400;
+  box-shadow: inset 0 -1px 0 0 var(--gm-line);
+  cursor: pointer;
+}
+.gm-row[data-unread] {
+  background: var(--gm-surface);
+  color: var(--gm-ink);
+  font-weight: 700;
+}
+.gm-row[data-selected] { background: var(--gm-selected); }
+.gm-row:hover,
+.gm-row:focus-within {
+  z-index: 1;
+  box-shadow:
+    inset 0 -1px 0 0 var(--gm-line),
+    0 1px 2px 0 rgba(60, 64, 67, 0.3),
+    0 1px 3px 1px rgba(60, 64, 67, 0.15);
+}
+/* A row with attachment chips grows; the chips sit under the text column. */
+.gm-row--tall { align-items: flex-start; padding-top: 8px; padding-bottom: 10px; }
+.gm-row--tall .gm-cell { align-self: flex-start; }
+
+.gm-cell {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.gm-check {
+  width: 18px;
+  height: 18px;
+  margin: 0 7px;
+  accent-color: var(--gm-blue);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.gm-av {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  margin-right: 12px;
+  background: #e8eaed;
+}
+.gm .gm-av--letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  background: #1a73e8;
+}
+
+.gm-from {
+  flex: 0 0 168px;
+  max-width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-right: 12px;
+  line-height: 24px;
+}
+.gm-from-n {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--gm-ink-2);
+  margin-left: 4px;
+}
+.gm-row[data-unread] .gm-from-n { color: var(--gm-ink); }
+
+.gm-mid {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.gm-line1 {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 24px;
+}
+.gm-snip {
+  font-weight: 400;
+  color: var(--gm-ink-2);
+}
+
+.gm-date {
+  flex: 0 0 auto;
+  min-width: 56px;
+  padding-left: 16px;
+  text-align: right;
+  font-size: 12px;
+  white-space: nowrap;
+  line-height: 24px;
+}
+
+/* Attachment chips under a row — straight out of Gmail's list. */
+.gm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.gm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 190px;
+  height: 30px;
+  padding: 0 12px 0 8px;
+  border: 1px solid var(--gm-hairline);
+  border-radius: 15px;
+  background: var(--gm-surface);
+  font-size: 12px;
+  font-weight: 400;
+  color: #3c4043;
+  text-decoration: none;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.gm-chip:hover {
+  background: #f1f3f4;
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.2);
+}
+.gm-chip-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gm-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  color: #fff;
+  background: #5f6368;
+}
+.gm-glyph[data-kind='pdf'] { background: #ea4335; }
+.gm-glyph[data-kind='img'] { background: #34a853; }
+.gm-glyph[data-kind='doc'] { background: #4285f4; }
+.gm-glyph[data-kind='sheet'] { background: #0f9d58; }
+
+.gm-empty {
+  padding: 72px 24px;
+  text-align: center;
+  color: var(--gm-ink-2);
+  font-size: 14px;
+}
+.gm-empty-t {
+  font-family: var(--gm-display);
+  font-size: 18px;
+  color: var(--gm-ink);
+  margin: 0 0 6px;
+}
+.gm-loading {
+  padding: 56px 0;
+  display: flex;
+  justify-content: center;
+  color: var(--gm-blue);
+}
+.gm-more {
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+}
+.gm-morebtn {
+  height: 36px;
+  padding: 0 22px;
+  border: 1px solid var(--gm-hairline);
+  border-radius: 18px;
+  font-size: 14px;
+  color: var(--gm-ink);
+  background: var(--gm-surface);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.gm-morebtn:hover {
+  background: #f6f8fc;
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.3);
+}
+.gm-morebtn:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
+
+/* ---- one conversation -----------------------------------------------------
+ * Gmail's reading pane: the subject as a light 22px heading, then a stack of
+ * messages where only the newest few are open and the rest fold behind a single
+ * counted pill. That fold IS the Gmail thread — no other mail client draws it
+ * this way, and it is the reason a long thread stays readable.
+ * -------------------------------------------------------------------------- */
+.gm-read-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 48px;
+  padding: 4px 16px 4px 6px;
+  flex-shrink: 0;
+}
+.gm-subject {
+  font-family: var(--gm-display);
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 400;
+  color: var(--gm-ink);
+  margin: 4px 0 20px;
+  padding: 0 24px;
+  word-break: break-word;
+}
+.gm-subject-n {
+  color: var(--gm-ink-2);
+  font-size: 16px;
+  margin-left: 8px;
+}
+
+.gm-thread {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 24px;
+}
+
+.gm-msg { padding: 0 24px; }
+
+.gm-msg-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 0 0;
+}
+.gm-msg-av {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #e8eaed;
+}
+.gm-msg-who { min-width: 0; flex: 1 1 auto; }
+.gm-msg-from {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gm-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gm-msg-to {
+  display: block;
+  font-size: 12px;
+  color: var(--gm-ink-2);
+  margin-top: 1px;
+}
+.gm-msg-when {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--gm-ink-2);
+  white-space: nowrap;
+  padding-left: 12px;
+  padding-top: 2px;
+}
+.gm-msg-body {
+  margin: 10px 0 0 48px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--gm-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.gm-msg-body--rich { white-space: normal; }
+
+/* a folded message: one 40px line, exactly like Gmail's */
+.gm-fold-msg {
+  background: var(--gm-surface);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 24px;
+  text-align: left;
+  border-bottom: 1px solid var(--gm-line);
+  transition: background 0.12s ease;
+}
+.gm-fold-msg:hover { background: #f6f8fc; }
+/* The avatar is what puts a folded name in the same column as an open one, so
+   the stack reads as one conversation rather than two lists. Gmail's is smaller
+   on a folded row than on an open one — a 36px circle does not fit a 40px row. */
+.gm-fold-av {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  object-fit: cover;
+  background: #e8eaed;
+}
+.gm .gm-fold-av.gm-av--letter { font-size: 11px; }
+.gm-fold-who {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--gm-ink);
+  flex-shrink: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gm-fold-peek {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  color: var(--gm-ink-2);
+}
+.gm-fold-when {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--gm-ink-2);
+  white-space: nowrap;
+}
+
+/* the counted "···" that hides everything earlier */
+.gm-fold {
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  margin: 6px 0;
+}
+.gm-fold-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 12px;
+  border-radius: 12px;
+  background: #e8eaed;
+  color: var(--gm-ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  transition: background 0.12s ease;
+}
+.gm-fold-btn:hover { background: #dadce0; }
+.gm-fold-rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--gm-line);
+  margin-left: 12px;
+}
+
+/* attachment cards inside a message */
+.gm-atts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 0 48px;
+}
+.gm-att {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 232px;
+  max-width: 100%;
+  height: 56px;
+  padding: 0 12px;
+  border: 1px solid var(--gm-hairline);
+  border-radius: 8px;
+  background: var(--gm-surface);
+  text-decoration: none;
+  color: inherit;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.gm-att:hover {
+  background: #f6f8fc;
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.2);
+}
+.gm-att-thumb {
+  width: 34px;
+  height: 34px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.gm-att-meta { min-width: 0; overflow: hidden; }
+.gm-att-name {
+  display: block;
+  font-size: 13px;
+  color: var(--gm-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gm-att-size {
+  display: block;
+  font-size: 11px;
+  color: var(--gm-ink-2);
+  margin-top: 1px;
+}
+
+/* the Reply pill, and the box it opens */
+.gm-actions {
+  display: flex;
+  gap: 12px;
+  margin: 20px 0 0 48px;
+  padding: 0 24px 0 0;
+}
+.gm-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 22px;
+  border: 1px solid var(--gm-hairline);
+  border-radius: 18px;
+  background: var(--gm-surface);
+  font-size: 14px;
+  color: var(--gm-ink);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.gm-pill:hover {
+  background: #f6f8fc;
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.3);
+}
+
+.gm-replybox {
+  margin: 16px 24px 0;
+  padding: 12px 16px 14px;
+  border: 1px solid var(--gm-hairline);
+  border-radius: 16px;
+  background: var(--gm-surface);
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.3), 0 2px 6px 2px rgba(60, 64, 67, 0.15);
+}
+.gm-replybox-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--gm-ink-2);
+  padding-bottom: 10px;
+}
+
+.gm-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 24px 0;
+  font-size: 13px;
+  color: var(--gm-ink-2);
+}
+
+/* ---- the docked compose window --------------------------------------------
+ * Gmail's compose is a panel docked to the bottom-right with a dark title bar,
+ * pinned to the viewport so the list stays readable behind it. Full-height
+ * sheet on a phone, which is what Gmail's mobile web does.
+ * -------------------------------------------------------------------------- */
+.gm-compose {
+  position: fixed;
+  right: 16px;
+  bottom: 0;
+  z-index: 60;
+  width: 484px;
+  max-width: calc(100vw - 32px);
+  max-height: min(620px, calc(100dvh - 24px));
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px 8px 0 0;
+  background: var(--gm-surface);
+  box-shadow: 0 8px 10px 1px rgba(0, 0, 0, 0.14), 0 3px 14px 2px rgba(0, 0, 0, 0.12),
+    0 5px 5px -3px rgba(0, 0, 0, 0.2);
+  animation: gm-dock 0.16s ease-out both;
+}
+@keyframes gm-dock {
+  from { transform: translateY(16px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+.gm-compose-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 8px 0 16px;
+  border-radius: 8px 8px 0 0;
+  background: #404040;
+  color: #fff;
+  flex-shrink: 0;
+}
+.gm-compose-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gm-compose-x {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex-shrink: 0;
+  transition: background 0.12s ease;
+}
+.gm-compose-x:hover { background: rgba(255, 255, 255, 0.16); }
+.gm-compose-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 16px 12px;
+}
+.gm-compose-to {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  border-bottom: 1px solid #f1f3f4;
+  font-size: 14px;
+  color: var(--gm-ink-2);
+}
+.gm-compose-to b { color: var(--gm-ink); font-weight: 400; }
+
+@media (max-width: 620px) {
+  .gm-compose {
+    right: 0;
+    left: 0;
+    top: 0;
+    width: auto;
+    max-width: none;
+    max-height: none;
+    border-radius: 0;
+  }
+  .gm-compose-head { border-radius: 0; }
+
+  /* Gmail's phone layout: sender and date on the first line, subject and
+     snippet wrapping underneath, everything aligned to the avatar column. A
+     168px sender beside a one-line subject is unreadable at 390px, and simply
+     shrinking the column just moves the truncation around. */
+  .gm-row,
+  .gm-row--tall {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      'cell from date'
+      'cell mid  mid';
+    align-items: start;
+    row-gap: 2px;
+    padding: 10px 12px 11px 4px;
+  }
+  .gm-cell { grid-area: cell; }
+  .gm-from {
+    grid-area: from;
+    flex-basis: auto;
+    max-width: none;
+  }
+  .gm-date { grid-area: date; }
+  .gm-mid { grid-area: mid; }
+  .gm-line1 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    white-space: normal;
+    line-height: 19px;
+  }
+  .gm-subject { font-size: 19px; line-height: 25px; padding: 0 16px; }
+  .gm-msg,
+  .gm-fold,
+  .gm-fold-msg { padding-left: 16px; padding-right: 16px; }
+  .gm-msg-body,
+  .gm-atts,
+  .gm-actions { margin-left: 0; }
+  .gm-replybox { margin-left: 16px; margin-right: 16px; }
+}
+
+/* ---- the composer, in both places it appears ------------------------------
+ * The docked window and the inline reply box share one body: a borderless
+ * textarea, then Send as a blue pill with the icon row trailing it. Gmail puts
+ * Send FIRST and reading order is the reason — the button you came for should
+ * not be the last thing found.
+ * -------------------------------------------------------------------------- */
+.gm-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gm-subject-field {
+  height: 40px;
+  border: 0;
+  border-bottom: 1px solid #f1f3f4;
+  background: none;
+  outline: none;
+  font: inherit;
+  font-size: 14px;
+  color: var(--gm-ink);
+  padding: 0;
+  width: 100%;
+}
+.gm-subject-field::placeholder { color: var(--gm-ink-2); }
+.gm-ta {
+  border: 0;
+  background: none;
+  outline: none;
+  resize: vertical;
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--gm-ink);
+  padding: 8px 0 0;
+  width: 100%;
+}
+.gm-ta::placeholder { color: var(--gm-ink-2); }
+.gm-ta:disabled { opacity: 0.6; }
+.gm-composer-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.gm-send {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 24px;
+  margin-right: 8px;
+  border-radius: 18px;
+  background: var(--gm-blue);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.15px;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.gm-send:hover:not(:disabled) {
+  background: #0842a0;
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, 0.3), 0 1px 3px 1px rgba(60, 64, 67, 0.15);
+}
+.gm-send:disabled {
+  background: #e8eaed;
+  color: #9aa0a6;
+  cursor: default;
+}
+.gm-composer-hint {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--gm-ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.gm-err {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 17px;
+  color: #d93025;
+}
+.gm-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 17px;
+  color: #b06000;
+}
+
+/* =============================================================================
+ * WHATSAPP
+ * ========================================================================== */
+
+.wa {
+  --wa-panel: #f0f2f5;        /* header and composer bars */
+  --wa-wall: #efeae2;         /* the chat wallpaper */
+  --wa-out: #d9fdd3;          /* my bubble */
+  --wa-in: #ffffff;           /* their bubble */
+  --wa-ink: #111b21;
+  --wa-meta: #667781;         /* names, statuses, dividers */
+  --wa-bubble-meta: rgba(17, 27, 33, 0.45);  /* the time inside a bubble */
+  --wa-green: #00a884;        /* send, and every affirmative */
+  --wa-green-deep: #008069;
+  --wa-line: #e9edef;
+  --wa-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
+
+  /* WhatsApp Web's own stack — no webfont to load. */
+  font-family: 'Segoe UI', 'Helvetica Neue', Helvetica, 'Lucida Grande', Arial,
+    Ubuntu, Cantarell, 'Fira Sans', sans-serif;
+  color: var(--wa-ink);
+  font-size: 14.2px;
+  line-height: 19px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wa *,
+.wa *::before,
+.wa *::after { box-sizing: border-box; }
+
+/**
+ * `:where()` contributes NOTHING to specificity, and that is the whole point.
+ * Written as `.wa button` this reset scores 0,1,1 — one class and one element —
+ * which beats every single-class rule below it, so `.wa-compose-btn`'s tonal
+ * pill, `.wa-send`'s green disc and `.wa-morebtn`'s outline all silently lost
+ * their background to `background: none`. Wrapped like this it scores 0,1,0 and
+ * loses to anything later, which is what a reset should do.
+ */
+.wa :where(button) {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.wa :focus-visible {
+  outline: 2px solid var(--wa-green-deep);
+  outline-offset: 2px;
+}
+
+.wa-shell {
+  display: flex;
+  align-items: stretch;
+  min-height: 0;
+  height: min(74vh, 720px);
+  border: 1px solid var(--wa-line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--wa-panel);
+}
+.wa-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ---- header ---------------------------------------------------------------
+ * 59px, flat grey, avatar then name over a status line. WhatsApp's status line
+ * says something true about the room and nothing else.
+ * -------------------------------------------------------------------------- */
+.wa-head {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  height: 59px;
+  flex-shrink: 0;
+  padding: 0 16px;
+  background: var(--wa-panel);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+.wa-head-av {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  object-fit: cover;
+  background: #8696a0;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 500;
+}
+.wa-head-t { min-width: 0; flex: 1 1 auto; }
+.wa-head-name {
+  font-size: 16px;
+  line-height: 21px;
+  color: var(--wa-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wa-head-sub {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--wa-meta);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wa-head-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #54656f;
+  flex-shrink: 0;
+  transition: background 0.12s ease;
+}
+.wa-head-btn:hover { background: rgba(0, 0, 0, 0.05); }
+
+/* ---- the wallpaper --------------------------------------------------------
+ * A doodle field on WhatsApp's warm grey. The tile is ours — drawn to the same
+ * sparse, thin-stroke register rather than lifted from their asset — and sits
+ * under the messages as a background layer so nothing above it inherits the
+ * opacity.
+ * -------------------------------------------------------------------------- */
+.wa-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 5.5% 8px;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--wa-wall);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='280' viewBox='0 0 280 280'%3E%3Cg fill='none' stroke='%23000' stroke-opacity='.055' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M34 44c-9-7-14-12-14-18a7 7 0 0113-4 7 7 0 0113 4c0 6-5 11-12 18z'/%3E%3Cpath d='M96 22h18v13a9 9 0 01-18 0z'/%3E%3Cpath d='M114 25h4a5 5 0 010 10h-4'/%3E%3Cpath d='M93 42h24'/%3E%3Cpath d='M176 27h7l3-5h11l3 5h7a4 4 0 014 4v16a4 4 0 01-4 4h-31a4 4 0 01-4-4V31a4 4 0 014-4z'/%3E%3Ccircle cx='192' cy='39' r='7'/%3E%3Cpath d='M248 54V20l16-5v34'/%3E%3Cellipse cx='243' cy='55' rx='6' ry='5'/%3E%3Cellipse cx='259' cy='50' rx='6' ry='5'/%3E%3Ccircle cx='38' cy='108' r='15'/%3E%3Cpath d='M33 104v1M44 104v1'/%3E%3Cpath d='M31 113a9 9 0 0014 0'/%3E%3Cpath d='M112 96l-14 14a8 8 0 0011 11l17-17a13 13 0 00-18-18l-18 18a18 18 0 0025 25l13-13'/%3E%3Cpath d='M196 92l6 12 13 2-9 9 2 13-12-6-12 6 2-13-9-9 13-2z'/%3E%3Cpath d='M250 122c-18 0-26-10-24-24 16-2 27 4 28 14'/%3E%3Cpath d='M228 122c8-8 14-12 24-14'/%3E%3Cpath d='M14 132h30a4 4 0 014 4v14a4 4 0 01-4 4H30l-10 8v-8h-6a4 4 0 01-4-4v-14a4 4 0 014-4z'/%3E%3Cpath d='M142 156l4-11 22-22 7 7-22 22z'/%3E%3Cpath d='M164 130l7 7'/%3E%3Cpath d='M204 152h4M230 152h4'/%3E%3Crect x='212' y='145' width='14' height='14' rx='2'/%3E%3Crect x='24' y='176' width='26' height='42' rx='5'/%3E%3Cpath d='M33 182h8'/%3E%3Ccircle cx='104' cy='196' r='11'/%3E%3Cpath d='M104 176v-6M104 222v-6M84 196h-6M130 196h-6M89 181l-4-4M123 215l-4-4M119 181l4-4M85 215l4-4'/%3E%3Cpath d='M176 206a13 14 0 1026 0c0-8-6-16-13-16s-13 8-13 16z'/%3E%3Cpath d='M189 222v6l-4 4'/%3E%3Crect x='236' y='184' width='34' height='24' rx='3'/%3E%3Cpath d='M236 187l17 12 17-12'/%3E%3Cpath d='M52 258a10 10 0 010-20 15 15 0 0129-4 9 9 0 01-2 24z'/%3E%3Crect x='130' y='244' width='30' height='22' rx='2'/%3E%3Cpath d='M130 252h30M145 244v22'/%3E%3Cpath d='M145 244c-6-8-14-4-11 1 2 4 11-1 11-1zM145 244c6-8 14-4 11 1-2 4-11-1-11-1z'/%3E%3Cpath d='M204 254a18 18 0 0136 0z'/%3E%3Cpath d='M222 254v16a5 5 0 01-10 0'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: repeat;
+}
+
+/* ---- date divider and system notices --------------------------------------
+ * Both are the same centred capsule. WhatsApp uses the pale amber one for
+ * anything the system says, which is exactly what our automated posts are.
+ * -------------------------------------------------------------------------- */
+/* `width: fit-content` and the auto margins, not just `align-self`: each row is
+   wrapped in a per-message <div> so the capsule is usually a BLOCK inside a
+   stretched flex item, where `align-self` reaches nothing and the pill spans the
+   whole room. */
+.wa-day,
+.wa-sys {
+  align-self: center;
+  width: fit-content;
+  max-width: 90%;
+  /* `auto` on both sides, and it must stay in the shorthand: written as
+     separate margin-left/right above a `margin: 10px 0` the shorthand silently
+     resets them and every capsule sits hard left. */
+  margin: 10px auto;
+  padding: 5px 12px 6px;
+  border-radius: 7.5px;
+  box-shadow: var(--wa-shadow);
+  font-size: 12.5px;
+  line-height: 21px;
+  text-align: center;
+  color: var(--wa-meta);
+}
+.wa-day {
+  background: var(--wa-in);
+  text-transform: uppercase;
+}
+.wa-sys {
+  background: #ffeecd;
+  color: #54656f;
+}
+
+/* ---- bubbles --------------------------------------------------------------
+ * 7.5px radius, a hard shadow, and the tail — a right triangle hung off the top
+ * corner of the FIRST bubble in a run. The tail is what makes a bubble read as
+ * WhatsApp rather than as any other chat, so runs after the first go without it
+ * and tuck in tighter, exactly as they do there.
+ * -------------------------------------------------------------------------- */
+.wa-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 2px;
+  padding: 0 8px;
+}
+.wa-row.out { align-items: flex-end; }
+.wa-row--new { margin-top: 12px; }
+
+.wa-b {
+  position: relative;
+  max-width: min(65%, 500px);
+  min-width: 88px;
+  padding: 6px 7px 8px 9px;
+  border-radius: 7.5px;
+  box-shadow: var(--wa-shadow);
+  font-size: 14.2px;
+  line-height: 19px;
+  color: var(--wa-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.wa-b.in  { background: var(--wa-in); }
+.wa-b.out { background: var(--wa-out); }
+.wa-b--rich { white-space: normal; }
+
+.wa-b--tail.in  { border-top-left-radius: 0; }
+.wa-b--tail.out { border-top-right-radius: 0; }
+.wa-b--tail::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 8px;
+  height: 13px;
+}
+.wa-b--tail.in::after {
+  left: -8px;
+  background: var(--wa-in);
+  clip-path: polygon(100% 0, 100% 100%, 0 0);
+}
+.wa-b--tail.out::after {
+  right: -8px;
+  background: var(--wa-out);
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+/* The sender's name above their text in a group — WhatsApp colours it per
+   person; here every teammate is one company, so one colour is the truth. */
+.wa-name {
+  display: block;
+  font-size: 12.8px;
+  line-height: 22px;
+  font-weight: 500;
+  color: #027eb5;
+  margin-bottom: -1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/**
+ * The time floats INTO the last line of text, and the text flows around it.
+ * That is the whole trick behind WhatsApp's bubbles being as tight as they are:
+ * a short message sits beside its timestamp instead of above it, and a long one
+ * wraps under. `float` is what does it — no grid, no measuring.
+ */
+.wa-meta {
+  float: right;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 15px;
+  margin: -10px 0 -5px 4px;
+  padding-left: 4px;
+  position: relative;
+  top: 6px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--wa-bubble-meta);
+  white-space: nowrap;
+}
+.wa-tick { color: #667781; flex-shrink: 0; }
+
+/* attachments inside a bubble */
+.wa-img {
+  display: block;
+  width: 100%;
+  max-width: 330px;
+  max-height: 340px;
+  object-fit: cover;
+  border-radius: 6px;
+  margin-bottom: 4px;
+}
+.wa-doc {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.04);
+  text-decoration: none;
+  color: inherit;
+  transition: background 0.12s ease;
+}
+.wa-doc:hover { background: rgba(0, 0, 0, 0.07); }
+.wa-doc-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 32px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  color: #fff;
+  background: #d13438;
+}
+.wa-doc-meta { min-width: 0; overflow: hidden; }
+.wa-doc-name {
+  display: block;
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wa-doc-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--wa-bubble-meta);
+  margin-top: 2px;
+  text-transform: uppercase;
+}
+.wa-att-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+/* the reply affordance, revealed on hover like WhatsApp's chevron */
+.wa-reply {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 4px 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--wa-green-deep);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.wa-row:hover .wa-reply,
+.wa-row:focus-within .wa-reply,
+.wa-reply[data-always] { opacity: 1; }
+@media (pointer: coarse) {
+  .wa-reply { opacity: 1; }
+}
+
+/* the bar itself: icons, a white pill, a green disc */
+.wa-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 5px 0;
+}
+.wa-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--wa-in);
+  border-radius: 8px;
+  padding: 9px 12px;
+}
+.wa-input textarea {
+  display: block;
+  width: 100%;
+  max-height: 100px;
+  border: 0;
+  background: none;
+  outline: none;
+  resize: none;
+  overflow-y: auto;
+  font: inherit;
+  font-size: 15px;
+  line-height: 20px;
+  color: var(--wa-ink);
+}
+.wa-input textarea::placeholder { color: #8696a0; }
+.wa-input textarea:disabled { opacity: 0.6; }
+.wa-send {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--wa-green);
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+.wa-send:hover:not(:disabled) { background: var(--wa-green-deep); }
+.wa-send:disabled { opacity: 0.45; cursor: default; }
+.wa-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #54656f;
+  transition: background 0.12s ease;
+}
+.wa-icon:hover:not(:disabled) { background: rgba(0, 0, 0, 0.05); }
+.wa-icon:disabled { opacity: 0.45; cursor: default; }
+.wa-err,
+.wa-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 4px 8px 6px;
+  font-size: 12.5px;
+  line-height: 17px;
+}
+.wa-err { color: #ea0038; }
+.wa-warn { color: #b06000; }
+
+/* ---- the round jump button ------------------------------------------------ */
+.wa-jump {
+  position: sticky;
+  bottom: 8px;
+  align-self: flex-end;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #54656f;
+  background: var(--wa-in);
+  box-shadow: 0 1px 3px rgba(11, 20, 26, 0.26);
+  transition: background 0.12s ease;
+}
+.wa-jump:hover { background: #f5f6f6; }
+
+/* ---- composer -------------------------------------------------------------
+ * The flat grey bar with a white pill in it and a green circular send. Nothing
+ * on WhatsApp's composer is a rectangle.
+ * -------------------------------------------------------------------------- */
+.wa-foot {
+  flex-shrink: 0;
+  padding: 5px 16px;
+  background: var(--wa-panel);
+}
+.wa-readonly {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px;
+  font-size: 13.5px;
+  color: var(--wa-meta);
+  background: var(--wa-panel);
+  flex-shrink: 0;
+}
+
+.wa-center {
+  margin: auto;
+  text-align: center;
+  padding: 20px;
+  color: var(--wa-meta);
+  font-size: 13.5px;
+}
+.wa-center-card {
+  display: inline-block;
+  padding: 10px 16px;
+  border-radius: 7.5px;
+  background: #ffeecd;
+  color: #54656f;
+  box-shadow: var(--wa-shadow);
+}
+.wa-older {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 10px;
+}
+.wa-older button {
+  height: 30px;
+  padding: 0 16px;
+  border-radius: 15px;
+  background: var(--wa-in);
+  box-shadow: var(--wa-shadow);
+  font-size: 12.5px;
+  color: var(--wa-meta);
+}
+.wa-older button:disabled { opacity: 0.6; cursor: default; }
+
+/* ---- the right drawer (threads) -------------------------------------------
+ * WhatsApp Web opens contact info and search as a panel to the right of the
+ * room, with a taller header of its own. A thread is the same shape of thing.
+ * -------------------------------------------------------------------------- */
+.wa-panel {
+  flex: 0 0 380px;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--wa-panel);
+  border-left: 1px solid rgba(0, 0, 0, 0.08);
+}
+.wa-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 59px;
+  flex-shrink: 0;
+  padding: 0 22px;
+  background: var(--wa-panel);
+  color: var(--wa-ink);
+  font-size: 16px;
+}
+.wa-panel-quoted {
+  margin: 12px 8px 4px;
+  padding: 6px 10px;
+  border-left: 4px solid var(--wa-green);
+  border-radius: 4px;
+  background: rgba(11, 20, 26, 0.05);
+  font-size: 13px;
+  color: var(--wa-meta);
+}
+.wa-panel-quoted b {
+  display: block;
+  color: var(--wa-green-deep);
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+@media (max-width: 900px) {
+  .wa-shell { flex-direction: column; }
+  .wa-panel {
+    flex: 1 1 auto;
+    max-width: none;
+    border-left: 0;
+    border-top: 1px solid rgba(0, 0, 0, 0.08);
+    height: min(52vh, 440px);
+  }
+}
+@media (max-width: 640px) {
+  .wa-scroll { padding-left: 3%; padding-right: 3%; }
+  .wa-b { max-width: 85%; }
+}
+
+/* ---- rich bodies ----------------------------------------------------------
+ * `ReadOnlyRichBody` ships its own <style> block that pins the text to
+ * `--color-text-primary` and mentions to `--color-accent`. Neither token exists
+ * under `.gm`/`.wa`, and on the team plane both resolve to the APP's palette —
+ * which would put a blue-on-blue mention inside a green WhatsApp bubble. These
+ * rules out-specify it (three classes to its two) and hand the colour back to
+ * the skin.
+ * -------------------------------------------------------------------------- */
+.gm .macan-rich-readonly .ProseMirror {
+  font-size: 14px;
+  line-height: 20px;
+  color: inherit;
+}
+.gm .macan-rich-readonly .ProseMirror .macan-mention {
+  color: var(--gm-blue);
+  background: #e8f0fe;
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-weight: 500;
+}
+.wa .macan-rich-readonly .ProseMirror {
+  font-size: 14.2px;
+  line-height: 19px;
+  color: inherit;
+}
+.wa .macan-rich-readonly .ProseMirror .macan-mention {
+  color: #027eb5;
+  background: rgba(2, 126, 181, 0.1);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-weight: 500;
+}
+.wa .wa-b.out .macan-rich-readonly .ProseMirror .macan-mention {
+  background: rgba(0, 128, 105, 0.14);
+  color: var(--wa-green-deep);
+}
+
+/* ---- the team's rich composer, wearing WhatsApp's pill --------------------
+ * `RichEditor` ships an inline <style> giving its content area an 80px floor,
+ * which is right for a task update and wrong for a chat bar: it turns a 52px
+ * strip into a 142px slab with a placeholder floating at the top of it. Three
+ * classes out-specifies that rule's two, and WhatsApp's box grows from one line
+ * as you type, so the floor comes down and a cap goes on.
+ * -------------------------------------------------------------------------- */
+.wa-foot .macan-rich-editor .macan-rich-content {
+  min-height: 22px;
+  max-height: 108px;
+}
+
+/* ---- scrollbars -----------------------------------------------------------
+ * Both apps use a thin, low-contrast bar that only reads as one when there is
+ * something to scroll. The chat wallpaper in particular is ruined by a 15px
+ * platform bar cutting the doodles off down the right edge.
+ * -------------------------------------------------------------------------- */
+.gm-list,
+.gm-thread,
+.wa-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+.gm-list::-webkit-scrollbar,
+.gm-thread::-webkit-scrollbar,
+.wa-scroll::-webkit-scrollbar { width: 6px; }
+.gm-list::-webkit-scrollbar-thumb,
+.gm-thread::-webkit-scrollbar-thumb,
+.wa-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+}
+.gm-list::-webkit-scrollbar-track,
+.gm-thread::-webkit-scrollbar-track,
+.wa-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- reduced motion -------------------------------------------------------
+ * The portal's own block only reaches `.mcp`; the team's plane has none, and
+ * both skins render there too.
+ * -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .gm *, .gm *::before, .gm *::after,
+  .wa *, .wa *::before, .wa *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

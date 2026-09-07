@@ -39,6 +39,10 @@ import useNotificationStream from './hooks/useNotificationStream';
 import { syncSubscription } from './services/pushService';
 import { getLastPortalLink } from './services/portalService';
 import './styles/portal.css';
+// The Gmail / WhatsApp skins for mail and chat. Imported HERE rather than in
+// either plane's own entry because both planes render them and they must be
+// byte-identical on each side — see the header of conversations.css.
+import './styles/conversations.css';
 
 /**
  * PortalNotFound — the catch-all for anything under /portal that isn't one of

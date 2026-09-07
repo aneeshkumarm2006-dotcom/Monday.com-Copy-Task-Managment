@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Paperclip, Send, Loader2, X, Check, AlertCircle, FileText,
+  Paperclip, Send, Loader2, X, Check, AlertCircle, FileText, Trash2, Smile,
 } from 'lucide-react';
 import { uploadPortalChatFile } from '../../services/portalService';
 
@@ -121,7 +121,18 @@ const PortalComposer = ({
   cancelLabel = 'Cancel',
   draftKey = '',
   onPendingFilesChange,
+  /**
+   * Which skin to wear: `'portal'` is the portal's own chrome, `'gm'` is
+   * Gmail's (a bare body over a blue Send pill), `'wa'` is WhatsApp's (one grey
+   * bar holding a white pill and a green disc). Only the chrome changes —
+   * drafts, uploads, the tray and every guard below are identical, because a
+   * message that sends differently depending on how the box looks is a bug
+   * waiting behind a redesign.
+   */
+  variant = 'portal',
 }) => {
+  const isWa = variant === 'wa';
+  const isGm = variant === 'gm';
   const [initialDraft] = useState(() => readDraft(draftKey));
   const [subject, setSubject] = useState(initialDraft?.subject || '');
   const [text, setText] = useState(initialDraft?.text || '');
@@ -131,6 +142,7 @@ const PortalComposer = ({
   const [busy, setBusy] = useState(false);
 
   const fileInput = useRef(null);
+  const textarea = useRef(null);
   const previews = useRef([]);
   // Mirror of `items` for handlers that must see the latest list without being
   // rebuilt (and re-bound) on every keystroke.
@@ -140,6 +152,21 @@ const PortalComposer = ({
   // Object URLs are released only on unmount: revoking on remove would blank a
   // thumbnail that is still on screen mid-animation.
   useEffect(() => () => previews.current.forEach((u) => URL.revokeObjectURL(u)), []);
+
+  /**
+   * WhatsApp's box grows with the message and stops at four lines or so. The
+   * height is reset to `auto` first because `scrollHeight` on an element that is
+   * already tall enough reports the height it has, not the height it needs — so
+   * without the reset the box can only ever grow, never shrink back after a
+   * delete.
+   */
+  useEffect(() => {
+    if (!isWa) return;
+    const el = textarea.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 100)}px`;
+  }, [isWa, text]);
 
   // Keep the draft current on every keystroke. An emptied composer removes its
   // own entry, so a sent message leaves nothing behind to come back.
@@ -283,13 +310,205 @@ const PortalComposer = ({
   // it complained about is no longer the send this form would make.
   const clearError = () => { if (error) setError(''); };
 
+
+  /**
+   * WhatsApp sends on Enter; everything else sends on Cmd/Ctrl+Enter. Both are
+   * the muscle memory of the app being imitated, and getting this wrong is the
+   * single most noticeable way a copy stops feeling like the original.
+   */
+  const onKeyDown = (e) => {
+    if (isWa) {
+      if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) submit(e);
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit(e);
+  };
+
+  const hiddenFileInput = (
+    <input
+      ref={fileInput}
+      type="file"
+      multiple
+      style={{ display: 'none' }}
+      onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
+    />
+  );
+
+  /* The upload tray is the portal's, in all three skins. It is the one part of
+     this form that says something neither Gmail nor WhatsApp has to: how far a
+     25MB file has got, and whether it is safe to hit send yet. */
+  const tray = items.length > 0 && (
+    <div className="mcp-tray">
+      {items.map((it) => (
+        <div key={it.key} className="mcp-tray-item" data-status={it.status}>
+          {it.previewUrl
+            ? <img className="mcp-tray-thumb" src={it.previewUrl} alt="" />
+            : <span className="mcp-tray-ico"><FileText size={17} /></span>}
+
+          <div className="mcp-tray-meta">
+            <div className="mcp-tray-name" title={it.file.name}>{it.file.name}</div>
+            <div className="mcp-tray-sub">
+              {it.status === 'uploading' && <><Loader2 size={11} className="mcp-spin" /> Uploading… {it.progress}%</>}
+              {it.status === 'done' && <span className="mcp-tray-ok"><Check size={12} /> Uploaded</span>}
+              {it.status === 'error' && <span className="mcp-tray-bad"><AlertCircle size={12} /> {it.error}</span>}
+              {it.status === 'ready' && (formatBytes(it.file.size) || 'Ready to upload')}
+            </div>
+            {(it.status === 'uploading' || it.status === 'done') && (
+              <span className="mcp-bar"><i style={{ width: `${it.status === 'done' ? 100 : it.progress}%` }} /></span>
+            )}
+          </div>
+
+          {it.status === 'done' ? (
+            <span className="mcp-tray-check" aria-label="Uploaded"><Check size={13} /></span>
+          ) : it.status !== 'uploading' ? (
+            <button
+              type="button"
+              className="mcp-tray-x"
+              aria-label={`Remove ${it.file.name}`}
+              onClick={() => {
+                // "Try again, or remove it" is the advice the error gives;
+                // taking that advice has to clear the error with it.
+                setItems((p) => p.filter((x) => x.key !== it.key));
+                setNotice('');
+                setError('');
+              }}
+            >
+              <X size={14} />
+            </button>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+
+  const dropProps = {
+    onDragOver: (e) => e.preventDefault(),
+    onDrop: (e) => { e.preventDefault(); if (!disabled) addFiles(e.dataTransfer?.files); },
+  };
+
+  /* ---- WhatsApp ---------------------------------------------------------- */
+  if (isWa) {
+    return (
+      <form className="wa-composer" onSubmit={submit} {...dropProps}>
+        {tray}
+        {notice && <p className="wa-warn"><AlertCircle size={13} /> {notice}</p>}
+        {error && <p className="wa-err"><AlertCircle size={13} /> {error}</p>}
+
+        <div className="wa-bar">
+          {hiddenFileInput}
+          {/* Decorative, and marked as such: WhatsApp's emoji button opens a
+              picker we do not have, and a control that does nothing is worse
+              than the gap it fills. This one is the icon and no more. */}
+          <span className="wa-icon" aria-hidden="true"><Smile size={24} /></span>
+          <button
+            type="button"
+            className="wa-icon"
+            aria-label="Attach a file"
+            disabled={busy || disabled}
+            onClick={() => fileInput.current?.click()}
+          >
+            <Paperclip size={22} />
+          </button>
+
+          <div className="wa-input">
+            <textarea
+              ref={textarea}
+              rows={1}
+              placeholder={placeholder}
+              value={text}
+              disabled={busy || disabled}
+              autoFocus={autoFocus}
+              onChange={(e) => { setText(e.target.value); clearError(); }}
+              onPaste={catchFiles}
+              onKeyDown={onKeyDown}
+            />
+          </div>
+
+          <button type="submit" className="wa-send" disabled={!canSend} aria-label={submitLabel}>
+            {busy ? <Loader2 size={20} className="mcp-spin" /> : <Send size={20} />}
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  /* ---- Gmail ------------------------------------------------------------- */
+  if (isGm) {
+    return (
+      <form className="gm-composer" onSubmit={submit} {...dropProps}>
+        {withSubject && (
+          <input
+            className="gm-subject-field"
+            placeholder={subjectPlaceholder}
+            value={subject}
+            maxLength={SUBJECT_MAX}
+            disabled={busy || disabled}
+            autoFocus={autoFocus}
+            onChange={(e) => { setSubject(e.target.value); clearError(); }}
+          />
+        )}
+
+        <textarea
+          className="gm-ta"
+          style={{ minHeight }}
+          placeholder={placeholder}
+          value={text}
+          disabled={busy || disabled}
+          autoFocus={autoFocus && !withSubject}
+          onChange={(e) => { setText(e.target.value); clearError(); }}
+          onPaste={catchFiles}
+          onKeyDown={onKeyDown}
+        />
+
+        {tray}
+        {notice && <p className="gm-warn"><AlertCircle size={13} /> {notice}</p>}
+        {error && <p className="gm-err"><AlertCircle size={13} /> {error}</p>}
+
+        {/* Send first, then the icons, then Discard — Gmail's order, and the
+            reason is reading order: the button you came for is the one you
+            meet first. */}
+        <div className="gm-composer-foot">
+          <button type="submit" className="gm-send" disabled={!canSend}>
+            {busy
+              ? <><Loader2 size={14} className="mcp-spin" /> {items.length ? 'Uploading…' : 'Sending…'}</>
+              : submitLabel}
+          </button>
+          {hiddenFileInput}
+          <button
+            type="button"
+            className="gm-iconbtn"
+            aria-label="Attach files"
+            title="Attach files"
+            disabled={busy || disabled}
+            onClick={() => fileInput.current?.click()}
+          >
+            <Paperclip size={18} />
+          </button>
+          {onCancel && (
+            <button
+              type="button"
+              className="gm-iconbtn"
+              aria-label={cancelLabel}
+              title={cancelLabel}
+              disabled={busy}
+              onClick={cancel}
+            >
+              <Trash2 size={18} />
+            </button>
+          )}
+          <span className="gm-composer-hint">
+            {items.length
+              ? `${plural(items.length, 'file')} ready`
+              : 'Paste or drop a screenshot'}
+          </span>
+        </div>
+      </form>
+    );
+  }
+
+  /* ---- the portal's own -------------------------------------------------- */
   return (
-    <form
-      className="mcp-composer"
-      onSubmit={submit}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => { e.preventDefault(); if (!disabled) addFiles(e.dataTransfer?.files); }}
-    >
+    <form className="mcp-composer" onSubmit={submit} {...dropProps}>
       {withSubject && (
         <div className="mcp-composer-subject">
           <input
@@ -316,65 +535,17 @@ const PortalComposer = ({
         autoFocus={autoFocus && !withSubject}
         onChange={(e) => { setText(e.target.value); clearError(); }}
         onPaste={catchFiles}
-        onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit(e); }}
+        onKeyDown={onKeyDown}
       />
 
-      {items.length > 0 && (
-        <div className="mcp-tray">
-          {items.map((it) => (
-            <div key={it.key} className="mcp-tray-item" data-status={it.status}>
-              {it.previewUrl
-                ? <img className="mcp-tray-thumb" src={it.previewUrl} alt="" />
-                : <span className="mcp-tray-ico"><FileText size={17} /></span>}
-
-              <div className="mcp-tray-meta">
-                <div className="mcp-tray-name" title={it.file.name}>{it.file.name}</div>
-                <div className="mcp-tray-sub">
-                  {it.status === 'uploading' && <><Loader2 size={11} className="mcp-spin" /> Uploading… {it.progress}%</>}
-                  {it.status === 'done' && <span className="mcp-tray-ok"><Check size={12} /> Uploaded</span>}
-                  {it.status === 'error' && <span className="mcp-tray-bad"><AlertCircle size={12} /> {it.error}</span>}
-                  {it.status === 'ready' && (formatBytes(it.file.size) || 'Ready to upload')}
-                </div>
-                {(it.status === 'uploading' || it.status === 'done') && (
-                  <span className="mcp-bar"><i style={{ width: `${it.status === 'done' ? 100 : it.progress}%` }} /></span>
-                )}
-              </div>
-
-              {it.status === 'done' ? (
-                <span className="mcp-tray-check" aria-label="Uploaded"><Check size={13} /></span>
-              ) : it.status !== 'uploading' ? (
-                <button
-                  type="button"
-                  className="mcp-tray-x"
-                  aria-label={`Remove ${it.file.name}`}
-                  onClick={() => {
-                    // "Try again, or remove it" is the advice the error gives;
-                    // taking that advice has to clear the error with it.
-                    setItems((p) => p.filter((x) => x.key !== it.key));
-                    setNotice('');
-                    setError('');
-                  }}
-                >
-                  <X size={14} />
-                </button>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      )}
+      {tray}
 
       {notice && <p className="mcp-inline-warn"><AlertCircle size={13} /> {notice}</p>}
       {error && <p className="mcp-inline-error"><AlertCircle size={13} /> {error}</p>}
 
       <div className="mcp-composer-foot">
         <div className="mcp-composer-tools">
-          <input
-            ref={fileInput}
-            type="file"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
-          />
+          {hiddenFileInput}
           <button
             type="button"
             className="mcp-btn mcp-btn--ghost"

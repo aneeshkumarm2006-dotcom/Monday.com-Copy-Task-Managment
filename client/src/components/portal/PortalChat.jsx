@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Loader2, Paperclip, MessageSquare, ArrowDown, X, CornerUpLeft, Lock,
+  Loader2, ChevronDown, X, CornerUpLeft, Lock, Search, MoreVertical, Check,
 } from 'lucide-react';
 import {
   getPortalMessages, sendPortalMessage, markPortalChannelRead,
@@ -12,11 +12,24 @@ import PortalComposer from './PortalComposer';
 // `macan_token` — into a page an external client loads. See its header comment.
 import ReadOnlyRichBody from '../board/ReadOnlyRichBody';
 import { mergeMessages } from '../../utils/portalChatRows';
+import { waClock, waDayLabel, dayKey, initialOf } from '../../utils/conversationFormat';
+import { WhatsAppAttachments } from '../chat/conversationSkins';
 
 /**
- * The client's side of a Slack-style room, in the portal's own visual language
- * (`mcp-*` / `--p-*`) rather than the app's Tailwind — the client sees this, so
- * it has to look like the rest of their portal, not like our admin tool.
+ * The client's chat room — WHATSAPP, as closely as a web app can copy it.
+ *
+ * The brief was not "make chat feel casual", it was "make it WhatsApp", so the
+ * things that are actually WhatsApp are all here and measured: the doodled
+ * wallpaper, the 7.5px bubbles at #d9fdd3 and white, the little tail on the
+ * first bubble of a run, the timestamp that floats INTO the last line of text
+ * rather than sitting under it, the capsule date dividers, the flat grey
+ * composer bar with a green disc on the end, and Enter to send.
+ *
+ * What is deliberately NOT copied: the blue double tick. We know a message
+ * reached the server and nothing more — there is no per-message read receipt in
+ * this data model — so every outgoing message gets ONE grey tick, which is
+ * exactly what that state means in WhatsApp. Inventing the blue one would be
+ * telling a client their message had been read when we have no idea.
  *
  * Delivery is deliberately belt-and-braces: `usePortalStream` pushes new
  * messages in instantly when the SSE connection is up, and this poll is what
@@ -27,80 +40,18 @@ import { mergeMessages } from '../../utils/portalChatRows';
  */
 const CHAT_POLL = 12000;
 
-/* ---- shared message anatomy ----------------------------------------------
- * Exported because PortalMail renders the exact same message body, avatar and
- * attachment treatment — a client should not be able to tell that chat and mail
- * are two components. Kept here, with the busier of the two surfaces.
- * -------------------------------------------------------------------------- */
+/** A run of messages from one person breaks after this long. WhatsApp's own
+ *  grouping window, near enough that nobody could tell the difference. */
+const RUN_GAP_MS = 5 * 60 * 1000;
 
-const initialsOf = (name) => (name || '?').trim().charAt(0).toUpperCase();
-
-const isImage = (a) =>
-  (a?.mime && a.mime.startsWith('image/')) ||
-  /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(a?.name || '') ||
-  /\.(png|jpe?g|gif|webp|bmp|svg)(\?|$)/i.test(a?.url || '');
-
-const formatBytes = (n) => {
-  const b = Number(n);
-  if (!Number.isFinite(b) || b <= 0) return '';
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`;
-  const mb = b / (1024 * 1024);
-  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
-};
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const replyLabel = (n) => `${n} ${n === 1 ? 'reply' : 'replies'}`;
 
-const formatClock = (iso) => {
-  if (!iso) return '';
-  try { return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); }
-  catch { return ''; }
-};
-const formatStamp = (iso) => {
-  if (!iso) return '';
-  try { return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
-  catch { return ''; }
-};
-const dayKey = (iso) => {
-  try { return new Date(iso).toDateString(); } catch { return ''; }
-};
-const dayLabel = (iso) => {
-  try {
-    const d = new Date(iso);
-    const today = new Date();
-    const yest = new Date(today);
-    yest.setDate(today.getDate() - 1);
-    if (d.toDateString() === today.toDateString()) return 'Today';
-    if (d.toDateString() === yest.toDateString()) return 'Yesterday';
-    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  } catch { return ''; }
-};
-
-export const PortalAvatar = ({ url, name }) =>
-  url
-    ? <img className="mcp-avatar" src={url} alt="" />
-    : <span className="mcp-avatar-fallback">{initialsOf(name)}</span>;
-
-/** Attachments exactly as the portal already renders them on an issue thread. */
-export const PortalAttachments = ({ items }) => {
-  const arr = (Array.isArray(items) ? items : []).filter((a) => a && a.url);
-  if (!arr.length) return null;
-  return (
-    <div className="mcp-att-wrap">
-      <span className="mcp-att-count"><Paperclip size={11} /> {plural(arr.length, 'attachment')}</span>
-      {arr.map((a, i) => (
-        <a key={i} href={a.url} target="_blank" rel="noreferrer" className="mcp-att-item">
-          {isImage(a) && <img className="mcp-thumb" src={a.url} alt={a.name || 'attachment'} />}
-          <span className="mcp-attach">
-            <Paperclip size={12} />
-            <span className="mcp-att-name">{a.name || 'Attachment'}</span>
-            {formatBytes(a.size) && <span className="mcp-att-size">· {formatBytes(a.size)}</span>}
-          </span>
-        </a>
-      ))}
-    </div>
-  );
-};
+/* ---- shared message anatomy ----------------------------------------------
+ * `PortalMessageBody` is exported because the mailbox renders the exact same
+ * body. The avatar and attachment helpers that used to live here went with the
+ * reskin: Gmail and WhatsApp draw a file completely differently, so a shared
+ * renderer would have had to be neither.
+ * -------------------------------------------------------------------------- */
 
 /**
  * A message body. Rich TipTap docs go through the read-only renderer; a plain
@@ -113,47 +64,56 @@ export const PortalMessageBody = ({ body, bodyText }) => {
   return <>{bodyText || ''}</>;
 };
 
-/* ---- message list --------------------------------------------------------- */
-
-
-const ChatMessage = ({ message, onOpenThread }) => {
+/* ---- one bubble ----------------------------------------------------------- */
+/**
+ * @param {boolean} tail   first of a run — the only bubble that gets the tail
+ * @param {boolean} showName first of a run from someone else
+ */
+const ChatMessage = ({ message, onOpenThread, tail = true, showName = true }) => {
   // `onOpenThread` absent = we are already inside a thread; a reply-to-a-reply
   // would need a second level the data model does not have.
   const mine = !!message.mine;
-  const system = message.authorType === 'system';
 
-  if (system) {
-    return <div className="mcp-sys">{message.bodyText}</div>;
+  if (message.authorType === 'system') {
+    return <div className="wa-sys">{message.bodyText}</div>;
   }
 
+  const side = mine ? 'out' : 'in';
   return (
-    <div className={`mcp-msg-row ${mine ? 'mine' : ''}`}>
-      {mine ? (
-        <span className="mcp-msg-author">{message.authorName || 'You'}</span>
-      ) : (
-        <div className="mcp-msg-head">
-          <PortalAvatar url={message.authorAvatar} name={message.authorName} />
-          <span className="mcp-msg-author" style={{ margin: 0 }}>{message.authorName}</span>
-        </div>
-      )}
-
-      <div className={`mcp-bubble ${mine ? 'mine' : 'them'} ${message.body ? 'mcp-bubble--rich' : ''}`}>
+    <div className={`wa-row ${side} ${tail ? 'wa-row--new' : ''}`}>
+      <div
+        className={[
+          'wa-b', side,
+          tail ? 'wa-b--tail' : '',
+          message.body ? 'wa-b--rich' : '',
+        ].filter(Boolean).join(' ')}
+      >
+        {!mine && showName && <span className="wa-name">{message.authorName}</span>}
+        <WhatsAppAttachments items={message.attachments} />
         <PortalMessageBody body={message.body} bodyText={message.bodyText} />
-        <PortalAttachments items={message.attachments} />
+        {/* AFTER the text, always: the float only lands on the last line if the
+            text is already there. Move it above and every bubble grows a row. */}
+        <span className="wa-meta">
+          {message.editedAt && <span>edited</span>}
+          {waClock(message.createdAt)}
+          {/* One tick: sent. See this file's header for why never two. */}
+          {mine && <Check size={14} className="wa-tick" aria-label="Sent" />}
+        </span>
       </div>
 
-      <div className="mcp-msg-foot">
-        <span className="mcp-msg-time">{formatClock(message.createdAt)}</span>
-        {onOpenThread && (
-          // The button hands itself to the opener, so closing the panel can put
-          // focus back exactly where the client left it.
-          <button type="button" className="mcp-msg-reply"
-            onClick={(e) => onOpenThread(message, e.currentTarget)}>
-            <CornerUpLeft size={11} />
-            {message.replyCount > 0 ? replyLabel(message.replyCount) : 'Reply'}
-          </button>
-        )}
-      </div>
+      {onOpenThread && (
+        // The button hands itself to the opener, so closing the panel can put
+        // focus back exactly where the client left it.
+        <button
+          type="button"
+          className="wa-reply"
+          data-always={message.replyCount > 0 || undefined}
+          onClick={(e) => onOpenThread(message, e.currentTarget)}
+        >
+          <CornerUpLeft size={11} />
+          {message.replyCount > 0 ? replyLabel(message.replyCount) : 'Reply'}
+        </button>
+      )}
     </div>
   );
 };
@@ -169,6 +129,7 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [canPost, setCanPost] = useState(true);
   const [atBottom, setAtBottom] = useState(true);
+  const [query, setQuery] = useState(null); // null = the search bar is closed
 
   // The open thread: { parent, replies } — null when the room is showing.
   const [thread, setThread] = useState(null);
@@ -214,6 +175,7 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
     setNextBefore(null);
     setLoading(true);
     setError('');
+    setQuery(null);
     threadOpenerRef.current = null;
     markedRef.current = '';
     atBottomRef.current = true;
@@ -276,6 +238,22 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
     landedRef.current = true;
   }, [lastId, jumpToBottom]);
 
+  /**
+   * An image finishing its download AFTER the room has scrolled to the bottom
+   * pushes everything below it off screen — which, since the newest message is
+   * at the bottom, is exactly the message the client came to read. `load` does
+   * not bubble, hence the capture phase; and it only re-pins when the reader was
+   * already at the bottom, so it can never yank someone out of the history they
+   * had scrolled back to.
+   */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    const onLoad = () => { if (atBottomRef.current) jumpToBottom('auto'); };
+    el.addEventListener('load', onLoad, true);
+    return () => el.removeEventListener('load', onLoad, true);
+  }, [jumpToBottom]);
+
   /* ---- read receipts ----
    * Only when the pane is on screen AND parked at the bottom: a client who has
    * scrolled up to re-read something has not seen what arrived below them. */
@@ -326,7 +304,7 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
       // A failed FIRST load must not read as "No replies yet" — that tells the
       // client there is no conversation here and invites them to reply into a
       // thread they cannot see. A failed poll keeps what is on screen.
-      if (initial) setThreadError(err.response?.data?.error || 'Couldn’t load this thread.');
+      if (initial) setThreadError(err.response?.data?.error || 'Couldn’t load these replies.');
     } finally {
       if (initial) setThreadLoading(false);
     }
@@ -402,164 +380,222 @@ const PortalChat = ({ channel, onUnreadChange, liveMessage }) => {
 
   if (!channel) return null;
 
+  /**
+   * WhatsApp's in-chat search filters the room down to matching messages. Ours
+   * searches what is LOADED, which is why it says so when it finds nothing —
+   * a client who has not paged back has not searched their whole history and
+   * should not be told otherwise.
+   */
+  const q = (query || '').trim().toLowerCase();
+  const shown = q
+    ? messages.filter((m) => (m.bodyText || '').toLowerCase().includes(q))
+    : messages;
+
   let lastDay = '';
+  let prev = null;
+
+  const roomTitle = channel.name || 'Messages';
 
   return (
-    <div className="mcp-chat mcp-rise">
-      <div className="mcp-chat-main">
-        <div className="mcp-chat-head">
-          <span className="mcp-chat-head-ico"><MessageSquare size={16} /></span>
-          <div style={{ minWidth: 0 }}>
-            <div className="mcp-chat-title">{channel.name || 'Messages'}</div>
-            <div className="mcp-chat-sub">Chat directly with the team working on this.</div>
-          </div>
-        </div>
-
-        <div className="mcp-chat-scroll" ref={scrollRef} onScroll={onScroll}>
-          {loading ? (
-            <div className="mcp-chat-center"><Loader2 size={22} color="#2563EB" className="mcp-spin" /></div>
-          ) : error ? (
-            <div className="mcp-chat-center mcp-chat-empty-text">{error}</div>
-          ) : (
-            <>
-              {nextBefore && (
-                <div className="mcp-chat-older">
-                  <button type="button" className="mcp-btn mcp-btn--ghost" style={{ height: 32, fontSize: 12.5 }}
-                    disabled={loadingOlder} onClick={loadOlder}>
-                    {loadingOlder
-                      ? <><Loader2 size={13} className="mcp-spin" /> Loading…</>
-                      : 'Load earlier messages'}
-                  </button>
-                </div>
-              )}
-
-              {messages.length === 0 && (
-                <div className="mcp-chat-center">
-                  <div className="mcp-chat-empty-ico"><MessageSquare size={22} /></div>
-                  <p className="mcp-chat-empty-text">
-                    No messages yet. Say hello — the team replies right here.
-                  </p>
-                </div>
-              )}
-
-              {messages.map((m) => {
-                const key = dayKey(m.createdAt);
-                const divider = key && key !== lastDay;
-                lastDay = key || lastDay;
-                return (
-                  <div key={m.id}>
-                    {divider && (
-                      <div className="mcp-chat-day"><span>{dayLabel(m.createdAt)}</span></div>
-                    )}
-                    <ChatMessage message={m} onOpenThread={openThread} />
-                  </div>
-                );
-              })}
-            </>
-          )}
-
-          {/* Sticky rather than absolutely positioned: it lives inside the
-              scrollport, so it pins itself above the composer whatever height
-              the composer has grown to. */}
-          {!atBottom && messages.length > 0 && (
-            <button type="button" className="mcp-chat-jump" onClick={() => jumpToBottom()}>
-              <ArrowDown size={14} /> Latest
-            </button>
-          )}
-        </div>
-
-        <div className="mcp-chat-foot">
-          {canPost ? (
-            <PortalComposer
-              channelId={channelId}
-              placeholder="Message the team…"
-              onSubmit={send}
-            />
-          ) : (
-            <p className="mcp-chat-readonly"><Lock size={13} /> This conversation is read-only.</p>
-          )}
-        </div>
-      </div>
-
-      {thread && (
-        <aside className="mcp-chat-thread" aria-label="Thread">
-          <div className="mcp-chat-head">
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="mcp-chat-title" ref={threadHeadRef} tabIndex={-1}>Thread</div>
-              <div className="mcp-chat-sub">
-                {threadError
-                  ? 'Couldn’t load the replies'
-                  : thread.replies.length ? replyLabel(thread.replies.length) : 'No replies yet'}
-              </div>
+    <div className="wa mcp-rise">
+      <div className="wa-shell">
+        <div className="wa-main">
+          <div className="wa-head">
+            <span className="wa-head-av" aria-hidden="true">{initialOf(roomTitle)}</span>
+            <div className="wa-head-t">
+              <div className="wa-head-name">{roomTitle}</div>
+              <div className="wa-head-sub">You and the team</div>
             </div>
-            <button type="button" className="mcp-linkbtn" style={{ padding: 4 }}
-              onClick={closeThread} aria-label="Close thread">
-              <X size={17} />
+            <button
+              type="button"
+              className="wa-head-btn"
+              aria-label={query === null ? 'Search this chat' : 'Close the search'}
+              aria-expanded={query !== null}
+              onClick={() => setQuery((v) => (v === null ? '' : null))}
+            >
+              {query === null ? <Search size={20} /> : <X size={20} />}
             </button>
+            <span className="wa-head-btn" aria-hidden="true"><MoreVertical size={20} /></span>
           </div>
 
-          <div className="mcp-chat-scroll">
-            <div className="mcp-thread-parent">
-              <div className="mcp-msg-head">
-                <PortalAvatar url={thread.parent.authorAvatar} name={thread.parent.authorName} />
-                <span className="mcp-msg-author" style={{ margin: 0 }}>
-                  {thread.parent.authorName}
-                  <span style={{ opacity: 0.7 }}> · {formatStamp(thread.parent.createdAt)}</span>
-                </span>
-              </div>
-              <div className={`mcp-bubble them ${thread.parent.body ? 'mcp-bubble--rich' : ''}`}>
-                <PortalMessageBody body={thread.parent.body} bodyText={thread.parent.bodyText} />
-                <PortalAttachments items={thread.parent.attachments} />
-              </div>
-            </div>
-
-            {threadLoading ? (
-              <div className="mcp-chat-center"><Loader2 size={18} color="#2563EB" className="mcp-spin" /></div>
-            ) : threadError ? (
-              <div className="mcp-chat-center">
-                <p className="mcp-chat-empty-text">{threadError}</p>
-                <button
-                  type="button"
-                  className="mcp-btn mcp-btn--ghost"
-                  style={{ height: 32, fontSize: 12.5 }}
-                  onClick={() => {
-                    setThreadError('');
-                    setThreadLoading(true);
-                    loadThread(openThreadId, { initial: true });
+          {query !== null && (
+            <div style={{ padding: '8px 16px', background: '#f0f2f5' }}>
+              <div className="wa-input">
+                <input
+                  type="search"
+                  autoFocus
+                  value={query}
+                  placeholder="Search loaded messages"
+                  aria-label="Search loaded messages"
+                  onChange={(e) => setQuery(e.target.value)}
+                  style={{
+                    width: '100%', border: 0, background: 'none', outline: 'none',
+                    font: 'inherit', fontSize: 15,
                   }}
-                >
-                  Try again
-                </button>
+                />
               </div>
+            </div>
+          )}
+
+          <div className="wa-scroll" ref={scrollRef} onScroll={onScroll}>
+            {loading ? (
+              <div className="wa-center"><Loader2 size={22} className="mcp-spin" /></div>
+            ) : error ? (
+              <div className="wa-center"><span className="wa-center-card">{error}</span></div>
             ) : (
-              thread.replies.map((r) => <ChatMessage key={r.id} message={r} />)
+              <>
+                {nextBefore && !q && (
+                  <div className="wa-older">
+                    <button type="button" disabled={loadingOlder} onClick={loadOlder}>
+                      {loadingOlder ? 'Loading…' : 'Load earlier messages'}
+                    </button>
+                  </div>
+                )}
+
+                {messages.length === 0 && (
+                  <div className="wa-center">
+                    <span className="wa-center-card">
+                      No messages yet. Say hello — the team replies right here.
+                    </span>
+                  </div>
+                )}
+
+                {messages.length > 0 && shown.length === 0 && (
+                  <div className="wa-center">
+                    <span className="wa-center-card">
+                      Nothing loaded here matches “{query}”.
+                    </span>
+                  </div>
+                )}
+
+                {shown.map((m) => {
+                  const key = dayKey(m.createdAt);
+                  const divider = key && key !== lastDay;
+                  lastDay = key || lastDay;
+
+                  // A run is the same person, on the same side, within five
+                  // minutes, uninterrupted by a date divider.
+                  const run =
+                    !divider &&
+                    !q &&
+                    prev &&
+                    prev.authorType !== 'system' &&
+                    m.authorType !== 'system' &&
+                    !!prev.mine === !!m.mine &&
+                    prev.authorName === m.authorName &&
+                    new Date(m.createdAt) - new Date(prev.createdAt) < RUN_GAP_MS;
+                  prev = m;
+
+                  return (
+                    <div key={m.id}>
+                      {divider && <div className="wa-day">{waDayLabel(m.createdAt)}</div>}
+                      <ChatMessage
+                        message={m}
+                        onOpenThread={openThread}
+                        tail={!run}
+                        showName={!run}
+                      />
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            {/* Sticky rather than absolutely positioned: it lives inside the
+                scrollport, so it pins itself above the composer whatever height
+                the composer has grown to. */}
+            {!atBottom && messages.length > 0 && (
+              <button type="button" className="wa-jump" onClick={() => jumpToBottom()} aria-label="Jump to the latest message">
+                <ChevronDown size={22} />
+              </button>
             )}
           </div>
 
           {canPost ? (
-            <div className="mcp-chat-foot">
+            <div className="wa-foot">
               <PortalComposer
-                // Remounted per thread so the draft below is read for THIS one,
-                // and so a half-written reply never follows the client into
-                // another thread.
-                key={openThreadId}
+                variant="wa"
                 channelId={channelId}
-                placeholder="Reply in thread…"
-                submitLabel="Reply"
-                minHeight={58}
-                // Escape and the close button both take this panel away mid
-                // sentence; the draft is what makes that recoverable.
-                draftKey={`chatThread:${openThreadId}`}
-                // Replying into a thread we failed to read means replying blind.
-                disabled={!!threadError}
-                onSubmit={sendReply}
+                placeholder="Type a message"
+                onSubmit={send}
               />
             </div>
           ) : (
-            <p className="mcp-chat-readonly"><Lock size={13} /> This conversation is read-only.</p>
+            <p className="wa-readonly"><Lock size={14} /> This conversation is read-only.</p>
           )}
-        </aside>
-      )}
+        </div>
+
+        {thread && (
+          <aside className="wa-panel" aria-label="Replies">
+            <div className="wa-panel-head">
+              <button type="button" onClick={closeThread} aria-label="Close the replies" style={{ display: 'flex' }}>
+                <X size={22} />
+              </button>
+              <span ref={threadHeadRef} tabIndex={-1}>
+                {threadError
+                  ? 'Replies didn’t load'
+                  : thread.replies.length ? replyLabel(thread.replies.length) : 'Replies'}
+              </span>
+            </div>
+
+            <div className="wa-scroll">
+              {/* WhatsApp quotes what you are replying to, above the replies. */}
+              <div className="wa-panel-quoted">
+                <b>{thread.parent.mine ? 'You' : thread.parent.authorName}</b>
+                {(thread.parent.bodyText || 'Attachment').slice(0, 300)}
+              </div>
+
+              {threadLoading ? (
+                <div className="wa-center"><Loader2 size={18} className="mcp-spin" /></div>
+              ) : threadError ? (
+                <div className="wa-center">
+                  <span className="wa-center-card">{threadError}</span>
+                  <div style={{ marginTop: 12 }}>
+                    <button
+                      type="button"
+                      className="gm-morebtn"
+                      onClick={() => {
+                        setThreadError('');
+                        setThreadLoading(true);
+                        loadThread(openThreadId, { initial: true });
+                      }}
+                    >
+                      Try again
+                    </button>
+                  </div>
+                </div>
+              ) : thread.replies.length === 0 ? (
+                <div className="wa-center"><span className="wa-center-card">No replies yet.</span></div>
+              ) : (
+                thread.replies.map((r) => <ChatMessage key={r.id} message={r} />)
+              )}
+            </div>
+
+            {canPost ? (
+              <div className="wa-foot">
+                <PortalComposer
+                  variant="wa"
+                  // Remounted per thread so the draft below is read for THIS one,
+                  // and so a half-written reply never follows the client into
+                  // another thread.
+                  key={openThreadId}
+                  channelId={channelId}
+                  placeholder="Reply"
+                  submitLabel="Reply"
+                  // Escape and the close button both take this panel away mid
+                  // sentence; the draft is what makes that recoverable.
+                  draftKey={`chatThread:${openThreadId}`}
+                  // Replying into a thread we failed to read means replying blind.
+                  disabled={!!threadError}
+                  onSubmit={sendReply}
+                />
+              </div>
+            ) : (
+              <p className="wa-readonly"><Lock size={14} /> This conversation is read-only.</p>
+            )}
+          </aside>
+        )}
+      </div>
     </div>
   );
 };

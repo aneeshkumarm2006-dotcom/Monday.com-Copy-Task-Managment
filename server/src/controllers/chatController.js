@@ -1387,6 +1387,25 @@ const loadThreads = async (channelId, { before = null, limit = MAX_MESSAGE_LIMIT
             },
           ],
         },
+        // Everything attached anywhere in the thread, root and replies alike.
+        // Gmail names a conversation's files on the LIST row, not only inside
+        // it, and that is the one thing a client scanning a mailbox for "where
+        // did they send the invoice" actually looks for. Name and type only —
+        // enough to draw the chip and pick its glyph, and no URL, because the
+        // list is not a download surface and a signed URL has no business
+        // sitting in a payload nobody clicked.
+        attachments: {
+          $concatArrays: [
+            { $ifNull: ['$attachments', []] },
+            {
+              $reduce: {
+                input: { $ifNull: ['$replies.attachments', []] },
+                initialValue: [],
+                in: { $concatArrays: ['$$value', { $ifNull: ['$$this', []] }] },
+              },
+            },
+          ],
+        },
       },
     },
     ...(before ? [{ $match: { lastAt: { $lt: before } } }] : []),
@@ -1402,6 +1421,7 @@ const loadThreads = async (channelId, { before = null, limit = MAX_MESSAGE_LIMIT
         replyCount: 1,
         participantUsers: 1,
         participantContacts: 1,
+        attachments: 1,
         author: 1,
         portalAuthor: 1,
         authorType: 1,
@@ -1459,6 +1479,13 @@ const serializeThreadRow = (t, names, seenAt) => ({
     .map((id) => names.get(String(id)))
     .filter(Boolean),
   replyCount: t.replyCount || 0,
+  // Capped at three chips plus a count, which is exactly what Gmail shows
+  // before it stops naming them. Sending forty filenames to draw three is the
+  // kind of payload nobody notices until a thread has forty.
+  attachments: (t.attachments || [])
+    .slice(0, 3)
+    .map((a) => ({ name: a?.name || 'Attachment', mime: a?.mime || '' })),
+  attachmentCount: (t.attachments || []).length,
   lastAt: t.lastAt,
   createdAt: t.createdAt,
   unread: !seenAt || t.lastAt > seenAt,

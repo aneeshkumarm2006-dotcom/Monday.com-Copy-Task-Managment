@@ -133,7 +133,7 @@ const classifyIssue = (board, statusValue) => {
 };
 
 /**
- * THERE IS NO REQUEST-TYPE LIST ANY MORE, and no category list either.
+ * THERE IS NO REQUEST TYPE ANY MORE, and no category list either.
  *
  * `PORTAL_TYPES` used to hold eight values, four of which — meta_ads,
  * google_ads, email_marketing, website_development — were SERVICE NAMES. They
@@ -152,9 +152,10 @@ const classifyIssue = (board, statusValue) => {
  * board form no longer offers any way to SET it, so the dropdown could only ever
  * have been empty.
  *
- * `Task.portalType` and `Task.portalCategory` remain on the model, and
- * `serializeIssue` still reports them, so requests raised before this change
- * keep their badge. Nothing writes them any more.
+ * `Task.portalType` remains on the model for the sake of old rows and the
+ * board export, but the portal no longer reads it: nothing writes it, no
+ * portal payload carries it, and no portal screen shows it. `portalCategory`
+ * is still serialized for requests raised before categories were dropped.
  */
 const PORTAL_PRIORITIES = ['low', 'medium', 'high', 'critical'];
 
@@ -204,7 +205,6 @@ const serializeIssue = (task, board, workstreams = null) => {
     name: task.name,
     note: task.note || '',
     category: task.portalCategory || '',
-    type: task.portalType || '',
     priority: task.priority || 'medium',
     rating: task.portalRating || null,
     dueDate: task.dueDate || null,
@@ -976,7 +976,7 @@ const getMyIssues = async (req, res) => {
     // count query. It is dropped before anything is serialized.
     const page = await Task.find(filter)
       .select(
-        'name note status priority dueDate createdAt updatedAt group portalRef portalType ' +
+        'name note status priority dueDate createdAt updatedAt group portalRef ' +
           'portalCategory portalRating portalShared portalSharedAt portalSubmitter attachments'
       )
       .sort({ createdAt: -1 })
@@ -1399,7 +1399,6 @@ const getIssueThread = async (req, res) => {
         statusLabel: cls.label,
         statusColor: cls.color,
         resolved: cls.state === 'resolved',
-        type: task.portalType || '',
         priority: task.priority || 'medium',
         rating: task.portalRating || null,
         attachments: requestAttachments.map((a) => ({

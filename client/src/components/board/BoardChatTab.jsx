@@ -1,8 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronLeft, Eye, Hash, Lock, Mail, MessageCircle, Plus } from 'lucide-react';
+import {
+  ChevronLeft, Eye, Hash, Lock, Mail, MessageCircle, PenSquare, RefreshCw, Search,
+  X, CornerUpLeft, MoreHorizontal, Inbox,
+} from 'lucide-react';
 import MessageItem from '../chat/MessageItem';
-import { timeShort } from '../chat/chatFormat';
+import { GmAvatar, GmailRowChips } from '../chat/conversationSkins';
+import {
+  gmailListDate, gmailStampLong, waDayLabel, dayKey,
+} from '../../utils/conversationFormat';
 import UpdateComposer from './UpdateComposer';
 import SetUpCommunicationModal from './SetUpCommunicationModal';
 import useAuthStore from '../../store/authStore';
@@ -131,63 +137,54 @@ const SurfaceRow = ({ channel, active, onClick }) => {
   );
 };
 
-/** One subject in a mailbox. */
-const ThreadRow = ({ thread, active, onClick }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    className="w-full flex items-start gap-2 px-3 py-2.5 text-left transition-colors duration-100 hover:bg-[color:var(--color-bg-subtle)]"
-    style={{
-      borderBottom: '1px solid var(--color-bg-subtle)',
-      background: active ? 'var(--color-bg-subtle)' : 'transparent',
-    }}
-  >
-    <span
-      className="shrink-0"
-      style={{
-        width: 6,
-        height: 6,
-        marginTop: 6,
-        borderRadius: 999,
-        background: thread.unread ? 'var(--color-accent)' : 'transparent',
+/**
+ * One conversation in a mailbox — GMAIL'S ROW, and the same one the client sees
+ * in their portal. 40px, sender in a fixed column, subject and snippet sharing
+ * one clipped line, date hard right; read is the blue-grey wash and unread is
+ * white and bold. See styles/conversations.css.
+ */
+const ThreadRow = ({ thread, active, onClick }) => {
+  const people = (thread.participants || []).map((p) => p?.name).filter(Boolean);
+  const label = people.length
+    ? (people.length <= 3 ? people.join(', ') : `${people.slice(0, 3).join(', ')} +${people.length - 3}`)
+    : 'No one yet';
+  const chips = thread.attachments || [];
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); }
       }}
-      aria-hidden="true"
-    />
-    <span className="min-w-0 flex-1">
-      <span className="flex items-baseline gap-2">
-        <span
-          className="font-body flex-1 truncate"
-          style={{
-            fontSize: 13,
-            fontWeight: thread.unread ? 700 : 600,
-            color: 'var(--color-text-primary)',
-          }}
-        >
+      className={`gm-row ${chips.length ? 'gm-row--tall' : ''}`}
+      data-unread={thread.unread || undefined}
+      data-selected={active || undefined}
+    >
+      <span className="gm-cell">
+        <GmAvatar url={thread.participants?.[0]?.profilePic} name={label} />
+      </span>
+
+      <span className="gm-from">
+        {label}
+        {thread.replyCount > 0 && <span className="gm-from-n">{thread.replyCount + 1}</span>}
+      </span>
+
+      <span className="gm-mid">
+        <span className="gm-line1">
           {thread.subject || '(no subject)'}
+          {thread.snippet && <span className="gm-snip"> - {thread.snippet}</span>}
         </span>
-        <span className="font-body shrink-0" style={{ fontSize: 10.5, color: 'var(--color-text-muted)' }}>
-          {timeShort(thread.lastAt || thread.createdAt)}
-        </span>
+        <GmailRowChips items={chips} extra={(thread.attachmentCount || 0) - chips.length} />
       </span>
-      <span
-        className="font-body block truncate"
-        style={{ fontSize: 11.5, marginTop: 1, color: 'var(--color-text-muted)' }}
-      >
-        {(thread.participants || []).map((p) => p.name).join(', ') || 'No one yet'}
-        {' · '}
-        {thread.replyCount || 0}
+
+      <span className="gm-date" title={gmailStampLong(thread.lastAt || thread.createdAt)}>
+        {gmailListDate(thread.lastAt || thread.createdAt)}
       </span>
-      {thread.snippet && (
-        <span
-          className="font-body block truncate"
-          style={{ fontSize: 11.5, marginTop: 1, color: 'var(--color-text-secondary)' }}
-        >
-          {thread.snippet}
-        </span>
-      )}
-    </span>
-  </button>
-);
+    </div>
+  );
+};
 
 /**
  * @param {string}  boardId
@@ -215,6 +212,13 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
   const [threadPane, setThreadPane] = useState(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const [subject, setSubject] = useState('');
+  // Gmail folds everything but the newest two messages of a conversation behind
+  // one counted pill. This is the per-message override on that default: absent
+  // means "however the fold wants it", present means the reader has said.
+  const [foldOverrides, setFoldOverrides] = useState(() => new Map());
+  // Client-side, over the conversations already paged in — see the placeholder.
+  const [mailQuery, setMailQuery] = useState('');
+  const [replyOpen, setReplyOpen] = useState(false);
   const [setupGroup, setSetupGroup] = useState(null);
   /**
    * Is this board's client portal actually LIVE? `null` means "not known".
@@ -454,6 +458,13 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
     };
   }, [activeId, activeMode]);
 
+  // A different conversation starts folded again, and with no half-open reply
+  // box carried over from the last one.
+  useEffect(() => {
+    setFoldOverrides(new Map());
+    setReplyOpen(false);
+  }, [threadId]);
+
   // One open mail thread.
   useEffect(() => {
     if (!threadId || !activeId) return undefined;
@@ -497,6 +508,9 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
     setThreadPane(null);
     setComposeOpen(false);
     setSubject('');
+    setFoldOverrides(new Map());
+    setMailQuery('');
+    setReplyOpen(false);
   };
 
   const loadOlder = async () => {
@@ -674,18 +688,23 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
     compact: true,
   };
 
-  const composerShell = (children) => (
-    <div
-      style={{
-        border: '1.5px solid var(--color-border)',
-        borderRadius: 12,
-        background: '#FBFAF8',
-        overflow: 'visible',
-      }}
-    >
-      {children}
-    </div>
+  /**
+   * The rich composer keeps its own body in every skin; only the box around it
+   * changes. WhatsApp's is a white pill sitting on the grey bar. Gmail's two
+   * boxes — the reply card and the docked window — draw their own chrome in
+   * `conversations.css`, so this is the only shell that needs a helper.
+   */
+  const waShell = (children) => (
+    <div style={{ background: '#ffffff', borderRadius: 8, overflow: 'visible' }}>{children}</div>
   );
+  /** Gmail's "to" line. The message knows who wrote it; only the room knows who
+   *  it went to, which is why this is resolved here and passed down. */
+  const clientLabel =
+    (clientName || data?.board?.portalClientName || '').trim() || 'the client';
+  const recipientFor = (m) => {
+    if (m?.authorType === 'client') return 'to me';
+    return activeChannel?.audience === 'client' ? `to ${clientLabel}` : 'to the team';
+  };
 
   if (loadError) {
     return (
@@ -916,26 +935,6 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
               </p>
               {activeChannel.audience === 'client' && <ClientPill />}
               <span className="flex-1" />
-              {activeChannel.mode === 'mail' && !threadId && canPost && (
-                <button
-                  type="button"
-                  onClick={() => setComposeOpen((v) => !v)}
-                  className="font-body inline-flex items-center gap-1 transition-colors hover:bg-[color:var(--color-accent-light)]"
-                  style={{
-                    height: 26,
-                    padding: '0 9px',
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    color: 'var(--color-accent)',
-                    border: '1px solid var(--color-accent)',
-                    borderRadius: 'var(--radius-md)',
-                    background: 'transparent',
-                  }}
-                >
-                  <Plus size={12} aria-hidden="true" />
-                  New thread
-                </button>
-              )}
             </div>
 
             {!paneReady ? (
@@ -947,152 +946,222 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
                 {pane.error}
               </p>
             ) : pane.mode === 'mail' ? (
-              /* ---- Mailbox: a list of subjects, or one open thread ---- */
-              threadId ? (
-                <>
-                  <div
-                    className="flex items-center gap-2 px-3 shrink-0"
-                    style={{ height: 40, borderBottom: '1px solid var(--color-bg-subtle)' }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setThreadId(null);
-                        setThreadPane(null);
-                      }}
-                      aria-label="Back to threads"
-                      className="flex items-center justify-center rounded-md hover:bg-[color:var(--color-bg-subtle)]"
-                      style={{ width: 28, height: 28 }}
-                    >
-                      <ChevronLeft size={17} color="var(--color-text-secondary)" aria-hidden="true" />
-                    </button>
-                    <p className="font-body font-bold text-[13.5px] text-[color:var(--color-text-primary)] truncate">
-                      {threadPane?.parent?.subject ||
-                        (pane.threads || []).find((t) => String(t._id) === String(threadId))
-                          ?.subject ||
-                        'Thread'}
-                    </p>
-                  </div>
+              /* ---- The mailbox: GMAIL, the team's side of the same view the
+                     client is looking at in their portal ---- */
+              threadId ? (() => {
+                const ready = threadPane && String(threadPane.threadId) === String(threadId);
+                const all = ready && !threadPane.error
+                  ? [threadPane.parent, ...(threadPane.replies || [])].filter(Boolean)
+                  : [];
+                // Gmail's habit: the newest two stay open, everything before
+                // them folds behind one counted pill. A short conversation is
+                // never folded at all.
+                const autoFrom = all.length > 3 ? all.length - 2 : 0;
+                const openAt = (m, i) => {
+                  const k = String(m._id);
+                  return foldOverrides.has(k) ? foldOverrides.get(k) : i >= autoFrom;
+                };
+                const hidden = all.slice(0, autoFrom).filter((m, i) => !openAt(m, i));
+                const toggle = (m, i) => setFoldOverrides((prev) => {
+                  const next = new Map(prev);
+                  next.set(String(m._id), !openAt(m, i));
+                  return next;
+                });
+                const subjectText =
+                  threadPane?.parent?.subject
+                  || (pane.threads || []).find((t) => String(t._id) === String(threadId))?.subject
+                  || '(no subject)';
 
-                  <div className="flex-1 overflow-y-auto py-2 px-1" style={{ minHeight: 0 }}>
-                    {!threadPane || String(threadPane.threadId) !== String(threadId) ? (
-                      <p className="font-body text-center py-6 text-[12.5px] text-[color:var(--color-text-muted)]">
-                        Loading…
-                      </p>
-                    ) : threadPane.error ? (
-                      <p className="font-body text-center py-6 text-[12.5px] text-[color:var(--color-status-stuck)]">
-                        {threadPane.error}
-                      </p>
-                    ) : (
-                      <>
-                        <div
-                          style={{
-                            borderBottom: '1px solid var(--color-bg-subtle)',
-                            paddingBottom: 4,
-                            marginBottom: 4,
-                          }}
-                        >
-                          <MessageItem
-                            message={threadPane.parent}
-                            currentUserId={currentUser?._id}
-                            canManage={pane.canManage}
-                            canMakeTask={canPost}
-                            onReply={null}
-                            onDelete={handleDelete}
-                            onMakeTask={handleMakeTask}
-                            onOpenChip={handleOpenChip}
-                          />
+                return (
+                  <div className="gm" style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: '#fff' }}>
+                    <div className="gm-read-head">
+                      <button
+                        type="button"
+                        onClick={() => { setThreadId(null); setThreadPane(null); }}
+                        aria-label="Back to the mailbox"
+                        title="Back to the mailbox"
+                        className="gm-iconbtn"
+                      >
+                        <ChevronLeft size={20} aria-hidden="true" />
+                      </button>
+                    </div>
+
+                    <div className="gm-thread">
+                      <h2 className="gm-subject">
+                        {subjectText}
+                        {all.length > 1 && <span className="gm-subject-n">{all.length}</span>}
+                      </h2>
+
+                      {!ready ? (
+                        <div className="gm-empty">Loading…</div>
+                      ) : threadPane.error ? (
+                        <div className="gm-empty">
+                          <p className="gm-empty-t">This conversation didn’t load</p>
+                          <p>{threadPane.error}</p>
                         </div>
-                        {threadPane.replies.map((r) => (
-                          <MessageItem
-                            key={r._id}
-                            message={r}
-                            currentUserId={currentUser?._id}
-                            canManage={pane.canManage}
-                            canMakeTask={false}
-                            onReply={null}
-                            onDelete={handleDelete}
-                            onMakeTask={handleMakeTask}
-                            onOpenChip={handleOpenChip}
-                          />
-                        ))}
-                      </>
-                    )}
-                  </div>
+                      ) : (
+                        <>
+                          {hidden.length > 0 && (
+                            <div className="gm-fold">
+                              <button
+                                type="button"
+                                className="gm-fold-btn"
+                                title="Show trimmed content"
+                                aria-label={`Show ${hidden.length} earlier ${hidden.length === 1 ? 'message' : 'messages'}`}
+                                onClick={() => setFoldOverrides(
+                                  new Map(all.map((m) => [String(m._id), true]))
+                                )}
+                              >
+                                <MoreHorizontal size={14} aria-hidden="true" /> {hidden.length}
+                              </button>
+                              <span className="gm-fold-rule" />
+                            </div>
+                          )}
 
-                  {canPost && (
-                    <div
-                      className="shrink-0 px-3 pb-3 pt-2"
-                      style={{ borderTop: '1px solid var(--color-bg-subtle)' }}
-                    >
-                      {composerShell(
-                        <UpdateComposer
-                          key={`board-mail-reply:${threadId}`}
-                          draftKey={`board-mail-reply:${threadId}`}
-                          submitMessage={submitThreadReply}
-                          placeholder={
-                            activeChannel.audience === 'client'
-                              ? `Reply to ${
-                                (clientName || data.board?.portalClientName || 'the client')
-                              }…`
-                              : 'Reply (private to the team)…'
-                          }
-                          submitLabel="Send"
-                          {...composerProps}
-                        />
+                          {all.map((m, i) => (
+                            <MessageItem
+                              key={m._id}
+                              variant="gmail"
+                              collapsed={!openAt(m, i)}
+                              onToggle={() => toggle(m, i)}
+                              recipient={recipientFor(m)}
+                              message={m}
+                              currentUserId={currentUser?._id}
+                              canManage={pane.canManage}
+                              canMakeTask={canPost && i === 0}
+                              onReply={null}
+                              onDelete={handleDelete}
+                              onMakeTask={handleMakeTask}
+                              onOpenChip={handleOpenChip}
+                            />
+                          ))}
+
+                          {canPost && !replyOpen && (
+                            <div className="gm-actions">
+                              <button type="button" className="gm-pill" onClick={() => setReplyOpen(true)}>
+                                <CornerUpLeft size={18} aria-hidden="true" /> Reply
+                              </button>
+                            </div>
+                          )}
+
+                          {canPost && replyOpen && (
+                            <div className="gm-replybox">
+                              <div className="gm-replybox-head">
+                                <CornerUpLeft size={16} aria-hidden="true" />
+                                <span>
+                                  {activeChannel.audience === 'client'
+                                    ? `Reply to ${clientLabel}`
+                                    : 'Reply (private to the team)'}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="gm-iconbtn"
+                                  style={{ marginLeft: 'auto', width: 28, height: 28 }}
+                                  onClick={() => setReplyOpen(false)}
+                                  aria-label="Close the reply"
+                                >
+                                  <X size={16} aria-hidden="true" />
+                                </button>
+                              </div>
+                              <UpdateComposer
+                                key={`board-mail-reply:${threadId}`}
+                                draftKey={`board-mail-reply:${threadId}`}
+                                submitMessage={submitThreadReply}
+                                placeholder=""
+                                submitLabel="Send"
+                                {...composerProps}
+                              />
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
-                  )}
-                </>
-              ) : (
-                <>
-                  {composeOpen && canPost && (
-                    <div
-                      className="shrink-0 px-3 pt-3 pb-2"
-                      style={{ borderBottom: '1px solid var(--color-bg-subtle)' }}
-                    >
-                      <input
-                        type="text"
-                        value={subject}
-                        onChange={(e) => setSubject(e.target.value)}
-                        placeholder="Subject"
-                        maxLength={200}
-                        aria-label="Subject"
-                        className="w-full h-9 px-3 mb-2 font-body text-[13px] text-[color:var(--color-text-primary)] bg-[color:var(--color-bg-input)] focus:outline-none"
-                        style={{
-                          border: '1px solid var(--color-border)',
-                          borderRadius: 'var(--radius-md)',
-                        }}
-                      />
-                      {composerShell(
-                        <UpdateComposer
-                          key={`board-mail-new:${activeId}`}
-                          draftKey={`board-mail-new:${activeId}`}
-                          submitMessage={submitNewThread}
-                          placeholder="Write the first message…"
-                          submitLabel="Send"
-                          {...composerProps}
-                        />
+                  </div>
+                );
+              })() : (() => {
+                const q = mailQuery.trim().toLowerCase();
+                const rows = q
+                  ? (pane.threads || []).filter((t) => {
+                    const people = (t.participants || []).map((p) => p?.name || '').join(' ');
+                    return `${t.subject || ''} ${t.snippet || ''} ${people}`.toLowerCase().includes(q);
+                  })
+                  : (pane.threads || []);
+
+                return (
+                  <div className="gm" style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column', background: '#fff' }}>
+                    <div className="gm-bar">
+                      {canPost && (
+                        <button
+                          type="button"
+                          className="gm-compose-btn"
+                          style={{ marginRight: 10 }}
+                          onClick={() => setComposeOpen(true)}
+                        >
+                          <PenSquare size={18} aria-hidden="true" /> Compose
+                        </button>
                       )}
+                      {/* Client-side, over what is loaded — which is what the
+                          placeholder says, so nobody reads an empty result as
+                          "this conversation does not exist". */}
+                      <div className="gm-search" style={{ flex: '1 1 160px', minWidth: 140, margin: 0 }}>
+                        <Search size={18} aria-hidden="true" />
+                        <input
+                          type="search"
+                          value={mailQuery}
+                          placeholder="Search this mailbox"
+                          aria-label="Search this mailbox"
+                          onChange={(e) => setMailQuery(e.target.value)}
+                        />
+                        {mailQuery && (
+                          <button
+                            type="button"
+                            className="gm-iconbtn"
+                            onClick={() => setMailQuery('')}
+                            aria-label="Clear the search"
+                          >
+                            <X size={18} aria-hidden="true" />
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        className="gm-iconbtn"
+                        onClick={() => loadChannels()}
+                        aria-label="Refresh"
+                        title="Refresh"
+                      >
+                        <RefreshCw size={18} aria-hidden="true" />
+                      </button>
                     </div>
-                  )}
-                  <div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
-                    {(pane.threads || []).length === 0 ? (
-                      <p className="font-body text-center py-10 text-[13px] text-[color:var(--color-text-muted)]">
-                        No threads yet. Start one with a subject line.
-                      </p>
+
+                    {rows.length === 0 ? (
+                      <div className="gm-empty">
+                        <Inbox size={40} style={{ opacity: 0.35, marginBottom: 12 }} aria-hidden="true" />
+                        {q ? (
+                          <>
+                            <p className="gm-empty-t">No conversations match “{mailQuery}”</p>
+                            <p>Search looks at the conversations already loaded here.</p>
+                          </>
+                        ) : (
+                          <>
+                            <p className="gm-empty-t">Nothing in this mailbox yet</p>
+                            <p>Compose the first one — it needs a subject line.</p>
+                          </>
+                        )}
+                      </div>
                     ) : (
-                      pane.threads.map((t) => (
-                        <ThreadRow
-                          key={t._id}
-                          thread={t}
-                          active={String(t._id) === String(threadId)}
-                          onClick={() => {
-                            setThreadId(String(t._id));
-                            setThreadPane(null);
-                            setPane((prev) =>
-                              prev && prev.mode === 'mail'
-                                ? {
+                      <div className="gm-list">
+                        {rows.map((t) => (
+                          <ThreadRow
+                            key={t._id}
+                            thread={t}
+                            active={String(t._id) === String(threadId)}
+                            onClick={() => {
+                              setThreadId(String(t._id));
+                              setThreadPane(null);
+                              setPane((prev) =>
+                                prev && prev.mode === 'mail'
+                                  ? {
                                     ...prev,
                                     threads: (prev.threads || []).map((x) =>
                                       String(x._id) === String(t._id)
@@ -1100,62 +1169,80 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
                                         : x
                                     ),
                                   }
-                                : prev
-                            );
-                          }}
-                        />
-                      ))
+                                  : prev
+                              );
+                            }}
+                          />
+                        ))}
+                      </div>
                     )}
                   </div>
-                </>
-              )
+                );
+              })()
             ) : (
-              /* ---- One running stream ---- */
-              <>
-                <div
-                  ref={feedRef}
-                  onScroll={handleFeedScroll}
-                  className="flex-1 overflow-y-auto py-2 px-1"
-                  style={{ minHeight: 0 }}
-                >
-                  {messages.length === 0 ? (
-                    <p className="font-body text-center py-10 text-[13px] text-[color:var(--color-text-muted)]">
-                      Nothing here yet — say hello.
-                    </p>
-                  ) : (
-                    <div className="flex flex-col gap-0.5">
-                      {pane.nextBefore && (
-                        <button
-                          type="button"
-                          onClick={loadOlder}
-                          className="font-body self-center py-2 text-[12px] font-semibold text-[color:var(--color-accent)]"
-                        >
-                          Load earlier messages
-                        </button>
-                      )}
-                      {messages.map((m) => (
-                        <MessageItem
-                          key={m._id}
-                          message={m}
-                          currentUserId={currentUser?._id}
-                          canManage={pane.canManage}
-                          canMakeTask={canPost}
-                          onReply={null}
-                          onDelete={handleDelete}
-                          onMakeTask={handleMakeTask}
-                          onOpenChip={handleOpenChip}
-                        />
-                      ))}
+              /* ---- One running room: WHATSAPP, the same bubbles the client
+                     sees on their side of it ---- */
+              <div className="wa" style={{ flex: '1 1 auto', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                <div ref={feedRef} onScroll={handleFeedScroll} className="wa-scroll">
+                  {pane.nextBefore && (
+                    <div className="wa-older">
+                      <button type="button" onClick={loadOlder}>Load earlier messages</button>
                     </div>
+                  )}
+
+                  {messages.length === 0 ? (
+                    <div className="wa-center">
+                      <span className="wa-center-card">Nothing here yet — say hello.</span>
+                    </div>
+                  ) : (
+                    (() => {
+                      let lastDay = '';
+                      let previous = null;
+                      return messages.map((m) => {
+                        const key = dayKey(m.createdAt);
+                        const divider = key && key !== lastDay;
+                        lastDay = key || lastDay;
+
+                        // A run is the same person, on the same side, within
+                        // five minutes, uninterrupted by a date divider. Only
+                        // the first bubble of one gets the tail and the name.
+                        const sameAuthor =
+                          previous &&
+                          previous.authorType === m.authorType &&
+                          String(previous.author?._id || previous.portalAuthor?._id || '') ===
+                            String(m.author?._id || m.portalAuthor?._id || '');
+                        const run =
+                          !divider &&
+                          sameAuthor &&
+                          m.authorType !== 'system' &&
+                          new Date(m.createdAt) - new Date(previous.createdAt) < 5 * 60 * 1000;
+                        previous = m;
+
+                        return (
+                          <div key={m._id}>
+                            {divider && <div className="wa-day">{waDayLabel(m.createdAt)}</div>}
+                            <MessageItem
+                              variant="whatsapp"
+                              tail={!run}
+                              message={m}
+                              currentUserId={currentUser?._id}
+                              canManage={pane.canManage}
+                              canMakeTask={canPost}
+                              onReply={null}
+                              onDelete={handleDelete}
+                              onMakeTask={handleMakeTask}
+                              onOpenChip={handleOpenChip}
+                            />
+                          </div>
+                        );
+                      });
+                    })()
                   )}
                 </div>
 
                 {canPost && (
-                  <div
-                    className="shrink-0 px-3 pb-3 pt-2"
-                    style={{ borderTop: '1px solid var(--color-bg-subtle)' }}
-                  >
-                    {composerShell(
+                  <div className="wa-foot">
+                    {waShell(
                       <UpdateComposer
                         key={`board-chat:${activeId}`}
                         draftKey={`board-chat:${activeId}`}
@@ -1164,10 +1251,8 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
                         // one that is under the cursor at the moment it matters.
                         placeholder={
                           activeChannel.audience === 'client'
-                            ? `Message ${
-                              (clientName || data.board?.portalClientName || 'the client')
-                            } here…`
-                            : `Message the team (private)…`
+                            ? `Message ${clientLabel} here…`
+                            : 'Message the team (private)…'
                         }
                         submitLabel="Send"
                         {...composerProps}
@@ -1175,11 +1260,55 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
                     )}
                   </div>
                 )}
-              </>
+              </div>
             )}
           </>
         )}
       </div>
+
+
+      {/* GMAIL'S COMPOSE WINDOW: docked to the bottom-right of the viewport,
+          not inlined above the list, so the conversations stay readable behind
+          whatever is being written. Same window the client gets in their
+          portal. Fixed positioning is deliberate — it is what makes it a
+          window rather than a panel. */}
+      {composeOpen && activeChannel?.mode === 'mail' && canPost && (
+        <div className="gm gm-compose" role="dialog" aria-label="New message">
+          <div className="gm-compose-head">
+            <span className="gm-compose-title">New message</span>
+            <button
+              type="button"
+              className="gm-compose-x"
+              onClick={() => setComposeOpen(false)}
+              aria-label="Close"
+            >
+              <X size={18} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="gm-compose-body">
+            <div className="gm-compose-to">
+              To <b>{activeChannel.audience === 'client' ? clientLabel : 'the team'}</b>
+            </div>
+            <input
+              type="text"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="Subject"
+              maxLength={200}
+              aria-label="Subject"
+              className="gm-subject-field"
+            />
+            <UpdateComposer
+              key={`board-mail-new:${activeId}`}
+              draftKey={`board-mail-new:${activeId}`}
+              submitMessage={submitNewThread}
+              placeholder=""
+              submitLabel="Send"
+              {...composerProps}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Mounted only while open, so each visit starts from a clean selection
           rather than whatever was ticked and abandoned last time. */}

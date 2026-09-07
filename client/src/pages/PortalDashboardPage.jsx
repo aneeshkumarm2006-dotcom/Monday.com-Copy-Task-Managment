@@ -3,8 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import {
   Plus, Paperclip, Send, ArrowLeft, LogOut, Loader2, CheckCircle2,
   CircleDot, MessageSquare, X, Inbox, Timer, Building2, ChevronRight,
-  ChevronLeft, Bug, Sparkles, ClipboardList, HelpCircle, Star, RotateCcw, Hand,
-  Search, Megaphone, ChevronDown, Clock, Mail, Code2,
+  ChevronLeft, ClipboardList, HelpCircle, Star, RotateCcw, Hand,
+  Search, Megaphone, ChevronDown, Clock, Mail,
   FileText, Check, AlertCircle, UploadCloud, RefreshCw,
 } from 'lucide-react';
 import {
@@ -29,16 +29,6 @@ const BUCKETS = {
   ongoing: { label: 'In progress', color: '#2563EB', icon: Timer },
   resolved: { label: 'Resolved', color: '#059669', icon: CheckCircle2 },
 };
-const TYPES = {
-  meta_ads: { label: 'Meta Ads', icon: Megaphone, color: '#1877F2' },
-  google_ads: { label: 'Google Ads', icon: Search, color: '#EA4335' },
-  email_marketing: { label: 'Email Marketing', icon: Mail, color: '#059669' },
-  website_development: { label: 'Website Development', icon: Code2, color: '#7C3AED' },
-  bug: { label: 'Bug', icon: Bug, color: '#DC2626' },
-  feature: { label: 'Feature request', icon: Sparkles, color: '#F59E0B' },
-  requirement: { label: 'Requirement', icon: ClipboardList, color: '#2563EB' },
-  question: { label: 'Question', icon: HelpCircle, color: '#0891B2' },
-};
 const PRIORITIES = {
   low: { label: 'Low', color: '#64748B' },
   medium: { label: 'Medium', color: '#2563EB' },
@@ -46,63 +36,12 @@ const PRIORITIES = {
   critical: { label: 'Urgent', color: '#DC2626' },
 };
 
-// The intake form adapts its labels + placeholders to the chosen request type,
-// so picking Bug vs Requirement vs Question visibly tailors what we ask for.
+// One label set for every request: the form no longer branches on anything.
 const DEFAULT_FORM = {
   titleLabel: 'Title',
   titlePlaceholder: 'e.g. Login page not loading',
   detailsLabel: 'Details',
   detailsPlaceholder: "Describe what's happening, your requirement, or your question — and anything that helps us.",
-};
-const TYPE_FORM = {
-  bug: {
-    titleLabel: 'What went wrong?',
-    titlePlaceholder: 'e.g. Login page shows a blank screen',
-    detailsLabel: 'What happened?',
-    detailsPlaceholder: 'Steps to reproduce · what you expected · what actually happened.',
-  },
-  feature: {
-    titleLabel: 'What would you like?',
-    titlePlaceholder: 'e.g. Add dark mode to the dashboard',
-    detailsLabel: 'Describe the idea',
-    detailsPlaceholder: 'What should it do, and what problem would it solve for you?',
-  },
-  requirement: {
-    titleLabel: 'What do you need?',
-    titlePlaceholder: 'e.g. New landing page for the spring campaign',
-    detailsLabel: 'Requirement details',
-    detailsPlaceholder: 'Goals · scope · references or deadlines · what "done" looks like.',
-  },
-  question: {
-    titleLabel: 'Your question',
-    titlePlaceholder: 'e.g. How do I export my report?',
-    detailsLabel: 'Add any details',
-    detailsPlaceholder: 'Anything that gives us context to answer well.',
-  },
-  meta_ads: {
-    titleLabel: 'What do you need for Meta Ads?',
-    titlePlaceholder: 'e.g. Launch a lead-gen campaign for the new offer',
-    detailsLabel: 'Campaign details',
-    detailsPlaceholder: 'Goals · budget · audience · creatives/links · start date.',
-  },
-  google_ads: {
-    titleLabel: 'What do you need for Google Ads?',
-    titlePlaceholder: 'e.g. Search campaign for our service pages',
-    detailsLabel: 'Campaign details',
-    detailsPlaceholder: 'Goals · budget · keywords/landing pages · target locations · start date.',
-  },
-  email_marketing: {
-    titleLabel: 'What do you need sent?',
-    titlePlaceholder: 'e.g. Monthly newsletter to our subscriber list',
-    detailsLabel: 'Campaign details',
-    detailsPlaceholder: 'Audience · offer/message · any copy or assets · desired send date.',
-  },
-  website_development: {
-    titleLabel: 'What do you need built?',
-    titlePlaceholder: 'e.g. New landing page for the spring launch',
-    detailsLabel: 'Project details',
-    detailsPlaceholder: 'Pages/features · references or examples · content status · deadline.',
-  },
 };
 
 const LIST_POLL = 20000;
@@ -194,12 +133,6 @@ const StatusChip = ({ label, color }) => (
     {label || 'Open'}
   </span>
 );
-const TypeBadge = ({ type }) => {
-  const t = TYPES[type];
-  if (!t) return null;
-  const Icon = t.icon;
-  return <span className="mcp-badge" style={{ '--bc': t.color }}><Icon size={12} /> {t.label}</span>;
-};
 const PriorityBadge = ({ priority }) => {
   const p = PRIORITIES[priority];
   if (!p || priority === 'medium') return null; // medium is the default — don't clutter
@@ -458,7 +391,6 @@ const PortalDashboardPage = () => {
 
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState('newest'); // newest | oldest | priority
-  const [typeFilter, setTypeFilter] = useState('all');
   // Which of this client's workstreams (SEO, Ads, Web Development) to show.
   // The board IS the client and its groups are the service lines, so this is
   // the primary axis — the state counts below recount within it.
@@ -842,7 +774,6 @@ const PortalDashboardPage = () => {
   const PRIORITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
   const q = query.trim().toLowerCase();
   let visible = filter === 'all' ? inWorkstream : inWorkstream.filter((i) => i.state === filter);
-  if (typeFilter !== 'all') visible = visible.filter((i) => i.type === typeFilter);
   if (q) visible = visible.filter((i) => `${i.name} ${i.note} ${i.ref}`.toLowerCase().includes(q));
   visible = [...visible].sort((a, b) => {
     if (sort === 'priority') return (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9);
@@ -1236,7 +1167,7 @@ const PortalDashboardPage = () => {
               </div>
             )}
 
-            {/* Search / type filter / sort toolbar */}
+            {/* Search / sort toolbar */}
             {inWorkstream.length > 0 && (
               <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
                 <div style={{ position: 'relative', flex: '1 1 220px', minWidth: 180 }}>
@@ -1244,17 +1175,6 @@ const PortalDashboardPage = () => {
                   <input className="mcp-field" style={{ paddingLeft: 34 }} placeholder="Search requests…"
                     value={query} onChange={(e) => setQuery(e.target.value)} />
                 </div>
-                {/* Only for requests raised BEFORE types were dropped. New
-                    ones carry none, so on a portal with no legacy rows this
-                    filter would match nothing and read as broken. */}
-                {inWorkstream.some((i) => i.type) && (
-                  <select className="mcp-field" style={{ width: 'auto', cursor: 'pointer' }} value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-                    <option value="all">All types</option>
-                    {Object.entries(TYPES)
-                      .filter(([k]) => inWorkstream.some((i) => i.type === k))
-                      .map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
-                  </select>
-                )}
                 <select className="mcp-field" style={{ width: 'auto', cursor: 'pointer' }} value={sort} onChange={(e) => setSort(e.target.value)}>
                   <option value="newest">Newest first</option>
                   <option value="oldest">Oldest first</option>
@@ -1310,7 +1230,6 @@ const PortalDashboardPage = () => {
                           {issue.workstream.name}
                         </span>
                       )}
-                      <TypeBadge type={issue.type} />
                       <PriorityBadge priority={issue.priority} />
                       {issue.category && <span className="mcp-tag">{issue.category}</span>}
                       {issue.attachmentCount > 0 && (
@@ -1527,9 +1446,9 @@ const NewIssueForm = ({
     onCreated({ ref: created?.ref, uploaded: doneCount, failed: failedCount });
 
   const label = { fontSize: 12.5, fontWeight: 600, color: '#475569', display: 'block', marginBottom: 7 };
-  // The type-specific label sets went with the type picker. DEFAULT_FORM's
-  // wording is deliberately service-agnostic, which is what a form inside a
-  // known service wants anyway.
+  // There is one label set and no type to branch on. DEFAULT_FORM's wording is
+  // deliberately service-agnostic, which is what a form inside a known service
+  // wants anyway.
   const f = DEFAULT_FORM;
 
   return (
@@ -1828,7 +1747,6 @@ const IssueDetail = ({ issue, onBack, orgName = '', contactKey = '', onExpired }
           <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.02em' }}>{issue.name}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, flexWrap: 'wrap' }}>
             {fromTeam && <FromTeamBadge orgName={orgName} />}
-            <TypeBadge type={detail?.type ?? issue.type} />
             <PriorityBadge priority={detail?.priority ?? issue.priority} />
             {issue.dueDate && (
               <span className="mcp-badge" style={{ '--bc': '#0891B2' }}>
