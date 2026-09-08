@@ -642,3 +642,136 @@ export const runConnectorWriteback = async (boardId, provider, payload = {}) => 
   );
   return data.report;
 };
+
+/**
+ * Start a site's setup with the first step alone: domain, name and scope.
+ *
+ * ---- Why a half-built site is allowed to exist ----------------------------
+ *
+ * Because the setup is genuinely long — a scope, up to four markets, two
+ * hundred keywords and ten competitors — and the alternative to storing a
+ * partial one is a single dialog that must be completed in one sitting or lost.
+ * That was the form this replaced, and "I pasted a hundred keywords and then
+ * went to look up a location code" is exactly how its drafts were lost.
+ *
+ * THE ROW IT MAKES IS INERT. A draft is refused a group binding and skipped by
+ * the collection scheduler, so it can sit unfinished for a month without
+ * costing anything. `launchConnectorSite` is the only way out of that state.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {{account?: string, name?: string, domain: string, scope?: string,
+ *   scopePath?: string}} payload
+ * @returns {Promise<Object>} the created draft
+ */
+export const createConnectorSiteDraft = async (boardId, provider, payload) => {
+  const { data } = await api.post(
+    `/api/boards/${boardId}/connectors/${provider}/sites`,
+    { ...payload, draft: true },
+    { suppressErrorToast: true }
+  );
+  return data.project;
+};
+
+/**
+ * Save whatever step of a draft has just been filled in.
+ *
+ * Uses the same endpoint as `updateConnectorSite` — THE SERVER DECIDES which
+ * rule applies, from the row's own status, and never from anything sent here. A
+ * draft is patched so that saving one step cannot erase another; a live site is
+ * replaced so that an edit dropping four keywords can say so. Sending a
+ * `draft: true` flag would let a stale tab opt a live site out of the stricter
+ * rule, so nothing here sends one.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {string} projectId
+ * @param {Object} patch - only the fields this step owns
+ * @returns {Promise<Object>} the updated draft
+ */
+export const saveConnectorSiteStep = async (boardId, provider, projectId, patch) => {
+  const { data } = await api.put(
+    `/api/boards/${boardId}/connectors/${provider}/sites/${projectId}`,
+    patch,
+    { suppressErrorToast: true }
+  );
+  return data.project;
+};
+
+/**
+ * Finish the setup: validate the whole site at once and make it collectable.
+ *
+ * The only way out of `draft`. Everything up to this point went through a patch
+ * reader that accepts an empty keyword list and an empty market list on
+ * purpose, so THIS IS THE FIRST MOMENT the site is checked as a whole — against
+ * the STORED row rather than against anything the browser is holding, so a tab
+ * left open overnight cannot launch yesterday's keyword list.
+ *
+ * SPENDS NOTHING ITSELF. It is what makes the next scheduled pass able to spend,
+ * which is why the wizard's last step says what one collection will buy.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {string} projectId
+ * @param {Object} [payload] - the last step's answers, if it has any
+ * @returns {Promise<Object>} the live project
+ */
+export const launchConnectorSite = async (boardId, provider, projectId, payload = {}) => {
+  const { data } = await api.post(
+    `/api/boards/${boardId}/connectors/${provider}/sites/${projectId}/launch`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data.project;
+};
+
+/**
+ * Throw a site away.
+ *
+ * REFUSED for a site that has collected anything — that one is unmapped
+ * instead, because the row is the parent of every reading ever taken for the
+ * domain and deleting it would discard the history quietly, on a button
+ * somebody pressed meaning "tidy this list". The server answers `HAS_HISTORY`
+ * with a sentence saying so.
+ *
+ * The case this exists for is the ordinary one: a draft abandoned halfway
+ * through setup, which has no readings by construction.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {string} projectId
+ * @returns {Promise<string>} the deleted id
+ */
+export const deleteConnectorSite = async (boardId, provider, projectId) => {
+  const { data } = await api.delete(
+    `/api/boards/${boardId}/connectors/${provider}/sites/${projectId}`,
+    { suppressErrorToast: true }
+  );
+  return data.deleted;
+};
+
+/**
+ * Search the cities and regions inside one country.
+ *
+ * ONLY the cities. The country list already arrived on the board load, inside
+ * the connector descriptor, because those codes are derivable and therefore
+ * small and always right. Cities are tens of thousands of rows per country with
+ * arbitrary codes, so they are read from the provider on demand — free, and
+ * cached server-side.
+ *
+ * Every caller must treat a failure as a NON-EVENT: the country list still
+ * works and the raw-code field is still there, so a picker that cannot reach
+ * the provider degrades to what existed before it.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @param {{country: string, q?: string}} params
+ * @returns {Promise<Array<Object>>}
+ */
+export const searchConnectorLocations = async (boardId, provider, { country, q = '' }) => {
+  const { data } = await api.get(
+    `/api/boards/${boardId}/connectors/${provider}/locations`,
+    { params: { country, q }, suppressErrorToast: true }
+  );
+  return data.locations || [];
+};

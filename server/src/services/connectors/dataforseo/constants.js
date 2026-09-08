@@ -96,6 +96,21 @@ const ENDPOINT_SERP_TASKS_READY = 'serp/google/organic/tasks_ready';
 const ENDPOINT_SERP_ERRORS = 'serp/errors';
 
 /**
+ * The geography reference table: every place the SERP API will accept a
+ * `location_code` for, addressable one country at a time.
+ *
+ * FREE, and unmetered in any way that matters — it is a static lookup table,
+ * not a search. `services/connectors/dataforseo/locations.js` is its only
+ * caller and holds the argument for why the country half of the picker does not
+ * use it at all.
+ *
+ * A COUNTRY CODE IS APPENDED to this path (`.../locations/us`). The un-suffixed
+ * form exists and returns every location on earth in one response — tens of
+ * megabytes — which is why nothing here calls it.
+ */
+const ENDPOINT_SERP_LOCATIONS = 'serp/google/locations';
+
+/**
  * `appendix/webhook_resend` — DELIBERATELY NEVER CALLED. Declared so the
  * decision is in the code rather than only in the plan.
  *
@@ -1395,6 +1410,7 @@ module.exports = {
   ENDPOINT_SERP_TASK_GET,
   ENDPOINT_SERP_TASKS_READY,
   ENDPOINT_SERP_ERRORS,
+  ENDPOINT_SERP_LOCATIONS,
   ENDPOINT_WEBHOOK_RESEND,
   ENDPOINT_LABS_STATUS,
   ENDPOINT_LABS_KEYWORD_OVERVIEW,

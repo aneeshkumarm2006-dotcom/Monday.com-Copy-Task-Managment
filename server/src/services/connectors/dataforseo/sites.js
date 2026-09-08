@@ -296,6 +296,212 @@ const readCompetitors = (value, domain) => {
   return { ok: true, competitors };
 };
 
+/** The four answers to "how much of this domain is ours". See the model. */
+const SCOPES = ['domain', 'host', 'subfolder', 'url'];
+
+/**
+ * Validate the scope and the path the narrow ones need.
+ *
+ * ---- Why an empty path is REFUSED rather than defaulted --------------------
+ *
+ * A `subfolder` scope with no folder matches the entire domain. It would be a
+ * Site labelled "acme.com/uk/" reporting acme.com's numbers - the silent
+ * WIDENING that `matchesTrackedSite` is careful never to do by accident, walked
+ * in through the front door instead. So it is an error with a sentence, not a
+ * default.
+ *
+ * The stored value is a PATH, never a full URL. The host already lives in
+ * `domain`, and a second copy of it here is a second thing to keep in step.
+ * Somebody pasting `https://acme.com/uk/` means the folder, so the host is
+ * stripped rather than rejected - and stripped without checking it matches,
+ * because a mismatch there is a typo in a field they are allowed to type a bare
+ * path into anyway.
+ *
+ * @param {any} rawScope
+ * @param {any} rawPath
+ */
+const readScope = (rawScope, rawPath) => {
+  const scope = String(rawScope || 'domain').trim().toLowerCase();
+  if (!SCOPES.includes(scope)) {
+    return fail(`"${scope}" is not a scope. Pick ${SCOPES.join(', ')}.`);
+  }
+
+  if (scope === 'domain' || scope === 'host') {
+    // A path is meaningless for these two and is dropped rather than stored,
+    // so switching a Site from `subfolder` back to `domain` cannot leave a
+    // stale folder behind for a later scope change to resurrect.
+    return { ok: true, scope, scopePath: '' };
+  }
+
+  let path = String(rawPath ?? '').trim();
+  if (path) {
+    path = path.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+    // Everything from the first slash. A bare host with no slash leaves
+    // nothing, which the emptiness check below then refuses.
+    const slash = path.indexOf('/');
+    path = slash === -1 ? '' : path.slice(slash);
+    path = path.split('?')[0].split('#')[0];
+  }
+
+  if (!path || path === '/') {
+    return fail(
+      scope === 'subfolder'
+        ? 'A subfolder scope needs the folder, like "/uk/". Without one it would track the whole domain.'
+        : 'A URL scope needs the page, like "/pricing". Without one it would track the whole domain.'
+    );
+  }
+
+  if (!path.startsWith('/')) path = `/${path}`;
+  if (path.length > C.MAX_DOMAIN_LENGTH) {
+    return fail('That path is too long.');
+  }
+
+  return { ok: true, scope, scopePath: path.toLowerCase() };
+};
+
+/**
+ * Read the FIRST STEP of the setup, and nothing else.
+ *
+ * ---- Why this is a second reader and not a flag on the first --------------
+ *
+ * `readSiteForm` is the gate on money: keywords, markets and their caps are
+ * required because a Site without them cannot be collected and a Site with too
+ * many of them is a bill nobody approved. Making those optional "when
+ * `draft: true`" would put the one function that guarantees a collectable Site
+ * one boolean away from guaranteeing nothing - and that boolean arrives in the
+ * request body.
+ *
+ * So the draft path is a DIFFERENT, SMALLER reader, and the only way out of
+ * draft is `readSiteForm` itself. Two readers, one gate.
+ *
+ * @param {Object} body
+ */
+const readSiteDraft = (body) => {
+  if (!body || typeof body !== 'object') return fail('Fill in the site details.');
+
+  const domain = normaliseDomain(body.domain);
+  if (!domain) {
+    return fail('Enter the site domain, like "acme.com".');
+  }
+
+  const scope = readScope(body.scope, body.scopePath);
+  if (!scope.ok) return scope;
+
+  const name =
+    typeof body.name === 'string' && body.name.trim()
+      ? body.name.trim().slice(0, 120)
+      : domain;
+
+  return {
+    ok: true,
+    values: {
+      name,
+      domain,
+      scope: scope.scope,
+      scopePath: scope.scopePath,
+    },
+  };
+};
+
+/**
+ * Read the PARTS OF A DRAFT somebody has filled in so far.
+ *
+ * A PATCH, which every other reader here deliberately is not - and the reason
+ * is that a draft is a half-finished form rather than a stored fact. The wizard
+ * saves after each step, so a request carrying only keywords must not be read
+ * as "and no markets"; the full-replacement rule that protects a LIVE Site from
+ * an ambiguous edit would, here, discard the step somebody just completed.
+ *
+ * Each field is still validated by the SAME function the live form uses, so a
+ * draft cannot accumulate a value that `readSiteForm` would later refuse - it
+ * would be a wizard that let you finish four steps and then rejected the first.
+ *
+ * @param {Object} body
+ */
+const readSiteDraftPatch = (body) => {
+  if (!body || typeof body !== 'object') return fail('Fill in the site details.');
+
+  const values = {};
+
+  if (body.domain !== undefined) {
+    const domain = normaliseDomain(body.domain);
+    if (!domain) return fail('Enter the site domain, like "acme.com".');
+    values.domain = domain;
+  }
+
+  if (body.name !== undefined) {
+    const named =
+      typeof body.name === 'string' && body.name.trim()
+        ? body.name.trim().slice(0, 120)
+        : values.domain;
+    if (named) values.name = named;
+  }
+
+  if (body.scope !== undefined || body.scopePath !== undefined) {
+    const scope = readScope(body.scope, body.scopePath);
+    if (!scope.ok) return scope;
+    values.scope = scope.scope;
+    values.scopePath = scope.scopePath;
+  }
+
+  if (body.trackedKeywords !== undefined) {
+    /**
+     * AN EMPTY LIST IS ALLOWED HERE and nowhere else. Clearing the keyword box
+     * mid-setup is an ordinary thing to do, and `readKeywords` refuses an empty
+     * list precisely because a LIVE Site with none is a Site that cannot be
+     * collected. A draft is not collected at all, so the refusal has nothing to
+     * protect and would only forbid backspacing.
+     */
+    if (!Array.isArray(body.trackedKeywords)) {
+      return fail('Send the tracked keywords as a list.');
+    }
+    if (body.trackedKeywords.length) {
+      const keywords = readKeywords(body.trackedKeywords);
+      if (!keywords.ok) return keywords;
+      values.trackedKeywords = keywords.keywords;
+    } else {
+      values.trackedKeywords = [];
+    }
+  }
+
+  if (body.targets !== undefined) {
+    if (!Array.isArray(body.targets)) return fail('Send the markets as a list.');
+    if (body.targets.length) {
+      const targets = readTargets(body.targets);
+      if (!targets.ok) return targets;
+      values.targets = targets.targets;
+    } else {
+      values.targets = [];
+    }
+  }
+
+  if (body.competitors !== undefined) {
+    const domain = values.domain || normaliseDomain(body.domain) || '';
+    const competitors = readCompetitors(body.competitors, domain);
+    if (!competitors.ok) return competitors;
+    values.competitors = competitors.competitors;
+  }
+
+  if (body.businessName !== undefined) {
+    values.businessName =
+      typeof body.businessName === 'string' ? body.businessName.trim().slice(0, 200) : '';
+  }
+
+  // Kept in step with whichever lists this patch actually carried, so the
+  // counts the listing renders never describe a previous version of the draft.
+  if (values.trackedKeywords) values.keywordCount = values.trackedKeywords.length;
+  if (values.competitors) values.competitorCount = values.competitors.length;
+  if (values.targets) {
+    values.locations = values.targets.map((t) => ({
+      locId: t.locationCode,
+      lang: t.languageCode,
+      label: t.label,
+    }));
+  }
+
+  return { ok: true, values };
+};
+
 /**
  * Read a whole Site out of a request body.
  *
@@ -318,6 +524,9 @@ const readSiteForm = (body) => {
   if (!domain) {
     return fail('Enter the site domain, like "acme.com".');
   }
+
+  const scope = readScope(body.scope, body.scopePath);
+  if (!scope.ok) return scope;
 
   const keywords = readKeywords(body.trackedKeywords);
   if (!keywords.ok) return keywords;
@@ -354,6 +563,8 @@ const readSiteForm = (body) => {
     values: {
       name,
       domain,
+      scope: scope.scope,
+      scopePath: scope.scopePath,
       businessName,
       trackedKeywords: keywords.keywords,
       targets: targets.targets,
@@ -554,6 +765,10 @@ module.exports = {
   readTargets,
   readCompetitors,
   readSiteForm,
+  readSiteDraft,
+  readSiteDraftPatch,
+  readScope,
+  SCOPES,
   listProjects,
   variantsFor,
   toListing,

@@ -219,6 +219,101 @@ const isTrackedDomain = (itemDomain, domain) => {
   return host === want || host.endsWith(`.${want}`);
 };
 
+/**
+ * The path of a result URL, lowercased, with a guaranteed leading slash and no
+ * query or fragment.
+ *
+ * Hand-parsed rather than `new URL()`, because a SERP payload's `url` is
+ * whatever Google printed and a malformed one must produce a non-match rather
+ * than an exception in the middle of normalising a hundred results.
+ */
+const pathOf = (url) => {
+  const text = String(url || '').trim().toLowerCase();
+  if (!text) return null;
+  const afterScheme = text.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
+  const slash = afterScheme.indexOf('/');
+  if (slash === -1) return '/';
+  return afterScheme.slice(slash).split('?')[0].split('#')[0] || '/';
+};
+
+/**
+ * A path with exactly one trailing slash, so `/uk` and `/uk/` are one folder.
+ *
+ * The distinction people mean when they type a folder is never the slash, and a
+ * scope that missed every result because of one would be a rank tracker
+ * reporting a healthy site as unranked.
+ */
+const asFolder = (path) => {
+  const text = pathOf(path) || '/';
+  return text.endsWith('/') ? text : `${text}/`;
+};
+
+/**
+ * DOES THIS SERP RESULT BELONG TO THE SITE WE ARE TRACKING?
+ *
+ * The scope-aware successor to `isTrackedDomain`, and the single predicate every
+ * rank, own-URL and AI-citation read now goes through — so a Site's scope cannot
+ * be honoured on one screen and ignored on another.
+ *
+ * ---- Why the default is the old behaviour, exactly ------------------------
+ *
+ * `scope` defaults to `domain` on the model and this function treats anything
+ * it does not recognise as `domain` too. A Site authored before scopes existed,
+ * a payload from an older snapshot, a caller that passes nothing: all three read
+ * exactly as they always did. THAT IS THE POINT — a rank history is a
+ * comparison over time, and a predicate that silently narrowed would put a step
+ * change in every chart in the product and attribute it to the client's SEO.
+ *
+ * ---- Why `subfolder` and `url` need the item and not just its domain -------
+ *
+ * Because the folder is in the path, which `item.domain` does not carry. That
+ * is the whole reason this takes the item rather than a string: the narrow
+ * scopes are unimplementable without the URL, and a `scope` field that only
+ * worked for two of its four values would be worse than not having one.
+ *
+ * @param {Object} item - one SERP item, with `domain` and usually `url`
+ * @param {{domain: string, scope?: string, scopePath?: string}} site
+ * @returns {boolean}
+ */
+const matchesTrackedSite = (item, site) => {
+  const domain = String(site?.domain || '').trim().toLowerCase();
+  if (!domain) return false;
+
+  const host = String(item?.domain || '').trim().toLowerCase();
+  if (!host) return false;
+
+  const scope = String(site?.scope || 'domain');
+
+  // `host` is the only scope that refuses subdomains. Every other scope starts
+  // from the wide test and then narrows on the path.
+  const hostMatches =
+    scope === 'host' ? host === domain : host === domain || host.endsWith(`.${domain}`);
+  if (!hostMatches) return false;
+
+  if (scope !== 'subfolder' && scope !== 'url') return true;
+
+  const path = pathOf(item?.url);
+  /**
+   * NO URL, NO MATCH — for the narrow scopes only.
+   *
+   * A result with no URL cannot be shown to be inside the folder, and the safe
+   * direction to fail is "not ours". The opposite would let a missing field
+   * widen a scope back to the whole domain, which is the failure this field
+   * exists to prevent.
+   */
+  if (!path) return false;
+
+  const wanted = String(site?.scopePath || '').trim();
+  // A narrow scope with nothing to narrow ON is treated as the whole domain
+  // rather than as nothing. `readSiteForm` refuses to store that combination,
+  // so this only ever covers a row written before it did.
+  if (!wanted) return true;
+
+  if (scope === 'subfolder') return asFolder(path).startsWith(asFolder(wanted));
+  // `url`: one page, with the trailing slash forgiven in both directions.
+  return asFolder(path) === asFolder(wanted);
+};
+
 // ---------------------------------------------------------------------------
 // Phase 10 — AI Visibility. Free, because it rides inside the rank payload.
 // ---------------------------------------------------------------------------
@@ -375,7 +470,8 @@ const aiTextOf = (block) => {
  * @param {string} domain - the Site's own domain
  * @returns {Object}
  */
-const readAiOverview = (items, domain) => {
+const readAiOverview = (items, site) => {
+  const domain = String(site?.domain || '');
   const list = Array.isArray(items) ? items : [];
   const block = list.find((i) => i && i.type === 'ai_overview') || null;
 
@@ -391,7 +487,13 @@ const readAiOverview = (items, domain) => {
   }
 
   const references = aiReferencesIn(block);
-  const ours = references.findIndex((r) => isTrackedDomain(r.domain, domain));
+  /**
+   * A reference carries a domain and a URL, so the Site's scope applies here
+   * exactly as it does to an organic row: a citation of `acme.com/de/` is not a
+   * citation of the `/uk/` Site, and counting it as one would report an AI
+   * Overview win to the wrong client.
+   */
+  const ours = references.findIndex((r) => matchesTrackedSite(r, site));
 
   const token = brandTokenFor(domain);
   const text = aiTextOf(block);
@@ -448,14 +550,14 @@ const readAiOverview = (items, domain) => {
  * so the screen cannot quietly compare a census with a movement check.
  *
  * @param {Array<Object>} organic
- * @param {string} domain
+ * @param {{domain: string, scope?: string, scopePath?: string}} site
  * @returns {Array<{url: string|null, rank: number|null, rankAbsolute: number|null}>}
  */
-const ownUrlsIn = (organic, domain) => {
+const ownUrlsIn = (organic, site) => {
   const rows = [];
   const seen = new Set();
   for (const item of Array.isArray(organic) ? organic : []) {
-    if (!isTrackedDomain(item?.domain, domain)) continue;
+    if (!matchesTrackedSite(item, site)) continue;
     const url = typeof item.url === 'string' ? item.url : null;
     /**
      * De-duplicated on the URL, because one page can legitimately appear twice
@@ -501,15 +603,23 @@ const ownUrlsIn = (organic, domain) => {
  * @param {any} payload - `tasks[0].result[0]` from `task_get/advanced`
  * @param {Object} opts
  * @param {string} opts.domain - the Site's own domain
+ * @param {string} [opts.scope] - `domain` | `host` | `subfolder` | `url`
+ * @param {string} [opts.scopePath] - the folder or page the narrow scopes mean
  * @param {string} [opts.keyword] - what we asked for, when the payload omits it
  * @returns {Object}
  */
-const normaliseSerpResult = (payload, { domain, keyword = '' } = {}) => {
+const normaliseSerpResult = (payload, { domain, scope, scopePath, keyword = '' } = {}) => {
+  /**
+   * The Site, as the predicate wants it. Assembled once here rather than
+   * threaded as three arguments, so a caller that forgets `scope` gets the
+   * documented default instead of a differently-shaped bug on each screen.
+   */
+  const site = { domain, scope, scopePath };
   const row = payload && typeof payload === 'object' ? payload : {};
   const items = Array.isArray(row.items) ? row.items : [];
 
   const organic = items.filter((i) => i && i.type === 'organic');
-  const hit = organic.find((i) => isTrackedDomain(i.domain, domain)) || null;
+  const hit = organic.find((i) => matchesTrackedSite(i, site)) || null;
 
   return {
     keyword: typeof row.keyword === 'string' && row.keyword ? row.keyword : keyword,
@@ -540,8 +650,8 @@ const normaliseSerpResult = (payload, { domain, keyword = '' } = {}) => {
      * a later reader would be computing a census of twenty results and calling
      * it a census of a hundred.
      */
-    aiOverview: readAiOverview(items, domain),
-    ownUrls: ownUrlsIn(organic, domain),
+    aiOverview: readAiOverview(items, site),
+    ownUrls: ownUrlsIn(organic, site),
   };
 };
 
@@ -750,7 +860,13 @@ module.exports = {
   normaliseUserData,
   normaliseSerpResult,
   aggregatePositions,
+  /**
+   * Still exported, and still correct where it is used: the AI-source table
+   * aggregates HOSTS with no URLs attached, so there is no path for a scope to
+   * narrow on and the wide test is the only honest one available.
+   */
   isTrackedDomain,
+  matchesTrackedSite,
   DFS_TIME,
   // Phase 10 — exported so the tests can assert each half of the AI reading
   // separately, which is the only way "cited and mentioned are different

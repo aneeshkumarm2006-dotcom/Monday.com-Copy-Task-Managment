@@ -286,6 +286,11 @@ test('a whole site reads into exactly the fields the model carries', () => {
     'keywordCount',
     'locations',
     'name',
+    // How much of the domain counts as ours, and the path the narrow scopes
+    // mean. Always present, because the default is a real answer rather than
+    // an absent one - see `ConnectorProject.scope`.
+    'scope',
+    'scopePath',
     'targets',
     'trackedKeywords',
   ]);

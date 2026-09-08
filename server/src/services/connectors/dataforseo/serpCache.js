@@ -601,7 +601,14 @@ const serve = async ({ project, kind, variant, keywords, session, now }) => {
       item_types: row.itemTypes,
       se_results_count: row.seResultsCount,
     };
-    rows.push(normaliseSerpResult(payload, { domain: project.domain, keyword }));
+    rows.push(
+      normaliseSerpResult(payload, {
+        domain: project.domain,
+        scope: project.scope,
+        scopePath: project.scopePath,
+        keyword,
+      })
+    );
 
     const trimmed = trimItems(row.items, C.SERP_RENDER_DEPTH);
     bodies.push({

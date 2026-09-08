@@ -1,4 +1,5 @@
 const sites = require('./sites');
+const locations = require('./locations');
 const { createDfsClient, describeAccount, verifyCredentials } = require('./client');
 const { KINDS, resolveKinds } = require('./kinds');
 const { SCREENS, SCREEN_GROUPS, resolveScreens } = require('./screens');
@@ -363,8 +364,86 @@ const descriptor = {
     maxTargets: C.MAX_TARGETS,
     maxCompetitors: C.MAX_COMPETITORS,
     devices: C.DEVICES,
+
+    /**
+     * How much of the domain counts as ours, as DATA so the picker renders the
+     * server's own list and its own explanations.
+     *
+     * The blurbs are here rather than in the component for the reason the caps
+     * are: this is the file that knows what the values MEAN to a collection,
+     * and a second copy in the client is a second copy to go stale. See
+     * `ConnectorProject.scope` for the full argument and
+     * `normalise.matchesTrackedSite` for the predicate that honours it.
+     */
+    scopes: [
+      {
+        key: 'domain',
+        label: 'Root domain',
+        hint: 'acme.com and every subdomain of it. The right answer for almost every client.',
+        needsPath: false,
+      },
+      {
+        key: 'host',
+        label: 'This host only',
+        hint: 'www.acme.com exactly. Subdomains are somebody else’s — a shop, a help centre.',
+        needsPath: false,
+      },
+      {
+        key: 'subfolder',
+        label: 'Subfolder',
+        hint: 'acme.com/uk/ and below. How one domain honestly carries several sites.',
+        needsPath: true,
+        pathPlaceholder: '/uk/',
+      },
+      {
+        key: 'url',
+        label: 'Exact page',
+        hint: 'One page, for a landing-page campaign.',
+        needsPath: true,
+        pathPlaceholder: '/pricing',
+      },
+    ],
+
+    /**
+     * The location and language catalogs, for the picker.
+     *
+     * Countries ride on the descriptor because they are DERIVED FROM A RULE and
+     * therefore small, static and always correct - see `locations.js`. Cities
+     * do not: they come from the provider on demand, through the endpoint the
+     * `locationSearch` flag advertises, and are never shipped as a table
+     * somebody would have to keep true.
+     */
+    locations: locations.COUNTRIES,
+    languages: locations.LANGUAGES.map(([code, label]) => ({ code, label })),
+    /** A city search needs a connected account; the tab hides it without one. */
+    locationSearch: true,
+    /**
+     * The two halves of that search, as functions on the descriptor so the
+     * controller can serve it WITHOUT naming a provider - the same rule
+     * `readForm` follows. `fetchLocations` is the only billable-looking call
+     * in this block and it is free; `searchLocations` is pure.
+     */
+    fetchLocations: locations.fetchCountryLocations,
+    searchLocations: locations.searchWithin,
+
     /** `(body) => {ok, values} | {ok: false, error, code}`. Pure. */
     readForm: sites.readSiteForm,
+    /**
+     * THE STAGED SETUP, declared by having the readers for it.
+     *
+     * The public catalog derives its `staged` flag from these two being
+     * present, so the tab offers the wizard WITHOUT naming a provider - the
+     * same rule it already follows for "Add site" versus "Refresh projects" -
+     * and a descriptor cannot advertise a flow it has no reader for.
+     *
+     * A Site is worth staging because it carries a scope, up to four markets,
+     * two hundred keywords and ten competitors, and the single dialog that held
+     * all of that asked for a raw integer location code in a number field.
+     */
+    /** The first step alone: domain, name and scope. See `sites.readSiteDraft`. */
+    readDraft: sites.readSiteDraft,
+    /** A partial save of a draft. The one PATCH reader in this file. */
+    readDraftPatch: sites.readSiteDraftPatch,
   },
 
   /**

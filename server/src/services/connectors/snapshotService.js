@@ -851,6 +851,20 @@ const scheduleForProvider = async (provider) => {
     // A project that vanished at the provider keeps its history but has nothing
     // left to collect — every call for it would be a fatal error.
     missing: { $ne: true },
+    /**
+     * A HALF-BUILT SITE IS NEVER COLLECTED FOR.
+     *
+     * The first of the two gates `ConnectorProject.status` describes, and the
+     * one that does not depend on anybody else behaving: a draft has no
+     * keywords, but an EMPTY ARRAY IS TRUTHY and `planProjectWork`'s
+     * `requires` gate therefore does not skip it. This does.
+     *
+     * `$ne` rather than `{status: 'live'}` so a row written before the field
+     * existed — where the key is simply absent — is still collected. Its
+     * default says `live` and it is; a filter that demanded the literal would
+     * silently stop every existing Site the day this shipped.
+     */
+    status: { $ne: 'draft' },
   })
     .sort({ name: 1 })
     .lean();

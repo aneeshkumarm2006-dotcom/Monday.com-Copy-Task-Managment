@@ -16,6 +16,9 @@ const {
   setConnectorProjectGroup,
   createConnectorSite,
   updateConnectorSite,
+  launchConnectorSite,
+  deleteConnectorSite,
+  getConnectorLocations,
 } = require('../controllers/connectorController');
 const {
   getConnectorData,
@@ -186,6 +189,49 @@ router.post('/boards/:boardId/connectors/:provider/sites', createConnectorSite);
 router.put(
   '/boards/:boardId/connectors/:provider/sites/:projectId',
   updateConnectorSite
+);
+
+/**
+ * The staged setup's last step, and its escape hatch.
+ *
+ * `/launch` is the ONLY way out of `status: 'draft'`, and it is a route of its
+ * own rather than a field on the PUT for the reason the controller sets out: it
+ * is the single moment the whole Site is validated at once, and that validation
+ * is what the word "live" means. Burying it in an update path would put the
+ * guarantee one forgotten line away from being lost.
+ *
+ * DELETE is here because the staged flow makes abandoned drafts a normal
+ * outcome — somebody opens the wizard, types a domain, and closes the tab. It
+ * refuses any Site that has actually collected something; that one is unmapped,
+ * not deleted, because the row parents its own history.
+ *
+ * Both are `connector.manage` like the two above, and for the same reason:
+ * launching starts a bill.
+ */
+router.post(
+  '/boards/:boardId/connectors/:provider/sites/:projectId/launch',
+  launchConnectorSite
+);
+router.delete(
+  '/boards/:boardId/connectors/:provider/sites/:projectId',
+  deleteConnectorSite
+);
+
+/**
+ * The market picker's city search.
+ *
+ * `connector.view`, not `manage`: it reads a free, public geography table and
+ * spends nothing, and the same read is what renders an EXISTING Site's markets
+ * as place names instead of as the bare integers the provider addresses them
+ * by. Somebody who may not change a market should still be able to read it.
+ *
+ * Rate-limited even so. It reaches a third party, and a typeahead is the one
+ * shape of UI that can turn a slow key-repeat into a hundred requests.
+ */
+router.get(
+  '/boards/:boardId/connectors/:provider/locations',
+  rateLimit({ bucket: 'connector:locations', windowMs: 60_000, max: 60 }),
+  getConnectorLocations
 );
 
 // --- The data plane ---------------------------------------------------------

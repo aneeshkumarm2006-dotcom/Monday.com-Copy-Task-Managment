@@ -150,6 +150,45 @@ const listConnectors = () =>
             devices: Array.isArray(c.projectAuthoring.devices)
               ? [...c.projectAuthoring.devices]
               : [],
+            /**
+             * Whether setup is a staged wizard or a single dialog.
+             *
+             * DERIVED FROM THE CAPABILITY, never declared. The staged flow saves
+             * after every step, so it is exactly and only available to a
+             * descriptor that can read a partial site — and a hand-written flag
+             * beside those functions is a second copy of the same fact, free to
+             * drift from it. The failure that drift produces is not subtle: the
+             * wizard's first step would POST a domain with no keywords to a
+             * reader that requires them, and the whole flow would be dead on
+             * arrival for that provider.
+             */
+            staged:
+              typeof c.projectAuthoring.readDraft === 'function' &&
+              typeof c.projectAuthoring.readDraftPatch === 'function',
+            /** How much of a domain counts as ours, with the server's copy. */
+            scopes: Array.isArray(c.projectAuthoring.scopes)
+              ? c.projectAuthoring.scopes.map((s) => ({ ...s }))
+              : [],
+            /**
+             * The country catalog, verbatim.
+             *
+             * ~115 rows of five short fields, and it rides on the board load
+             * that already carries every screen and every field this provider
+             * declares. The alternative - a second request the moment somebody
+             * opens the market step - buys a round trip to save a few KB on a
+             * page that is not on any hot path.
+             *
+             * Cities are NOT here, and that is the point: they are tens of
+             * thousands of rows per country and they come from the provider on
+             * demand. `locationSearch` says that endpoint exists.
+             */
+            locations: Array.isArray(c.projectAuthoring.locations)
+              ? c.projectAuthoring.locations.map((l) => ({ ...l }))
+              : [],
+            languages: Array.isArray(c.projectAuthoring.languages)
+              ? c.projectAuthoring.languages.map((l) => ({ ...l }))
+              : [],
+            locationSearch: !!c.projectAuthoring.locationSearch,
           }
         : null,
 

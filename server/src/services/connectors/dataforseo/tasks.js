@@ -859,6 +859,11 @@ const pollJob = async ({
 
       const normalised = normaliseSerpResult(row, {
         domain: project.domain,
+        // The Site's scope travels with its domain everywhere the two are read
+        // together. Omitting it here would make a `/uk/` Site's rank identical
+        // to the whole domain's on the one path that actually collects.
+        scope: project.scope,
+        scopePath: project.scopePath,
         keyword: item.keyword,
       });
 

@@ -205,6 +205,108 @@ const connectorProjectSchema = new mongoose.Schema(
     businessName: { type: String, default: '' },
 
     /**
+     * HOW MUCH OF THE DOMAIN COUNTS AS OURS when a result comes back.
+     *
+     * The first question Semrush's own setup asks, and it is not cosmetic: it
+     * decides which SERP rows are read as the client's. A blog on
+     * `blog.acme.com` is the same business as `acme.com` and a different
+     * property from `acme.com/blog`, and an agency reporting on one of those
+     * three while measuring another is reporting a number that is simply not
+     * about the thing in the heading.
+     *
+     *   `domain`    - the host and every subdomain of it. THE DEFAULT, and what
+     *                 every row written before this field existed means. Widest,
+     *                 and right for almost every client.
+     *   `host`      - this exact host only. `www.acme.com` ranking does not
+     *                 count as `acme.com` ranking. For a business whose
+     *                 subdomains are somebody else's — a shop on Shopify, a help
+     *                 centre on Zendesk.
+     *   `subfolder` - inside one path, `acme.com/uk/`. The usual answer for an
+     *                 international site that splits markets by folder, and the
+     *                 reason one domain can honestly carry several Sites.
+     *   `url`       - one page, exactly. A landing-page campaign.
+     *
+     * ---- Why this is stored rather than inferred from the domain -----------
+     *
+     * Because it cannot be inferred. `acme.com` and `acme.com/uk/` are told
+     * apart by a slash, but `www.acme.com` under `domain` and under `host` are
+     * the same string meaning two different things, and the difference is the
+     * user's intent. `sites.normaliseDomain` deliberately keeps `www.` for the
+     * same reason.
+     *
+     * `normalise.matchesTrackedSite` is the only reader, and the default is
+     * exactly today's behaviour — so an existing Site's history keeps meaning
+     * what it meant.
+     */
+    scope: {
+      type: String,
+      enum: ['domain', 'host', 'subfolder', 'url'],
+      default: 'domain',
+    },
+
+    /**
+     * The path or URL the two narrow scopes are about.
+     *
+     * Empty for `domain` and `host`, which need nothing beyond the domain
+     * itself. REQUIRED IN PRACTICE for `subfolder` and `url` — a `subfolder`
+     * scope with no folder would match the whole site and quietly become
+     * `domain` under a name that says otherwise, which is the kind of silent
+     * widening that shows up as an inexplicably good rank report.
+     * `sites.readSiteForm` refuses that combination rather than defaulting it.
+     *
+     * Stored as the path only ("/uk/"), never the full URL: the host is already
+     * `domain`, and two places holding the same host is two places for them to
+     * disagree.
+     */
+    scopePath: { type: String, default: '' },
+
+    /**
+     * IS THIS SITE FINISHED BEING SET UP?
+     *
+     * ---- Why a half-built project is allowed to exist at all ---------------
+     *
+     * Because the setup is genuinely long — a domain, its markets, up to two
+     * hundred keywords, its competitors — and the alternative to storing a
+     * partial one is a single dialog that must be completed in one sitting or
+     * lost. That is the form this feature replaced, and "I pasted a hundred
+     * keywords and then went to look up a location code" is exactly how its
+     * drafts were lost.
+     *
+     * It also matches how the tools this is modelled on work: a project is
+     * created from a domain and a name, and each tool inside it is set up
+     * afterwards, at leisure.
+     *
+     *   `draft` - created, not finished, AND NEVER COLLECTED FOR.
+     *   `live`  - passed the full `readSiteForm` and is collectable.
+     *
+     * ---- The two gates, and why there are two ------------------------------
+     *
+     * A draft has no keywords, and `planProjectWork` gates a kind on
+     * `project[kind.requires]` where an EMPTY ARRAY IS TRUTHY — the trap this
+     * schema already records twice. So "it has no keywords" does not stop a
+     * draft being collected for, and cannot be relied on.
+     *
+     * What stops it is two independent facts:
+     *
+     *   1. `scheduleForProvider` filters `status: {$ne: 'draft'}` directly.
+     *   2. A draft CANNOT BE BOUND TO A GROUP (`setConnectorProjectGroup`
+     *      refuses one), and that scheduler only ever loads bound projects.
+     *
+     * Either alone would do. Both, because the thing on the other side of this
+     * gate is money, and a gate with a spare is the correct shape for that.
+     *
+     * DEFAULT `live`, deliberately: every row that existed before this field
+     * was added is finished, and defaulting to `draft` would strand every one
+     * of them the moment the code shipped.
+     */
+    status: {
+      type: String,
+      enum: ['draft', 'live'],
+      default: 'live',
+      index: true,
+    },
+
+    /**
      * This row was authored here rather than mirrored from a provider.
      *
      * The flag that makes the difference visible in a shell six months from now,

@@ -5,6 +5,7 @@ const ConnectorAuthAttempt = require('../models/ConnectorAuthAttempt');
 const BoardConnector = require('../models/BoardConnector');
 const ConnectorProject = require('../models/ConnectorProject');
 const ConnectorBudget = require('../models/ConnectorBudget');
+const ConnectorSnapshot = require('../models/ConnectorSnapshot');
 const TaskGroup = require('../models/TaskGroup');
 
 const {
@@ -15,6 +16,7 @@ const {
 const { getConnector, listConnectors } = require('../services/connectors');
 const { monthKeyFor } = require('../services/connectors/budget');
 const { refreshOrgProjects } = require('../services/connectors/projectMirror');
+const { openSession } = require('../services/connectors/session');
 const { isConnectorProvider, connectorProviderLabel } = require('../utils/connectorProviders');
 const connectorCrypto = require('../utils/connectorCrypto');
 
@@ -1089,6 +1091,15 @@ const publicProject = (project, { includeRaw = false } = {}) => {
      * see `ConnectorProject.businessName`.
      */
     businessName: project.businessName || '',
+    /**
+     * How much of the domain counts as this Site's, and whether setup ever
+     * finished. Both are what the listing renders a card's state from - a draft
+     * is offered "Resume setup" and a live one its numbers - so they ride on the
+     * ordinary read rather than needing a second request per row.
+     */
+    scope: project.scope || 'domain',
+    scopePath: project.scopePath || '',
+    status: project.status || 'live',
     locallyAuthored: !!project.locallyAuthored,
   };
   if (includeRaw) out.raw = project.raw ?? null;
@@ -1255,6 +1266,25 @@ const setConnectorProjectGroup = async (req, res) => {
       project.boundAt = null;
       await project.save();
       return res.json({ project: publicProject(project) });
+    }
+
+    /**
+     * THE SECOND DRAFT GATE. See `ConnectorProject.status`.
+     *
+     * Binding is what makes a Site collectable — the scheduler only ever loads
+     * bound projects — so an unfinished one must not get past here. The
+     * scheduler refuses drafts too, and deliberately: this one produces a
+     * sentence a person can act on, that one is the backstop that holds even if
+     * a row reaches a group by some path this controller does not own.
+     *
+     * UNMAPPING a draft is untouched, above. It is always allowed, because it
+     * can only ever reduce what is collected.
+     */
+    if (project.status === 'draft') {
+      return res.status(409).json({
+        error: `${project.name || project.domain} has not finished setting up. Finish it before mapping it to a group.`,
+        code: 'SITE_DRAFT',
+      });
     }
 
     const group = await TaskGroup.findById(groupId).select('board name').lean();
@@ -1436,7 +1466,24 @@ const createConnectorSite = async (req, res) => {
     const { ctx, connector } = gated;
     const { provider } = req.params;
 
-    const form = connector.projectAuthoring.readForm(req.body);
+    /**
+     * TWO WAYS IN, and the body picks which.
+     *
+     * `draft: true` is the staged setup's first step - a domain, a name and a
+     * scope - and it produces a row that is explicitly NOT collectable. Anything
+     * else is the one-shot create that has always existed, and it still goes
+     * through the full form.
+     *
+     * The branch is on the DESCRIPTOR having a draft reader, not on the flag
+     * alone: a provider that never declared one cannot be talked into a
+     * half-built project by a request body.
+     */
+    const wantsDraft =
+      req.body?.draft === true && typeof connector.projectAuthoring.readDraft === 'function';
+
+    const form = wantsDraft
+      ? connector.projectAuthoring.readDraft(req.body)
+      : connector.projectAuthoring.readForm(req.body);
     if (!form.ok) {
       return res.status(400).json({ error: form.error, code: form.code || undefined });
     }
@@ -1484,6 +1531,7 @@ const createConnectorSite = async (req, res) => {
         raw: null,
         missing: false,
         lastSeenAt: new Date(),
+        status: wantsDraft ? 'draft' : 'live',
         ...form.values,
       });
     } catch (err) {
@@ -1527,17 +1575,34 @@ const updateConnectorSite = async (req, res) => {
       return res.status(400).json({ error: 'Invalid project id' });
     }
 
-    const form = connector.projectAuthoring.readForm(req.body);
-    if (!form.ok) {
-      return res.status(400).json({ error: form.error, code: form.code || undefined });
-    }
-
     const project = await ConnectorProject.findOne({
       _id: projectId,
       organisation: ctx.board.organisation,
       provider,
     });
     if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    /**
+     * A DRAFT IS PATCHED; A LIVE SITE IS REPLACED.
+     *
+     * Two different rules for two genuinely different things, and the row's own
+     * status decides - never the request, which would let a caller opt out of
+     * the full-replacement rule that keeps a live edit unambiguous.
+     *
+     * The wizard saves after each step, so a request carrying only keywords
+     * must not be read as "and no markets". A finished Site has the opposite
+     * need: an edit that drops four keywords has to be able to say so.
+     */
+    const isDraft = project.status === 'draft';
+    const reader =
+      isDraft && typeof connector.projectAuthoring.readDraftPatch === 'function'
+        ? connector.projectAuthoring.readDraftPatch
+        : connector.projectAuthoring.readForm;
+
+    const form = reader(req.body);
+    if (!form.ok) {
+      return res.status(400).json({ error: form.error, code: form.code || undefined });
+    }
 
     // A mirrored row is somebody else's record. Editing one here would put our
     // edit and the next refresh in a fight the refresh always wins.
@@ -1548,7 +1613,7 @@ const updateConnectorSite = async (req, res) => {
       });
     }
 
-    if (project.domain !== form.values.domain) {
+    if (form.values.domain && project.domain !== form.values.domain) {
       const clash = await findDomainClash({
         organisation: ctx.board.organisation,
         provider,
@@ -1573,6 +1638,259 @@ const updateConnectorSite = async (req, res) => {
   }
 };
 
+/**
+ * POST /api/boards/:boardId/connectors/:provider/sites/:projectId/launch
+ *
+ * FINISH THE SETUP. The staged flow's "Start tracking".
+ *
+ * ---- Why this is its own endpoint and not a PATCH of `status` -------------
+ *
+ * Because it is the only moment the whole Site is checked at once, and that
+ * check is what the word "live" means. A draft accumulates through a patch
+ * reader that accepts an empty keyword list and an empty market list, on
+ * purpose - so at the moment of launch NOTHING has yet verified that this row
+ * is collectable. `readForm` is that verification, and it runs here against the
+ * MERGED row rather than against a request body, because the wizard's last step
+ * sends nothing new.
+ *
+ * A `PATCH {status: 'live'}` would put the same guarantee behind a field
+ * assignment, where the next person to add a field to the update path has to
+ * remember it. This cannot be forgotten: there is no other way out of draft.
+ */
+const launchConnectorSite = async (req, res) => {
+  try {
+    const gated = await gateAuthoring(req, res);
+    if (!gated) return undefined;
+    const { ctx, connector } = gated;
+    const { provider, projectId } = req.params;
+
+    if (!isValidId(projectId)) {
+      return res.status(400).json({ error: 'Invalid project id' });
+    }
+
+    const project = await ConnectorProject.findOne({
+      _id: projectId,
+      organisation: ctx.board.organisation,
+      provider,
+    });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!project.locallyAuthored) {
+      return res.status(409).json({
+        error: 'That project came from the provider, so it is set up there.',
+        code: 'NOT_AUTHORED',
+      });
+    }
+
+    /**
+     * The check runs against the STORED row, with the request body allowed to
+     * supply the last step's answers on the way past. Sending the whole Site
+     * again would work too, but it would mean the browser holding the
+     * authoritative copy of something the server has - and a stale tab could
+     * then launch yesterday's keyword list.
+     */
+    const merged = {
+      name: project.name,
+      domain: project.domain,
+      scope: project.scope,
+      scopePath: project.scopePath,
+      trackedKeywords: project.trackedKeywords,
+      targets: project.targets,
+      competitors: project.competitors,
+      businessName: project.businessName,
+      ...(req.body && typeof req.body === 'object' ? req.body : {}),
+    };
+
+    const form = connector.projectAuthoring.readForm(merged);
+    if (!form.ok) {
+      return res.status(400).json({ error: form.error, code: form.code || undefined });
+    }
+
+    if (project.domain !== form.values.domain) {
+      const clash = await findDomainClash({
+        organisation: ctx.board.organisation,
+        provider,
+        domain: form.values.domain,
+        excludeId: project._id,
+      });
+      if (clash) {
+        return res.status(409).json({
+          error: `${form.values.domain} is already set up here.`,
+          code: 'DOMAIN_TAKEN',
+        });
+      }
+    }
+
+    Object.assign(project, form.values);
+    project.status = 'live';
+    await project.save();
+
+    return res.json({ project: publicProject(project) });
+  } catch (err) {
+    console.error('launchConnectorSite error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * DELETE /api/boards/:boardId/connectors/:provider/sites/:projectId
+ *
+ * Throw a Site away.
+ *
+ * ---- Why this refuses a Site that has collected anything ------------------
+ *
+ * `ConnectorProject` is the parent of every `ConnectorSnapshot` ever written
+ * for that domain, and the model says in as many words that deleting one to
+ * tidy up would silently discard the month-over-month history that is the whole
+ * reason the feature exists. A cascade would do exactly that, quietly, on a
+ * button somebody pressed meaning "remove this from the list".
+ *
+ * So the rule is narrow and honest: a Site with no readings can be deleted,
+ * because there is nothing to lose; one with readings is UNMAPPED instead,
+ * which stops all collection and costs nothing, and the person is told that in
+ * a sentence rather than finding out from a chart that went blank.
+ *
+ * That also makes the ordinary case work - a draft abandoned halfway through
+ * setup has no snapshots by construction, and clearing those out is the reason
+ * this endpoint exists at all.
+ */
+const deleteConnectorSite = async (req, res) => {
+  try {
+    const gated = await gateAuthoring(req, res);
+    if (!gated) return undefined;
+    const { ctx } = gated;
+    const { provider, projectId } = req.params;
+
+    if (!isValidId(projectId)) {
+      return res.status(400).json({ error: 'Invalid project id' });
+    }
+
+    const project = await ConnectorProject.findOne({
+      _id: projectId,
+      organisation: ctx.board.organisation,
+      provider,
+    });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    if (!project.locallyAuthored) {
+      return res.status(409).json({
+        error: 'That project came from the provider, so it is deleted there.',
+        code: 'NOT_AUTHORED',
+      });
+    }
+
+    const snapshots = await ConnectorSnapshot.countDocuments({ project: project._id });
+    if (snapshots > 0) {
+      return res.status(409).json({
+        error:
+          `${project.name || project.domain} has ${snapshots} collected reading` +
+          `${snapshots === 1 ? '' : 's'}. Unmap it from its group to stop collecting — ` +
+          'deleting it would throw that history away.',
+        code: 'HAS_HISTORY',
+      });
+    }
+
+    await ConnectorProject.deleteOne({ _id: project._id });
+    return res.json({ deleted: String(project._id) });
+  } catch (err) {
+    console.error('deleteConnectorSite error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/boards/:boardId/connectors/:provider/locations?country=US&q=york
+ *
+ * The market picker's search.
+ *
+ * ---- Why the countries do not come through here ---------------------------
+ *
+ * They already arrived on the board load, inside the descriptor. This endpoint
+ * exists for the half that CANNOT be shipped: the cities and regions inside one
+ * country, which are tens of thousands of rows and have no derivable codes.
+ *
+ * `connector.view` rather than `connector.manage`, deliberately. It reads a
+ * public geography table, spends nothing, and the read is what makes an
+ * EXISTING Site's markets legible - "2840" rendered as "United States" is worth
+ * having for somebody who may not change it.
+ */
+const getConnectorLocations = async (req, res) => {
+  try {
+    const { provider } = req.params;
+
+    const ctx = await gateBoard(req, res, 'connector.view');
+    if (!ctx) return undefined;
+
+    const connector = isConnectorProvider(provider) ? getConnector(provider) : null;
+    if (!connector?.projectAuthoring?.locationSearch) {
+      return res.status(400).json({
+        error: `${connector?.label || provider} has no location catalog.`,
+        code: 'NO_LOCATIONS',
+      });
+    }
+
+    const country = String(req.query?.country || '').trim().toUpperCase();
+    const query = String(req.query?.q || '').trim();
+
+    if (!/^[A-Z]{2}$/.test(country)) {
+      return res.status(400).json({ error: 'Pick a country first.' });
+    }
+
+    /**
+     * ANY usable account will do, and the first one is fine.
+     *
+     * This is a static reference table, identical for every account, so the
+     * pool's usual "say which one" rule buys nothing here - it would just be a
+     * dialog asking somebody to choose between two identical answers.
+     */
+    const account = await ConnectorAccount.findOne({
+      organisation: ctx.board.organisation,
+      provider,
+      status: { $ne: 'revoked' },
+    })
+      .sort({ label: 1 })
+      .lean();
+
+    if (!account) {
+      return res.status(409).json({
+        error: `Connect a ${connectorProviderLabel(provider)} account to search cities.`,
+        code: 'NO_ACCOUNT',
+      });
+    }
+
+    let session;
+    try {
+      session = await openSession(account._id);
+    } catch (err) {
+      return res.status(err.needsReauth ? 409 : err.status || 500).json({
+        error: err.message,
+        code: err.needsReauth ? 'NEEDS_REAUTH' : undefined,
+      });
+    }
+
+    try {
+      const client = connector.createClient(session);
+      const rows = await connector.projectAuthoring.fetchLocations(client, country);
+      return res.json({
+        locations: connector.projectAuthoring.searchLocations(rows, query),
+        country,
+      });
+    } catch (err) {
+      if (err.needsReauth) {
+        await session.markNeedsReauth();
+        return res.status(409).json({ error: err.message, code: 'NEEDS_REAUTH' });
+      }
+      // A geography lookup failing is a nuisance, never a blocker: the country
+      // list still works and the raw-code field is still there.
+      return res.status(err.status || 502).json({
+        error: err.message || 'Could not read that country’s locations.',
+      });
+    }
+  } catch (err) {
+    console.error('getConnectorLocations error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   getCatalog,
   listOrgConnectors,
@@ -1588,6 +1906,9 @@ module.exports = {
   setConnectorProjectGroup,
   createConnectorSite,
   updateConnectorSite,
+  launchConnectorSite,
+  deleteConnectorSite,
+  getConnectorLocations,
   // Exported for the phases that follow — one gate, not a copy per controller.
   gateBoard,
   gateOrgAdmin,

@@ -19,6 +19,7 @@ import EmptyState from '../../ui/EmptyState';
 import useToastStore from '../../../store/toastStore';
 import FieldMappingPanel from './FieldMappingPanel';
 import SiteFormModal from './SiteFormModal';
+import SitesPanel from './sites/SitesPanel';
 import ConnectorSettingsPanel from './ConnectorSettingsPanel';
 import AdsBudgetAddonCard from './AdsBudgetAddonCard';
 import GoalVocabularyCard from './GoalVocabularyCard';
@@ -262,9 +263,39 @@ const AddonsTab = ({
           : [saved, ...list],
       };
     });
-    toastSuccess(
-      `${saved.name || saved.domain} saved. Map it to a group to start collecting.`
-    );
+    /**
+     * WHAT TO SAY DEPENDS ON WHETHER IT IS FINISHED.
+     *
+     * "Map it to a group to start collecting" is wrong for a draft twice over:
+     * it cannot be mapped (the server refuses one), and saying so invites
+     * somebody to go looking for a dropdown that is deliberately not there.
+     *
+     * A draft also saves after every step of the wizard, so a toast per save
+     * would be five toasts for one site. It gets none — the wizard's own
+     * progress is the feedback.
+     */
+    if (saved.status !== 'draft') {
+      toastSuccess(
+        saved.group
+          ? `${saved.name || saved.domain} saved.`
+          : `${saved.name || saved.domain} saved. Map it to a group to start collecting.`
+      );
+    }
+  };
+
+  /**
+   * A site was deleted. Dropped from the list in place, for the same reason a
+   * save is merged in place: refetching would make the row jump while the
+   * confirmation toast is still on screen.
+   *
+   * Only ever reachable for a site with no collected readings — the server
+   * refuses the rest, because the row parents its own history.
+   */
+  const siteDeleted = (provider, projectId) => {
+    setProjectsByProvider((prev) => ({
+      ...prev,
+      [provider]: (prev[provider] || []).filter((p) => String(p._id) !== String(projectId)),
+    }));
   };
 
   const mapProject = async (provider, project, groupId) => {
@@ -420,18 +451,26 @@ const AddonsTab = ({
                       the far end; one that authors its own gets "Add site",
                       because there is no far end to read. Neither branch names
                       a provider. */}
-                  {connector.enabled && canManage && connector.projectAuthoring && (
-                    <Button
-                      variant="secondary"
-                      icon={Plus}
-                      onClick={() =>
-                        setSiteModal({ provider: connector.name, project: null })
-                      }
-                      disabled={!connector.accountCount}
-                    >
-                      Add {connector.projectAuthoring.label.toLowerCase()}
-                    </Button>
-                  )}
+                  {/* A provider whose setup is STAGED grows its own "Add"
+                      button inside the panel below, beside the sites it is
+                      adding to — so the header would be a second one, and the
+                      one furthest from what it acts on. The single-dialog
+                      providers keep theirs here. */}
+                  {connector.enabled &&
+                    canManage &&
+                    connector.projectAuthoring &&
+                    !connector.projectAuthoring.staged && (
+                      <Button
+                        variant="secondary"
+                        icon={Plus}
+                        onClick={() =>
+                          setSiteModal({ provider: connector.name, project: null })
+                        }
+                        disabled={!connector.accountCount}
+                      >
+                        Add {connector.projectAuthoring.label.toLowerCase()}
+                      </Button>
+                    )}
                   {connector.enabled && canManage && !connector.projectAuthoring && (
                     <Button
                       variant="secondary"
@@ -500,7 +539,35 @@ const AddonsTab = ({
                     </div>
                   )}
 
-                  {projects.length === 0 ? (
+                  {/*
+                    ---- Two shapes of project list, and the DESCRIPTOR picks ---
+
+                    A provider whose setup is staged gets the card list, because
+                    its rows carry a state a line cannot express: a DRAFT is a
+                    real row that collects nothing and needs a person to finish
+                    it, and rendering that as a normal row with an empty keyword
+                    count is how a half-built site sits unnoticed for a month.
+
+                    Everything else keeps the row list it has always had. Neither
+                    branch names a provider — the same rule the two "Add" verbs
+                    above already follow.
+                  */}
+                  {connector.projectAuthoring?.staged ? (
+                    <SitesPanel
+                      boardId={boardId}
+                      connector={connector}
+                      projects={projects}
+                      accounts={providerAccounts}
+                      groups={groups}
+                      canManage={canManage}
+                      savingProjectId={savingProject}
+                      onSaved={(row) => siteSaved(connector.name, row)}
+                      onDeleted={(id) => siteDeleted(connector.name, id)}
+                      onMap={(project, groupId) =>
+                        mapProject(connector.name, project, groupId)
+                      }
+                    />
+                  ) : projects.length === 0 ? (
                     <div
                       className="px-4 py-6"
                       style={{ borderTop: '1px solid var(--color-border)' }}

@@ -225,7 +225,7 @@ const plainSerp = (keyword) => ({
 });
 
 test('CITED and MENTIONED are read apart, and neither implies the other', () => {
-  const citedOnly = N.readAiOverview(aiSerp({ cited: true, mentioned: false }).items, 'acme.com');
+  const citedOnly = N.readAiOverview(aiSerp({ cited: true, mentioned: false }).items, { domain: 'acme.com' });
   assert.equal(citedOnly.present, true);
   assert.equal(citedOnly.cited, true);
   assert.equal(
@@ -236,7 +236,7 @@ test('CITED and MENTIONED are read apart, and neither implies the other', () => 
 
   const mentionedOnly = N.readAiOverview(
     aiSerp({ cited: false, mentioned: true }).items,
-    'acme.com'
+    { domain: 'acme.com' }
   );
   assert.equal(mentionedOnly.cited, false);
   assert.equal(
@@ -267,7 +267,7 @@ test('a citation URL with a scroll-to-text fragment still resolves to a host', (
 });
 
 test('no AI Overview at all is `present: false`, not "the overview ignored us"', () => {
-  const none = N.readAiOverview(plainSerp('x').items, 'acme.com');
+  const none = N.readAiOverview(plainSerp('x').items, { domain: 'acme.com' });
   assert.deepEqual(none, {
     present: false,
     cited: false,
