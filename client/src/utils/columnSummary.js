@@ -76,7 +76,21 @@ export const computeSummary = (rows, column) => {
   }
 
   const nums = numbersIn(present);
-  if (nums.length === 0) return null;
+  if (nums.length === 0) {
+    /**
+     * An EMPTY group still has a total, and it is zero.
+     *
+     * Returning null here meant a freshly-seeded Billing board showed twelve
+     * months with no totals anywhere — so the one thing the template promised
+     * (this board adds your invoices up) was invisible until somebody typed an
+     * invoice in. A sum over nothing is 0; say so.
+     *
+     * Min and max are the exception: the smallest of no numbers is not zero,
+     * it does not exist, and printing ₹0 would be a claim rather than a blank.
+     */
+    if (kind === 'sum') return { value: 0, count: 0 };
+    return null;
+  }
 
   switch (kind) {
     case 'sum':

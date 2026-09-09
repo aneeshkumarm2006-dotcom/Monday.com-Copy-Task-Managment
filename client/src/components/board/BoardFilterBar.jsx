@@ -28,6 +28,7 @@ import {
   OptionRow,
   MiniChip,
 } from '../ui/FilterControls';
+import { boardOffersFilter } from '../../utils/boardTemplateDisplay';
 
 const PRIORITY_ORDER = ['critical', 'high', 'medium', 'low'];
 const LEGACY_STATUS_ORDER = ['not_started', 'working_on_it', 'done', 'stuck'];
@@ -66,6 +67,14 @@ const BoardFilterBar = ({
   // Mobile-only: whether the filter row is expanded below the toggle.
   const [mobileExpanded, setMobileExpanded] = useState(false);
   const activeCount = countActiveFilters(filters);
+  /**
+   * Which filters this board offers.
+   *
+   * Priority and Labels are meaningless on an invoice, and a control that
+   * never narrows anything teaches people the whole row is not worth reading.
+   * A plain task board offers all five, exactly as before.
+   */
+  const offers = (key) => boardOffersFilter(board, key);
   const set = (patch) => onChange?.({ ...filters, ...patch });
 
   // --- Derived option lists ------------------------------------------------
@@ -248,6 +257,7 @@ const BoardFilterBar = ({
       </div>
 
       {/* Status */}
+      {offers('status') && (
       <FilterPopover label="Status" icon={CircleDot} activeCount={filters.statuses?.length || 0}>
         <OptionList emptyLabel="No statuses">
           {statusOptions.map((opt) => (
@@ -261,8 +271,10 @@ const BoardFilterBar = ({
           ))}
         </OptionList>
       </FilterPopover>
+      )}
 
       {/* Priority */}
+      {offers('priority') && (
       <FilterPopover label="Priority" icon={Flag} activeCount={filters.priorities?.length || 0}>
         <OptionList>
           {PRIORITY_ORDER.map((key) => {
@@ -281,8 +293,10 @@ const BoardFilterBar = ({
           })}
         </OptionList>
       </FilterPopover>
+      )}
 
       {/* Labels */}
+      {offers('labels') && (
       <FilterPopover label="Labels" icon={Tag} activeCount={filters.labels?.length || 0}>
         <OptionList emptyLabel="No labels on this board">
           {labelOptions.length > 0 && (
@@ -310,8 +324,10 @@ const BoardFilterBar = ({
           ))}
         </OptionList>
       </FilterPopover>
+      )}
 
       {/* Due date */}
+      {offers('due') && (
       <FilterPopover label="Due date" icon={Calendar} activeCount={filters.due?.length || 0}>
         <OptionList>
           {DUE_BUCKETS.map((b) => (
@@ -330,8 +346,10 @@ const BoardFilterBar = ({
           ))}
         </OptionList>
       </FilterPopover>
+      )}
 
       {/* Assignee */}
+      {offers('owner') && (
       <FilterPopover label="Owner" icon={User} activeCount={filters.assignees?.length || 0}>
         <OptionList emptyLabel="Nobody assigned yet">
           <OptionRow
@@ -364,6 +382,7 @@ const BoardFilterBar = ({
           ))}
         </OptionList>
       </FilterPopover>
+      )}
 
       {/* Group owner (tracker boards) — hides whole groups, not rows */}
       {showGroupOwner && (

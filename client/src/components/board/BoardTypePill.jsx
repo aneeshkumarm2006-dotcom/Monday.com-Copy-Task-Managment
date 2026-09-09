@@ -1,5 +1,6 @@
 import { Globe, Lock, CalendarRange, Users } from 'lucide-react';
 import { boardTypeKey } from '../../utils/boardFilters';
+import { templateDisplay } from '../../utils/boardTemplateDisplay';
 
 /**
  * The little pill that says what KIND of board this is.
@@ -44,8 +45,33 @@ const BoardTypePill = ({ board, size = 11 }) => {
   if (!board) return null;
   const spec = STYLES[boardTypeKey(board)];
   const Icon = spec.icon;
+  /**
+   * The TEMPLATE pill sits alongside, never instead.
+   *
+   * They answer different questions and both matter: "Billing" is what the
+   * board is FOR, "private" is who can see it. Collapsing them would drop
+   * whichever half the reader happened to need — and on a hiring board, the
+   * half that says who can read it is not the one to lose.
+   */
+  const tpl = templateDisplay(board);
 
   return (
+    <>
+    {tpl.label && (
+      <span
+        className="inline-flex items-center gap-1 font-body shrink-0"
+        style={{
+          fontSize: size,
+          fontWeight: 600,
+          padding: size >= 11 ? '3px 10px' : '2px 8px',
+          borderRadius: 'var(--radius-full)',
+          background: tpl.background,
+          color: tpl.color,
+        }}
+      >
+        {tpl.label}
+      </span>
+    )}
     <span
       className="inline-flex items-center gap-1 font-body shrink-0"
       style={{
@@ -60,6 +86,7 @@ const BoardTypePill = ({ board, size = 11 }) => {
       <Icon size={size} aria-hidden="true" />
       {spec.label}
     </span>
+    </>
   );
 };
 

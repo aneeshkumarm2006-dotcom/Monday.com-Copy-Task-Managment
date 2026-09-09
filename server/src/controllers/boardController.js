@@ -700,6 +700,7 @@ const createBoard = async (req, res) => {
         groups: sourceGroups.map((g) => g.name),
         defaultView: source.defaultView || 'table',
         forceVisibility: null,
+        templateKey: source.templateKey || null,
       };
       // A board with no statuses (pre-migration) would seed a board that cannot
       // hold a status at all. Fall back rather than copy the gap.
@@ -830,6 +831,10 @@ const createBoard = async (req, res) => {
       useFlexibleColumns: tpl.columns.length > 0,
       goalColumns: [],
       defaultView: tpl.defaultView || 'table',
+      // A label only — see the field's comment on the model. A board copied
+      // from another board inherits ITS label, because the shape is the same
+      // thing and calling the copy "Blank" would be less true, not more.
+      templateKey: tpl.templateKey || (template === 'blank' ? null : template),
     });
 
     // Seed the template's groups. Best-effort and AFTER the board exists: a

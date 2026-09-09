@@ -58,6 +58,7 @@ import TaskTable from '../components/board/TaskTable';
 import { InlineAssigneeMenu } from '../components/board/AssigneePicker';
 import DataGrid from '../components/board/DataGrid';
 import { groupSummaries } from '../utils/columnSummary';
+import { newRowLabel, rowCountLabel } from '../utils/boardTemplateDisplay';
 import SortableItem from '../components/dnd/SortableItem';
 import StatusMenu from '../components/board/StatusMenu';
 import PriorityMenu from '../components/board/PriorityMenu';
@@ -376,12 +377,28 @@ const BoardDetailPage = () => {
       return next;
     });
 
-  // Collapse all groups on first load — gives the clean "categories only" view
+  /**
+   * Collapse all groups on first load — the clean "categories only" view.
+   *
+   * EXCEPT the first group on a template board that is still empty. A Billing
+   * board seeded with twelve months and no rows opened as twelve closed
+   * bars: you could not see a single column the template had just created,
+   * and the board looked identical to a blank one. Leaving the first group
+   * open shows the shape immediately, which is the whole promise of picking a
+   * template.
+   *
+   * Only while EMPTY. The moment there is real work on the board, the
+   * categories-only view is the better one and this stops applying.
+   */
   useEffect(() => {
     if (groups.length === 0 || initialCollapseApplied.current) return;
     initialCollapseApplied.current = true;
-    setCollapsed(new Set(groups.map((g) => g._id)));
-  }, [groups]);
+    const isSeededAndEmpty =
+      !!board?.templateKey &&
+      groups.every((g) => (tasksByGroup[g._id] || []).length === 0);
+    const keep = isSeededAndEmpty ? groups.slice(1) : groups;
+    setCollapsed(new Set(keep.map((g) => g._id)));
+  }, [groups, board?.templateKey, tasksByGroup]);
 
   // Which group (if any) is currently creating a new task inline
   const [creatingInGroup, setCreatingInGroup] = useState(null);
@@ -2725,6 +2742,7 @@ const BoardDetailPage = () => {
                           name={group.name}
                           colorDot={GROUP_DOT_CYCLE[idx % GROUP_DOT_CYCLE.length]}
                           summaries={groupSummaries(board, groupTasks)}
+                          countLabel={rowCountLabel(board, groupTasks.length)}
                           totalCount={groupTasks.length}
                           doneCount={doneCount}
                           collapsed={isCollapsed}
@@ -2997,9 +3015,24 @@ const BoardDetailPage = () => {
                 Export
               </Button>
             )}
-            {canEdit && (
+            {/* The primary action is a ROW, not a group.
+                On a Billing board the thing you do is add an invoice; the
+                twelve months already exist. "New Group" as the one blue button
+                had the board offering its rarest action as its first one.
+                A board with no groups yet has nowhere to put a row, so there
+                it stays New Group. */}
+            {canEdit && groups.length > 0 && (
               <Button
                 variant="primary"
+                icon={Plus}
+                onClick={() => handleStartCreate(orderedGroups[0]?._id || groups[0]._id)}
+              >
+                {newRowLabel(board)}
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                variant={groups.length > 0 ? 'secondary' : 'primary'}
                 icon={Plus}
                 onClick={handleOpenGroupModal}
               >

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  Bookmark,
   Calendar,
   CreditCard,
   LayoutGrid,
@@ -7,8 +8,6 @@ import {
   TrendingUp,
   UserPlus,
   Users,
-  Check,
-  Bookmark,
 } from 'lucide-react';
 import { getBoardTemplates } from '../../services/boardService';
 
@@ -16,15 +15,23 @@ import { getBoardTemplates } from '../../services/boardService';
  * The template step of the board dialog.
  *
  * A template seeds columns, statuses and groups and then has no further
- * existence — nothing stores which one a board came from. So this screen is
- * doing one job: showing what you will get, clearly enough that you can tell
- * the six apart without creating six boards to find out.
+ * existence — nothing stores which one a board came from. So this screen does
+ * one job: show what you will get, clearly enough to tell the seven apart
+ * without creating seven boards to find out.
+ *
+ * ---- THE LAYOUT IS THE POINT, AND IT WAS GOT WRONG ONCE ------------------
+ *
+ * THREE ACROSS, everything visible at once. It shipped briefly as a
+ * horizontally-scrolling rail, which put two and a half cards on screen and hid
+ * the rest behind a gesture — so the one decision this screen exists for got
+ * made against a third of the options. A picker you have to scroll sideways to
+ * read is a picker whose first card always wins.
  *
  * Blank is first and selected by default. Most boards are still task boards,
- * and the picker must not make the ordinary case feel like the wrong one.
+ * and this must not make the ordinary case feel like the wrong one.
  */
 
-/** Icon per template. Keyed by the registry's `icon` string, not by index. */
+/** Icon per template, keyed by the registry's `icon` string. */
 const ICONS = {
   layout: LayoutGrid,
   receipt: Receipt,
@@ -38,6 +45,16 @@ const ICONS = {
 /** A translucent wash of the template's accent, for the icon tile. */
 const tint = (hex) => `${hex}14`;
 
+/**
+ * A column's chip label.
+ *
+ * A formula column carries its marker, because "this is worked out for you" is
+ * a fact about a money board that a bare column name cannot tell you — and it
+ * is exactly what somebody is looking for when choosing between Budget and
+ * Blank.
+ */
+const chipLabel = (c) => (c.type === 'formula' ? `${c.name} ƒ` : c.name);
+
 const TemplateCard = ({ template, selected, onSelect }) => {
   const Icon = ICONS[template.icon] || LayoutGrid;
   return (
@@ -45,14 +62,12 @@ const TemplateCard = ({ template, selected, onSelect }) => {
       type="button"
       onClick={() => onSelect(template.key)}
       aria-pressed={selected}
-      className="text-left shrink-0 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+      className="text-left h-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
       style={{
-        // The border thickens on selection rather than a ring appearing, and
-        // the padding drops by the same pixel — so the tile does not grow and
-        // shove the rail sideways when you click it.
+        // The border thickens on selection and the padding drops by the same
+        // pixel, so the card does not grow and shift the grid when clicked.
         border: selected ? '2px solid var(--color-accent)' : '1px solid var(--color-border)',
-        padding: selected ? 11 : 12,
-        width: 194,
+        padding: selected ? 12 : 13,
         borderRadius: 'var(--radius-md)',
         background: selected ? 'var(--color-accent-light)' : 'var(--color-bg-surface)',
       }}
@@ -65,14 +80,11 @@ const TemplateCard = ({ template, selected, onSelect }) => {
         <Icon size={16} color={template.accent} />
       </span>
 
-      <span className="flex items-center gap-1.5">
-        <span
-          className="font-display block"
-          style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--color-text-primary)' }}
-        >
-          {template.name}
-        </span>
-        {selected && <Check size={13} color="var(--color-accent)" strokeWidth={3} aria-hidden="true" />}
+      <span
+        className="font-display block"
+        style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--color-text-primary)' }}
+      >
+        {template.name}
       </span>
 
       <span
@@ -83,9 +95,6 @@ const TemplateCard = ({ template, selected, onSelect }) => {
       </span>
 
       <span className="flex gap-1 flex-wrap">
-        {/* Four column names, then a count. The full list is what the preview
-            strip below the grid is for — a card that spells out nine columns
-            is a card nobody reads. */}
         {template.columns.slice(0, 4).map((c) => (
           <span
             key={c.name}
@@ -96,13 +105,17 @@ const TemplateCard = ({ template, selected, onSelect }) => {
               borderRadius: 3,
               background: 'var(--color-bg-subtle)',
               color: 'var(--color-text-secondary)',
+              whiteSpace: 'nowrap',
             }}
           >
-            {c.name}
+            {chipLabel(c)}
           </span>
         ))}
         {template.columns.length > 4 && (
-          <span className="font-body" style={{ fontSize: 9.5, padding: '2px 4px', color: 'var(--color-text-muted)' }}>
+          <span
+            className="font-body"
+            style={{ fontSize: 9.5, padding: '2px 4px', color: 'var(--color-text-muted)' }}
+          >
             +{template.columns.length - 4}
           </span>
         )}
@@ -112,63 +125,183 @@ const TemplateCard = ({ template, selected, onSelect }) => {
 };
 
 /**
- * "From one of your boards" — the option that stops these being six guesses.
+ * "From one of your boards" — the option that stops these being seven guesses.
  *
- * The value it produces is `board:<id>`, which `createBoard` resolves by
- * reading that board under the caller's own access. Nothing about the shape is
- * assembled here and posted; the client only names which board.
+ * Wider than the others and last, because it is a different KIND of choice: the
+ * seven above are things Macan knows how to make; this is a thing you already
+ * made. It produces `board:<id>`, which `createBoard` resolves by re-reading
+ * that board under your own access — the client never assembles a shape and
+ * posts it.
  */
 const FromBoardCard = ({ boards, value, onChange }) => {
   const selected = value.startsWith('board:') ? value.slice('board:'.length) : '';
   return (
     <div
-      className="shrink-0"
+      className="h-full"
       style={{
         border: selected ? '2px solid var(--color-accent)' : '1px dashed var(--color-border-strong)',
-        padding: selected ? 11 : 12,
-        width: 194,
+        padding: selected ? 12 : 13,
         borderRadius: 'var(--radius-md)',
         background: selected ? 'var(--color-accent-light)' : 'var(--color-bg-input)',
       }}
     >
-      <span
-        className="flex items-center justify-center mb-2.5"
-        style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--color-bg-subtle)' }}
-        aria-hidden="true"
-      >
-        <Bookmark size={16} color="var(--color-text-secondary)" />
-      </span>
-      <p className="font-display" style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--color-text-primary)' }}>
-        From one of your boards
-      </p>
-      <p
-        className="font-body mt-1 mb-2"
-        style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--color-text-secondary)' }}
-      >
-        Copy its columns, statuses and groups — without its rows.
-      </p>
-      <select
-        value={selected}
-        onChange={(e) => onChange(e.target.value ? `board:${e.target.value}` : 'blank')}
-        aria-label="Copy the shape of which board"
-        className="w-full font-body"
+      <div className="flex items-start gap-3">
+        <span
+          className="flex items-center justify-center shrink-0"
+          style={{ width: 32, height: 32, borderRadius: 8, background: 'var(--color-bg-subtle)' }}
+          aria-hidden="true"
+        >
+          <Bookmark size={16} color="var(--color-text-secondary)" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p
+            className="font-display"
+            style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--color-text-primary)' }}
+          >
+            From one of your boards
+          </p>
+          <p
+            className="font-body mt-1 mb-2"
+            style={{ fontSize: 11.5, lineHeight: 1.45, color: 'var(--color-text-secondary)' }}
+          >
+            Copy the columns, statuses and groups of a board you already run — without its
+            rows. The one that learns from what you actually do.
+          </p>
+          <select
+            value={selected}
+            onChange={(e) => onChange(e.target.value ? `board:${e.target.value}` : 'blank')}
+            aria-label="Copy the shape of which board"
+            className="font-body"
+            style={{
+              height: 30,
+              maxWidth: 280,
+              width: '100%',
+              fontSize: 12,
+              padding: '0 7px',
+              border: '1px solid var(--color-border)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--color-bg-surface)',
+              color: 'var(--color-text-primary)',
+            }}
+          >
+            <option value="">Choose a board…</option>
+            {boards.map((b) => (
+              <option key={b._id} value={b._id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * The preview strip — the selected template's columns as an actual table head.
+ *
+ * A card can only carry four chips. This answers "what you'll get" in full, and
+ * drawing it as a table header rather than a list is the point: it is what the
+ * board will look like, at the size it will look like it.
+ */
+const Preview = ({ template }) => {
+  if (!template || template.key === 'blank') return null;
+  const groupWord = template.groups.length === 12 ? 'monthly groups' : 'groups';
+  const numeric = (t) => t === 'number' || t === 'formula';
+  return (
+    <div
+      className="mt-3"
+      style={{
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-md)',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        className="px-3 flex items-center font-body"
         style={{
           height: 30,
-          fontSize: 12,
-          padding: '0 7px',
-          border: '1px solid var(--color-border)',
-          borderRadius: 'var(--radius-sm)',
-          background: 'var(--color-bg-surface)',
-          color: 'var(--color-text-primary)',
+          background: 'var(--color-bg-input)',
+          borderBottom: '1px solid var(--color-border)',
+          fontSize: 10.5,
+          fontWeight: 700,
+          letterSpacing: '0.07em',
+          textTransform: 'uppercase',
+          color: 'var(--color-text-muted)',
         }}
       >
-        <option value="">Choose a board…</option>
-        {boards.map((b) => (
-          <option key={b._id} value={b._id}>
-            {b.name}
-          </option>
-        ))}
-      </select>
+        {template.name} — what you&rsquo;ll get
+      </div>
+
+      <div className="px-3 py-2.5" style={{ background: 'var(--color-bg-surface)' }}>
+        {template.groups.length > 0 && (
+          <div className="flex items-center gap-2 mb-2">
+            <span
+              style={{ width: 8, height: 8, borderRadius: '50%', background: template.accent }}
+              aria-hidden="true"
+            />
+            <span
+              className="font-body"
+              style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-text-primary)' }}
+            >
+              {template.groups[0]}
+            </span>
+            <span className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+              · first of {template.groups.length}
+            </span>
+          </div>
+        )}
+
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid var(--color-border)' }}>
+            <thead>
+              <tr>
+                {template.columns.map((c) => (
+                  <th
+                    key={c.name}
+                    scope="col"
+                    className="font-body"
+                    style={{
+                      height: 30,
+                      padding: '0 10px',
+                      textAlign: numeric(c.type) ? 'right' : 'left',
+                      fontSize: 10,
+                      fontWeight: 600,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.07em',
+                      color: 'var(--color-text-secondary)',
+                      background: 'var(--color-bg-input)',
+                      borderBottom: '1px solid var(--color-border)',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {c.name}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td
+                  colSpan={template.columns.length}
+                  className="font-body"
+                  style={{ height: 34, padding: '0 10px', fontSize: 11.5, color: 'var(--color-text-muted)' }}
+                >
+                  Empty and ready — {template.columns.length} columns,{' '}
+                  {template.statuses.length} statuses
+                  {template.groups.length > 0 && `, ${template.groups.length} ${groupWord}`}.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        {template.forceVisibility === 'private' && (
+          <p className="font-body mt-2" style={{ fontSize: 11.5, color: 'var(--color-status-working)' }}>
+            Always private — hiring boards carry things that should not be workspace-wide.
+          </p>
+        )}
+      </div>
     </div>
   );
 };
@@ -217,24 +350,9 @@ const TemplatePicker = ({ value, onChange, boards = [] }) => {
 
   return (
     <div>
-      {/* A HORIZONTAL RAIL, not a grid.
-          Seven tiles stacked two-up made the dialog taller than most laptop
-          screens, so the name field and the Create button scrolled out of view
-          behind the thing you were choosing. One scrolling row keeps the whole
-          dialog on screen and reads as "pick one of these" rather than as a
-          page of options. */}
-      <div
-        className="flex gap-2.5 pb-2"
-        style={{
-          overflowX: 'auto',
-          overflowY: 'hidden',
-          scrollbarWidth: 'thin',
-          // Room for the selected tile's thicker border and the focus ring,
-          // which would otherwise be clipped by the scroll container.
-          paddingLeft: 2,
-          paddingRight: 2,
-        }}
-      >
+      {/* Three across on a wide dialog, two on a narrow one, one on a phone.
+          Never a horizontal scroller — see the header. */}
+      <div className="grid gap-2.5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
         {templates.map((t) => (
           <TemplateCard
             key={t.key}
@@ -243,57 +361,17 @@ const TemplatePicker = ({ value, onChange, boards = [] }) => {
             onSelect={onChange}
           />
         ))}
+
+        {/* Spans the rest of its row: a different kind of choice from the seven
+            above it, and it needs the width for the board picker. */}
         {boards.length > 0 && (
-          <FromBoardCard boards={boards} value={value} onChange={onChange} />
+          <div className="lg:col-span-2">
+            <FromBoardCard boards={boards} value={value} onChange={onChange} />
+          </div>
         )}
       </div>
 
-      {/* What the selection actually means, spelled out. The cards can only
-          show four column names; this says how many of everything, and names
-          the two consequences a card cannot show — the forced privacy and the
-          view it opens on. */}
-      {selected && selected.key !== 'blank' && (
-        <div
-          className="mt-2 px-3.5 py-2.5"
-          style={{
-            background: 'var(--color-bg-input)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-md)',
-          }}
-        >
-          <p
-            className="font-body mb-1.5"
-            style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}
-          >
-            You&rsquo;ll get
-          </p>
-          <p className="font-body" style={{ fontSize: 12.5, color: 'var(--color-text-primary)' }}>
-            {selected.columns.length} column{selected.columns.length === 1 ? '' : 's'}
-            {' · '}
-            {selected.statuses.map((s) => s.name).join(' / ')}
-            {selected.groups.length > 0 && ` · ${selected.groups.length} groups`}
-          </p>
-          {selected.groups.length > 0 && (
-            <p className="font-body mt-1" style={{ fontSize: 11.5, color: 'var(--color-text-secondary)' }}>
-              {selected.groups.slice(0, 6).join(' · ')}
-              {selected.groups.length > 6 && ` +${selected.groups.length - 6} more`}
-            </p>
-          )}
-          {selected.forceVisibility === 'private' && (
-            <p className="font-body mt-1.5" style={{ fontSize: 11.5, color: 'var(--color-status-working)' }}>
-              This board is always private — hiring boards carry things that should not be workspace-wide.
-            </p>
-          )}
-          {selected.defaultView === 'calendar' && (
-            <p className="font-body mt-1.5" style={{ fontSize: 11.5, color: 'var(--color-text-secondary)' }}>
-              Opens on the calendar rather than the table.
-            </p>
-          )}
-          <p className="font-body mt-1.5" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-            Everything can be changed after the board exists.
-          </p>
-        </div>
-      )}
+      <Preview template={selected} />
     </div>
   );
 };

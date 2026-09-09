@@ -195,6 +195,11 @@ const BoardFormModal = ({
       isOpen={isOpen}
       onClose={submitting ? undefined : onClose}
       title={title}
+      // Wide on CREATE, because the template grid is three across and a 480px
+      // dialog turns that into a single tall column — which is the layout the
+      // design exists to avoid. Edit has no template step and keeps the
+      // ordinary width.
+      maxWidth={mode === 'create' ? 880 : 480}
       footer={
         <>
           <Button

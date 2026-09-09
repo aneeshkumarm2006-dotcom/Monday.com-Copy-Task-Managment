@@ -48,6 +48,16 @@ const BOARD_TEMPLATES = [
     key: 'blank',
     name: 'Blank',
     blurb: 'Tasks, status, owner, due date. What every board is today.',
+    /** What one row IS. The group header reads "5 items", not
+     *  "5 items" — a board that calls its invoices items is a board that has not
+     *  been set up for the work. */
+    rowNoun: ['item', 'items'],
+    /** The label on the board's primary button. */
+    rowAction: 'task',
+    /** Which filters the board offers. Priority and Labels are meaningless on
+     *  an invoice, and a filter that never narrows anything is a control that
+     *  teaches people the row of controls is not worth reading. */
+    filters: ['status','priority','labels','due','owner'],
     icon: 'layout',
     accent: '#6B7280',
     // No columns: a blank board keeps the legacy task shape, exactly as before
@@ -62,6 +72,16 @@ const BOARD_TEMPLATES = [
     key: 'billing',
     name: 'Billing & Invoices',
     blurb: 'One row per invoice. Groups are months; the footer totals what is owed.',
+    /** What one row IS. The group header reads "5 invoices", not
+     *  "5 items" — a board that calls its invoices items is a board that has not
+     *  been set up for the work. */
+    rowNoun: ['invoice', 'invoices'],
+    /** The label on the board's primary button. */
+    rowAction: 'invoice',
+    /** Which filters the board offers. Priority and Labels are meaningless on
+     *  an invoice, and a filter that never narrows anything is a control that
+     *  teaches people the row of controls is not worth reading. */
+    filters: ['status','due','owner'],
     icon: 'receipt',
     accent: '#16A34A',
     columns: [
@@ -88,6 +108,16 @@ const BOARD_TEMPLATES = [
     key: 'budget',
     name: 'Budget planner',
     blurb: 'Allocated against spent, with remaining and pacing worked out for you.',
+    /** What one row IS. The group header reads "5 lines", not
+     *  "5 items" — a board that calls its invoices items is a board that has not
+     *  been set up for the work. */
+    rowNoun: ['line', 'lines'],
+    /** The label on the board's primary button. */
+    rowAction: 'line',
+    /** Which filters the board offers. Priority and Labels are meaningless on
+     *  an invoice, and a filter that never narrows anything is a control that
+     *  teaches people the row of controls is not worth reading. */
+    filters: ['owner'],
     icon: 'chart',
     accent: '#2563EB',
     columns: [
@@ -114,6 +144,16 @@ const BOARD_TEMPLATES = [
     key: 'pipeline',
     name: 'Sales pipeline',
     blurb: 'Groups are stages. Drag a deal from one to the next; the stage totals follow.',
+    /** What one row IS. The group header reads "5 deals", not
+     *  "5 items" — a board that calls its invoices items is a board that has not
+     *  been set up for the work. */
+    rowNoun: ['deal', 'deals'],
+    /** The label on the board's primary button. */
+    rowAction: 'deal',
+    /** Which filters the board offers. Priority and Labels are meaningless on
+     *  an invoice, and a filter that never narrows anything is a control that
+     *  teaches people the row of controls is not worth reading. */
+    filters: ['owner','due'],
     icon: 'users',
     accent: '#7C3AED',
     columns: [
@@ -137,6 +177,16 @@ const BOARD_TEMPLATES = [
     key: 'recruitment',
     name: 'Recruitment',
     blurb: "Candidates through stages, with the CV and the interviewer's score on the row.",
+    /** What one row IS. The group header reads "5 candidates", not
+     *  "5 items" — a board that calls its invoices items is a board that has not
+     *  been set up for the work. */
+    rowNoun: ['candidate', 'candidates'],
+    /** The label on the board's primary button. */
+    rowAction: 'candidate',
+    /** Which filters the board offers. Priority and Labels are meaningless on
+     *  an invoice, and a filter that never narrows anything is a control that
+     *  teaches people the row of controls is not worth reading. */
+    filters: ['status','owner'],
     icon: 'hiring',
     accent: '#EA580C',
     columns: [
@@ -167,6 +217,16 @@ const BOARD_TEMPLATES = [
     key: 'expenses',
     name: 'Expenses & reimbursements',
     blurb: 'Who spent what, the receipt, and whether it has been approved and paid back.',
+    /** What one row IS. The group header reads "5 claims", not
+     *  "5 items" — a board that calls its invoices items is a board that has not
+     *  been set up for the work. */
+    rowNoun: ['claim', 'claims'],
+    /** The label on the board's primary button. */
+    rowAction: 'claim',
+    /** Which filters the board offers. Priority and Labels are meaningless on
+     *  an invoice, and a filter that never narrows anything is a control that
+     *  teaches people the row of controls is not worth reading. */
+    filters: ['status','owner','due'],
     icon: 'card',
     accent: '#D97706',
     columns: [
@@ -194,6 +254,16 @@ const BOARD_TEMPLATES = [
     key: 'content',
     name: 'Content calendar',
     blurb: 'A piece per row — channel, writer, publish date, live link.',
+    /** What one row IS. The group header reads "5 pieces", not
+     *  "5 items" — a board that calls its invoices items is a board that has not
+     *  been set up for the work. */
+    rowNoun: ['piece', 'pieces'],
+    /** The label on the board's primary button. */
+    rowAction: 'piece',
+    /** Which filters the board offers. Priority and Labels are meaningless on
+     *  an invoice, and a filter that never narrows anything is a control that
+     *  teaches people the row of controls is not worth reading. */
+    filters: ['status','due','owner'],
     icon: 'calendar',
     accent: '#DC2626',
     columns: [
@@ -250,6 +320,9 @@ const templateSummaries = () =>
     groups: t.groups,
     defaultView: t.defaultView,
     forceVisibility: t.forceVisibility || null,
+    rowNoun: t.rowNoun,
+    rowAction: t.rowAction,
+    filters: t.filters,
   }));
 
 module.exports = {

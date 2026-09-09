@@ -394,6 +394,27 @@ const boardSchema = new mongoose.Schema(
     // legacy path is removed and this flag becomes implicit.
     useFlexibleColumns: { type: Boolean, default: false },
     /**
+     * Which template seeded this board.
+     *
+     * A LABEL, and nothing else. It is read to draw the board's pill, to say
+     * "5 invoices" rather than "5 items", and to choose which filters the row
+     * offers — all of which are about what the board IS FOR, which does not
+     * change when somebody adds a column.
+     *
+     * It is NEVER read to decide behaviour. The columns, statuses and groups
+     * are the board's own from the moment it exists; nothing re-seeds from
+     * here, and a board whose template was deleted from the registry keeps
+     * working with a generic pill. That separation is why storing it is safe:
+     * this was left out at first precisely to avoid a board pretending to be a
+     * template it has since been edited away from, and the answer is not to
+     * hide what it is for, it is to never let this field drive anything.
+     */
+    templateKey: {
+      type: String,
+      default: null,
+    },
+
+    /**
      * Which view a board opens on.
      *
      * Seeded by the template and editable afterwards. It exists for exactly one

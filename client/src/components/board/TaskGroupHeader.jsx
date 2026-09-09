@@ -79,6 +79,9 @@ const TaskGroupHeader = ({
    *  Empty on every board whose columns ask for no summary, which is every
    *  board that existed before templates. */
   summaries = [],
+  /** "5 invoices" — what one row is called on this board. Falls back to
+   *  "items" so a plain task board is byte-identical to before. */
+  countLabel = '',
 }) => {
   const Chevron = collapsed ? ChevronRight : ChevronDown;
   const progressPct =
@@ -456,7 +459,9 @@ const TaskGroupHeader = ({
             border: '1px solid var(--color-border)',
           }}
         >
-          {totalCount} {totalCount === 1 ? 'item' : 'items'}
+          {/* "5 invoices", not "5 items". A board that calls its invoices
+              items is a board nobody has set up for the work. */}
+          {countLabel || `${totalCount} ${totalCount === 1 ? 'item' : 'items'}`}
         </span>
 
         {/* Column totals, beside the count.
@@ -467,7 +472,7 @@ const TaskGroupHeader = ({
             row is a fixed-width slot and a board with six summed columns would
             push the actions off the right edge. */}
         {summaries.length > 0 && (
-          <span className="hidden lg:flex items-center gap-3 shrink-0 ml-1">
+          <span className="hidden md:flex items-center gap-3 shrink-0 ml-1">
             {summaries.slice(0, 2).map((s) => (
               <span
                 key={s.key}
