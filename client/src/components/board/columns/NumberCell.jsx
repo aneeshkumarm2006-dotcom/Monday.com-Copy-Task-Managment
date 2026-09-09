@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { focusedInputStyle, cellWrapperStyle } from './cellShared';
+import { formatNumber } from '../../../utils/numberFormat';
 
 const NumberCell = ({ value, column, readOnly, onChange }) => {
   const [editing, setEditing] = useState(false);
@@ -30,7 +31,9 @@ const NumberCell = ({ value, column, readOnly, onChange }) => {
         style={{ ...cellWrapperStyle, justifyContent: 'flex-end', cursor: readOnly ? 'default' : 'text' }}
         onClick={() => !readOnly && setEditing(true)}
       >
-        <span>{value == null ? '' : Number(value).toLocaleString()}</span>
+        {/* Formatted for READING; the input below still edits the raw number,
+            because typing into "₹1,80,000" is nobody's idea of a number field. */}
+        <span>{formatNumber(value, column?.settings)}</span>
       </div>
     );
   }

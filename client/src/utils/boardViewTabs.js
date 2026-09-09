@@ -132,5 +132,16 @@ export const gateSignature = (gate) =>
  * @param {ViewTab[]} visibleTabs
  * @returns {string}
  */
-export const resolveView = (raw, visibleTabs) =>
-  visibleTabs.some((t) => t.value === raw) ? raw : 'board';
+export const resolveView = (raw, visibleTabs, fallback = 'board') =>
+  visibleTabs.some((t) => t.value === raw)
+    ? raw
+    : /**
+       * The board's OWN default when the URL names nothing usable.
+       *
+       * Seeded by a template — Content opens on the calendar, where the
+       * calendar is the board rather than a tab nobody clicks. Still checked
+       * against the visible tabs: a board whose default view was later gated
+       * off (an add-on switched off, a permission lost) must land somewhere
+       * that exists rather than on a blank pane.
+       */
+      (visibleTabs.some((t) => t.value === fallback) ? fallback : 'board');

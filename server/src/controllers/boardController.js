@@ -30,6 +30,11 @@ const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
 const { BOARD_LEVELS } = require('../utils/capabilities');
 const { isGoalVocabulary, GOAL_VOCABULARY_KEYS } = require('../utils/goalTypes');
 const { isBoardType } = require('../utils/boardTypes');
+const {
+  isTemplateKey,
+  templateByKey,
+  templateSummaries,
+} = require('../utils/boardTemplates');
 const { isValidTimezone } = require('../utils/tzDay');
 const { monthKeyOf } = require('../utils/monthKey');
 const { createNotification } = require('../services/notificationService');
@@ -519,6 +524,98 @@ const getDashboardStats = async (req, res) => {
  * orgId and createdBy. New boards are seeded with the four default statuses so
  * the existing UI flow (StatusMenu / Chip) keeps working.
  */
+/**
+ * GET /api/boards/templates
+ *
+ * What the picker renders. No org scoping and no permission gate: the list is a
+ * static description of what the product offers, identical for everybody, and
+ * carries nothing about any workspace's data.
+ */
+const listBoardTemplates = async (req, res) => {
+  return res.json({ templates: templateSummaries() });
+};
+
+/**
+ * GET /api/boards/:id/as-template
+ *
+ * This board's SHAPE, in the same form the registry uses — columns, statuses
+ * and group names, and none of its rows.
+ *
+ * The point of the whole feature: six templates written by somebody guessing at
+ * how an agency works are worth less than one board the agency already runs. So
+ * rather than a stored "custom template" collection with its own lifecycle,
+ * ownership and staleness, this reads a board on demand and hands back a seed.
+ * The board IS the template, which means it cannot drift from itself.
+ *
+ * Gated on READ access to the source board, and only on that. A shape is not
+ * data — no task, no value, no assignee crosses this line — but you should not
+ * be able to learn the column layout of a private board you cannot open.
+ */
+const getBoardAsTemplate = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const boardId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(boardId)) {
+      return res.status(404).json({ error: 'Board not found' });
+    }
+
+    const board = await Board.findById(boardId);
+    if (!board) return res.status(404).json({ error: 'Board not found' });
+
+    const { org, isMember } = await loadOrgForMember(board.organisation, userId);
+    if (!org) return res.status(404).json({ error: 'Board not found' });
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this workspace' });
+    }
+    const orgAccess = resolveOrgAccess(org, userId);
+    const visible = await Board.exists({
+      _id: board._id,
+      ...boardVisibilityFilter(orgAccess, userId),
+    });
+    if (!visible) {
+      return res.status(403).json({ error: 'You do not have access to this board' });
+    }
+
+    const groups = await TaskGroup.find({ board: board._id })
+      .sort({ order: 1 })
+      .select('name')
+      .lean();
+
+    return res.json({
+      template: {
+        key: `board:${board._id}`,
+        name: board.name,
+        blurb: `Same columns, statuses and groups as ${board.name}.`,
+        icon: 'layout',
+        accent: '#6B7280',
+        columns: (board.columns || [])
+          .slice()
+          .sort((a, b) => (a.order || 0) - (b.order || 0))
+          .map((c) => ({
+            key: c.key,
+            name: c.name,
+            type: c.type,
+            width: c.width,
+            isPrimary: !!c.isPrimary,
+            settings: { ...(c.settings || {}) },
+          })),
+        statuses: (board.statuses || []).map((st) => ({
+          key: st.key,
+          name: st.name,
+          color: st.color,
+          order: st.order,
+          isDefault: !!st.isDefault,
+        })),
+        groups: groups.map((g) => g.name),
+        defaultView: board.defaultView || 'table',
+      },
+    });
+  } catch (err) {
+    console.error('getBoardAsTemplate error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 const createBoard = async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -534,6 +631,9 @@ const createBoard = async (req, res) => {
       // deliberately NO first contact to invite here — see the portal comment
       // further down, where the link is no longer minted at create time either.
       clientName,
+      // Which template to seed from. Absent or 'blank' keeps the previous
+      // behaviour exactly — four statuses, no columns, no groups.
+      template = 'blank',
     } = req.body;
 
     if (!organisation) {
@@ -544,6 +644,71 @@ const createBoard = async (req, res) => {
     }
     if (!isBoardType(boardType)) {
       return res.status(400).json({ error: 'Invalid board type' });
+    }
+    /**
+     * The template, which is either one of the built-in keys or `board:<id>` —
+     * an existing board used as a seed.
+     *
+     * The board case is resolved HERE rather than by the client sending a shape
+     * it built: a client-supplied column list is a client-supplied
+     * `useFlexibleColumns` and a client-supplied set of formula expressions, on
+     * a board the caller may not even be able to read. So the client sends an
+     * id and the server does the reading, under the same access check as any
+     * other board read.
+     */
+    let tpl;
+    if (typeof template === 'string' && template.startsWith('board:')) {
+      const sourceId = template.slice('board:'.length);
+      if (!mongoose.Types.ObjectId.isValid(sourceId)) {
+        return res.status(400).json({ error: 'Unknown board template' });
+      }
+      const source = await Board.findById(sourceId);
+      if (!source) return res.status(404).json({ error: 'Template board not found' });
+      // Same workspace only. Copying a shape across workspaces would need its
+      // own access story, and nothing asks for it.
+      if (String(source.organisation) !== String(organisation)) {
+        return res.status(403).json({ error: 'That board is in another workspace' });
+      }
+      const sourceOrg = await Organisation.findById(source.organisation);
+      const sourceAccess = resolveOrgAccess(sourceOrg, userId);
+      const canSee = await Board.exists({
+        _id: source._id,
+        ...boardVisibilityFilter(sourceAccess, userId),
+      });
+      if (!canSee) {
+        return res.status(403).json({ error: 'You do not have access to that board' });
+      }
+      const sourceGroups = await TaskGroup.find({ board: source._id })
+        .sort({ order: 1 })
+        .select('name')
+        .lean();
+      tpl = {
+        columns: (source.columns || [])
+          .slice()
+          .sort((a, b) => (a.order || 0) - (b.order || 0))
+          .map((c) => ({
+            key: c.key,
+            name: c.name,
+            type: c.type,
+            width: c.width,
+            isPrimary: !!c.isPrimary,
+            settings: { ...(c.settings || {}) },
+          })),
+        statuses: (source.statuses || []).map((st) => ({
+          key: st.key, name: st.name, color: st.color, order: st.order, isDefault: !!st.isDefault,
+        })),
+        groups: sourceGroups.map((g) => g.name),
+        defaultView: source.defaultView || 'table',
+        forceVisibility: null,
+      };
+      // A board with no statuses (pre-migration) would seed a board that cannot
+      // hold a status at all. Fall back rather than copy the gap.
+      if (tpl.statuses.length === 0) tpl.statuses = DEFAULT_STATUSES.map((st) => ({ ...st }));
+    } else {
+      if (!isTemplateKey(template)) {
+        return res.status(400).json({ error: 'Unknown board template' });
+      }
+      tpl = templateByKey(template);
     }
     // A tracker board must know whose calendar defines its months. Not defaulted
     // to UTC on purpose — see the comment on `Board.monthTimezone`. The client
@@ -559,7 +724,16 @@ const createBoard = async (req, res) => {
     // pin it to 'private'. Standard and tracker boards validate visibility as
     // before: a tracker board is an ordinary internal board that happens to be
     // partitioned, so it may be public if the team wants it to be.
-    const effectiveVisibility = boardType === 'client' ? 'private' : visibility;
+    //
+    // A TEMPLATE MAY ALSO PIN IT. Recruitment does: a hiring board carries
+    // salary talk, rejection notes and people's phone numbers, and landing
+    // public because somebody clicked through the dialog is not a mistake you
+    // get to fix afterwards — by then it has been read. Board type still wins,
+    // since a client board's privacy is structural rather than a preference.
+    const effectiveVisibility =
+      boardType === 'client'
+        ? 'private'
+        : tpl.forceVisibility || visibility;
     if (!VALID_VISIBILITIES.includes(effectiveVisibility)) {
       return res.status(400).json({ error: 'Invalid visibility value' });
     }
@@ -643,12 +817,39 @@ const createBoard = async (req, res) => {
       organisation,
       createdBy: userId,
       order: nextBoardOrder,
-      statuses: DEFAULT_STATUSES.map((s) => ({ ...s })),
+      statuses: tpl.statuses.map((s) => ({ ...s })),
       labels: [],
-      columns: [],
-      useFlexibleColumns: false,
+      columns: tpl.columns.map((c, i) => ({
+        ...c,
+        order: i,
+        settings: { ...(c.settings || {}) },
+      })),
+      // The flexible-columns engine is what renders `columns` at all, so a
+      // template that seeds any must switch it on. A blank board seeds none
+      // and stays on the legacy path, unchanged.
+      useFlexibleColumns: tpl.columns.length > 0,
       goalColumns: [],
+      defaultView: tpl.defaultView || 'table',
     });
+
+    // Seed the template's groups. Best-effort and AFTER the board exists: a
+    // board with no groups is a board you can add groups to, but a failed
+    // group insert that rolled back the board would lose the whole creation
+    // over a cosmetic detail.
+    if (tpl.groups.length > 0) {
+      try {
+        await TaskGroup.insertMany(
+          tpl.groups.map((groupName, i) => ({
+            name: groupName,
+            board: board._id,
+            order: i,
+            createdBy: userId,
+          }))
+        );
+      } catch (groupErr) {
+        console.error('createBoard: template groups failed:', groupErr.message);
+      }
+    }
 
     // Attach the creator's resolved permissions, as getBoards does. The client
     // prepends this to its cache and may open it straight away without a
@@ -1842,6 +2043,8 @@ const transferBoardOwnership = async (req, res) => {
 module.exports = {
   getBoard,
   getBoards,
+  listBoardTemplates,
+  getBoardAsTemplate,
   getDashboardStats,
   createBoard,
   updateBoard,

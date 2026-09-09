@@ -790,7 +790,10 @@ const BoardDetailPage = () => {
   // an unknown value, or `?view=goals` on a standard board, or a board that has
   // not loaded yet, all fall back to the board view instead of rendering a tab
   // that is not there.
-  const view = resolveView(searchParams.get('view'), visibleTabs);
+  // The board's own `defaultView` is the fallback when the URL names no view —
+  // set by the template that created it, and a board fact rather than a
+  // template one, because nothing remembers which template a board came from.
+  const view = resolveView(searchParams.get('view'), visibleTabs, board?.defaultView);
   const setView = useCallback(
     (next) => {
       const params = new URLSearchParams(searchParams);

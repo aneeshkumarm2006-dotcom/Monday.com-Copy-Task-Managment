@@ -5,6 +5,7 @@ import Button from '../ui/Button';
 import Spinner from '../ui/Spinner';
 import MonthSplitPreview from './MonthSplitPreview';
 import { previewBoardConversion } from '../../services/monthService';
+import TemplatePicker from './TemplatePicker';
 
 /**
  * BoardFormModal — used for both creating and editing a board.
@@ -30,6 +31,9 @@ const DEFAULTS = {
   // client's invitation goes out with the first SERVICE, not with the board,
   // because a portal with no services is an empty page.
   clientName: '',
+  // Which template seeds the board. Create-only — a template has no meaning
+  // once a board exists, so editing never shows this.
+  template: 'blank',
 };
 
 const BoardFormModal = ({
@@ -39,6 +43,8 @@ const BoardFormModal = ({
   initialValues,
   mode = 'create',
   canChangeVisibility = true,
+  /** The workspace's boards, for the "copy an existing board" option. */
+  existingBoards = [],
 }) => {
   const [values, setValues] = useState(DEFAULTS);
   const [submitting, setSubmitting] = useState(false);
@@ -142,6 +148,9 @@ const BoardFormModal = ({
         name: trimmed,
         description: values.description.trim(),
         boardType: values.boardType,
+        // Create only. The server refuses an unknown key, and 'blank' is the
+        // no-op that reproduces the old behaviour exactly.
+        template: mode === 'create' ? values.template : undefined,
         // Only meaningful when the type is actually changing; the caller uses it
         // to decide whether to run a conversion alongside the plain update.
         typeChanged: typeChanging,
@@ -552,6 +561,28 @@ const BoardFormModal = ({
               looking at.
             </p>
           </>
+        )}
+
+        {/* Template — CREATE ONLY. A template seeds content and then has no
+            further existence: nothing stores which one a board came from, so
+            offering it on edit would be offering to re-seed a board that
+            already has work on it. Placed after the type and before the
+            description because it is a decision about the board's SHAPE, and
+            the description is a note about it. */}
+        {mode === 'create' && (
+          <div>
+            <p
+              className="font-body mb-2"
+              style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--color-text-primary)' }}
+            >
+              Start from
+            </p>
+            <TemplatePicker
+              value={values.template}
+              onChange={(key) => setValues((v) => ({ ...v, template: key }))}
+              boards={existingBoards}
+            />
+          </div>
         )}
 
         <Input

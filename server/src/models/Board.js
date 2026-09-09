@@ -393,6 +393,20 @@ const boardSchema = new mongoose.Schema(
     // runs against them. Two release cycles after migration completes, the
     // legacy path is removed and this flag becomes implicit.
     useFlexibleColumns: { type: Boolean, default: false },
+    /**
+     * Which view a board opens on.
+     *
+     * Seeded by the template and editable afterwards. It exists for exactly one
+     * template — Content, where the calendar IS the board rather than a tab
+     * nobody clicks — but as a board fact rather than a template one, because
+     * after creation nothing remembers which template a board came from and
+     * "opens on calendar" has to keep being true.
+     */
+    defaultView: {
+      type: String,
+      enum: ['table', 'calendar'],
+      default: 'table',
+    },
     // The extra columns this board's Goals tables carry, shared by every group.
     // Empty on every board until an org admin adds one; tracker boards only.
     goalColumns: { type: [goalColumnSchema], default: [] },

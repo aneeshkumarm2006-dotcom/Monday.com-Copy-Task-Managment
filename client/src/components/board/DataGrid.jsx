@@ -7,6 +7,15 @@ import useBoardStore from '../../store/boardStore';
 import useTaskStore from '../../store/taskStore';
 import useToastStore from '../../store/toastStore';
 import { isTaskPinned } from '../../utils/taskPins';
+import { computeSummary, summariesFor, summaryLabel } from '../../utils/columnSummary';
+import { CURRENCIES, formatNumber } from '../../utils/numberFormat';
+
+/**
+ * Column types whose values are numbers, and can therefore carry a display
+ * format. `rating` is excluded on purpose — stars are not currency, and
+ * offering the choice invites somebody to make them so.
+ */
+const NUMBER_FORMATTABLE = new Set(['number', 'formula', 'mirror']);
 
 /**
  * DataGrid — generic grid driven by `board.columns` and a flat `tasks`
@@ -40,6 +49,13 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
   const columns = useMemo(
     () => (board?.columns || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0)),
     [board?.columns]
+  );
+
+  // Does any column ask for a summary? Checked once so an ordinary task board
+  // — where none do — renders no footer row at all rather than a row of blanks.
+  const hasSummaries = useMemo(
+    () => columns.some((c) => c.settings?.summary && c.settings.summary !== 'none'),
+    [columns]
   );
 
   // CSS grid template — last column is the "+ add column" cell.
@@ -197,7 +213,7 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
                   borderRadius: 'var(--radius-md)',
                   boxShadow: 'var(--shadow-md)',
                   padding: 4,
-                  minWidth: 140,
+                  minWidth: 168,
                 }}
                 onMouseLeave={() => setHeaderMenu(null)}
               >
@@ -227,14 +243,96 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
                 >
                   Change width
                 </button>
-                <button
-                  type="button"
-                  style={{ ...menuItemStyle, opacity: 0.4, cursor: 'not-allowed' }}
-                  disabled
-                  title="Coming in a later release"
-                >
-                  Freeze (later)
-                </button>
+                {/* Format — number-ish columns only. The stored value stays a
+                    plain number; this only decides what it looks like, which
+                    is why it lives in settings rather than changing the type. */}
+                {NUMBER_FORMATTABLE.has(col.type) && (
+                  <label style={{ ...menuItemStyle, display: 'block', cursor: 'default' }}>
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>
+                      Format
+                    </span>
+                    <select
+                      value={col.settings?.format || 'plain'}
+                      onChange={(e) => {
+                        const format = e.target.value;
+                        updateColumn(board._id, col._id, {
+                          settings: {
+                            ...(col.settings || {}),
+                            format,
+                            // Pin a currency the first time one is chosen, so
+                            // the cell does not render in whatever the list
+                            // happens to have first.
+                            ...(format === 'currency' && !col.settings?.currency
+                              ? { currency: 'INR' }
+                              : {}),
+                          },
+                        }).catch((err) =>
+                          toastError(err?.response?.data?.error || 'Could not change the format')
+                        );
+                        setHeaderMenu(null);
+                      }}
+                      style={{ width: '100%', fontSize: 12, padding: '3px 4px' }}
+                    >
+                      <option value="plain">Plain number</option>
+                      <option value="currency">Currency</option>
+                      <option value="percent">Percent</option>
+                    </select>
+                  </label>
+                )}
+
+                {NUMBER_FORMATTABLE.has(col.type) && col.settings?.format === 'currency' && (
+                  <label style={{ ...menuItemStyle, display: 'block', cursor: 'default' }}>
+                    <span style={{ display: 'block', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>
+                      Currency
+                    </span>
+                    <select
+                      value={col.settings?.currency || 'INR'}
+                      onChange={(e) => {
+                        updateColumn(board._id, col._id, {
+                          settings: { ...(col.settings || {}), currency: e.target.value },
+                        }).catch((err) =>
+                          toastError(err?.response?.data?.error || 'Could not change the currency')
+                        );
+                        setHeaderMenu(null);
+                      }}
+                      style={{ width: '100%', fontSize: 12, padding: '3px 4px' }}
+                    >
+                      {CURRENCIES.map((c) => (
+                        <option key={c.code} value={c.code}>
+                          {c.symbol} {c.code}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+
+                {/* Summary — what the footer under this column adds up to. The
+                    options depend on the type: you can sum a number and count a
+                    checkbox, and offering the wrong one is offering a footer
+                    that reads NaN. */}
+                <label style={{ ...menuItemStyle, display: 'block', cursor: 'default' }}>
+                  <span style={{ display: 'block', fontSize: 10, color: 'var(--color-text-muted)', marginBottom: 3 }}>
+                    Summary
+                  </span>
+                  <select
+                    value={col.settings?.summary || 'none'}
+                    onChange={(e) => {
+                      updateColumn(board._id, col._id, {
+                        settings: { ...(col.settings || {}), summary: e.target.value },
+                      }).catch((err) =>
+                        toastError(err?.response?.data?.error || 'Could not change the summary')
+                      );
+                      setHeaderMenu(null);
+                    }}
+                    style={{ width: '100%', fontSize: 12, padding: '3px 4px' }}
+                  >
+                    {summariesFor(col.type).map((sum) => (
+                      <option key={sum.key} value={sum.key}>
+                        {sum.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <button
                   type="button"
                   disabled={col.isPrimary}
@@ -291,6 +389,74 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
           >
             No tasks yet.
           </div>
+        )}
+
+        {/* Summary row — the number under a column, per group.
+            Rendered only when at least one column asks for one, so an ordinary
+            task board grows no extra row. It is part of the same CSS grid as
+            the rows above so the cells line up with their columns without a
+            second width calculation to keep in step. */}
+        {hasSummaries && tasks.length > 0 && (
+          <>
+            {columns.map((col) => {
+              const result = computeSummary(tasks, col);
+              const label = summaryLabel(tasks, col);
+              return (
+                <div
+                  key={`sum-${col._id}`}
+                  style={{
+                    padding: '6px 10px',
+                    borderTop: '1px solid var(--color-border-strong)',
+                    background: 'var(--color-bg-subtle)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'flex-end',
+                    justifyContent: 'center',
+                    minHeight: 40,
+                  }}
+                >
+                  {result && (
+                    <>
+                      <span
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: '0.07em',
+                          textTransform: 'uppercase',
+                          color: 'var(--color-text-muted)',
+                          lineHeight: 1.2,
+                        }}
+                      >
+                        {label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 700,
+                          color: 'var(--color-text-primary)',
+                          fontVariantNumeric: 'tabular-nums',
+                        }}
+                      >
+                        {/* `raw` counts (filled / empty / checked) are counts of
+                            ROWS, not values in the column's own unit — running
+                            them through the currency formatter would print
+                            "₹3" for three receipts. */}
+                        {result.raw
+                          ? result.value.toLocaleString()
+                          : formatNumber(result.value, col.settings)}
+                      </span>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+            <div
+              style={{
+                borderTop: '1px solid var(--color-border-strong)',
+                background: 'var(--color-bg-subtle)',
+              }}
+            />
+          </>
         )}
       </div>
     </div>

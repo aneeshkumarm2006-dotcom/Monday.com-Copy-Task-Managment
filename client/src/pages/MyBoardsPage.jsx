@@ -495,6 +495,9 @@ const MyBoardsPage = () => {
         onClose={() => setCreateOpen(false)}
         onSubmit={handleCreateSubmit}
         mode="create"
+        // For "copy an existing board" — the list this page already holds, so
+        // the picker costs no extra request.
+        existingBoards={boards}
       />
 
       {/* Edit modal */}

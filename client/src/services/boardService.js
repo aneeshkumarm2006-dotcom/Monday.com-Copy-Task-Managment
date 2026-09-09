@@ -31,6 +31,30 @@ export const getDashboardStats = async (orgId) => {
 };
 
 /**
+ * GET /api/boards/templates — what the template picker offers.
+ *
+ * Not org-scoped and not gated: the list is a static description of what the
+ * product can seed, identical for everybody, carrying nothing about any
+ * workspace's data.
+ */
+export const getBoardTemplates = async () => {
+  const { data } = await api.get('/api/boards/templates');
+  return data.templates || [];
+};
+
+/**
+ * GET /api/boards/:id/as-template — an existing board's shape, no rows.
+ *
+ * Only used to PREVIEW what copying that board would give you. Creating from
+ * it sends the key `board:<id>` and the server re-reads the board itself — the
+ * client never posts a shape it assembled.
+ */
+export const getBoardAsTemplate = async (boardId) => {
+  const { data } = await api.get(`/api/boards/${boardId}/as-template`);
+  return data.template;
+};
+
+/**
  * POST /api/boards — create a board (admin only).
  */
 export const createBoard = async (payload) => {

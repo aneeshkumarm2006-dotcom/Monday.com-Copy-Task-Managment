@@ -2,6 +2,8 @@ const express = require('express');
 const authMiddleware = require('../middleware/auth');
 const {
   getBoard,
+  listBoardTemplates,
+  getBoardAsTemplate,
   getBoards,
   createBoard,
   updateBoard,
@@ -48,6 +50,10 @@ router.use(authMiddleware);
 // GET /api/boards?org=:orgId — list boards for an organisation
 router.get('/', getBoards);
 
+// GET /api/boards/templates — the template picker's list. A STATIC path, so it
+// must sit above `/:id` or "templates" is read as a board id.
+router.get('/templates', listBoardTemplates);
+
 // GET /api/boards/:id — one board by id, for deep links that land on a board
 // in a workspace other than the one currently selected. Safe above the other
 // `/:id/*` routes: those carry a second segment, so nothing is shadowed.
@@ -70,6 +76,10 @@ router.delete('/:id', deleteBoard);
 // POST with { dryRun: true } returns the month-split preview and writes nothing.
 router.post('/:id/convert', convertBoardType);
 router.get('/:id/months', getBoardMonths);
+
+// GET /api/boards/:id/as-template — this board's shape as a seed, with none of
+// its rows. Gated on read access to the source board.
+router.get('/:id/as-template', getBoardAsTemplate);
 // Changing the timezone re-files every task, so it is its own endpoint rather
 // than a field on PUT /:id — see the controller.
 router.put('/:id/month-timezone', setMonthTimezone);
