@@ -377,29 +377,6 @@ const BoardDetailPage = () => {
       return next;
     });
 
-  /**
-   * Collapse all groups on first load — the clean "categories only" view.
-   *
-   * EXCEPT the first group on a template board that is still empty. A Billing
-   * board seeded with twelve months and no rows opened as twelve closed
-   * bars: you could not see a single column the template had just created,
-   * and the board looked identical to a blank one. Leaving the first group
-   * open shows the shape immediately, which is the whole promise of picking a
-   * template.
-   *
-   * Only while EMPTY. The moment there is real work on the board, the
-   * categories-only view is the better one and this stops applying.
-   */
-  useEffect(() => {
-    if (groups.length === 0 || initialCollapseApplied.current) return;
-    initialCollapseApplied.current = true;
-    const isSeededAndEmpty =
-      !!board?.templateKey &&
-      groups.every((g) => (tasksByGroup[g._id] || []).length === 0);
-    const keep = isSeededAndEmpty ? groups.slice(1) : groups;
-    setCollapsed(new Set(keep.map((g) => g._id)));
-  }, [groups, board?.templateKey, tasksByGroup]);
-
   // Which group (if any) is currently creating a new task inline
   const [creatingInGroup, setCreatingInGroup] = useState(null);
   // Key counter per group — increment after each save to reset the inline creation row
@@ -511,6 +488,35 @@ const BoardDetailPage = () => {
   const [initialPanelTab, setInitialPanelTab] = useState(null);
 
   const board = getBoardById(boardId) || null;
+
+  /**
+   * Collapse all groups on first load — the clean "categories only" view.
+   *
+   * EXCEPT the first group on a template board that is still empty. A Billing
+   * board seeded with twelve months and no rows opened as twelve closed bars:
+   * you could not see a single column the template had just created, and the
+   * board looked identical to a blank one. Leaving the first group open shows
+   * the shape immediately, which is the whole promise of picking a template.
+   *
+   * Only while EMPTY. The moment there is real work on the board, the
+   * categories-only view is the better one and this stops applying.
+   *
+   * MUST STAY BELOW `board`. It reads `board?.templateKey` in its dependency
+   * array, and a deps array is evaluated during RENDER, not when the effect
+   * runs — so sitting above the `const board = …` line put it in that
+   * binding's temporal dead zone and threw "Cannot access 'board' before
+   * initialization" on every board page, which is exactly how it shipped once.
+   */
+  useEffect(() => {
+    if (groups.length === 0 || initialCollapseApplied.current) return;
+    initialCollapseApplied.current = true;
+    const isSeededAndEmpty =
+      !!board?.templateKey &&
+      groups.every((g) => (tasksByGroup[g._id] || []).length === 0);
+    const keep = isSeededAndEmpty ? groups.slice(1) : groups;
+    setCollapsed(new Set(keep.map((g) => g._id)));
+  }, [groups, board?.templateKey, tasksByGroup]);
+
   const orgId = currentOrg?._id || null;
 
   // --- Effective board permissions ---------------------------------------
