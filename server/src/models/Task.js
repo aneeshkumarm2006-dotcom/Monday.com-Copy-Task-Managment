@@ -11,6 +11,24 @@ const taskSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'TaskGroup',
     },
+    /**
+     * When this task last moved to a DIFFERENT group. Null until it moves.
+     *
+     * The stages view reads it as "time in stage", which on a pipeline is the
+     * most useful thing a card can say — a deal sitting in Qualified for six
+     * weeks is a specific, diagnosable problem, and nothing else on the row
+     * reveals it. `updatedAt` cannot stand in: editing a note or ticking a
+     * checkbox would reset the clock and make a stale deal look fresh.
+     *
+     * Written only by `reorderTasks`, and only for tasks whose `group` actually
+     * changed — a plain reorder within one group is not a move. Null reads as
+     * "has not moved since it was created", so the view falls back to
+     * `createdAt` rather than showing nothing.
+     */
+    groupChangedAt: {
+      type: Date,
+      default: null,
+    },
     board: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Board',

@@ -1,4 +1,5 @@
-import { formatNumber } from './numberFormat';
+import { formatNumber } from './numberFormat.js';
+import { columnValuesOf } from './columnValues.js';
 
 /**
  * Group column summaries — the number under a column, per group.
@@ -61,7 +62,11 @@ export const computeSummary = (rows, column) => {
   const kind = column?.settings?.summary;
   if (!kind || kind === 'none') return null;
 
-  const raw = rows.map((r) => r?.columnValues?.[column.key]);
+  // Keyed by the column's `_id`, and a Map on a hydrated document — see
+  // `columnValues.js`. This read used `column.key` against a plain object,
+  // which is `undefined` on every row of every board, so every total on
+  // every template board was 0 or empty regardless of the data.
+  const raw = columnValuesOf(rows, column);
   const present = raw.filter((v) => v !== null && v !== undefined && v !== '');
 
   switch (kind) {

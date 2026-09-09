@@ -2091,6 +2091,49 @@ const reorderChecklist = async (req, res) => {
 };
 
 /**
+ * The bulk writes one reorder produces.
+ *
+ * Pure, and exported, so the one rule with teeth here can be asserted rather
+ * than described: `groupChangedAt` is stamped ONLY on rows that actually
+ * changed group.
+ *
+ * "Time in stage" is the number the stages view exists to show — a deal sitting
+ * in Qualified for six weeks is the most useful thing a pipeline card can say.
+ * If tidying the order inside a column reset that clock, the oldest deal on the
+ * board would read as the newest, and nothing would look broken.
+ *
+ * One timestamp for the whole batch, so every card moved by a single drag
+ * shares an instant rather than drifting by however long the loop took.
+ *
+ * @param {Array<string>} orderedIds  the target group's full order after the drop
+ * @param {Array<{_id:*, group:*}>} priorTasks  the same tasks as they are NOW
+ * @param {*} targetGroupId
+ * @param {Date} at
+ * @returns {Array<Object>} bulkWrite ops
+ */
+const reorderWriteOps = (orderedIds, priorTasks, targetGroupId, at) => {
+  const targetIdStr = targetGroupId.toString();
+  const priorGroup = new Map(
+    (priorTasks || []).map((t) => [t._id.toString(), t.group ? t.group.toString() : null])
+  );
+  return (orderedIds || []).map((id, idx) => {
+    const moved = priorGroup.get(String(id)) !== targetIdStr;
+    return {
+      updateOne: {
+        filter: { _id: id },
+        update: {
+          $set: {
+            order: idx,
+            group: targetGroupId,
+            ...(moved ? { groupChangedAt: at } : {}),
+          },
+        },
+      },
+    };
+  });
+};
+
+/**
  * PUT /api/tasks/reorder — reorder tasks within a single target group.
  *
  * Body: { orderedIds: [taskId,...], targetGroupId }
@@ -2244,8 +2287,11 @@ const reorderTasks = async (req, res) => {
     if (denied) return res.status(denied.status).json({ error: denied.error });
 
     // Load every supplied task and validate same board, top-level, etc.
+    // `group` is selected so the write below can tell a MOVE from a reorder —
+    // see `groupChangedAt`. Without it every drag inside a group would reset
+    // the stages view's "time in stage" clock.
     const tasks = await Task.find({ _id: { $in: orderedIds } }).select(
-      '_id board parent monthKey'
+      '_id board parent monthKey group'
     );
     if (tasks.length !== orderedIds.length) {
       return res.status(400).json({ error: 'One or more task ids were not found' });
@@ -2260,12 +2306,7 @@ const reorderTasks = async (req, res) => {
       }
     }
 
-    const ops = orderedIds.map((id, idx) => ({
-      updateOne: {
-        filter: { _id: id },
-        update: { $set: { order: idx, group: targetGroupId } },
-      },
-    }));
+    const ops = reorderWriteOps(orderedIds, tasks, targetGroupId, new Date());
     if (ops.length > 0) await Task.bulkWrite(ops);
 
     await Board.updateOne({ _id: targetGroup.board }, { $set: { updatedAt: new Date() } });
@@ -2974,6 +3015,7 @@ module.exports = {
   updateTask,
   deleteTask,
   reorderTasks,
+  reorderWriteOps,
   moveTasksToMonth,
   setTaskPinned,
   setTaskGoalLinks,

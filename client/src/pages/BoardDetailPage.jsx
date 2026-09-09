@@ -97,6 +97,14 @@ import {
   resolveView,
   resolveViewTabs,
 } from '../utils/boardViewTabs';
+import {
+  TABLE as TABLE_VIEW,
+  VIEW_LABELS,
+  boardViews,
+  hasViewChoice,
+  resolveBoardView,
+} from '../utils/boardViews';
+import StagesView from '../components/board/views/StagesView';
 import useBoardConnectors from '../hooks/useBoardConnectors';
 import MonthSelector from '../components/board/MonthSelector';
 import MoveToMonthModal from '../components/board/MoveToMonthModal';
@@ -814,10 +822,40 @@ const BoardDetailPage = () => {
   // an unknown value, or `?view=goals` on a standard board, or a board that has
   // not loaded yet, all fall back to the board view instead of rendering a tab
   // that is not there.
-  // The board's own `defaultView` is the fallback when the URL names no view —
-  // set by the template that created it, and a board fact rather than a
-  // template one, because nothing remembers which template a board came from.
-  const view = resolveView(searchParams.get('view'), visibleTabs, board?.defaultView);
+  //
+  // `board.defaultView` is deliberately NOT the fallback here any more. It used
+  // to be passed in, from when it was going to name a tab — but it now names a
+  // BOARD VIEW ('stages', 'ledger', …), which is a different axis: one Board
+  // tab, several ways of drawing it. Feeding it in was already inert, because
+  // no tab is ever called 'stages' and `resolveView` checks the fallback
+  // against the visible tabs — but inert and wrong is how the next person
+  // wires up a real bug.
+  const view = resolveView(searchParams.get('view'), visibleTabs);
+
+  /**
+   * HOW the Board tab draws itself — table, stages, and the three still to
+   * come. Kept in the URL for the same reason as `view`: one source of truth,
+   * and a link worth pasting to somebody.
+   *
+   * `resolveBoardView` guarantees the answer is a view this board can actually
+   * render, so a stale `?boardView=ledger`, or a board whose stored default
+   * names something that has not shipped, both land on the table rather than
+   * on a blank pane. A board with no template resolves to the table alone,
+   * which is what keeps every existing task board untouched.
+   */
+  const boardView = resolveBoardView(searchParams.get('boardView'), board);
+  const viewChoices = useMemo(() => boardViews(board), [board]);
+  const setBoardView = useCallback(
+    (next) => {
+      const params = new URLSearchParams(searchParams);
+      // The board's own default is the clean URL, so the common case has no
+      // query string to carry around.
+      if (next === (board?.defaultView || TABLE_VIEW)) params.delete('boardView');
+      else params.set('boardView', next);
+      setSearchParams(params, { replace: true });
+    },
+    [searchParams, setSearchParams, board?.defaultView]
+  );
   const setView = useCallback(
     (next) => {
       const params = new URLSearchParams(searchParams);
@@ -2957,8 +2995,13 @@ const BoardDetailPage = () => {
             (~670px with every control showing) pushed the whole page sideways on
             phones and iPad portrait. Letting it shrink is what allows the buttons
             to wrap. At desktop widths it still fits on one line, unchanged. */}
+        {/* `hasViewChoice` is in this gate because switching how a board DRAWS
+            is not an edit — a viewer on a pipeline board must be able to read
+            it as stages. Without it the whole row is hidden from anyone with
+            read-only access and the switcher goes with it. */}
         {(canEdit || isBoardCreator || canExportActivity || canManageTrackers
-          || canConvertToTracker || (isClientBoard && canManageAccess)) && (
+          || canConvertToTracker || hasViewChoice(board)
+          || (isClientBoard && canManageAccess)) && (
           <div className="flex items-center gap-2 flex-wrap justify-end macan-mobile-scroll-row">
             {/* A public board needs no sharing — everyone is already in it — so
                 the button stays hidden there for everyone EXCEPT its owner, who
@@ -3020,6 +3063,48 @@ const BoardDetailPage = () => {
               >
                 Export
               </Button>
+            )}
+            {/* WHICH VIEW. Only rendered when the board has more than one —
+                a board with a single view has nothing to switch, and a
+                one-segment control reads as a button that does nothing. That
+                is also the seal on the ordinary task board: no template means
+                one view, which means no switcher here. */}
+            {hasViewChoice(board) && (
+              <div
+                role="group"
+                aria-label="Board view"
+                className="inline-flex overflow-hidden shrink-0"
+                style={{
+                  border: '1px solid var(--color-border-strong)',
+                  borderRadius: 'var(--radius-md)',
+                  height: 34,
+                }}
+              >
+                {viewChoices.map((v, i) => {
+                  const active = v === boardView;
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setBoardView(v)}
+                      aria-pressed={active}
+                      className="font-body transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--color-accent)]"
+                      style={{
+                        padding: '0 13px',
+                        fontSize: 13,
+                        fontWeight: active ? 700 : 500,
+                        color: active ? '#fff' : 'var(--color-text-secondary)',
+                        background: active ? 'var(--color-accent)' : 'transparent',
+                        borderLeft:
+                          i === 0 ? 'none' : '1px solid var(--color-border-strong)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {VIEW_LABELS[v] || v}
+                    </button>
+                  );
+                })}
+              </div>
             )}
             {/* The primary action is a ROW, not a group.
                 On a Billing board the thing you do is add an invoice; the
@@ -3373,9 +3458,40 @@ const BoardDetailPage = () => {
         </div>
       )}
 
-      {/* The task grid. On a client board it is rendered INSIDE the service
-          workspace below (Work tab); everywhere else it is the board. */}
-      {view === 'board' && !isClientBoard && taskGroupsSection}
+      {/* HOW the Board tab draws itself.
+          On a client board the grid is rendered INSIDE the service workspace
+          below (Work tab); everywhere else it is the board.
+
+          `boardView` is only ever a view this board can actually render — see
+          `utils/boardViews.js` — so the table is reached by falling through
+          rather than by being asked for, and a view that has not shipped can
+          never leave this branch empty. */}
+      {view === 'board' && !isClientBoard && (
+        boardView === 'stages' ? (
+          <StagesView
+            board={board}
+            groups={groups}
+            /* The FILTERED lists in persisted order. Not `displayTasksByGroup`:
+               that floats pinned rows to the top, and a pinned card jumping a
+               stage boundary would look like the board moved it. */
+            tasksByGroup={filteredTasksByGroup}
+            canEdit={canEdit}
+            /* Same rule as the table: dragging inside a filtered subset would
+               write a bogus order back over the rows you cannot see. */
+            dragEnabled={canEdit && !taskFiltersActive}
+            onOpenTask={handleOpenTask}
+            onAddTask={handleStartCreate}
+            onMoveTask={(targetGroupId, orderedIds) =>
+              reorderTasksAction(targetGroupId, orderedIds, { month: monthKey }).catch((err) => {
+                console.error('Failed to move task:', err);
+                toastError('Could not move the card');
+              })
+            }
+          />
+        ) : (
+          taskGroupsSection
+        )
+      )}
 
       {/* ------------------------------------------------------------------
           THE CLIENT WORKSPACE

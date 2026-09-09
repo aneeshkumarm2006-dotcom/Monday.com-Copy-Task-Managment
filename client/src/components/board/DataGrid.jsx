@@ -8,6 +8,7 @@ import useTaskStore from '../../store/taskStore';
 import useToastStore from '../../store/toastStore';
 import { isTaskPinned } from '../../utils/taskPins';
 import { computeSummary, summariesFor, summaryLabel } from '../../utils/columnSummary';
+import { columnValue } from '../../utils/columnValues';
 import { CURRENCIES, formatNumber } from '../../utils/numberFormat';
 
 /**
@@ -74,13 +75,9 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
     }
   };
 
-  const valueFor = (task, columnId) => {
-    if (!task || !task.columnValues) return null;
-    if (typeof task.columnValues.get === 'function') {
-      return task.columnValues.get(columnId.toString());
-    }
-    return task.columnValues[columnId.toString()];
-  };
+  // One shared reader, so the grid and the summaries under it can never
+  // disagree about where a value lives — they did, and every footer read 0.
+  const valueFor = (task, columnId) => columnValue(task, columnId) ?? null;
 
   const handleRenameCommit = async (columnId) => {
     const next = renameDraft.trim();

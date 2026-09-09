@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   BOARD_TEMPLATES,
@@ -129,23 +131,66 @@ test('recruitment is private and nothing else forces visibility', () => {
   assert.equal(forced[0].forceVisibility, 'private');
 });
 
-test('no template names a view the board cannot render', () => {
+test('every template names its views, and opens on the first of them', () => {
   /**
-   * The board page's tabs are board / chat / delivery / goals / people / vault
-   * / addons / adsbudget / connector / seo — plus 'table', which is what
-   * `Board.defaultView` calls the default. There is NO calendar tab: /calendar
-   * is a separate page over every board.
+   * `views` is what a board OFFERS; `defaultView` is which of them it opens on.
    *
-   * A template naming a view that does not exist does not error. `resolveView`
-   * falls back to the board view and the template quietly does not do the thing
-   * its blurb says — which is the failure this test exists to catch, since the
-   * content template wants a calendar and cannot have one yet.
+   * The old version of this test refused any template naming a view the board
+   * could not render, because back then naming one meant `resolveView` quietly
+   * falling back and the template not doing what its blurb said. That failure
+   * mode is gone: `client/src/utils/boardViews.js` now holds a `BUILT` set and
+   * draws the table for anything unbuilt, and its own test proves a board can
+   * never resolve to a view it cannot draw.
+   *
+   * So a template may now name the view it was DESIGNED for before that view
+   * exists — which is what lets the five views ship one at a time without
+   * touching this file again. What still has to hold is the shape.
    */
-  const RENDERABLE = new Set(['table', 'board']);
   for (const t of BOARD_TEMPLATES) {
+    assert.ok(Array.isArray(t.views) && t.views.length > 0, `${t.key} has no views`);
+    assert.ok(t.views.includes('table'), `${t.key} must keep the table as its fallback`);
+    assert.equal(
+      t.defaultView,
+      t.views[0],
+      `${t.key} opens on "${t.defaultView}" but its first view is "${t.views[0]}"`
+    );
+    assert.equal(new Set(t.views).size, t.views.length, `${t.key} lists a view twice`);
+  }
+});
+
+test('the blank template offers no view but the table', () => {
+  // The seal. A switcher only appears when a board has more than one view, so
+  // this single assertion is what keeps every existing task board looking
+  // exactly as it did before views existed.
+  const blank = templateByKey('blank');
+  assert.deepEqual(blank.views, ['table']);
+  assert.equal(blank.defaultView, 'table');
+});
+
+test('the client registry knows every view the server names', () => {
+  /**
+   * Same tripwire as `boardTemplateDisplay.test.js`, for the same reason: the
+   * board page picks a view on first paint and cannot ask the server which one.
+   * A view named here and unknown there would be dropped silently and the board
+   * would open on the table forever.
+   */
+  const clientSource = fs.readFileSync(
+    path.join(__dirname, '../../../client/src/utils/boardViews.js'),
+    'utf8'
+  );
+  for (const t of BOARD_TEMPLATES) {
+    if (t.key === 'blank') continue;
+    const block = clientSource.match(new RegExp(`\\n  ${t.key}: \\[([^\\]]*)\\]`));
+    assert.ok(block, `client boardViews has no entry for "${t.key}"`);
+    const named = [...block[1].matchAll(/'([a-z]+)'|TABLE/g)].map((m) => m[1] || 'table');
+    assert.deepEqual(
+      named,
+      t.views,
+      `${t.key} views differ between server and client`
+    );
     assert.ok(
-      RENDERABLE.has(t.defaultView),
-      `${t.key} opens on "${t.defaultView}", which the board page cannot render`
+      clientSource.includes(`${t.defaultView}:`) || t.defaultView === 'table',
+      `client boardViews has no label for "${t.defaultView}"`
     );
   }
 });

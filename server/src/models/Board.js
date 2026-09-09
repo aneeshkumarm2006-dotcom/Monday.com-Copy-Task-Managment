@@ -417,15 +417,21 @@ const boardSchema = new mongoose.Schema(
     /**
      * Which view a board opens on.
      *
-     * Seeded by the template and editable afterwards. It exists for exactly one
-     * template — Content, where the calendar IS the board rather than a tab
-     * nobody clicks — but as a board fact rather than a template one, because
-     * after creation nothing remembers which template a board came from and
-     * "opens on calendar" has to keep being true.
+     * Seeded by the template and editable afterwards, as a board fact rather
+     * than a template one: after creation nothing remembers which template a
+     * board came from, and "opens on stages" has to keep being true.
+     *
+     * The enum lists every view that has been DESIGNED, not every view that is
+     * built — a board may legitimately store `ledger` before the ledger ships,
+     * or keep storing it after a rollback. Deciding whether a stored value can
+     * actually be drawn is the CLIENT's job, in `utils/boardViews.js`, which
+     * falls back to the table for anything unbuilt. Validating buildability
+     * here instead would mean a rollback turning every affected board into a
+     * save error.
      */
     defaultView: {
       type: String,
-      enum: ['table', 'calendar'],
+      enum: ['table', 'stages', 'ledger', 'allocation', 'queue', 'calendar'],
       default: 'table',
     },
     // The extra columns this board's Goals tables carry, shared by every group.

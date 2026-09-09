@@ -65,6 +65,13 @@ const BOARD_TEMPLATES = [
     columns: [],
     statuses: DEFAULT_STATUSES,
     groups: [],
+    /**
+     * Which of `views` this board opens on. Always the first — the view the
+     * template was designed for. If it is not built yet the client's
+     * `boardViews.js` draws the table instead, so this can name the intent
+     * before the code exists.
+     */
+    views: ['table'],
     defaultView: 'table',
   },
 
@@ -101,7 +108,14 @@ const BOARD_TEMPLATES = [
       { key: 'stuck', name: 'Overdue', color: '#DC2626', order: 3, isDefault: false },
     ],
     groups: MONTH_GROUPS,
-    defaultView: 'table',
+    /**
+     * Which of `views` this board opens on. Always the first — the view the
+     * template was designed for. If it is not built yet the client's
+     * `boardViews.js` draws the table instead, so this can name the intent
+     * before the code exists.
+     */
+    views: ['ledger', 'table'],
+    defaultView: 'ledger',
   },
 
   {
@@ -137,7 +151,14 @@ const BOARD_TEMPLATES = [
     ],
     statuses: DEFAULT_STATUSES,
     groups: ['Paid media', 'Tools & software', 'Contractors', 'Other'],
-    defaultView: 'table',
+    /**
+     * Which of `views` this board opens on. Always the first — the view the
+     * template was designed for. If it is not built yet the client's
+     * `boardViews.js` draws the table instead, so this can name the intent
+     * before the code exists.
+     */
+    views: ['allocation', 'table'],
+    defaultView: 'allocation',
   },
 
   {
@@ -170,7 +191,14 @@ const BOARD_TEMPLATES = [
     // The stages ARE the groups — dragging a deal forward is the move the board
     // already does best, and it already writes to the activity log.
     groups: ['New lead', 'Qualified', 'Proposal sent', 'In negotiation', 'Won', 'Lost'],
-    defaultView: 'table',
+    /**
+     * Which of `views` this board opens on. Always the first — the view the
+     * template was designed for. If it is not built yet the client's
+     * `boardViews.js` draws the table instead, so this can name the intent
+     * before the code exists.
+     */
+    views: ['stages', 'table'],
+    defaultView: 'stages',
   },
 
   {
@@ -202,7 +230,14 @@ const BOARD_TEMPLATES = [
     ],
     statuses: DEFAULT_STATUSES,
     groups: ['Applied', 'Screening', 'Interviewing', 'Offer out', 'Hired', 'Rejected'],
-    defaultView: 'table',
+    /**
+     * Which of `views` this board opens on. Always the first — the view the
+     * template was designed for. If it is not built yet the client's
+     * `boardViews.js` draws the table instead, so this can name the intent
+     * before the code exists.
+     */
+    views: ['stages', 'table'],
+    defaultView: 'stages',
     /**
      * The one template that overrides visibility.
      *
@@ -247,7 +282,14 @@ const BOARD_TEMPLATES = [
     ],
     statuses: DEFAULT_STATUSES,
     groups: ['Awaiting approval', 'Approved & paid', 'Rejected'],
-    defaultView: 'table',
+    /**
+     * Which of `views` this board opens on. Always the first — the view the
+     * template was designed for. If it is not built yet the client's
+     * `boardViews.js` draws the table instead, so this can name the intent
+     * before the code exists.
+     */
+    views: ['queue', 'table'],
+    defaultView: 'queue',
   },
 
   {
@@ -282,20 +324,13 @@ const BOARD_TEMPLATES = [
     ],
     groups: MONTH_GROUPS,
     /**
-     * TABLE, not calendar — and that is a shortfall, not a preference.
-     *
-     * The design for this template has it opening on a month grid, which is
-     * the right answer: for a content calendar the calendar IS the board. But
-     * the board page has no calendar TAB — `/calendar` is a separate app page
-     * over all boards — so there is nothing for `defaultView: 'calendar'` to
-     * open. `resolveView` would fall back to the board view and the template
-     * would quietly not do the thing it says.
-     *
-     * So it says table until the tab exists. The `defaultView` machinery is
-     * built and works; what is missing is the view itself, and the test below
-     * refuses any template that names a view the board cannot render.
+     * Which of `views` this board opens on. Always the first — the view the
+     * template was designed for. If it is not built yet the client's
+     * `boardViews.js` draws the table instead, so this can name the intent
+     * before the code exists.
      */
-    defaultView: 'table',
+    views: ['calendar', 'table'],
+    defaultView: 'calendar',
   },
 ];
 
