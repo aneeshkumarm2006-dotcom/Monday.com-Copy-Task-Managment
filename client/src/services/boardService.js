@@ -436,3 +436,20 @@ export const getActivityExport = async (boardId, { from, to, threads = true }) =
   });
   return data;
 };
+
+/**
+ * POST /api/boards/:boardId/files — store one file against a board.
+ *
+ * The ledger's drop-to-create needs the bytes somewhere BEFORE there is a row
+ * to hang them on, so that a failed upload leaves no invoice row with no
+ * invoice behind it. Returns the descriptor a `file` column stores:
+ * `{ url, name, mime, size, publicId }`.
+ */
+export const uploadBoardFile = async (boardId, file) => {
+  const form = new FormData();
+  form.append('file', file);
+  const { data } = await api.post(`/api/boards/${boardId}/files`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data.file;
+};

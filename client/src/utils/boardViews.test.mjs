@@ -96,11 +96,35 @@ test('the stored default is used when the URL says nothing', () => {
 });
 
 test('an unbuilt default falls through to the table rather than blanking', () => {
-  // A Billing board created today stores defaultView 'table'; one created after
-  // the ledger ships stores 'ledger'. Roll the ledger back and this is the case
-  // that decides whether those boards open or break.
-  assert.equal(resolveBoardView(null, board('billing', 'ledger')), TABLE);
-  assert.equal(resolveBoardView(null, board('content', 'calendar')), TABLE);
+  /**
+   * Every template stores the view it was DESIGNED for, whether or not that
+   * view exists yet — so this is the case that decides whether a board opens or
+   * breaks between drops, and after a rollback.
+   *
+   * The examples here have to be views that are still unbuilt. When one ships,
+   * this test fails and gets repointed, which is the tripwire working: it
+   * failed on `billing`/`ledger` the day the ledger landed.
+   */
+  for (const [templateKey, designed] of [
+    ['content', 'calendar'],
+    ['budget', 'allocation'],
+    ['expenses', 'queue'],
+  ]) {
+    assert.ok(!BUILT.has(designed), `"${designed}" now ships — repoint this test`);
+    assert.equal(resolveBoardView(null, board(templateKey, designed)), TABLE);
+    assert.equal(resolveBoardView(designed, board(templateKey, designed)), TABLE);
+  }
+});
+
+test('a built default IS opened on', () => {
+  // The other half. A board whose designed view has shipped must actually open
+  // on it, or every template would be permanently stuck on the table.
+  assert.equal(resolveBoardView(null, board('billing', 'ledger')), 'ledger');
+  assert.equal(resolveBoardView(null, board('pipeline', 'stages')), 'stages');
+  // …and an older board of the same template, stored before the view shipped,
+  // keeps opening where it always did and merely gains the choice.
+  assert.equal(resolveBoardView(null, board('billing', TABLE)), TABLE);
+  assert.deepEqual(boardViews(board('billing', TABLE)), ['ledger', TABLE]);
 });
 
 test('every view that can be offered has a label', () => {

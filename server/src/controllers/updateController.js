@@ -214,6 +214,28 @@ const addUpdate = async (req, res) => {
       visibility: isInternal ? 'internal' : 'shared',
     });
 
+    /**
+     * Record that these people were told about this row.
+     *
+     * Uses `validMentions` — the list already filtered down to users who can
+     * actually READ the board — rather than what the client sent. A mention of
+     * somebody without access notifies nobody, and a tile claiming they were
+     * told would be a lie the board never corrects.
+     *
+     * Fire-and-forget: failing to stamp must not fail the post. The update is
+     * already created and the mention notifications go out below; losing the
+     * denormalised marker costs a "Nobody told" badge, not a message.
+     */
+    if (validMentions.length > 0) {
+      Task.updateOne(
+        { _id: taskId },
+        {
+          $addToSet: { notifiedUsers: { $each: validMentions } },
+          $set: { notifiedAt: new Date() },
+        }
+      ).catch((err) => console.error('addUpdate: notified stamp failed:', err.message));
+    }
+
     logActivity({
       task,
       actor: userId,

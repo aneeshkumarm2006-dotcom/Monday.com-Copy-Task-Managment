@@ -105,6 +105,11 @@ import {
   resolveBoardView,
 } from '../utils/boardViews';
 import StagesView from '../components/board/views/StagesView';
+import LedgerView from '../components/board/views/LedgerView';
+import UpdateComposer from '../components/board/UpdateComposer';
+import { draftKeyFor } from '../utils/updateDrafts';
+import { ledgerColumns, titleFromFilename } from '../utils/ledger';
+import { uploadBoardFile } from '../services/boardService';
 import useBoardConnectors from '../hooks/useBoardConnectors';
 import MonthSelector from '../components/board/MonthSelector';
 import MoveToMonthModal from '../components/board/MoveToMonthModal';
@@ -844,6 +849,7 @@ const BoardDetailPage = () => {
    * which is what keeps every existing task board untouched.
    */
   const boardView = resolveBoardView(searchParams.get('boardView'), board);
+
   const viewChoices = useMemo(() => boardViews(board), [board]);
   const setBoardView = useCallback(
     (next) => {
@@ -1377,6 +1383,86 @@ const BoardDetailPage = () => {
   const orderedGroupIds = useMemo(
     () => orderedGroups.map((g) => g._id),
     [orderedGroups]
+  );
+
+  /**
+   * MUST STAY BELOW `orderedGroups` AND `filteredTasksByGroup`.
+   *
+   * A dependency array is evaluated during RENDER, in source order — not when
+   * the callback later runs. Sitting this above either declaration puts it in
+   * that binding's temporal dead zone and throws on every board page, which is
+   * exactly how the collapse effect shipped broken once.
+   */
+  /**
+   * LEDGER — drop-to-create, and the notify step after it.
+   *
+   * The file is uploaded BEFORE the row is created. That ordering is the whole
+   * safety property: a billing board must never hold an invoice row with no
+   * invoice behind it, so a failed upload leaves the board exactly as it was
+   * and shows a card you can dismiss. See `boardFileController` on the server.
+   */
+  const [ledgerUploads, setLedgerUploads] = useState([]);
+  // The task whose "tell somebody" composer is open, or null.
+  const [notifyTask, setNotifyTask] = useState(null);
+
+  const handleLedgerDrop = useCallback(
+    async (files) => {
+      if (!board?._id) return;
+      const targetGroup = orderedGroups[0]?._id || groups[0]?._id || null;
+      if (!targetGroup) {
+        toastError('Add a group to this board before adding invoices.');
+        return;
+      }
+      const fileColumn = ledgerColumns(board).file;
+
+      // Sequential rather than parallel: dropping a folder of twenty invoices
+      // should not open twenty concurrent uploads against the account, and the
+      // tiles appearing one at a time reads as progress rather than as a stall.
+      for (const file of files) {
+        const ticket = `${Date.now()}-${file.name}-${Math.random().toString(36).slice(2, 8)}`;
+        setLedgerUploads((u) => [...u, { id: ticket, name: file.name, error: null }]);
+        try {
+          const stored = await uploadBoardFile(board._id, file);
+          const created = await taskService.createTask({
+            name: titleFromFilename(file.name),
+            board: board._id,
+            group: targetGroup,
+            ...(monthKey ? { monthKey } : {}),
+          });
+          // `createTask` does not accept columnValues, so the file is written
+          // in a second call. If THIS fails the row still exists — which is why
+          // the error says the row was made, rather than pretending nothing
+          // happened.
+          let withFile = created;
+          if (fileColumn) {
+            withFile = await taskService.updateTask(created._id, {
+              columnValues: { [fileColumn._id]: [stored] },
+            });
+          }
+          addTaskLocal(withFile || created);
+          setLedgerUploads((u) => u.filter((x) => x.id !== ticket));
+          // Straight into "who should know?" — adding an invoice nobody is told
+          // about is the state this view exists to make visible.
+          setNotifyTask(withFile || created);
+        } catch (err) {
+          console.error('Ledger upload failed:', err);
+          const message =
+            err?.response?.status === 413 || err?.code === 'LIMIT_FILE_SIZE'
+              ? 'Too large — the limit is 25 MB.'
+              : err?.response?.data?.error || 'Upload failed.';
+          setLedgerUploads((u) =>
+            u.map((x) => (x.id === ticket ? { ...x, error: message } : x))
+          );
+        }
+      }
+    },
+    [board, orderedGroups, groups, monthKey, addTaskLocal, toastError]
+  );
+
+  /** Every row on the board, flat — the ledger has one group, not twelve. */
+  const ledgerTasks = useMemo(
+    () => orderedGroups.flatMap((g) => filteredTasksByGroup[g._id] || []),
+    [orderedGroups, filteredTasksByGroup]
   );
 
   /* ---------------------------------------------------------------------
@@ -3467,7 +3553,17 @@ const BoardDetailPage = () => {
           rather than by being asked for, and a view that has not shipped can
           never leave this branch empty. */}
       {view === 'board' && !isClientBoard && (
-        boardView === 'stages' ? (
+        boardView === 'ledger' ? (
+          <LedgerView
+            board={board}
+            tasks={ledgerTasks}
+            canEdit={canEdit}
+            uploads={ledgerUploads}
+            onOpenTask={handleOpenTask}
+            onNotifyTask={setNotifyTask}
+            onDropFiles={handleLedgerDrop}
+          />
+        ) : boardView === 'stages' ? (
           <StagesView
             board={board}
             groups={groups}
@@ -4192,6 +4288,47 @@ const BoardDetailPage = () => {
         canEdit={canEdit}
         onClose={handleCloseNotes}
       />
+
+      {/* ------------------------------------------------------------------
+          TELL SOMEBODY ABOUT THIS ROW
+
+          Opens the moment a dropped invoice becomes a row, and again from the
+          strip under any ledger tile. It is the ORDINARY update composer — the
+          same editor, the same @mention picker, the same notification path —
+          rather than a bespoke "notify" form, so a message sent here lands in
+          the invoice's own thread where the reply will be looked for.
+
+          Posting stamps `notifiedUsers` on the task server-side, which is what
+          flips the tile from "Nobody told" to a row of faces.
+          ------------------------------------------------------------------ */}
+      <Modal
+        isOpen={!!notifyTask}
+        onClose={() => setNotifyTask(null)}
+        title={notifyTask ? `${notifyTask.name} — who should know?` : ''}
+        maxWidth={560}
+      >
+        {notifyTask && (
+          <div className="flex flex-col gap-3">
+            <p
+              className="font-body"
+              style={{ fontSize: 13, color: 'var(--color-text-secondary)' }}
+            >
+              Mention anyone with <strong>@</strong> and they will be notified. Skip this and the
+              invoice is filed but nobody has been handed it.
+            </p>
+            <UpdateComposer
+              key={notifyTask._id}
+              taskId={notifyTask._id}
+              visibility="shared"
+              draftKey={draftKeyFor(currentUser?._id, notifyTask._id, 'ledger')}
+              mentionUsers={members}
+              placeholder="@mention someone and say what you need from them…"
+              submitLabel="Send"
+              onPosted={() => setNotifyTask(null)}
+            />
+          </div>
+        )}
+      </Modal>
 
       {/* Automations */}
       {canOnBoard('automation.view') && (

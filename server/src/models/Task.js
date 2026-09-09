@@ -12,6 +12,36 @@ const taskSchema = new mongoose.Schema(
       ref: 'TaskGroup',
     },
     /**
+     * WHO HAS BEEN TOLD ABOUT THIS ROW, and when they last were.
+     *
+     * Appended only when an update actually @mentions somebody — which is the
+     * only moment a person is genuinely notified about a row. Deliberately NOT
+     * "has any update": a note somebody wrote to themselves is not a handover,
+     * and counting it as one is how a row nobody has picked up comes to look
+     * like a row somebody owns.
+     *
+     * The ledger reads this to separate an invoice that exists from an invoice
+     * somebody is chasing. Nothing anywhere else shows that difference, and an
+     * invoice nobody was handed is exactly how one quietly goes 39 days late.
+     *
+     * Denormalised onto the task on purpose: the alternative is an aggregation
+     * over every update of every row on every board read, to answer a question
+     * the tile has to render on first paint.
+     *
+     * Only ever grown, never pruned — "Aneesh was told" stays true after he
+     * loses board access, and the tile shows a name, not a permission.
+     */
+    notifiedUsers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
+    notifiedAt: {
+      type: Date,
+      default: null,
+    },
+    /**
      * When this task last moved to a DIFFERENT group. Null until it moves.
      *
      * The stages view reads it as "time in stage", which on a pipeline is the

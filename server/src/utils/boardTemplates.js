@@ -93,13 +93,23 @@ const BOARD_TEMPLATES = [
     accent: '#16A34A',
     columns: [
       { key: 'invoice', name: 'Invoice', type: 'text', isPrimary: true, width: 130 },
+      /**
+       * SECOND, not seventh. The document is the thing that exists first — you
+       * have the PDF before you have the number typed, the client linked or the
+       * amount agreed — so it sits beside the number that names it rather than
+       * off the right-hand edge of the scroll.
+       *
+       * `dropColumn` on this template points here: a PDF dropped on the board
+       * lands in this column and becomes a row.
+       */
+      { key: 'pdf', name: 'PDF', type: 'file', width: 130 },
       { key: 'client', name: 'Client', type: 'connect_boards', width: 190 },
       { key: 'amount', name: 'Amount', type: 'number', width: 130, settings: { ...RUPEES, summary: 'sum' } },
       { key: 'issued', name: 'Issued', type: 'date', width: 120 },
       { key: 'due', name: 'Due', type: 'date', width: 120 },
       { key: 'owner', name: 'Owner', type: 'person', width: 140 },
-      { key: 'pdf', name: 'PDF', type: 'file', width: 110 },
-      { key: 'notes', name: 'Notes', type: 'long_text', width: 200 },
+      // Notes dropped: every row already has an updates thread, and a long_text
+      // column duplicating it only widened the horizontal scroll.
     ],
     statuses: [
       { key: 'not_started', name: 'Draft', color: '#6B7280', order: 0, isDefault: true },
@@ -107,7 +117,26 @@ const BOARD_TEMPLATES = [
       { key: 'done', name: 'Paid', color: '#16A34A', order: 2, isDefault: false },
       { key: 'stuck', name: 'Overdue', color: '#DC2626', order: 3, isDefault: false },
     ],
-    groups: MONTH_GROUPS,
+    /**
+     * ONE group, not twelve months.
+     *
+     * There is already an `issued` column, so the month an invoice belongs to
+     * is DERIVED from it, not a separate fact. Asking someone to also file the
+     * row into March creates a way for the board to disagree with itself — an
+     * invoice issued on 2 April sitting in March forever because it was dropped
+     * one row too high. A group is for something the data cannot tell you, and
+     * a month is not that.
+     *
+     * Twelve empty months also meant a new billing board opened as twelve rows
+     * of chrome above zero invoices.
+     */
+    groups: ['Invoices'],
+    /**
+     * Which column a file dropped on this board lands in. The ledger view reads
+     * it to turn a dropped PDF into a row; a template without it accepts no
+     * drops at all.
+     */
+    dropColumn: 'pdf',
     /**
      * Which of `views` this board opens on. Always the first — the view the
      * template was designed for. If it is not built yet the client's
@@ -230,6 +259,9 @@ const BOARD_TEMPLATES = [
     ],
     statuses: DEFAULT_STATUSES,
     groups: ['Applied', 'Screening', 'Interviewing', 'Offer out', 'Hired', 'Rejected'],
+    // Drop a CV on the board and it becomes a candidate. See `dropColumn` on
+    // billing; only the ledger reads this today.
+    dropColumn: 'cv',
     /**
      * Which of `views` this board opens on. Always the first — the view the
      * template was designed for. If it is not built yet the client's
@@ -282,6 +314,8 @@ const BOARD_TEMPLATES = [
     ],
     statuses: DEFAULT_STATUSES,
     groups: ['Awaiting approval', 'Approved & paid', 'Rejected'],
+    // Photograph the receipt, drop it, the claim exists.
+    dropColumn: 'receipt',
     /**
      * Which of `views` this board opens on. Always the first — the view the
      * template was designed for. If it is not built yet the client's

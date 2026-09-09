@@ -525,7 +525,12 @@ const readableBoardIds = async (org, userId) => {
 const populateTask = (query) =>
   query
     .populate('assignedTo', 'name profilePic email')
-    .populate('createdBy', 'name profilePic email');
+    .populate('createdBy', 'name profilePic email')
+    // The ledger renders "told Aneesh, 3 days ago" on first paint, so the
+    // people have to arrive with the row. Same three fields as the others —
+    // enough for an avatar and a name, and nothing that is not already on
+    // screen elsewhere.
+    .populate('notifiedUsers', 'name profilePic email');
 
 /**
  * Annotate a list of POJO tasks with `hasSubitems: bool` and

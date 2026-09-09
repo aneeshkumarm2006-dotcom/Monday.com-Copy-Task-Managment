@@ -27,6 +27,7 @@ const seed = (key) => {
     useFlexibleColumns: tpl.columns.length > 0,
     groups: tpl.groups,
     defaultView: tpl.defaultView,
+    dropColumn: tpl.dropColumn || null,
     visibility: tpl.forceVisibility || null,
   };
 };
@@ -55,8 +56,10 @@ test('columns are ordered as designed, not as the object happened to iterate', (
 });
 
 test('billing is the invoice board that was designed', () => {
+  // PDF is SECOND. The document exists before the number is typed, the client
+  // linked or the amount agreed, so it sits beside the number that names it.
   assert.deepEqual(colNames('billing'), [
-    'Invoice', 'Client', 'Amount', 'Issued', 'Due', 'Owner', 'PDF', 'Notes',
+    'Invoice', 'PDF', 'Client', 'Amount', 'Issued', 'Due', 'Owner',
   ]);
   // The four statuses were RENAMED, not replaced — the keys still carry the
   // meaning the rest of the app reads.
@@ -68,9 +71,17 @@ test('billing is the invoice board that was designed', () => {
   assert.equal(amount.settings.format, 'currency');
   assert.equal(amount.settings.currency, 'INR');
   assert.equal(amount.settings.summary, 'sum');
-  // Groups are months, so a year of invoicing files itself.
-  assert.equal(seed('billing').groups.length, 12);
-  assert.equal(seed('billing').groups[0], 'January');
+  /**
+   * ONE group, not twelve months.
+   *
+   * The month is derived from `issued`; filing the row into March by hand as
+   * well is how the board comes to disagree with itself. This assertion is the
+   * guard against the months quietly coming back.
+   */
+  assert.deepEqual(seed('billing').groups, ['Invoices']);
+  // A dropped PDF has somewhere to land, which is what makes the row creatable
+  // from the document rather than the other way round.
+  assert.equal(seed('billing').dropColumn, 'pdf');
   // The client is a LINK to the client's board, not its name retyped.
   assert.equal(colByKey('billing', 'client').type, 'connect_boards');
 });
@@ -153,4 +164,24 @@ test('blank seeds nothing at all', () => {
   assert.deepEqual(s.groups, []);
   assert.equal(s.visibility, null);
   assert.equal(s.useFlexibleColumns, false);
+});
+
+test('a document board says which column a dropped file lands in', () => {
+  // Billing, Recruitment and Expenses are the three whose rows are documents
+  // you already have. Without `dropColumn` there is nowhere for a dropped file
+  // to go and the board silently accepts no drops.
+  for (const [key, col] of [['billing', 'pdf'], ['recruitment', 'cv'], ['expenses', 'receipt']]) {
+    assert.equal(seed(key).dropColumn, col, `${key} should drop into "${col}"`);
+    const target = colByKey(key, col);
+    assert.ok(target, `${key} names a dropColumn "${col}" it does not have`);
+    assert.equal(target.type, 'file', `${key}.${col} must be a file column`);
+  }
+});
+
+test('a board with no document column declares no drop target', () => {
+  // Dropping a file on a budget or a pipeline should do nothing at all, rather
+  // than land somewhere arbitrary.
+  for (const key of ['blank', 'budget', 'pipeline', 'content']) {
+    assert.equal(seed(key).dropColumn, null, `${key} should accept no drops`);
+  }
 });

@@ -58,7 +58,7 @@ const TEMPLATE_VIEWS = {
  * offers the table alone and starts offering the ledger the day `'ledger'` is
  * added to this set — with no other change anywhere.
  */
-const BUILT = new Set([TABLE, 'stages']);
+const BUILT = new Set([TABLE, 'stages', 'ledger']);
 
 /** What the switcher calls each one. */
 export const VIEW_LABELS = {

@@ -1,0 +1,423 @@
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { FileText, Upload, AlertTriangle, Loader2 } from 'lucide-react';
+import Avatar from '../../ui/Avatar';
+import { formatNumber } from '../../../utils/numberFormat';
+import { columnValue } from '../../../utils/columnValues';
+import {
+  ledgerColumns,
+  ledgerTotals,
+  invoiceState,
+  notified,
+} from '../../../utils/ledger';
+import { timeAgo } from '../../../utils/dateUtils';
+
+/**
+ * LEDGER — a billing board drawn as the documents it is made of.
+ *
+ * A row that reads `INV-2026-013.pdf` makes you open it to know what it is. A
+ * tile that shows the number, the amount and a status stamp identifies itself
+ * before you have finished reading it, and the overdue one does not need a
+ * status column to shout — it is the tile with the red stamp on it.
+ *
+ * ---- THE TWO STATES NOBODY ELSE SHOWS --------------------------------------
+ *
+ * An invoice that EXISTS and an invoice somebody is CHASING are different
+ * things, and no billing board anywhere distinguishes them. The strip under
+ * each tile does: who was told, and when — or "Nobody told" in amber. That gap
+ * is exactly how an invoice quietly goes 39 days late.
+ *
+ * `notifiedUsers` is stamped on the task only when an update genuinely
+ * @mentions somebody, so the strip cannot be satisfied by a note written to
+ * oneself. See the field's comment on the Task model.
+ *
+ * ---- WHAT THE TILE DOES NOT SHOW -------------------------------------------
+ *
+ * NOT the first page of the PDF. Macan stores PDFs as Cloudinary `raw` on
+ * purpose — so they download as `application/pdf` rather than being sniffed as
+ * images — and `raw` assets cannot be transformed, so there is no page render
+ * to fetch. Drawing a generic document mark is honest; faking a preview is not.
+ * Image invoices (a photographed bill) do get their real thumbnail, because
+ * those are stored as images and already have one.
+ */
+
+/** The stamp in the corner of a tile. */
+const STAMP = {
+  paid: { bg: 'var(--color-status-done-light, #F0FDF4)', fg: 'var(--color-status-done, #16A34A)' },
+  sent: { bg: 'var(--color-status-working-light, #FFF8ED)', fg: 'var(--color-status-working)' },
+  overdue: { bg: 'var(--color-status-stuck)', fg: '#FFFFFF' },
+  draft: { bg: 'var(--color-bg-subtle)', fg: 'var(--color-text-secondary)' },
+};
+
+const isImage = (f) => typeof f?.mime === 'string' && f.mime.startsWith('image/');
+
+const Figure = ({ label, value, settings, tone }) => (
+  <div
+    style={{
+      flex: '1 1 130px',
+      padding: '10px 12px',
+      border: `1px solid ${tone === 'bad' ? 'var(--color-status-stuck)' : 'var(--color-border)'}`,
+      borderRadius: 'var(--radius-md)',
+      background: tone === 'bad' ? 'var(--color-status-stuck-light, #FEF2F2)' : 'var(--color-bg-subtle)',
+    }}
+  >
+    <span
+      className="font-body block"
+      style={{ fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--color-text-muted)' }}
+    >
+      {label}
+    </span>
+    <span
+      className="font-body block"
+      style={{
+        fontSize: 19,
+        fontWeight: 700,
+        marginTop: 2,
+        fontVariantNumeric: 'tabular-nums',
+        color:
+          tone === 'bad'
+            ? 'var(--color-status-stuck)'
+            : tone === 'good'
+              ? 'var(--color-status-done, #16A34A)'
+              : 'var(--color-text-primary)',
+      }}
+    >
+      {formatNumber(value, settings)}
+    </span>
+  </div>
+);
+
+const InvoiceTile = ({ task, board, cols, onOpen, onNotify }) => {
+  const state = invoiceState(task, board, cols);
+  const stamp = STAMP[state.key] || STAMP.draft;
+  const files = cols.file ? columnValue(task, cols.file) : null;
+  const file = Array.isArray(files) ? files[0] : null;
+  const amount = cols.amount ? columnValue(task, cols.amount) : null;
+  const due = cols.due ? columnValue(task, cols.due) : null;
+  const told = notified(task);
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${state.key === 'overdue' ? 'var(--color-status-stuck)' : 'var(--color-border)'}`,
+        borderRadius: 'var(--radius-md)',
+        overflow: 'hidden',
+        background: 'var(--color-bg-surface)',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onOpen?.(task)}
+        className="text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--color-accent)]"
+        style={{ display: 'block', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
+        aria-label={`Open ${task.name}`}
+      >
+        <span
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            position: 'relative',
+            height: 92,
+            background: 'var(--color-bg-input)',
+            borderBottom: '1px solid var(--color-border)',
+            overflow: 'hidden',
+          }}
+        >
+          {isImage(file) ? (
+            <img
+              src={file.url}
+              alt=""
+              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              loading="lazy"
+            />
+          ) : (
+            <FileText
+              size={26}
+              aria-hidden="true"
+              color={file ? 'var(--color-text-muted)' : 'var(--color-border-strong)'}
+            />
+          )}
+          <span
+            className="font-body"
+            style={{
+              position: 'absolute',
+              right: 7,
+              bottom: 7,
+              fontSize: 9,
+              fontWeight: 700,
+              letterSpacing: '0.08em',
+              padding: '2px 6px',
+              borderRadius: 3,
+              background: stamp.bg,
+              color: stamp.fg,
+              textTransform: 'uppercase',
+            }}
+          >
+            {state.key === 'overdue' && state.daysLate > 0
+              ? `${state.daysLate} days late`
+              : state.label}
+          </span>
+        </span>
+
+        <span style={{ display: 'block', padding: '8px 10px' }}>
+          <span
+            className="font-body block"
+            style={{
+              fontSize: 11,
+              color: 'var(--color-text-secondary)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {task.name}
+          </span>
+          <span
+            className="font-body block"
+            style={{
+              fontSize: 14,
+              fontWeight: 700,
+              marginTop: 2,
+              fontVariantNumeric: 'tabular-nums',
+              color: state.key === 'overdue' ? 'var(--color-status-stuck)' : 'var(--color-text-primary)',
+            }}
+          >
+            {amount == null || amount === '' ? '—' : formatNumber(amount, cols.amount?.settings)}
+          </span>
+          <span
+            className="font-body block"
+            style={{
+              fontSize: 10.5,
+              color: 'var(--color-text-muted)',
+              marginTop: 1,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {due ? `Due ${new Date(due).toLocaleDateString()}` : 'No due date'}
+          </span>
+        </span>
+      </button>
+
+      {/* Told, or not. The whole reason this view exists rather than a gallery. */}
+      <button
+        type="button"
+        onClick={() => onNotify?.(task)}
+        className="w-full text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--color-accent)]"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '6px 10px',
+          borderTop: '1px solid var(--color-border)',
+          background: told.told ? 'var(--color-bg-subtle)' : 'var(--color-status-working-light, #FFF8ED)',
+          color: told.told ? 'var(--color-text-muted)' : 'var(--color-status-working)',
+          fontSize: 10,
+          fontWeight: told.told ? 400 : 700,
+          border: 'none',
+          cursor: 'pointer',
+        }}
+        title={told.told ? 'Tell someone else' : 'Nobody has been told about this invoice'}
+      >
+        {told.told ? (
+          <>
+            <span className="flex" aria-hidden="true">
+              {told.people.slice(0, 3).map((p) => (
+                <Avatar key={p._id || p} user={p} size={15} />
+              ))}
+            </span>
+            <span className="font-body">Told {told.at ? timeAgo(told.at) : ''}</span>
+          </>
+        ) : (
+          <>
+            <AlertTriangle size={11} aria-hidden="true" />
+            <span className="font-body">Nobody told</span>
+          </>
+        )}
+      </button>
+    </div>
+  );
+};
+
+const LedgerView = ({
+  board,
+  tasks = [],
+  canEdit = false,
+  uploads = [],
+  onOpenTask,
+  onNotifyTask,
+  onDropFiles,
+}) => {
+  const cols = useMemo(() => ledgerColumns(board), [board]);
+  const totals = useMemo(() => ledgerTotals(tasks, board, cols), [tasks, board, cols]);
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef(null);
+  // A dragenter on a child fires a dragleave on the parent, so a plain boolean
+  // flickers the whole grid while the pointer crosses a tile. Counting the
+  // enters and leaves is what makes the highlight hold steady.
+  const dragDepth = useRef(0);
+
+  const money = cols.amount?.settings;
+
+  const handleFiles = useCallback(
+    (fileList) => {
+      const files = Array.from(fileList || []);
+      if (files.length > 0) onDropFiles?.(files);
+    },
+    [onDropFiles]
+  );
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    if (!canEdit) return;
+    handleFiles(e.dataTransfer?.files);
+  };
+
+  return (
+    <div
+      onDragEnter={(e) => {
+        if (!canEdit) return;
+        e.preventDefault();
+        dragDepth.current += 1;
+        setDragging(true);
+      }}
+      onDragOver={(e) => canEdit && e.preventDefault()}
+      onDragLeave={() => {
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (dragDepth.current === 0) setDragging(false);
+      }}
+      onDrop={onDrop}
+      style={{
+        borderRadius: 'var(--radius-md)',
+        outline: dragging ? '2px dashed var(--color-accent)' : 'none',
+        outlineOffset: 6,
+        background: dragging ? 'var(--color-accent-light)' : 'transparent',
+        transition: 'background 120ms ease',
+      }}
+    >
+      <div className="flex gap-2.5 flex-wrap" style={{ marginBottom: 14 }}>
+        <Figure label="Billed" value={totals.billed} settings={money} />
+        <Figure label="Paid" value={totals.paid} settings={money} tone="good" />
+        <Figure label="Outstanding" value={totals.outstanding} settings={money} />
+        <Figure
+          label={totals.overdueCount > 0 ? `Overdue · ${totals.overdueCount}` : 'Overdue'}
+          value={totals.overdue}
+          settings={money}
+          tone={totals.overdue > 0 ? 'bad' : undefined}
+        />
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+          gap: 10,
+        }}
+      >
+        {tasks.map((task) => (
+          <InvoiceTile
+            key={task._id}
+            task={task}
+            board={board}
+            cols={cols}
+            onOpen={onOpenTask}
+            onNotify={onNotifyTask}
+          />
+        ))}
+
+        {/* In-flight uploads sit where their tile will be, so the grid does not
+            jump when they land. A failure removes its own placeholder — no row
+            is ever created, which is the point of uploading first. */}
+        {uploads.map((u) => (
+          <div
+            key={u.id}
+            style={{
+              border: `1px solid ${u.error ? 'var(--color-status-stuck)' : 'var(--color-border)'}`,
+              borderRadius: 'var(--radius-md)',
+              background: u.error ? 'var(--color-status-stuck-light, #FEF2F2)' : 'var(--color-bg-subtle)',
+              padding: 12,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              justifyContent: 'center',
+              minHeight: 150,
+            }}
+          >
+            {u.error ? (
+              <AlertTriangle size={16} color="var(--color-status-stuck)" aria-hidden="true" />
+            ) : (
+              <Loader2 size={16} className="animate-spin" color="var(--color-text-muted)" aria-hidden="true" />
+            )}
+            <span
+              className="font-body"
+              style={{ fontSize: 10.5, color: 'var(--color-text-secondary)', wordBreak: 'break-all' }}
+            >
+              {u.name}
+            </span>
+            <span
+              className="font-body"
+              style={{ fontSize: 10, color: u.error ? 'var(--color-status-stuck)' : 'var(--color-text-muted)' }}
+            >
+              {u.error || 'Uploading…'}
+            </span>
+          </div>
+        ))}
+
+        {canEdit && (
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+            style={{
+              border: '2px dashed var(--color-accent)',
+              borderRadius: 'var(--radius-md)',
+              background: 'var(--color-accent-light)',
+              color: 'var(--color-accent)',
+              minHeight: 150,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 7,
+              padding: 12,
+              fontSize: 11.5,
+              fontWeight: 600,
+              cursor: 'pointer',
+              textAlign: 'center',
+            }}
+          >
+            <Upload size={20} aria-hidden="true" />
+            Drop invoice files here
+            <input
+              ref={inputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                handleFiles(e.target.files);
+                // Cleared so re-picking the SAME file fires change again.
+                e.target.value = '';
+              }}
+            />
+          </button>
+        )}
+      </div>
+
+      {tasks.length === 0 && uploads.length === 0 && !canEdit && (
+        <p
+          className="font-body text-center"
+          style={{ fontSize: 13, color: 'var(--color-text-muted)', padding: '36px 0' }}
+        >
+          No invoices on this board yet.
+        </p>
+      )}
+    </div>
+  );
+};
+
+export default LedgerView;

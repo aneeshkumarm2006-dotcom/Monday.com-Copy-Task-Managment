@@ -38,6 +38,9 @@ const {
   deleteColumn,
 } = require('../controllers/columnController');
 const { getActivityExport } = require('../controllers/boardExportController');
+const { uploadBoardFile } = require('../controllers/boardFileController');
+const { taskAttachmentUpload, handleUploadError } = require('../config/cloudinary');
+const rateLimit = require('../middleware/rateLimit');
 const {
   convertBoardType, getBoardMonths, setMonthTimezone,
 } = require('../controllers/trackerBoardController');
@@ -46,6 +49,32 @@ const router = express.Router();
 
 // All board routes require authentication
 router.use(authMiddleware);
+
+/**
+ * POST /api/boards/:id/files — store one file against a board.
+ *
+ * The ledger's drop-to-create needs somewhere for an invoice PDF to land BEFORE
+ * the row that will hold it exists. See `boardFileController` for why that
+ * ordering is the safe one.
+ *
+ * Tighter than the vault's 30/min: this is reached by dragging a folder of
+ * files onto a board, so a genuine burst is a handful at once, and the ceiling
+ * is there to stop a runaway loop filling the Cloudinary account rather than to
+ * pace a person.
+ */
+const boardFileLimit = rateLimit({
+  bucket: 'board:file-upload',
+  windowMs: 60_000,
+  max: 40,
+  message: 'Too many uploads. Please wait a moment.',
+});
+router.post(
+  '/:id/files',
+  boardFileLimit,
+  taskAttachmentUpload.single('file'),
+  handleUploadError,
+  uploadBoardFile
+);
 
 // GET /api/boards?org=:orgId — list boards for an organisation
 router.get('/', getBoards);
