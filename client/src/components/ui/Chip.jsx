@@ -5,6 +5,7 @@ import {
   getStatusPalette,
   getLabelPalette,
 } from '../../utils/priorityColors';
+import { chipStyle } from '../../utils/chipStyle';
 
 /**
  * Chip — status (pill) or priority (rounded-sm) label.
@@ -17,6 +18,13 @@ import {
  *          palette for status when board is omitted (e.g. personal tasks).
  *   label: optional override label
  *   onClick: optional — makes the chip clickable
+ *   variant: 'pill' | 'fill' | 'tint' | 'tag' — see utils/chipStyle.js
+ *
+ * `pill` is the default and is deliberately unchanged: it is what renders on
+ * My Work, the dashboard, kanban cards, the ledger, the client portal and in
+ * notifications. Only a board TABLE opts into the filled forms, because a
+ * colour-first cell needs a cell — a notification rendered as a solid green
+ * rectangle is not an improvement.
  */
 const Chip = forwardRef(function Chip(
   {
@@ -25,45 +33,34 @@ const Chip = forwardRef(function Chip(
     board,
     label: labelOverride,
     onClick,
+    variant = 'pill',
     className = '',
     ...rest
   },
   ref,
 ) {
-  let bg;
-  let text;
+  let palette;
   let label;
 
   if (type === 'priority') {
-    const entry = PRIORITY_COLORS[value] || PRIORITY_COLORS.low;
-    bg = entry.bg;
-    text = entry.text;
-    label = labelOverride ?? entry.label;
+    palette = PRIORITY_COLORS[value] || PRIORITY_COLORS.low;
+    label = labelOverride ?? palette.label;
   } else if (type === 'label') {
-    const pal = getLabelPalette(board, value);
-    bg = pal.bg;
-    text = pal.text;
-    label = labelOverride ?? pal.label;
+    palette = getLabelPalette(board, value);
+    label = labelOverride ?? palette.label;
   } else {
     // status
-    if (board) {
-      const pal = getStatusPalette(board, value);
-      bg = pal.bg;
-      text = pal.text;
-      label = labelOverride ?? pal.label;
-    } else {
-      const entry =
-        STATUS_COLORS[value] || STATUS_COLORS.not_started;
-      bg = entry.bg;
-      text = entry.text;
-      label = labelOverride ?? entry.label;
-    }
+    palette = board
+      ? getStatusPalette(board, value)
+      : STATUS_COLORS[value] || STATUS_COLORS.not_started;
+    label = labelOverride ?? palette.label;
   }
 
   const isClickable = typeof onClick === 'function';
-  const radius = 'var(--radius-full)';
-
   const Tag = isClickable ? 'button' : 'span';
+  // `fill` and `tint` span their cell, so they cannot be inline-flex — they are
+  // the cell. Everything else stays an inline chip that sits in text.
+  const spans = variant === 'fill' || variant === 'tint';
 
   return (
     <Tag
@@ -71,22 +68,17 @@ const Chip = forwardRef(function Chip(
       type={isClickable ? 'button' : undefined}
       onClick={onClick}
       className={[
-        'inline-flex items-center gap-1 font-body font-medium text-[12px] leading-none',
-        'whitespace-nowrap select-none align-middle',
+        spans ? 'font-body leading-none' : 'inline-flex items-center gap-1 font-body leading-none',
+        'whitespace-nowrap select-none',
+        spans ? '' : 'align-middle',
         isClickable
-          ? 'cursor-pointer transition-opacity duration-150 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]'
+          ? 'cursor-pointer transition-opacity duration-150 hover:opacity-90 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent)] focus-visible:outline-offset-[-2px]'
           : '',
         className,
       ]
         .filter(Boolean)
         .join(' ')}
-      style={{
-        backgroundColor: bg,
-        color: text,
-        borderRadius: radius,
-        padding: '3px 10px',
-        border: 'none',
-      }}
+      style={chipStyle(palette, variant)}
       {...rest}
     >
       {label}

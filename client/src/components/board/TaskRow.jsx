@@ -46,6 +46,14 @@ const toYMD = (iso) => {
  *   [Checkbox 40] [Name flex] [Priority 130] [Status 160]
  *   [Labels 180] [Owner 160] [Due 140] [Comments 48] [Actions 48]
  */
+/**
+ * The row height, shared by the `tr` and by the two cells that paint edge to
+ * edge. A child with `height: 100%` inside a `td` only resolves against a cell
+ * that has a height of its own — without this the filled status cell collapses
+ * to the height of its text and floats in the middle of the row.
+ */
+const ROW_HEIGHT = 48;
+
 const TaskRow = ({
   task,
   board = null,
@@ -127,7 +135,7 @@ const TaskRow = ({
       ].join(' ')}
       style={{
         ...sortableStyle,
-        height: 48,
+        height: ROW_HEIGHT,
         borderBottom: isLast ? 'none' : '1px solid var(--color-border)',
         background: sortableStyle?.background,
         opacity: isDragging ? 0.4 : sortableStyle?.opacity,
@@ -392,11 +400,16 @@ const TaskRow = ({
         </div>
       </td>
 
-      {/* Priority */}
-      <td style={{ width: 130, padding: '0 16px' }}>
+      {/* PRIORITY — tinted, filling its cell.
+          No padding on the `td`: the chip IS the cell, and a colour-first cell
+          that leaves a white margin is just a big pill. Tinted rather than
+          filled so that exactly one column on the row shouts — see
+          `utils/chipStyle.js`. */}
+      <td style={{ width: 130, padding: 0, height: ROW_HEIGHT }}>
         {task.priority ? (
           <Chip
             type="priority"
+            variant="tint"
             value={task.priority}
             onClick={
               onPriorityClick ? (e) => onPriorityClick(task, e) : undefined
@@ -406,13 +419,13 @@ const TaskRow = ({
           <button
             type="button"
             onClick={onPriorityClick ? (e) => onPriorityClick(task, e) : undefined}
-            className="font-body transition-colors duration-150 hover:text-[color:var(--color-accent)]"
+            className="font-body w-full h-full text-left transition-colors duration-150 hover:text-[color:var(--color-accent)]"
             style={{
               fontSize: 13,
               color: 'var(--color-text-muted)',
               background: 'transparent',
               border: 'none',
-              padding: 0,
+              padding: '0 16px',
               cursor: onPriorityClick ? 'pointer' : 'default',
             }}
           >
@@ -421,10 +434,13 @@ const TaskRow = ({
         )}
       </td>
 
-      {/* Status */}
-      <td style={{ width: 160, padding: '0 16px' }}>
+      {/* STATUS — the one column that fills edge to edge in full colour.
+          White text on the palette's `deep` step, which is the only one that
+          clears 4.5:1 for every hue. */}
+      <td style={{ width: 160, padding: 0, height: ROW_HEIGHT }}>
         <Chip
           type="status"
+          variant="fill"
           value={task.status || 'not_started'}
           board={board}
           onClick={
@@ -685,6 +701,7 @@ const LabelsCell = ({ board, labels, onClick }) => {
         <Chip
           key={labelId.toString()}
           type="label"
+          variant="tag"
           value={labelId}
           board={board}
         />
