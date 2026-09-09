@@ -3561,6 +3561,10 @@ const BoardDetailPage = () => {
             uploads={ledgerUploads}
             onOpenTask={handleOpenTask}
             onNotifyTask={setNotifyTask}
+            /* The same menu the table's row `⋯` opens — Pin, Share, Edit,
+               Delete — so the ledger is not a view you have to leave in order
+               to remove a file you dropped by mistake. */
+            onMenuTask={(task, anchor) => setActionsMenu({ task, anchor })}
             onDropFiles={handleLedgerDrop}
           />
         ) : boardView === 'stages' ? (

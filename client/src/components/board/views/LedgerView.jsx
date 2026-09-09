@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { FileText, Upload, AlertTriangle, Loader2 } from 'lucide-react';
+import { FileText, Upload, AlertTriangle, Loader2, MoreHorizontal } from 'lucide-react';
 import Avatar from '../../ui/Avatar';
 import { formatNumber } from '../../../utils/numberFormat';
 import { columnValue } from '../../../utils/columnValues';
@@ -86,7 +86,7 @@ const Figure = ({ label, value, settings, tone }) => (
   </div>
 );
 
-const InvoiceTile = ({ task, board, cols, onOpen, onNotify }) => {
+const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu }) => {
   const state = invoiceState(task, board, cols);
   const stamp = STAMP[state.key] || STAMP.draft;
   const files = cols.file ? columnValue(task, cols.file) : null;
@@ -104,8 +104,45 @@ const InvoiceTile = ({ task, board, cols, onOpen, onNotify }) => {
         background: 'var(--color-bg-surface)',
         display: 'flex',
         flexDirection: 'column',
+        position: 'relative',
       }}
     >
+      {/* A SIBLING of the open-button below, not a child of it.
+          The whole tile face is one big button so that clicking anywhere on the
+          document opens the row — and a button inside a button is invalid HTML
+          that browsers resolve by dropping one of them, so this sits over the
+          top instead. It opens the SAME menu as the table's row `⋯`, which is
+          how Delete, Pin and Share reach a view that has no rows to hang them
+          on. Without it a file dropped by mistake could not be removed at all
+          without switching to the table. */}
+      {onMenu && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMenu(task, e.currentTarget);
+          }}
+          aria-label={`Actions for ${task.name}`}
+          aria-haspopup="menu"
+          className="flex items-center justify-center focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[color:var(--color-accent)]"
+          style={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            zIndex: 2,
+            width: 24,
+            height: 24,
+            borderRadius: 'var(--radius-sm)',
+            border: '1px solid var(--color-border)',
+            background: 'var(--color-bg-surface)',
+            color: 'var(--color-text-secondary)',
+            cursor: 'pointer',
+            boxShadow: '0 1px 2px rgba(0,0,0,0.12)',
+          }}
+        >
+          <MoreHorizontal size={14} aria-hidden="true" />
+        </button>
+      )}
       <button
         type="button"
         onClick={() => onOpen?.(task)}
@@ -249,6 +286,7 @@ const LedgerView = ({
   uploads = [],
   onOpenTask,
   onNotifyTask,
+  onMenuTask,
   onDropFiles,
 }) => {
   const cols = useMemo(() => ledgerColumns(board), [board]);
@@ -327,6 +365,7 @@ const LedgerView = ({
             cols={cols}
             onOpen={onOpenTask}
             onNotify={onNotifyTask}
+            onMenu={onMenuTask}
           />
         ))}
 
