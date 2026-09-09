@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { FileText, Upload, AlertTriangle, Loader2, MoreHorizontal } from 'lucide-react';
 import Avatar from '../../ui/Avatar';
+import FilePreviewModal from '../FilePreviewModal';
 import { formatNumber } from '../../../utils/numberFormat';
 import { columnValue } from '../../../utils/columnValues';
 import {
@@ -86,7 +87,7 @@ const Figure = ({ label, value, settings, tone }) => (
   </div>
 );
 
-const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu }) => {
+const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu, onPreview }) => {
   const state = invoiceState(task, board, cols);
   const stamp = STAMP[state.key] || STAMP.draft;
   const files = cols.file ? columnValue(task, cols.file) : null;
@@ -143,12 +144,19 @@ const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu }) => {
           <MoreHorizontal size={14} aria-hidden="true" />
         </button>
       )}
+      {/* THE DOCUMENT FACE OPENS THE DOCUMENT.
+          Clicking a picture of an invoice and getting a task panel is the wrong
+          answer twice over: it is not what the thing you clicked looks like,
+          and the file is not visible from that panel either — it lives in a
+          column, so the panel's Files tab reads 0. The face previews; the
+          details strip below opens the row. */}
       <button
         type="button"
-        onClick={() => onOpen?.(task)}
+        onClick={() => (file ? onPreview?.(task) : onOpen?.(task))}
         className="text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--color-accent)]"
-        style={{ display: 'block', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
-        aria-label={`Open ${task.name}`}
+        style={{ display: 'block', border: 'none', padding: 0, background: 'transparent', cursor: file ? 'zoom-in' : 'pointer' }}
+        aria-label={file ? `Preview ${file.name || task.name}` : `Open ${task.name}`}
+        title={file ? 'Preview the document' : 'No file on this invoice yet'}
       >
         <span
           style={{
@@ -198,6 +206,17 @@ const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu }) => {
           </span>
         </span>
 
+      </button>
+
+      {/* The details strip opens the ROW — owner, due date, updates, checklist. */}
+      <button
+        type="button"
+        onClick={() => onOpen?.(task)}
+        className="text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--color-accent)]"
+        style={{ display: 'block', border: 'none', padding: 0, background: 'transparent', cursor: 'pointer', width: '100%' }}
+        aria-label={`Open ${task.name}`}
+        title="Open the invoice row"
+      >
         <span style={{ display: 'block', padding: '8px 10px' }}>
           <span
             className="font-body block"
@@ -292,6 +311,15 @@ const LedgerView = ({
   const cols = useMemo(() => ledgerColumns(board), [board]);
   const totals = useMemo(() => ledgerTotals(tasks, board, cols), [tasks, board, cols]);
   const [dragging, setDragging] = useState(false);
+  /**
+   * The document being read, as `{ attachments, index }`.
+   *
+   * Held HERE rather than lifted to the page: the ledger already holds every
+   * file descriptor, and the viewer walks the list with ← / →, so the natural
+   * list is "every invoice on this board that has a file" — which only this
+   * component knows.
+   */
+  const [preview, setPreview] = useState(null);
   const inputRef = useRef(null);
   // A dragenter on a child fires a dragleave on the parent, so a plain boolean
   // flickers the whole grid while the pointer crosses a tile. Counting the
@@ -299,6 +327,32 @@ const LedgerView = ({
   const dragDepth = useRef(0);
 
   const money = cols.amount?.settings;
+
+  /**
+   * Every invoice that actually has a file, in the order they are on screen.
+   *
+   * The viewer's ← / → walk this, so opening one invoice lets you read through
+   * the lot without going back to the grid — which is most of the point of a
+   * gallery. Rows with no file are skipped rather than shown as blanks.
+   */
+  const previewable = useMemo(() => {
+    if (!cols.file) return [];
+    const out = [];
+    for (const task of tasks) {
+      const files = columnValue(task, cols.file);
+      const file = Array.isArray(files) ? files[0] : null;
+      if (file?.url) out.push({ ...file, taskId: task._id });
+    }
+    return out;
+  }, [tasks, cols.file]);
+
+  const openPreview = useCallback(
+    (task) => {
+      const idx = previewable.findIndex((f) => f.taskId === task._id);
+      if (idx >= 0) setPreview(idx);
+    },
+    [previewable]
+  );
 
   const handleFiles = useCallback(
     (fileList) => {
@@ -366,6 +420,7 @@ const LedgerView = ({
             onOpen={onOpenTask}
             onNotify={onNotifyTask}
             onMenu={onMenuTask}
+            onPreview={openPreview}
           />
         ))}
 
@@ -446,6 +501,15 @@ const LedgerView = ({
           </button>
         )}
       </div>
+
+      {preview !== null && previewable[preview] && (
+        <FilePreviewModal
+          attachments={previewable}
+          index={preview}
+          onIndexChange={setPreview}
+          onClose={() => setPreview(null)}
+        />
+      )}
 
       {tasks.length === 0 && uploads.length === 0 && !canEdit && (
         <p
