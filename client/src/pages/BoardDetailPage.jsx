@@ -3565,6 +3565,10 @@ const BoardDetailPage = () => {
                Delete — so the ledger is not a view you have to leave in order
                to remove a file you dropped by mistake. */
             onMenuTask={(task, anchor) => setActionsMenu({ task, anchor })}
+            /* The board's own status menu, gated by the same `canChangeStatus`
+               the table's chip uses — so Draft → Sent → Paid is one click from
+               the gallery rather than a trip through the row panel. */
+            onStatusTask={handleStatusClick}
             onDropFiles={handleLedgerDrop}
           />
         ) : boardView === 'stages' ? (

@@ -87,7 +87,7 @@ const Figure = ({ label, value, settings, tone }) => (
   </div>
 );
 
-const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu, onPreview }) => {
+const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu, onPreview, onStatus }) => {
   const state = invoiceState(task, board, cols);
   const stamp = STAMP[state.key] || STAMP.draft;
   const files = cols.file ? columnValue(task, cols.file) : null;
@@ -116,6 +116,45 @@ const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu, onPreview })
           how Delete, Pin and Share reach a view that has no rows to hang them
           on. Without it a file dropped by mistake could not be removed at all
           without switching to the table. */}
+      {/* THE STAMP IS A CONTROL, not a label.
+          Marking an invoice paid is the most common thing anybody does on a
+          billing board, and sending them to the row panel for it made the
+          gallery a place you can only look at. Opens the board's own status
+          menu — the same one the table's status chip opens — so the four names
+          come from the board and cannot drift. A sibling of the face button
+          rather than a child, for the same button-in-button reason as the ⋯. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onStatus?.(task, e);
+        }}
+        disabled={!onStatus}
+        aria-label={`Status: ${state.label}. Change it`}
+        aria-haspopup={onStatus ? 'menu' : undefined}
+        className="font-body focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[color:var(--color-accent)]"
+        style={{
+          position: 'absolute',
+          right: 7,
+          top: 66,
+          zIndex: 2,
+          fontSize: 9,
+          fontWeight: 700,
+          letterSpacing: '0.08em',
+          padding: '3px 7px',
+          borderRadius: 3,
+          border: 'none',
+          background: stamp.bg,
+          color: stamp.fg,
+          textTransform: 'uppercase',
+          cursor: onStatus ? 'pointer' : 'default',
+        }}
+      >
+        {state.key === 'overdue' && state.daysLate > 0
+          ? `${state.daysLate} days late`
+          : state.label}
+      </button>
+
       {onMenu && (
         <button
           type="button"
@@ -184,26 +223,6 @@ const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu, onPreview })
               color={file ? 'var(--color-text-muted)' : 'var(--color-border-strong)'}
             />
           )}
-          <span
-            className="font-body"
-            style={{
-              position: 'absolute',
-              right: 7,
-              bottom: 7,
-              fontSize: 9,
-              fontWeight: 700,
-              letterSpacing: '0.08em',
-              padding: '2px 6px',
-              borderRadius: 3,
-              background: stamp.bg,
-              color: stamp.fg,
-              textTransform: 'uppercase',
-            }}
-          >
-            {state.key === 'overdue' && state.daysLate > 0
-              ? `${state.daysLate} days late`
-              : state.label}
-          </span>
         </span>
 
       </button>
@@ -306,6 +325,7 @@ const LedgerView = ({
   onOpenTask,
   onNotifyTask,
   onMenuTask,
+  onStatusTask,
   onDropFiles,
 }) => {
   const cols = useMemo(() => ledgerColumns(board), [board]);
@@ -421,6 +441,7 @@ const LedgerView = ({
             onNotify={onNotifyTask}
             onMenu={onMenuTask}
             onPreview={openPreview}
+            onStatus={onStatusTask}
           />
         ))}
 
