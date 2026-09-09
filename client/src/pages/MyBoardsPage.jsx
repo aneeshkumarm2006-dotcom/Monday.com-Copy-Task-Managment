@@ -165,6 +165,12 @@ const MyBoardsPage = () => {
       // first SERVICE added to the board does both, because a portal with no
       // services opens on an empty page. See server/src/utils/portalActivation.js.
       clientName: values.clientName,
+      // Which template seeds the columns, statuses and groups. THIS PAYLOAD IS
+      // BUILT FIELD BY FIELD rather than spread, so anything the form adds and
+      // this list does not name is silently dropped — which is exactly what
+      // happened to `template` the first time: the picker worked, the value was
+      // stored, and every board came out blank because it stopped here.
+      template: values.template,
       organisation: orgId,
     });
     setCreateOpen(false);

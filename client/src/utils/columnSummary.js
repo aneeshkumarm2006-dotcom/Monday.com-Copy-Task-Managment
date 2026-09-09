@@ -1,3 +1,5 @@
+import { formatNumber } from './numberFormat';
+
 /**
  * Group column summaries — the number under a column, per group.
  *
@@ -102,4 +104,37 @@ export const summaryLabel = (rows, column) => {
     return `Average of ${result.count}`;
   }
   return entry.label;
+};
+
+/**
+ * Every summarised column's total for one group, ready to render.
+ *
+ * Shared by the group header and the table footer so the two can never show
+ * different numbers for the same column — which they would the moment one of
+ * them grew its own idea of how to format a count.
+ *
+ * Returns `[]` for a board with no flexible columns, which is every board that
+ * existed before templates: the header slot renders nothing at all rather than
+ * an empty row of labels.
+ */
+export const groupSummaries = (board, rows) => {
+  if (!board?.useFlexibleColumns || !Array.isArray(board.columns)) return [];
+  const out = [];
+  for (const col of board.columns) {
+    const kind = col.settings?.summary;
+    if (!kind || kind === 'none') continue;
+    const result = computeSummary(rows, col);
+    if (!result) continue;
+    out.push({
+      key: col._id || col.key,
+      name: col.name,
+      label: summaryLabel(rows, col),
+      // A count of ROWS is not a value in the column's own unit — running
+      // "3 receipts missing" through the currency formatter would print "₹3".
+      display: result.raw
+        ? result.value.toLocaleString()
+        : formatNumber(result.value, col.settings),
+    });
+  }
+  return out;
 };

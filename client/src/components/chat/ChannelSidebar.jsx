@@ -150,10 +150,22 @@ const ChannelSidebar = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channels, q]);
 
+  /*
+   * The column CONTAINS its own scroll rather than being one.
+   *
+   * It used to be `h-full overflow-y-auto`, which scrolled the header and the
+   * search box away with the list, and — because `h-full` only binds when every
+   * ancestor has a definite height — let a long channel list grow the PAGE
+   * instead of scrolling inside its box.
+   *
+   * `min-h-0` is the part that actually holds it. A flex child defaults to
+   * `min-height: auto`, which refuses to shrink below its content, so without
+   * it the column is as tall as its list whatever height it was given.
+   */
   return (
-    <div className="flex flex-col h-full overflow-y-auto" style={{ background: '#FFFFFF' }}>
+    <div className="flex flex-col h-full min-h-0 overflow-hidden" style={{ background: '#FFFFFF' }}>
       <div
-        className="flex items-center gap-2.5 px-4 py-3 shrink-0 sticky top-0 z-[1]"
+        className="flex items-center gap-2.5 px-4 py-3 shrink-0"
         style={{ borderBottom: '1px solid var(--color-border)', background: '#FFFFFF' }}
       >
         <img src={macanMark} alt="" aria-hidden="true" width={18} height={18} />
@@ -203,8 +215,8 @@ const ChannelSidebar = ({
 
       {searchOpen && (
         <div
-          className="px-3 py-2 shrink-0 sticky z-[1]"
-          style={{ top: 49, background: '#FFFFFF', borderBottom: '1px solid var(--color-bg-subtle)' }}
+          className="px-3 py-2 shrink-0"
+          style={{ background: '#FFFFFF', borderBottom: '1px solid var(--color-bg-subtle)' }}
         >
           <div
             className="flex items-center gap-2"
@@ -259,6 +271,8 @@ const ChannelSidebar = ({
         </div>
       )}
 
+      {/* The only thing that scrolls. `min-h-0` again, for the same reason. */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
       {loading && channels.length === 0 ? (
         <p className="font-body px-4 py-6 text-[13px] text-[color:var(--color-text-muted)]">
           Loading channels…
@@ -368,6 +382,7 @@ const ChannelSidebar = ({
           )}
         </div>
       )}
+      </div>
     </div>
   );
 };

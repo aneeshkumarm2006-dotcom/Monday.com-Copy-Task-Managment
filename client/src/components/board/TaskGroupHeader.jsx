@@ -75,6 +75,10 @@ const TaskGroupHeader = ({
   ownerFromLabel = '',
   onOpenOwner,
   dragHandle = null,
+  /** Column totals for this group, as `[{ key, name, label, display }]`.
+   *  Empty on every board whose columns ask for no summary, which is every
+   *  board that existed before templates. */
+  summaries = [],
 }) => {
   const Chevron = collapsed ? ChevronRight : ChevronDown;
   const progressPct =
@@ -454,6 +458,31 @@ const TaskGroupHeader = ({
         >
           {totalCount} {totalCount === 1 ? 'item' : 'items'}
         </span>
+
+        {/* Column totals, beside the count.
+            The same numbers the table footer shows, lifted into the header so a
+            money board answers "what does this month come to" without scrolling
+            to the bottom of the group — which on a twelve-row invoice list is
+            the whole question. Only the first two, and only on desktop: this
+            row is a fixed-width slot and a board with six summed columns would
+            push the actions off the right edge. */}
+        {summaries.length > 0 && (
+          <span className="hidden lg:flex items-center gap-3 shrink-0 ml-1">
+            {summaries.slice(0, 2).map((s) => (
+              <span
+                key={s.key}
+                className="font-body whitespace-nowrap"
+                style={{ fontSize: 11.5, color: 'var(--color-text-secondary)' }}
+                title={`${s.label} of ${s.name}`}
+              >
+                {s.name}{' '}
+                <b style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                  {s.display}
+                </b>
+              </span>
+            ))}
+          </span>
+        )}
       </div>
 
       {/* Group owner (tracker boards). Deliberately on the LEFT, with the

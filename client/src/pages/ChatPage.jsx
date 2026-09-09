@@ -414,14 +414,18 @@ const ChatPage = () => {
 
   return (
     <PageWrapper padded={false} className="!pb-0" hideNavOnMobile fullWidth>
-      <div className="macan-chat-shell flex" style={{ minHeight: 0 }}>
+      <div className="macan-chat-shell flex overflow-hidden" style={{ minHeight: 0 }}>
         {/* Channel list — full-screen on phones until a channel is opened */}
         <div
           className={[
             'macan-chat-sidebar shrink-0',
             conversationOpen ? 'hidden md:flex' : 'flex',
           ].join(' ')}
-          style={{ flexDirection: 'column', borderRight: '1px solid var(--color-border)' }}
+          // `minHeight: 0` so this column can be shorter than its channel list.
+          // Without it the flex default (`min-height: auto`) makes the column as
+          // tall as its content and the list pushes the page down instead of
+          // scrolling inside itself.
+          style={{ flexDirection: 'column', minHeight: 0, borderRight: '1px solid var(--color-border)' }}
         >
           <ChannelSidebar
             channels={sidebarChannels}

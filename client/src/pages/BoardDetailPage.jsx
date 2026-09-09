@@ -57,6 +57,7 @@ import TaskGroupHeader from '../components/board/TaskGroupHeader';
 import TaskTable from '../components/board/TaskTable';
 import { InlineAssigneeMenu } from '../components/board/AssigneePicker';
 import DataGrid from '../components/board/DataGrid';
+import { groupSummaries } from '../utils/columnSummary';
 import SortableItem from '../components/dnd/SortableItem';
 import StatusMenu from '../components/board/StatusMenu';
 import PriorityMenu from '../components/board/PriorityMenu';
@@ -2723,6 +2724,7 @@ const BoardDetailPage = () => {
                         <TaskGroupHeader
                           name={group.name}
                           colorDot={GROUP_DOT_CYCLE[idx % GROUP_DOT_CYCLE.length]}
+                          summaries={groupSummaries(board, groupTasks)}
                           totalCount={groupTasks.length}
                           doneCount={doneCount}
                           collapsed={isCollapsed}

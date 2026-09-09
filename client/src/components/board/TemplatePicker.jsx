@@ -45,13 +45,14 @@ const TemplateCard = ({ template, selected, onSelect }) => {
       type="button"
       onClick={() => onSelect(template.key)}
       aria-pressed={selected}
-      className="text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+      className="text-left shrink-0 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
       style={{
         // The border thickens on selection rather than a ring appearing, and
-        // the padding drops by the same pixel — so the card does not grow and
-        // shove its neighbours when you click it.
+        // the padding drops by the same pixel — so the tile does not grow and
+        // shove the rail sideways when you click it.
         border: selected ? '2px solid var(--color-accent)' : '1px solid var(--color-border)',
-        padding: selected ? 12 : 13,
+        padding: selected ? 11 : 12,
+        width: 194,
         borderRadius: 'var(--radius-md)',
         background: selected ? 'var(--color-accent-light)' : 'var(--color-bg-surface)',
       }}
@@ -121,9 +122,11 @@ const FromBoardCard = ({ boards, value, onChange }) => {
   const selected = value.startsWith('board:') ? value.slice('board:'.length) : '';
   return (
     <div
+      className="shrink-0"
       style={{
         border: selected ? '2px solid var(--color-accent)' : '1px dashed var(--color-border-strong)',
-        padding: selected ? 12 : 13,
+        padding: selected ? 11 : 12,
+        width: 194,
         borderRadius: 'var(--radius-md)',
         background: selected ? 'var(--color-accent-light)' : 'var(--color-bg-input)',
       }}
@@ -214,7 +217,24 @@ const TemplatePicker = ({ value, onChange, boards = [] }) => {
 
   return (
     <div>
-      <div className="grid gap-2.5" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(196px, 1fr))' }}>
+      {/* A HORIZONTAL RAIL, not a grid.
+          Seven tiles stacked two-up made the dialog taller than most laptop
+          screens, so the name field and the Create button scrolled out of view
+          behind the thing you were choosing. One scrolling row keeps the whole
+          dialog on screen and reads as "pick one of these" rather than as a
+          page of options. */}
+      <div
+        className="flex gap-2.5 pb-2"
+        style={{
+          overflowX: 'auto',
+          overflowY: 'hidden',
+          scrollbarWidth: 'thin',
+          // Room for the selected tile's thicker border and the focus ring,
+          // which would otherwise be clipped by the scroll container.
+          paddingLeft: 2,
+          paddingRight: 2,
+        }}
+      >
         {templates.map((t) => (
           <TemplateCard
             key={t.key}
@@ -234,7 +254,7 @@ const TemplatePicker = ({ value, onChange, boards = [] }) => {
           view it opens on. */}
       {selected && selected.key !== 'blank' && (
         <div
-          className="mt-3 px-3.5 py-3"
+          className="mt-2 px-3.5 py-2.5"
           style={{
             background: 'var(--color-bg-input)',
             border: '1px solid var(--color-border)',
