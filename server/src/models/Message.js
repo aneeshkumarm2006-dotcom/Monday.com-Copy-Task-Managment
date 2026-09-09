@@ -49,6 +49,20 @@ const attachmentSchema = new mongoose.Schema(
   { _id: true }
 );
 
+/**
+ * One emoji on one message, and everybody who picked it.
+ *
+ * `emoji` is the literal character(s) — not a shortcode — so nothing has to own
+ * a name-to-glyph table that then disagrees with whatever the composer inserted.
+ */
+const reactionSchema = new mongoose.Schema(
+  {
+    emoji: { type: String, required: true, maxlength: 16 },
+    users: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  },
+  { _id: false }
+);
+
 const messageSchema = new mongoose.Schema(
   {
     channel: {
@@ -211,6 +225,40 @@ const messageSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    /**
+     * Reactions, stored as ONE ROW PER EMOJI holding the people who picked it.
+     *
+     * The other shape — one row per (person, emoji) — reads more normalised and
+     * is worse here: rendering a message needs the counts grouped by emoji, so
+     * that shape makes every render do the grouping, and the array it groups
+     * is the one that grows fastest in the whole model. This way the document
+     * is already in the shape the UI draws, and toggling is one positional
+     * update rather than a find-then-insert.
+     *
+     * `users` is the count AND the "did I react" answer, so no separate tally
+     * can drift from the membership it is supposed to count. An emoji whose
+     * last user leaves is pulled entirely — an empty chip is not a state.
+     *
+     * TEAM MEMBERS ONLY. A ClientContact is not a User and never enters this
+     * array; the portal does not offer reactions, and if it ever does it gets
+     * its own field for the same reason `mentionsContacts` is separate.
+     */
+    reactions: {
+      type: [reactionSchema],
+      default: [],
+    },
+    /**
+     * Pinned to the top of its channel. A channel-level fact stored on the
+     * MESSAGE, because "which messages are pinned here" is a query the channel
+     * read already makes and an array on Channel would need keeping in step
+     * with deletions in two places.
+     */
+    pinnedAt: { type: Date, default: null },
+    pinnedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -219,6 +267,12 @@ const messageSchema = new mongoose.Schema(
 messageSchema.index({ channel: 1, createdAt: -1 });
 // The thread read: replies to one message, oldest first.
 messageSchema.index({ replyTo: 1, createdAt: 1 });
+// The pin bar: a channel's pinned messages, most recently pinned first.
+// Partial, because pinned messages are a rounding error against all messages.
+messageSchema.index(
+  { channel: 1, pinnedAt: -1 },
+  { partialFilterExpression: { pinnedAt: { $type: 'date' } } }
+);
 
 
 module.exports = mongoose.model('Message', messageSchema);

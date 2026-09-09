@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Plus, Search as SearchIcon, X } from 'lucide-react';
+import { AtSign, Plus, Search as SearchIcon, X } from 'lucide-react';
 import Avatar from '../ui/Avatar';
 import { initialsOf, tileColor, timeShort } from './chatFormat';
 import macanMark from '../../assets/macan-mark.svg';
@@ -109,7 +109,21 @@ const SectionLabel = ({ children }) => (
   </p>
 );
 
-const ChannelSidebar = ({ channels, activeChannelId, onOpen, onCreate, loading }) => {
+const ChannelSidebar = ({
+  channels,
+  activeChannelId,
+  onOpen,
+  onCreate,
+  loading,
+  /** The Mentions destination. Optional so the board Chat tab, which reuses
+   *  this sidebar for one board, does not grow a workspace-wide row. */
+  onOpenMentions,
+  mentionCount = 0,
+  mentionsActive = false,
+  /** Hand off to full message-history search. Optional for the same reason
+   *  `onOpenMentions` is: the board Chat tab has no workspace to search. */
+  onOpenSearch,
+}) => {
   // The mock's header search: tap the icon, an input slides in, the list
   // filters as you type — clients, rooms and people alike.
   const [searchOpen, setSearchOpen] = useState(false);
@@ -225,6 +239,23 @@ const ChannelSidebar = ({ channels, activeChannelId, onOpen, onCreate, loading }
               </button>
             )}
           </div>
+
+          {/* The bridge to real search. This box filters ROOM NAMES, which is
+              the right default — you usually know where you are going. But
+              someone typing a phrase into it is looking for something that was
+              SAID, and hitting nothing without being told the other search
+              exists is how people conclude chat has no history. */}
+          {q && onOpenSearch && (
+            <button
+              type="button"
+              onClick={() => onOpenSearch(query.trim())}
+              className="w-full mt-1.5 px-2 py-1.5 text-left rounded-md transition-colors hover:bg-[color:var(--color-bg-subtle)]"
+            >
+              <span className="font-body" style={{ fontSize: 12, color: 'var(--color-accent)', fontWeight: 600 }}>
+                Search messages for “{query.trim()}”
+              </span>
+            </button>
+          )}
         </div>
       )}
 
@@ -243,6 +274,59 @@ const ChannelSidebar = ({ channels, activeChannelId, onOpen, onCreate, loading }
         </p>
       ) : (
         <div className="pb-3">
+          {/* Mentions sits ABOVE the rooms and outside the search filter: it is
+              a destination, not a conversation, and hiding it behind a query
+              for a room name would be hiding the one row that is about you. */}
+          {onOpenMentions && !q && (
+            <>
+              <SectionLabel>Pinned</SectionLabel>
+              <button
+                type="button"
+                onClick={onOpenMentions}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors duration-100 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline-none focus-visible:bg-[color:var(--color-bg-subtle)]"
+                style={mentionsActive ? { background: 'var(--color-accent-light)' } : undefined}
+              >
+                <span
+                  className="flex items-center justify-center shrink-0 text-white"
+                  style={{
+                    width: 30,
+                    height: 30,
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'var(--color-status-working)',
+                  }}
+                  aria-hidden="true"
+                >
+                  <AtSign size={15} />
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="block font-body font-semibold text-[12.5px] text-[color:var(--color-text-primary)] truncate">
+                    Mentions &amp; reactions
+                  </span>
+                  <span className="block font-body text-[11.5px] text-[color:var(--color-text-muted)] truncate">
+                    {mentionCount > 0
+                      ? `${mentionCount} need${mentionCount === 1 ? 's' : ''} a reply`
+                      : 'Nothing waiting on you'}
+                  </span>
+                </span>
+                {mentionCount > 0 && (
+                  <span
+                    className="shrink-0 flex items-center justify-center font-body font-bold text-white"
+                    style={{
+                      minWidth: 18,
+                      height: 18,
+                      padding: '0 5px',
+                      fontSize: 10,
+                      borderRadius: 9,
+                      background: 'var(--color-status-working)',
+                    }}
+                  >
+                    {mentionCount}
+                  </span>
+                )}
+              </button>
+            </>
+          )}
+
           {sections.boards.map((section) => (
             <div key={section.name}>
               <SectionLabel>Clients · {section.name}</SectionLabel>

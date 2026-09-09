@@ -611,6 +611,41 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
 
   /* --- Message actions ---------------------------------------------------- */
 
+  /**
+   * Reactions on a client board's Chat tab.
+   *
+   * This pane keeps its own message state rather than using the chat store —
+   * it is a board tab, not the /chat page — so the patch is local. The server
+   * call and its rules are identical; only where the result lands differs.
+   */
+  const patchReactions = (messageId, reactions) => {
+    const id = String(messageId);
+    const apply = (m) => (String(m._id) === id ? { ...m, reactions } : m);
+    setPane((prev) =>
+      prev && prev.mode === 'chat'
+        ? { ...prev, messages: (prev.messages || []).map(apply) }
+        : prev
+    );
+    setThreadPane((prev) =>
+      prev
+        ? {
+            ...prev,
+            parent: prev.parent ? apply(prev.parent) : prev.parent,
+            replies: (prev.replies || []).map(apply),
+          }
+        : prev
+    );
+  };
+
+  const handleToggleReaction = async (message, emoji) => {
+    try {
+      const reactions = await chatService.toggleReaction(activeId, message._id, emoji);
+      patchReactions(message._id, reactions);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not add that reaction.');
+    }
+  };
+
   const handleDelete = async (message) => {
     if (!window.confirm('Delete this message?')) return;
     try {
@@ -1031,6 +1066,7 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
                               onDelete={handleDelete}
                               onMakeTask={handleMakeTask}
                               onOpenChip={handleOpenChip}
+                              onToggleReaction={canPost ? handleToggleReaction : null}
                             />
                           ))}
 
@@ -1230,6 +1266,7 @@ const BoardChatTab = ({ boardId, onlyGroupId = null, clientName = '' }) => {
                               onDelete={handleDelete}
                               onMakeTask={handleMakeTask}
                               onOpenChip={handleOpenChip}
+                              onToggleReaction={canPost ? handleToggleReaction : null}
                             />
                           </div>
                         );

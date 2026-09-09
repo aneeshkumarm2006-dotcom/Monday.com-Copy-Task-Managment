@@ -176,3 +176,74 @@ export const uploadChatAttachment = async (channelId, file) => {
   );
   return data.attachment;
 };
+
+/* ------------------------- Reactions, pins, saves ------------------------- */
+
+/**
+ * Toggle one emoji on one message. The same call adds or removes — the server
+ * decides which, so a double-tap cannot leave the two sides disagreeing.
+ * Returns the message's full reactions array.
+ */
+export const toggleReaction = async (channelId, messageId, emoji) => {
+  const { data } = await api.put(
+    `/api/chat/channels/${channelId}/messages/${messageId}/reactions`,
+    { emoji }
+  );
+  return data.reactions;
+};
+
+/** Pin or unpin a message in its room. Returns the re-populated message. */
+export const togglePin = async (channelId, messageId, pinned) => {
+  const { data } = await api.put(
+    `/api/chat/channels/${channelId}/messages/${messageId}/pin`,
+    { pinned }
+  );
+  return data.message;
+};
+
+/** The room's pinned messages, most recently pinned first. */
+export const getPins = async (channelId) => {
+  const { data } = await api.get(`/api/chat/channels/${channelId}/pins`);
+  return data.messages || [];
+};
+
+/** Save or unsave a message. Private to the caller — nobody is told. */
+export const toggleSave = async (channelId, messageId, saved) => {
+  const { data } = await api.put(
+    `/api/chat/channels/${channelId}/messages/${messageId}/save`,
+    { saved }
+  );
+  return data.saved;
+};
+
+/** Everything the caller set aside, newest-saved first. */
+export const getSaved = async () => {
+  const { data } = await api.get('/api/chat/saved');
+  return data.messages || [];
+};
+
+/**
+ * Every place someone called your name.
+ *
+ * `filter` is 'unanswered' (default) or 'all'. `unansweredCount` always
+ * reflects the FULL set regardless of the filter, so the badge does not change
+ * when you switch tabs.
+ */
+export const getMentions = async (filter = 'unanswered') => {
+  const { data } = await api.get('/api/chat/mentions', { params: { filter } });
+  return data;
+};
+
+/**
+ * Search message HISTORY, not room names.
+ *
+ * Scoped server-side to the rooms the caller can read, so nothing here can
+ * widen it — `channel` narrows the search, and asking for one you cannot read
+ * is refused rather than ignored.
+ */
+export const searchMessages = async (orgId, q, filters = {}) => {
+  const { data } = await api.get('/api/chat/search', {
+    params: { org: orgId, q, ...filters },
+  });
+  return data.results || [];
+};

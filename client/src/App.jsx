@@ -171,6 +171,7 @@ function App() {
   const fetchNotifications = useNotificationStore((s) => s.fetchNotifications);
   const clearNotifications = useNotificationStore((s) => s.clear);
   const fetchChannels = useChatStore((s) => s.fetchChannels);
+  const fetchMentions = useChatStore((s) => s.fetchMentions);
   const clearChat = useChatStore((s) => s.clear);
 
   // On mount (or token change), hydrate the user profile from the backend.
@@ -198,6 +199,10 @@ function App() {
       // Channels too, so the Chat tab's unread badge is live from first paint
       // (this is also what lazily creates the auto client channels).
       if (currentOrgId) fetchChannels(currentOrgId);
+      // The mention count drives the Chat tab's badge everywhere, not only on
+      // /chat — so it is fetched here with the channels rather than by the page
+      // that happens to display the list.
+      fetchMentions();
     } else if (!token) {
       // Actually logged out — not merely still hydrating. On a cold load
       // `user` is null for a beat while the profile fetch runs, and clearing

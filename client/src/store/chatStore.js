@@ -34,6 +34,39 @@ const useChatStore = create((set, get) => ({
   thread: null,
   threadLoading: false,
 
+  // The open room's pinned messages. Loaded with the room rather than lazily,
+  // because the pin bar is chrome — it is either there when the room paints or
+  // it lands late and shoves the conversation down under the reader's eyes.
+  pins: [],
+
+  // The caller's saved messages. Loaded on demand — it is its own destination,
+  // not something every room needs.
+  saved: [],
+  savedLoading: false,
+
+  // The mentions page. `mentionCount` is the UNANSWERED total across the whole
+  // workspace and is what the sidebar row and the mobile badge read — it stays
+  // put when the filter changes, because a badge that moves when you switch a
+  // tab is a badge nobody believes.
+  mentions: [],
+  mentionsLoading: false,
+  mentionCount: 0,
+  mentionFilter: 'unanswered',
+
+  // Message search. `searchQuery` is what was actually SEARCHED, not what is
+  // being typed — the input keeps its own state, so a slow response cannot
+  // overwrite the box under the reader's fingers.
+  searchResults: [],
+  searchLoading: false,
+  searchQuery: '',
+  // Message ids the caller has saved, so a row can render its own state
+  // without the list being open. Kept as a Set for the per-message lookup.
+  savedIds: new Set(),
+
+  // The signed-in user's id. Set by ChatPage from the auth store; the chat
+  // store deliberately does not reach into another store to get it.
+  myUserId: null,
+
   // How many unread the channel had at the moment it was opened — the anchor
   // for the red NEW divider. Frozen for the visit; live arrivals don't move it.
   unreadAtOpen: 0,
@@ -74,6 +107,7 @@ const useChatStore = create((set, get) => ({
       messagesLoading: true,
       nextBefore: null,
       thread: null,
+      pins: [],
       unreadAtOpen: known?.unread || 0,
     });
     try {
@@ -89,6 +123,14 @@ const useChatStore = create((set, get) => ({
         canManage,
       });
       get().markRead(channelId);
+      // Best-effort and unawaited: a room whose pin bar failed to load is a
+      // room, but a room that will not open because its pin bar 500'd is not.
+      chatService
+        .getPins(channelId)
+        .then((pins) => {
+          if (get().activeChannelId === channelId) set({ pins });
+        })
+        .catch(() => {});
     } catch (err) {
       console.error('Failed to load messages:', err);
     } finally {
@@ -97,7 +139,7 @@ const useChatStore = create((set, get) => ({
   },
 
   closeChannel: () => {
-    set({ activeChannelId: null, messages: [], thread: null, nextBefore: null });
+    set({ activeChannelId: null, messages: [], thread: null, nextBefore: null, pins: [] });
   },
 
   loadOlder: async () => {
@@ -112,6 +154,30 @@ const useChatStore = create((set, get) => ({
       });
     } catch (err) {
       console.error('Failed to load older messages:', err);
+    }
+  },
+
+  /**
+   * Open a thread by ID in a NAMED channel, without needing the parent message.
+   *
+   * What a deep link has: an id out of a URL or a mentions row, and no loaded
+   * message to hand over. `openThread` above cannot serve that — it takes the
+   * parent (to paint it instantly) and reads the channel from the store, which
+   * during a navigation is still the previous one or none at all.
+   */
+  openThreadById: async (channelId, threadId) => {
+    if (!channelId || !threadId) return;
+    set({ threadLoading: true, thread: { parent: null, replies: [] } });
+    try {
+      const { parent, replies } = await chatService.getThread(channelId, threadId);
+      // Ignore a slow response for a channel the user has since left.
+      if (String(get().activeChannelId) !== String(channelId)) return;
+      set({ thread: { parent, replies } });
+    } catch (err) {
+      console.error('Failed to load thread:', err);
+      set({ thread: null });
+    } finally {
+      set({ threadLoading: false });
     }
   },
 
@@ -218,6 +284,175 @@ const useChatStore = create((set, get) => ({
         : null,
     }));
   },
+
+  /**
+   * Apply a reaction array to a message wherever it is on screen — the feed,
+   * the open thread, and the pin bar all render the same message and all three
+   * must move together or one of them shows a stale count.
+   */
+  applyReactions: (messageId, reactions) => {
+    const id = String(messageId);
+    const patch = (m) => (String(m._id) === id ? { ...m, reactions } : m);
+    set((s) => ({
+      messages: s.messages.map(patch),
+      pins: s.pins.map(patch),
+      thread: s.thread
+        ? {
+            parent: patch(s.thread.parent),
+            replies: s.thread.replies.map(patch),
+          }
+        : null,
+    }));
+  },
+
+  /**
+   * Toggle an emoji, optimistically.
+   *
+   * Optimistic because a reaction is the one interaction where the round-trip
+   * is longer than the intent — you press 👍 and look away. The server's answer
+   * overwrites the guess when it lands, and on failure the guess is rolled back
+   * to exactly what was there before rather than being re-derived, so a
+   * concurrent reaction from somebody else is not clobbered by our undo.
+   */
+  /**
+   * Toggle in a NAMED channel, for surfaces that act on a message outside the
+   * open room — the mentions list, saved messages. No optimistic patch: those
+   * lists refetch, and there is nothing on screen to patch.
+   */
+  toggleReactionIn: async (channelId, messageId, emoji) => {
+    const reactions = await chatService.toggleReaction(channelId, messageId, emoji);
+    get().applyReactions(messageId, reactions);
+    return reactions;
+  },
+
+  toggleSaveIn: async (channelId, messageId, saved) => {
+    await chatService.toggleSave(channelId, messageId, saved);
+    set((s) => {
+      const next = new Set(s.savedIds);
+      if (saved) next.add(String(messageId));
+      else next.delete(String(messageId));
+      return {
+        savedIds: next,
+        saved: saved ? s.saved : s.saved.filter((r) => String(r.message?._id) !== String(messageId)),
+      };
+    });
+  },
+
+  toggleReaction: async (messageId, emoji) => {
+    const { activeChannelId, messages, thread, pins, myUserId } = get();
+    if (!activeChannelId) return;
+
+    const found =
+      messages.find((m) => String(m._id) === String(messageId)) ||
+      thread?.replies?.find((m) => String(m._id) === String(messageId)) ||
+      (String(thread?.parent?._id) === String(messageId) ? thread.parent : null) ||
+      pins.find((m) => String(m._id) === String(messageId));
+    const before = found?.reactions ? found.reactions.map((r) => ({ ...r, users: [...r.users] })) : [];
+
+    if (myUserId) {
+      const next = before.map((r) => ({ ...r, users: [...r.users] }));
+      const row = next.find((r) => r.emoji === emoji);
+      if (!row) {
+        next.push({ emoji, users: [myUserId] });
+      } else if (row.users.some((u) => String(u) === String(myUserId))) {
+        row.users = row.users.filter((u) => String(u) !== String(myUserId));
+      } else {
+        row.users.push(myUserId);
+      }
+      get().applyReactions(messageId, next.filter((r) => r.users.length > 0));
+    }
+
+    try {
+      const reactions = await chatService.toggleReaction(activeChannelId, messageId, emoji);
+      get().applyReactions(messageId, reactions);
+    } catch (err) {
+      get().applyReactions(messageId, before);
+      throw err;
+    }
+  },
+
+  /** Pin or unpin, and keep the pin bar in step without a refetch. */
+  togglePin: async (messageId, pinned) => {
+    const { activeChannelId } = get();
+    if (!activeChannelId) return;
+    const message = await chatService.togglePin(activeChannelId, messageId, pinned);
+    get().replaceMessage(message);
+    set((s) => ({
+      pins: pinned
+        ? [message, ...s.pins.filter((m) => String(m._id) !== String(messageId))]
+        : s.pins.filter((m) => String(m._id) !== String(messageId)),
+    }));
+    return message;
+  },
+
+  /** Save or unsave. Private — no event, nobody told, no optimistic drama. */
+  toggleSave: async (messageId, saved) => {
+    const { activeChannelId } = get();
+    if (!activeChannelId) return;
+    await chatService.toggleSave(activeChannelId, messageId, saved);
+    set((s) => {
+      const next = new Set(s.savedIds);
+      if (saved) next.add(String(messageId));
+      else next.delete(String(messageId));
+      return {
+        savedIds: next,
+        saved: saved ? s.saved : s.saved.filter((r) => String(r.message?._id) !== String(messageId)),
+      };
+    });
+  },
+
+  runSearch: async (orgId, q, filters = {}) => {
+    const query = (q || '').trim();
+    if (query.length < 2) {
+      set({ searchResults: [], searchQuery: query, searchLoading: false });
+      return;
+    }
+    set({ searchLoading: true, searchQuery: query });
+    try {
+      const results = await chatService.searchMessages(orgId, query, filters);
+      // Drop a slow answer for a query the reader has moved on from.
+      if (get().searchQuery !== query) return;
+      set({ searchResults: results });
+    } catch (err) {
+      console.error('Search failed:', err);
+      set({ searchResults: [] });
+    } finally {
+      set({ searchLoading: false });
+    }
+  },
+
+  clearSearch: () => set({ searchResults: [], searchQuery: '', searchLoading: false }),
+
+  fetchMentions: async (filter) => {
+    const next = filter || get().mentionFilter;
+    set({ mentionsLoading: true, mentionFilter: next });
+    try {
+      const { mentions, unansweredCount } = await chatService.getMentions(next);
+      set({ mentions, mentionCount: unansweredCount });
+    } catch (err) {
+      console.error('Failed to load mentions:', err);
+    } finally {
+      set({ mentionsLoading: false });
+    }
+  },
+
+  fetchSaved: async () => {
+    set({ savedLoading: true });
+    try {
+      const rows = await chatService.getSaved();
+      set({
+        saved: rows,
+        savedIds: new Set(rows.map((r) => String(r.message?._id)).filter(Boolean)),
+      });
+    } catch (err) {
+      console.error('Failed to load saved messages:', err);
+    } finally {
+      set({ savedLoading: false });
+    }
+  },
+
+  /** Who "me" is, so a reaction chip can tell my 👍 from everyone else's. */
+  setMyUserId: (id) => set({ myUserId: id ? String(id) : null }),
 
   makeTask: async (messageId, payload = {}) => {
     const { activeChannelId } = get();
@@ -335,6 +570,9 @@ const useChatStore = create((set, get) => ({
       messages: [],
       thread: null,
       nextBefore: null,
+      pins: [],
+      saved: [],
+      savedIds: new Set(),
     }),
 }));
 

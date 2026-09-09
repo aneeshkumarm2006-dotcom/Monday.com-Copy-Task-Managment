@@ -77,6 +77,10 @@ require('./Message');
 require('./ChannelRead');
 require('./MailThreadRead');
 require('./ChannelContactRead');
+// A personal bookmark on a message. Its own collection rather than an array on
+// Message because a bookmark is PRIVATE and a reaction is public — see the
+// model header for why that difference decides the shape.
+require('./SavedMessage');
 
 // The Client Portal roster. It was missing from this barrel, which meant
 // `mongoose.model('ClientContact')` only resolved once some controller had

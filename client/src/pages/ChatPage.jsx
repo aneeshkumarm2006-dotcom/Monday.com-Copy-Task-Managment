@@ -14,6 +14,9 @@ import ChannelSidebar from '../components/chat/ChannelSidebar';
 import MessageItem, { NewDivider } from '../components/chat/MessageItem';
 import { waDayLabel, dayKey } from '../utils/conversationFormat';
 import SharePicker from '../components/chat/SharePicker';
+import PinBar from '../components/chat/PinBar';
+import MentionsPanel from '../components/chat/MentionsPanel';
+import SearchPanel from '../components/chat/SearchPanel';
 import Avatar from '../components/ui/Avatar';
 import Modal from '../components/ui/Modal';
 import useChatStore from '../store/chatStore';
@@ -82,12 +85,22 @@ const ChatPage = () => {
   const nextBefore = useChatStore((s) => s.nextBefore);
   const canPost = useChatStore((s) => s.canPost);
   const canManage = useChatStore((s) => s.canManage);
+  const pins = useChatStore((s) => s.pins);
+  const savedIds = useChatStore((s) => s.savedIds);
+  const toggleReaction = useChatStore((s) => s.toggleReaction);
+  const togglePin = useChatStore((s) => s.togglePin);
+  const toggleSave = useChatStore((s) => s.toggleSave);
+  const fetchSaved = useChatStore((s) => s.fetchSaved);
+  const fetchMentions = useChatStore((s) => s.fetchMentions);
+  const mentionCount = useChatStore((s) => s.mentionCount);
+  const setMyUserId = useChatStore((s) => s.setMyUserId);
   const unreadAtOpen = useChatStore((s) => s.unreadAtOpen);
   const thread = useChatStore((s) => s.thread);
   const threadLoading = useChatStore((s) => s.threadLoading);
   const openChannel = useChatStore((s) => s.openChannel);
   const closeChannel = useChatStore((s) => s.closeChannel);
   const openThread = useChatStore((s) => s.openThread);
+  const openThreadById = useChatStore((s) => s.openThreadById);
   const closeThread = useChatStore((s) => s.closeThread);
   const loadOlder = useChatStore((s) => s.loadOlder);
   const sendMessage = useChatStore((s) => s.sendMessage);
@@ -122,8 +135,30 @@ const ChatPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orgId]);
 
-  // Deep link: /chat?channel=<id> (mention notifications, refreshes).
+  // The chat store needs to know who "me" is to tell my reaction chips from
+  // everyone else's, and it deliberately does not reach into the auth store to
+  // find out. Also warms the saved-message set so a row can render its own
+  // bookmark state without the saved list ever being opened.
+  useEffect(() => {
+    if (!currentUser?._id) return;
+    setMyUserId(currentUser._id);
+    fetchSaved();
+  }, [currentUser?._id, setMyUserId, fetchSaved]);
+
+  /**
+   * Which destination the middle column is showing.
+   *
+   * Read from the URL rather than held in state, so a mentions view survives a
+   * refresh and can be linked to — /chat?view=mentions is where the bell's
+   * "see all mentions" and the mobile tab both point.
+   */
+  const viewParam = searchParams.get('view');
+  const view = viewParam === 'mentions' || viewParam === 'search' ? viewParam : 'chat';
+
+  // Deep link: /chat?channel=<id>&thread=<id> (mention rows, notifications,
+  // refreshes).
   const channelParam = searchParams.get('channel');
+  const threadParam = searchParams.get('thread');
   useEffect(() => {
     if (channelParam && String(channelParam) !== String(activeChannelId)) {
       openChannel(channelParam);
@@ -137,6 +172,17 @@ const ChatPage = () => {
     // user on the list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelParam, activeChannelId]);
+
+  // Open the thread the URL names, but only once its channel is the open one —
+  // `getThread` is scoped to a channel, so asking before the switch lands would
+  // resolve against the room we just left.
+  useEffect(() => {
+    if (!threadParam) return;
+    if (String(activeChannelId) !== String(channelParam)) return;
+    if (String(thread?.parent?._id) === String(threadParam)) return;
+    openThreadById(channelParam, threadParam);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadParam, channelParam, activeChannelId]);
 
   useEffect(() => () => closeChannel(), [closeChannel]);
 
@@ -163,6 +209,37 @@ const ChatPage = () => {
   };
 
   const handleBackToList = () => setSearchParams({});
+
+  const handleOpenSearch = () => setSearchParams({ view: 'search' });
+
+  const handleOpenMentions = () => {
+    // Leaves the open channel behind: mentions is a destination of its own, and
+    // a conversation still mounted under it would keep marking itself read.
+    setSearchParams({ view: 'mentions' });
+    fetchMentions();
+  };
+
+  /**
+   * Open a mention where it happened.
+   *
+   * A mention inside a thread opens the THREAD, not just the room — landing at
+   * the bottom of a busy room and being told to find the message yourself is
+   * the reason people stop clicking these. `openThread` needs the parent
+   * message, which this view does not hold, so the channel is opened first and
+   * the thread id is handed to the store to resolve.
+   */
+  const handleOpenMention = (row) => {
+    const channelId = row.channel?._id;
+    if (!channelId) return;
+    stickToBottom.current = true;
+    // The thread rides the URL rather than being opened here: at this moment
+    // the channel is not open yet, so anything reading `activeChannelId` would
+    // resolve against the previous room. The deep-link effect below opens it
+    // once the channel actually is. It also makes the link shareable.
+    setSearchParams(
+      row.threadId ? { channel: channelId, thread: row.threadId } : { channel: channelId }
+    );
+  };
 
   const handleStartDm = async (member) => {
     try {
@@ -206,6 +283,30 @@ const ChatPage = () => {
       toast.success(`Task created: ${task.name}`);
     } catch (err) {
       toast.error(err?.response?.data?.error || 'Could not create the task.');
+    }
+  };
+
+  const handleToggleReaction = async (message, emoji) => {
+    try {
+      await toggleReaction(message._id, emoji);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not add that reaction.');
+    }
+  };
+
+  const handlePin = async (message, pinned) => {
+    try {
+      await togglePin(message._id, pinned);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not pin the message.');
+    }
+  };
+
+  const handleSave = async (message, saved) => {
+    try {
+      await toggleSave(message._id, saved);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || 'Could not save the message.');
     }
   };
 
@@ -328,6 +429,10 @@ const ChatPage = () => {
             onOpen={handleOpenChannel}
             onCreate={() => setCreateOpen(true)}
             loading={channelsLoading}
+            onOpenMentions={handleOpenMentions}
+            onOpenSearch={handleOpenSearch}
+            mentionCount={mentionCount}
+            mentionsActive={view === 'mentions'}
           />
         </div>
 
@@ -342,7 +447,15 @@ const ChatPage = () => {
           ].join(' ')}
           style={{ background: 'var(--color-bg-surface)', minHeight: 0 }}
         >
-          {!conversationOpen ? (
+          {view === 'mentions' ? (
+            <MentionsPanel onOpen={handleOpenMention} />
+          ) : view === 'search' ? (
+            <SearchPanel
+              orgId={orgId}
+              onOpen={handleOpenMention}
+              onClose={() => setSearchParams({})}
+            />
+          ) : !conversationOpen ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8">
               <div
                 className="flex items-center justify-center"
@@ -435,6 +548,13 @@ const ChatPage = () => {
                 )}
               </div>
 
+              <PinBar
+                pins={pins}
+                canManage={canPost}
+                onOpen={openThread}
+                onUnpin={(m) => handlePin(m, false)}
+              />
+
               {/* Feed — WHATSAPP: doodled wallpaper, tailed bubbles, capsule
                   date dividers. Same room the client sees on a client board. */}
               <div ref={feedRef} onScroll={handleFeedScroll} className="wa-scroll" style={{ minHeight: 0 }}>
@@ -485,6 +605,10 @@ const ChatPage = () => {
                               onDelete={handleDelete}
                               onMakeTask={handleMakeTask}
                               onOpenChip={handleOpenChip}
+                              onToggleReaction={canPost ? handleToggleReaction : null}
+                              onPin={canPost ? handlePin : null}
+                              onSave={handleSave}
+                              isSaved={savedIds.has(String(m._id))}
                             />
                           </div>
                         );
@@ -596,7 +720,13 @@ const ChatPage = () => {
             </div>
 
             <div className="wa-scroll" style={{ minHeight: 0 }}>
+              {/* `parent` is null for a beat when the thread was opened from a
+                  URL rather than from a message already on screen — there is
+                  nothing to paint until the fetch lands. */}
               <div style={{ borderBottom: '1px dashed rgba(0,0,0,.12)', paddingBottom: 8, marginBottom: 6 }}>
+                {!thread.parent ? (
+                  <div className="wa-center"><span className="wa-center-card">Loading…</span></div>
+                ) : (
                 <MessageItem
                   variant="whatsapp"
                   message={thread.parent}
@@ -607,7 +737,12 @@ const ChatPage = () => {
                   onDelete={handleDelete}
                   onMakeTask={handleMakeTask}
                   onOpenChip={handleOpenChip}
+                  onToggleReaction={canPost ? handleToggleReaction : null}
+                  onPin={canPost ? handlePin : null}
+                  onSave={handleSave}
+                  isSaved={savedIds.has(String(thread.parent?._id))}
                 />
+                )}
               </div>
               {threadLoading ? (
                 <div className="wa-center"><span className="wa-center-card">Loading replies…</span></div>
@@ -630,6 +765,11 @@ const ChatPage = () => {
                       onDelete={handleDelete}
                       onMakeTask={handleMakeTask}
                       onOpenChip={handleOpenChip}
+                      onToggleReaction={canPost ? handleToggleReaction : null}
+                      /* No pin on a reply: pinning one line out of a thread
+                         puts it in the bar without the question it answered. */
+                      onSave={handleSave}
+                      isSaved={savedIds.has(String(r._id))}
                     />
                   ))}
                 </>

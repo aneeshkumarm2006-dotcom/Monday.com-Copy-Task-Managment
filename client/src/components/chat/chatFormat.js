@@ -78,3 +78,17 @@ export const monthLabel = (monthKey) => {
   if (!y || !m) return '';
   return new Date(y, m - 1, 1).toLocaleDateString([], { month: 'long' }).toUpperCase();
 };
+
+/**
+ * The emoji a reaction may be, in picker order.
+ *
+ * MIRRORS `ALLOWED_REACTIONS` in server/src/controllers/chatController.js. The
+ * server refuses anything outside its list, so a glyph added here and not there
+ * is a chip that silently 400s. It lives in this file rather than beside the
+ * component so both the message row and the mentions page can read it without
+ * either importing the other.
+ */
+export const REACTION_CHOICES = [
+  '\u{1F44D}', '\u{1F44E}', '\u2705', '\u274C', '\u{1F440}', '\u{1F389}',
+  '\u{1F64F}', '\u{1F525}', '\u{1F604}', '\u{1F622}', '\u2764\uFE0F', '\u{1F680}',
+];

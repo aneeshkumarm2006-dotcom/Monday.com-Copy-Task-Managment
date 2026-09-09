@@ -50,11 +50,15 @@ const getAvatarColor = (seed = '') => {
 // lights the More tab, not nothing.
 const MORE_ROUTES = ['/dashboard', '/calendar', '/analytics', '/productivity', '/members', '/settings'];
 
-const TabButton = ({ label, icon: Icon, active, badge = 0, onClick }) => (
+const TabButton = ({ label, icon: Icon, active, badge = 0, badgeTone = 'alert', onClick }) => (
   <button
     type="button"
     onClick={onClick}
-    aria-label={badge > 0 ? `${label}, ${badge} unread` : label}
+    aria-label={
+      badge > 0
+        ? `${label}, ${badge} ${badgeTone === 'mention' ? 'needing a reply' : 'unread'}`
+        : label
+    }
     aria-current={active ? 'page' : undefined}
     className="relative flex flex-col items-center justify-center gap-0.5 flex-1 h-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--color-accent)]"
     style={{
@@ -77,7 +81,13 @@ const TabButton = ({ label, icon: Icon, active, badge = 0, onClick }) => (
             fontSize: 10,
             lineHeight: 1,
             borderRadius: 999,
-            background: 'var(--color-status-stuck, #DC2626)',
+            /* Amber when the count is MENTIONS rather than unread messages.
+               An @you and a busy room are not the same thing, and a single red
+               number makes a question aimed at you look like chatter. */
+            background:
+              badgeTone === 'mention'
+                ? 'var(--color-status-working, #D97706)'
+                : 'var(--color-status-stuck, #DC2626)',
             border: '2px solid var(--color-bg-surface)',
             boxSizing: 'content-box',
           }}
@@ -292,6 +302,10 @@ const TabBar = () => {
   // needs a selector that builds a fresh object or array each call; that is why
   // the filtered LIST is not what comes back here.
   const chatUnread = useChatStore((s) => s.totalUnread());
+  // Mentions outrank unread messages on the Chat tab: a question with your name
+  // on it is the thing you actually need to come back for, so when there are
+  // any, the badge counts THOSE and turns amber.
+  const mentionCount = useChatStore((s) => s.mentionCount);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetClosing, setSheetClosing] = useState(false);
   const closeTimer = useRef(null);
@@ -323,7 +337,13 @@ const TabBar = () => {
   const tabs = [
     { label: 'Boards', icon: LayoutGrid, to: '/boards' },
     { label: 'My Work', icon: CheckSquare, to: '/my-tasks' },
-    { label: 'Chat', icon: MessageCircle, to: '/chat', badge: chatUnread },
+    {
+      label: 'Chat',
+      icon: MessageCircle,
+      to: '/chat',
+      badge: mentionCount > 0 ? mentionCount : chatUnread,
+      badgeTone: mentionCount > 0 ? 'mention' : 'alert',
+    },
     { label: 'Alerts', icon: Bell, to: '/notifications', badge: unreadCount },
   ];
 
@@ -346,6 +366,7 @@ const TabBar = () => {
               label={tab.label}
               icon={tab.icon}
               badge={tab.badge}
+              badgeTone={tab.badgeTone}
               // `/boards` must not light up while `/boards/:id` is open from a
               // dashboard link — but startsWith keeps it lit when the user
               // drilled in FROM the Boards tab, which is what they expect.

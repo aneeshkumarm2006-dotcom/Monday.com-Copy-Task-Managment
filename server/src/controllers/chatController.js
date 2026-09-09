@@ -1,6 +1,8 @@
+const mongoose = require('mongoose');
 const Channel = require('../models/Channel');
 const Message = require('../models/Message');
 const ChannelRead = require('../models/ChannelRead');
+const SavedMessage = require('../models/SavedMessage');
 const Board = require('../models/Board');
 const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
@@ -1653,9 +1655,565 @@ const markThreadReadEndpoint = async (req, res) => {
   }
 };
 
+/* --------------------------------- Search --------------------------------- */
+
+const MAX_SEARCH_RESULTS = 40;
+
+/**
+ * Every channel in a workspace the caller may READ, including their DMs.
+ *
+ * Shared by search so it can scope BEFORE it queries rather than after. That
+ * direction is the whole safety property: matching text across all messages and
+ * then filtering the results would mean the database had already told us the
+ * contents of rooms the caller cannot open, and one forgotten filter — an early
+ * return, a count, a "did you mean" — would ship them. Scoping first makes the
+ * unreadable rooms unreachable rather than merely unshown.
+ *
+ * Deliberately reuses `resolveAccess` and the same client-board rule as
+ * `listChannels`, so the set you can search is exactly the set you can see.
+ */
+const readableChannelIds = async (orgId, userId) => {
+  const ctx = await loadOrgContext(orgId, userId);
+  // `loadOrgContext` signals failure with `error` + `status` and success with
+  // `org` — there is no `ok` flag, and checking for one would make every call
+  // look like a failure with an undefined status.
+  if (ctx.error) return { ok: false, status: ctx.status, error: ctx.error };
+
+  const channels = await Channel.find({
+    archived: false,
+    $or: [
+      { organisation: orgId, kind: { $ne: 'dm' } },
+      { kind: 'dm', members: userId },
+    ],
+  }).populate('board', 'visibility publicDefaultLevel memberAccess createdBy organisation boardType');
+
+  const internal = ctx.can('board.view_public');
+  const ids = channels
+    .filter((ch) => {
+      if (ch.kind === 'dm') {
+        return (ch.members || []).some((m) => String(m?._id || m) === String(userId));
+      }
+      if (!ch.board) return internal;
+      return resolveAccess(ch.board, ctx.org, userId).canRead;
+    })
+    .map((ch) => ch._id);
+
+  return { ok: true, ids, byId: new Map(channels.map((c) => [String(c._id), c])) };
+};
+
+/**
+ * GET /api/chat/search?org=&q=&channel=&from=&since=&threadsOnly=&hasFiles=
+ *
+ * Message-history search. The sidebar's box filters ROOM NAMES; this reads what
+ * was said, which is the difference between chat being a record and a stream
+ * you lose.
+ *
+ * A regex rather than a `$text` index, and that is a real trade worth naming:
+ * `$text` is faster and stems words, but it only matches whole tokens, so
+ * searching "budget" would not find "budgets" and searching a partial word
+ * would find nothing — which is how most people actually type into a search
+ * box. Anchored to the caller's readable channels, the scan is over one
+ * workspace's messages, not the collection.
+ */
+const searchMessages = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const orgId = (req.query.org || '').toString();
+    if (!orgId) return res.status(400).json({ error: 'org is required' });
+
+    const q = (req.query.q || '').trim();
+    if (q.length < 2) {
+      return res.json({ results: [], query: q });
+    }
+
+    const scope = await readableChannelIds(orgId, userId);
+    if (!scope.ok) return res.status(scope.status).json({ error: scope.error });
+    if (scope.ids.length === 0) return res.json({ results: [], query: q });
+
+    // One room, if asked for — but only if it was in the readable set, so the
+    // filter can narrow the scope and never widen it.
+    let channelIds = scope.ids;
+    if (req.query.channel) {
+      const wanted = String(req.query.channel);
+      if (!scope.ids.some((id) => String(id) === wanted)) {
+        return res.status(403).json({ error: 'No access to that conversation' });
+      }
+      channelIds = scope.ids.filter((id) => String(id) === wanted);
+    }
+
+    const filter = {
+      channel: { $in: channelIds },
+      // Escaped: a search for "c++" or "a(b" must be a search, not a crash, and
+      // an unescaped user string in a regex is also how you write one that
+      // takes the database down.
+      bodyText: { $regex: q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' },
+    };
+    if (req.query.from) filter.author = req.query.from;
+    if (req.query.threadsOnly === 'true') filter.replyTo = { $ne: null };
+    if (req.query.hasFiles === 'true') filter['attachments.0'] = { $exists: true };
+    if (req.query.since) {
+      const since = new Date(req.query.since);
+      if (!Number.isNaN(since.getTime())) filter.createdAt = { $gte: since };
+    }
+
+    const messages = await Message.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(MAX_SEARCH_RESULTS)
+      .populate(MESSAGE_POPULATE)
+      .lean();
+
+    const results = messages.map((m) => {
+      const channel = scope.byId.get(String(m.channel));
+      return {
+        message: m,
+        threadId: m.replyTo ? String(m.replyTo) : null,
+        channel: channel
+          ? {
+              _id: channel._id,
+              name: channel.name,
+              kind: channel.kind,
+              mode: channel.mode,
+              board: channel.board?._id || channel.board || null,
+            }
+          : null,
+      };
+    });
+
+    return res.json({ results, query: q });
+  } catch (err) {
+    console.error('searchMessages error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/* -------------------------------- Mentions -------------------------------- */
+
+const MAX_MENTIONS = 60;
+
+/**
+ * An id as an ObjectId, for an aggregation `$match`.
+ *
+ * `find()` casts its filter against the schema; `aggregate()` does NOT — a
+ * pipeline matching `author: '<hex string>'` compares a string against an
+ * ObjectId, matches nothing, and returns an empty result rather than an error.
+ * Which for the mention list would mean every mention reading as unanswered,
+ * forever, with nothing in the logs.
+ */
+const toObjectId = (id) => new mongoose.Types.ObjectId(String(id));
+
+/**
+ * GET /api/chat/mentions?filter=unanswered|all
+ *
+ * Every place somebody called your name — rooms, threads and private chats —
+ * in one list.
+ *
+ * ---- WHAT "ANSWERED" MEANS, AND WHY -------------------------------------
+ *
+ * The whole point of the unanswered filter is that its count going to zero
+ * means something. A list you clear by clicking is a list nobody trusts, so
+ * "answered" is defined by what you DID, never by what you looked at:
+ *
+ *   - you reacted to it            — a 👍 is an answer, and often the whole one
+ *   - it is inside a thread, and   — you replied where the question was asked
+ *     you posted in that thread
+ *     after it
+ *   - it is a top-level message,   — a top-level question in a room is answered
+ *     and you posted anything in     by a top-level message in that room. This
+ *     that channel after it          is deliberately loose: requiring a thread
+ *                                    reply would leave every ordinary
+ *                                    back-and-forth stuck on the list forever.
+ *
+ * Cost is two aggregations regardless of how many mentions come back — your
+ * latest message per channel, and per thread — rather than a query per row.
+ */
+const listMentions = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const wantUnanswered = req.query.filter !== 'all';
+
+    const raw = await Message.find({ mentions: userId })
+      .sort({ createdAt: -1 })
+      .limit(MAX_MENTIONS)
+      .populate(MESSAGE_POPULATE)
+      .lean();
+    if (raw.length === 0) {
+      return res.json({ mentions: [], unansweredCount: 0 });
+    }
+
+    // Access is resolved HERE, not trusted from the mention. Being named in a
+    // room is not a grant, and a mention outlives the access that produced it:
+    // a board grant is removed, a private board's membership changes, and the
+    // row is still sitting there pointing at a conversation you may no longer
+    // read. Dropped silently — a mention you cannot open is not an error, it
+    // is simply no longer yours.
+    const channelIds = distinctIds(raw, 'channel');
+    const channels = await Channel.find({ _id: { $in: channelIds } });
+    const readable = new Map();
+    for (const channel of channels) {
+      // eslint-disable-next-line no-await-in-loop
+      const access = await resolveChannelAccess(channel, userId);
+      if (access.ok) readable.set(String(channel._id), channel);
+    }
+    const rows = raw.filter((m) => readable.has(String(m.channel)));
+    if (rows.length === 0) {
+      return res.json({ mentions: [], unansweredCount: 0 });
+    }
+
+    // My last word in each channel, and in each thread these mentions sit in.
+    const threadRoots = distinctIds(rows, 'replyTo');
+
+    const [byChannel, byThread] = await Promise.all([
+      Message.aggregate([
+        {
+          $match: {
+            author: toObjectId(userId),
+            channel: { $in: channelIds.map(toObjectId) },
+          },
+        },
+        { $group: { _id: '$channel', at: { $max: '$createdAt' } } },
+      ]),
+      threadRoots.length
+        ? Message.aggregate([
+            {
+              $match: {
+                author: toObjectId(userId),
+                replyTo: { $in: threadRoots.map(toObjectId) },
+              },
+            },
+            { $group: { _id: '$replyTo', at: { $max: '$createdAt' } } },
+          ])
+        : Promise.resolve([]),
+    ]);
+
+    const lastInChannel = new Map(byChannel.map((r) => [String(r._id), r.at]));
+    const lastInThread = new Map(byThread.map((r) => [String(r._id), r.at]));
+
+    const answered = (m) => {
+      const reacted = (m.reactions || []).some((r) =>
+        (r.users || []).some((u) => String(u) === String(userId))
+      );
+      if (reacted) return true;
+      const mentionedAt = new Date(m.createdAt).getTime();
+      if (m.replyTo) {
+        const at = lastInThread.get(String(m.replyTo));
+        return !!at && new Date(at).getTime() > mentionedAt;
+      }
+      const at = lastInChannel.get(String(m.channel));
+      return !!at && new Date(at).getTime() > mentionedAt;
+    };
+
+    const out = rows.map((m) => {
+      const channel = readable.get(String(m.channel));
+      return {
+        message: m,
+        answered: answered(m),
+        // A mention inside a thread opens the thread, not the room. Carried
+        // here rather than derived on the client, which cannot see `replyTo`
+        // of a message it has not loaded.
+        threadId: m.replyTo ? String(m.replyTo) : null,
+        channel: {
+          _id: channel._id,
+          name: channel.name,
+          kind: channel.kind,
+          mode: channel.mode,
+          audience: channel.audience,
+          board: channel.board || null,
+        },
+      };
+    });
+
+    const unansweredCount = out.filter((r) => !r.answered).length;
+    return res.json({
+      mentions: wantUnanswered ? out.filter((r) => !r.answered) : out,
+      unansweredCount,
+    });
+  } catch (err) {
+    console.error('listMentions error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/* ------------------------- Reactions, pins, saves ------------------------- */
+
+/**
+ * The emoji a reaction may be. A closed set, not "any string".
+ *
+ * Anything else is a free-text column rendered at 18px in everybody's room:
+ * a 40-character "emoji" is a layout bug, and an arbitrary one is a way to
+ * write in a room you were only given permission to react in. Twelve covers
+ * what a work chat actually does — acknowledge, agree, celebrate, flag.
+ */
+const ALLOWED_REACTIONS = [
+  '👍', '👎', '✅', '❌', '👀', '🎉', '🙏', '🔥', '😄', '😢', '❤️', '🚀',
+];
+
+/**
+ * PUT /api/chat/channels/:channelId/messages/:messageId/reactions
+ * Body: { emoji }
+ *
+ * TOGGLES — the same call adds your reaction or takes it away, because that is
+ * what pressing the chip does and a separate DELETE would only let the client
+ * disagree with the server about which one to send.
+ *
+ * The write is a full document save rather than a positional `$addToSet`, so
+ * the "an emoji nobody is on is removed" rule and the add live in one place.
+ * A message's reactions array is small and contended for milliseconds at a
+ * time; the clarity is worth more than the lost atomicity, and the worst case
+ * of a lost update is one person's 👍 not landing on a chip they can press
+ * again.
+ */
+const toggleReaction = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const emoji = (req.body?.emoji || '').trim();
+    if (!ALLOWED_REACTIONS.includes(emoji)) {
+      return res.status(400).json({ error: 'Unsupported reaction' });
+    }
+
+    const message = await Message.findOne({
+      _id: req.params.messageId,
+      channel: req.params.channelId,
+    });
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+
+    const channel = await Channel.findById(message.channel);
+    if (!channel) return res.status(404).json({ error: 'Channel not found' });
+    const access = await resolveChannelAccess(channel, userId);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const row = (message.reactions || []).find((r) => r.emoji === emoji);
+    if (!row) {
+      message.reactions.push({ emoji, users: [userId] });
+    } else if (row.users.some((u) => String(u) === String(userId))) {
+      row.users = row.users.filter((u) => String(u) !== String(userId));
+      // An emoji with nobody on it is not a state — the chip would render as a
+      // zero. Drop the row rather than leaving an empty one behind.
+      if (row.users.length === 0) {
+        message.reactions = message.reactions.filter((r) => r.emoji !== emoji);
+      }
+    } else {
+      row.users.push(userId);
+    }
+
+    await message.save();
+
+    // Live, to everyone in the room including the actor: their own chip should
+    // settle from the server's answer rather than from an optimistic guess
+    // that a concurrent toggle could have made wrong.
+    try {
+      const audience = await channelAudience(channel);
+      eventBus.emit('chat.reaction', {
+        channelId: String(channel._id),
+        messageId: String(message._id),
+        orgId: channel.organisation ? String(channel.organisation) : null,
+        reactions: message.reactions,
+        recipientIds: audience.userIds,
+      });
+    } catch (emitErr) {
+      /* delivery is best-effort; the reaction is stored */
+    }
+
+    return res.json({ reactions: message.reactions });
+  } catch (err) {
+    console.error('toggleReaction error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PUT /api/chat/channels/:channelId/messages/:messageId/pin
+ * Body: { pinned: boolean }
+ *
+ * Pinning is a statement about the ROOM, not about you, so unlike saving it is
+ * gated: whoever may post may pin. That is deliberate rather than restricting
+ * it to managers — a pin is cheap to undo and a room whose brief only an admin
+ * can put up is a room where the brief never goes up.
+ */
+const MAX_PINS_PER_CHANNEL = 10;
+
+const togglePin = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const message = await Message.findOne({
+      _id: req.params.messageId,
+      channel: req.params.channelId,
+    });
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+
+    const channel = await Channel.findById(message.channel);
+    if (!channel) return res.status(404).json({ error: 'Channel not found' });
+    const access = await resolveChannelAccess(channel, userId);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const pinned = req.body?.pinned !== false;
+
+    if (pinned && !message.pinnedAt) {
+      // A pin bar that holds everything holds nothing. The cap is what keeps
+      // pinning a decision rather than a second inbox.
+      const count = await Message.countDocuments({
+        channel: channel._id,
+        pinnedAt: { $ne: null },
+      });
+      if (count >= MAX_PINS_PER_CHANNEL) {
+        return res.status(409).json({
+          error: `A room can hold ${MAX_PINS_PER_CHANNEL} pinned messages. Unpin one first.`,
+        });
+      }
+    }
+
+    message.pinnedAt = pinned ? new Date() : null;
+    message.pinnedBy = pinned ? userId : null;
+    await message.save();
+
+    const populated = await Message.findById(message._id).populate(MESSAGE_POPULATE);
+    return res.json({ message: populated });
+  } catch (err) {
+    console.error('togglePin error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/chat/channels/:channelId/pins — the room's pin bar.
+ */
+const listPins = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const channel = await Channel.findById(req.params.channelId);
+    if (!channel) return res.status(404).json({ error: 'Channel not found' });
+    const access = await resolveChannelAccess(channel, userId);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const messages = await Message.find({
+      channel: channel._id,
+      pinnedAt: { $ne: null },
+    })
+      .sort({ pinnedAt: -1 })
+      .limit(MAX_PINS_PER_CHANNEL)
+      .populate(MESSAGE_POPULATE);
+
+    return res.json({ messages });
+  } catch (err) {
+    console.error('listPins error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PUT /api/chat/channels/:channelId/messages/:messageId/save
+ * Body: { saved: boolean }
+ *
+ * Private to the caller. No audience, no event, nobody told.
+ */
+const toggleSave = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const message = await Message.findOne({
+      _id: req.params.messageId,
+      channel: req.params.channelId,
+    });
+    if (!message) return res.status(404).json({ error: 'Message not found' });
+
+    const channel = await Channel.findById(message.channel);
+    if (!channel) return res.status(404).json({ error: 'Channel not found' });
+    const access = await resolveChannelAccess(channel, userId);
+    if (!access.ok) return res.status(access.status).json({ error: access.error });
+
+    const saved = req.body?.saved !== false;
+
+    if (saved) {
+      await SavedMessage.updateOne(
+        { user: userId, message: message._id },
+        {
+          $setOnInsert: {
+            user: userId,
+            message: message._id,
+            channel: channel._id,
+            organisation: channel.organisation || null,
+          },
+        },
+        { upsert: true }
+      );
+    } else {
+      await SavedMessage.deleteOne({ user: userId, message: message._id });
+    }
+
+    return res.json({ saved });
+  } catch (err) {
+    console.error('toggleSave error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * GET /api/chat/saved — everything the caller set aside, newest first.
+ *
+ * Access is resolved HERE rather than trusted from the saved row: a bookmark
+ * outlives the access that created it. Someone loses a board grant, a private
+ * board's membership changes, a channel is archived — and the row is still
+ * sitting there. So every channel the list touches is re-checked, and what the
+ * caller may no longer read is silently dropped rather than 403'd, because a
+ * personal list is not the place to be told what you have lost.
+ */
+const listSaved = async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const rows = await SavedMessage.find({ user: userId })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+    if (rows.length === 0) return res.json({ messages: [] });
+
+    const channelIds = distinctIds(rows, 'channel');
+    const channels = await Channel.find({ _id: { $in: channelIds } });
+    const allowed = new Set();
+    for (const channel of channels) {
+      // eslint-disable-next-line no-await-in-loop
+      const access = await resolveChannelAccess(channel, userId);
+      if (access.ok) allowed.add(String(channel._id));
+    }
+    const channelById = new Map(channels.map((c) => [String(c._id), c]));
+
+    const keep = rows.filter((r) => allowed.has(String(r.channel)));
+    const messages = await Message.find({
+      _id: { $in: keep.map((r) => r.message) },
+    }).populate(MESSAGE_POPULATE);
+    const messageById = new Map(messages.map((m) => [String(m._id), m]));
+
+    // Ordered by when it was SAVED, not when it was written — the list is a
+    // pile you made, and the order you made it in is the one you remember.
+    const out = [];
+    for (const row of keep) {
+      const message = messageById.get(String(row.message));
+      if (!message) continue; // deleted since
+      const channel = channelById.get(String(row.channel));
+      out.push({
+        savedAt: row.createdAt,
+        channel: channel
+          ? { _id: channel._id, name: channel.name, kind: channel.kind, board: channel.board }
+          : null,
+        message,
+      });
+    }
+
+    return res.json({ messages: out });
+  } catch (err) {
+    console.error('listSaved error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   listChannels,
   createChannel,
+  listMentions,
+  searchMessages,
+  toggleReaction,
+  togglePin,
+  listPins,
+  toggleSave,
+  listSaved,
+  ALLOWED_REACTIONS,
   openDm,
   updateChannel,
   markChannelRead,

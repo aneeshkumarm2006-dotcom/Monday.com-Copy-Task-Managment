@@ -48,6 +48,10 @@ export default function useNotificationStream(token, orgId, enabled) {
           // A channel message from someone else. The chat store decides
           // whether it lands in an open conversation or bumps a badge.
           useChatStore.getState().receiveMessage(data.channelId, data.message);
+        } else if (data?.type === 'chat.reaction' && data.messageId) {
+          // A thin frame — just the message's new reactions. Applied wherever
+          // that message is on screen; a no-op if it is not.
+          useChatStore.getState().applyReactions(data.messageId, data.reactions || []);
         }
       } catch {
         // ignore heartbeats / malformed frames

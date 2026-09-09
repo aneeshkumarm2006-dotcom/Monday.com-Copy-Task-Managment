@@ -1,7 +1,8 @@
-import { CheckSquare, ClipboardPlus, MessageSquare, Trash2, Check } from 'lucide-react';
+import { useState } from 'react';
+import { Bookmark, CheckSquare, ClipboardPlus, MessageSquare, Pin, SmilePlus, Trash2, Check } from 'lucide-react';
 import ReadOnlyRichBody from '../board/ReadOnlyRichBody';
 import Avatar from '../ui/Avatar';
-import { monthLabel } from './chatFormat';
+import { monthLabel, REACTION_CHOICES } from './chatFormat';
 import { GmailAttachments, WhatsAppAttachments } from './conversationSkins';
 import { gmailStamp, gmailStampLong, gmailAgo, gmailListDate, waClock } from '../../utils/conversationFormat';
 import macanMark from '../../assets/macan-mark.svg';
@@ -137,8 +138,129 @@ const SystemGlyph = ({ size = 36 }) => (
 );
 
 /* ---- the actions, in whichever skin asked for them ------------------------ */
-const Actions = ({ message, canManage, canMakeTask, isOwn, onReply, onDelete, onMakeTask, tone }) => {
-  const anything = onReply || (canMakeTask && !message.task) || isOwn || canManage;
+
+/**
+ * The reaction chips under a message, plus the add-one button.
+ *
+ * Renders NOTHING when there are no reactions and no way to add one, so a room
+ * full of plain messages does not grow a row of empty affordances under every
+ * line. The add button appears on hover, like the rest of the toolbar.
+ */
+const ReactionBar = ({ reactions = [], currentUserId, onToggle, canReact }) => {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const rows = (reactions || []).filter((r) => (r.users || []).length > 0);
+  if (rows.length === 0 && !canReact) return null;
+
+  return (
+    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap relative">
+      {rows.map((r) => {
+        const mine = (r.users || []).some((u) => String(u?._id || u) === String(currentUserId));
+        return (
+          <button
+            key={r.emoji}
+            type="button"
+            onClick={() => onToggle(r.emoji)}
+            disabled={!canReact}
+            aria-pressed={mine}
+            aria-label={`${r.emoji} ${r.users.length}`}
+            className="inline-flex items-center gap-1 transition-colors"
+            style={{
+              height: 22,
+              padding: '0 7px',
+              borderRadius: 11,
+              fontSize: 11,
+              border: `1px solid ${mine ? 'var(--color-accent)' : 'var(--color-border)'}`,
+              background: mine ? 'var(--color-accent-light)' : 'var(--color-bg-surface)',
+              color: mine ? 'var(--color-accent-text)' : 'var(--color-text-secondary)',
+              fontWeight: mine ? 600 : 400,
+              cursor: canReact ? 'pointer' : 'default',
+            }}
+          >
+            <span aria-hidden="true">{r.emoji}</span>
+            <span>{r.users.length}</span>
+          </button>
+        );
+      })}
+
+      {canReact && (
+        <>
+          <button
+            type="button"
+            onClick={() => setPickerOpen((v) => !v)}
+            aria-label="Add a reaction"
+            aria-expanded={pickerOpen}
+            className={
+              rows.length > 0
+                ? 'inline-flex items-center justify-center'
+                : 'inline-flex items-center justify-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(pointer:coarse)]:opacity-100 transition-opacity'
+            }
+            style={{
+              height: 22,
+              padding: '0 7px',
+              borderRadius: 11,
+              border: '1px dashed var(--color-border)',
+              background: 'var(--color-bg-surface)',
+              color: 'var(--color-text-muted)',
+            }}
+          >
+            <SmilePlus size={12} aria-hidden="true" />
+          </button>
+
+          {pickerOpen && (
+            <>
+              {/* Click-away. A transparent full-screen layer rather than a
+                  document listener, so the picker closes on the same gesture
+                  that does the next thing. */}
+              <button
+                type="button"
+                aria-label="Close reaction picker"
+                onClick={() => setPickerOpen(false)}
+                className="fixed inset-0"
+                style={{ zIndex: 40, background: 'transparent', cursor: 'default' }}
+              />
+              <div
+                className="absolute flex flex-wrap gap-1 p-2"
+                style={{
+                  bottom: 26,
+                  left: 0,
+                  width: 196,
+                  zIndex: 41,
+                  background: 'var(--color-bg-elevated)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 'var(--radius-md)',
+                  boxShadow: '0 8px 22px var(--color-shadow-md)',
+                }}
+              >
+                {REACTION_CHOICES.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => {
+                      setPickerOpen(false);
+                      onToggle(emoji);
+                    }}
+                    aria-label={emoji}
+                    className="flex items-center justify-center transition-colors hover:bg-[color:var(--color-bg-subtle)]"
+                    style={{ width: 28, height: 28, borderRadius: 6, fontSize: 15 }}
+                  >
+                    <span aria-hidden="true">{emoji}</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+const Actions = ({
+  message, canManage, canMakeTask, isOwn, onReply, onDelete, onMakeTask, tone,
+  onPin, onSave, isSaved,
+}) => {
+  const anything =
+    onReply || (canMakeTask && !message.task) || isOwn || canManage || onPin || onSave;
   if (!anything) return null;
   const base = {
     fontSize: 11.5,
@@ -171,6 +293,28 @@ const Actions = ({ message, canManage, canMakeTask, isOwn, onReply, onDelete, on
           Make a task
         </button>
       )}
+      {onPin && (
+        <button
+          type="button"
+          onClick={() => onPin(message, !message.pinnedAt)}
+          className={message.pinnedAt ? 'inline-flex items-center gap-1' : hidden}
+          style={message.pinnedAt ? { ...base, color: 'var(--color-status-working)', fontWeight: 600 } : base}
+        >
+          <Pin size={11} aria-hidden="true" />
+          {message.pinnedAt ? 'Pinned' : 'Pin'}
+        </button>
+      )}
+      {onSave && (
+        <button
+          type="button"
+          onClick={() => onSave(message, !isSaved)}
+          className={isSaved ? 'inline-flex items-center gap-1' : hidden}
+          style={isSaved ? { ...base, color: 'var(--color-accent)', fontWeight: 600 } : base}
+        >
+          <Bookmark size={11} aria-hidden="true" fill={isSaved ? 'currentColor' : 'none'} />
+          {isSaved ? 'Saved' : 'Save'}
+        </button>
+      )}
       {(isOwn || canManage) && (
         <button
           type="button"
@@ -196,6 +340,13 @@ const MessageItem = ({
   onDelete,
   onMakeTask,
   onOpenChip,
+  /** Reactions, pins and saves. All three optional — a surface that does not
+   *  pass them (the portal's read-only renders, a preview) simply has none,
+   *  rather than each caller having to switch them off. */
+  onToggleReaction,
+  onPin,
+  onSave,
+  isSaved = false,
   /** 'gmail' inside a mailbox, 'whatsapp' inside a room. Always pass it. */
   variant = 'whatsapp',
   /** Gmail only: who this went to, e.g. "to Acme Ltd". The team plane knows
@@ -239,6 +390,21 @@ const MessageItem = ({
       onDelete={onDelete}
       onMakeTask={onMakeTask}
       tone={variant === 'whatsapp' ? 'wa' : 'gm'}
+      onPin={onPin}
+      onSave={onSave}
+      isSaved={isSaved}
+    />
+  );
+
+  // Reactions sit BELOW the actions row, closest to the message they belong
+  // to — they are part of what was said, where the actions are things you can
+  // do about it.
+  const reactionBar = onToggleReaction && !isSystem && (
+    <ReactionBar
+      reactions={message.reactions}
+      currentUserId={currentUserId}
+      canReact={!!onToggleReaction}
+      onToggle={(emoji) => onToggleReaction(message, emoji)}
     />
   );
 
@@ -295,7 +461,7 @@ const MessageItem = ({
         </div>
 
         <GmailAttachments items={message.attachments} />
-        <div style={{ marginLeft: 48 }}>{actions}</div>
+        <div style={{ marginLeft: 48 }}>{reactionBar}{actions}</div>
       </div>
     );
   }
@@ -333,6 +499,7 @@ const MessageItem = ({
           {isOwn && <Check size={14} className="wa-tick" aria-label="Sent" />}
         </span>
       </div>
+      {reactionBar}
       {actions}
     </div>
   );

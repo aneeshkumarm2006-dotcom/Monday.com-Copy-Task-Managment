@@ -200,6 +200,41 @@ const handleChatMessage = async ({
 };
 
 /**
+ * A reaction changed on a message somebody is looking at.
+ *
+ * Deliberately a THIN frame — the message id and its new reactions array, not
+ * the message. A room where five people are picking emoji would otherwise
+ * re-send the whole populated message five times to everyone, and the client
+ * already has it; all it needs is the new chips.
+ *
+ * Team members only. Reactions are not offered in the portal, so there is no
+ * client copy of this event the way there is for `chat.message`.
+ */
+const handleChatReaction = async ({ channelId, messageId, orgId, reactions, recipientIds }) => {
+  try {
+    const users = Array.isArray(recipientIds) ? recipientIds : [];
+    if (users.length === 0) return;
+    const org = orgId ? String(orgId) : null;
+    for (const userId of users) {
+      const set = connections.get(String(userId));
+      if (!set || set.size === 0) continue;
+      for (const conn of set) {
+        if (org === null || conn.orgId === null || conn.orgId === org) {
+          writeEvent(conn.res, {
+            type: 'chat.reaction',
+            channelId: String(channelId),
+            messageId: String(messageId),
+            reactions,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    console.error('notificationStream handleChatReaction error:', err);
+  }
+};
+
+/**
  * Subscribe to the event bus and start the heartbeat. Idempotent — safe to call
  * once on server boot next to the other mount() calls.
  */
@@ -209,6 +244,7 @@ const mount = () => {
   eventBus.on('notification.created', handleNotificationCreated);
   eventBus.on('board.changed', handleBoardChanged);
   eventBus.on('chat.message', handleChatMessage);
+  eventBus.on('chat.reaction', handleChatReaction);
   heartbeat = setInterval(() => {
     for (const set of connections.values()) {
       for (const conn of set) {

@@ -3,6 +3,13 @@ const authMiddleware = require('../middleware/auth');
 const { updateUpload, handleUploadError } = require('../config/cloudinary');
 const {
   listChannels,
+  listMentions,
+  searchMessages,
+  toggleReaction,
+  togglePin,
+  listPins,
+  toggleSave,
+  listSaved,
   createChannel,
   openDm,
   updateChannel,
@@ -28,6 +35,12 @@ router.use(authMiddleware);
 // POST   /api/chat/channels                    — manual channel (workspace or board)
 // PATCH  /api/chat/channels/:channelId         — rename / archive
 // POST   /api/chat/channels/:channelId/read    — move the caller's read marker
+// Private to the caller, and not scoped to a channel — above the channel
+// routes because they belong to the person, not to a room.
+router.get('/saved', listSaved);
+router.get('/mentions', listMentions);
+router.get('/search', searchMessages);
+
 router.get('/channels', listChannels);
 router.post('/channels', createChannel);
 
@@ -56,6 +69,16 @@ router.patch('/channels/:channelId/messages/:messageId', editMessage);
 router.delete('/channels/:channelId/messages/:messageId', deleteMessage);
 // POST /api/chat/channels/:channelId/messages/:messageId/task — make-this-a-task
 router.post('/channels/:channelId/messages/:messageId/task', makeTaskFromMessage);
+
+// Reactions, pins and saves.
+//
+// All three TOGGLE rather than offering an add/remove pair: the client presses
+// one control, so one endpoint decides what pressing it means and the two
+// sides cannot disagree about which verb to send.
+router.put('/channels/:channelId/messages/:messageId/reactions', toggleReaction);
+router.put('/channels/:channelId/messages/:messageId/pin', togglePin);
+router.put('/channels/:channelId/messages/:messageId/save', toggleSave);
+router.get('/channels/:channelId/pins', listPins);
 
 // Mail surfaces. A thread IS a top-level message with a subject plus its
 // existing one level of replies, so reading a thread still goes through
