@@ -22,6 +22,8 @@ import { columnValue } from '../../../utils/columnValues';
 import { computeSummary } from '../../../utils/columnSummary';
 import { formatNumber } from '../../../utils/numberFormat';
 import { rowCountLabel } from '../../../utils/boardTemplateDisplay';
+import { groupColorAt } from '../../../utils/groupColors';
+import { deepFor } from '../../../utils/priorityColors';
 
 /**
  * STAGES — the board drawn as columns of cards you drag between.
@@ -95,7 +97,7 @@ const ageTone = (days) => {
 
 const ageLabel = (days) => (days === 0 ? 'today' : `${days}d`);
 
-const StageCard = ({ task, cols, canDrag, onOpen }) => {
+const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task._id,
     disabled: !canDrag,
@@ -124,7 +126,9 @@ const StageCard = ({ task, cols, canDrag, onOpen }) => {
         opacity: isDragging ? 0.4 : 1,
         background: 'var(--color-bg-surface)',
         border: '1px solid var(--color-border)',
-        borderLeft: `3px solid ${cols.accent}`,
+        // The card carries its stage's colour, so a card in flight is still
+        // recognisably from Proposal Sent while it is being dragged.
+        borderLeft: `3px solid ${color || cols.accent}`,
         borderRadius: 'var(--radius-md)',
         padding: '9px 10px',
         cursor: canDrag ? 'grab' : 'pointer',
@@ -234,7 +238,15 @@ const StageCard = ({ task, cols, canDrag, onOpen }) => {
   );
 };
 
-const StageColumn = ({ group, tasks, cols, shape, board, openTotal, canEdit, dragEnabled, onOpenTask, onAddTask }) => {
+const StageColumn = ({ group, tasks, cols, shape, board, color, openTotal, canEdit, dragEnabled, onOpenTask, onAddTask }) => {
+  const stageColor = color || cols.accent;
+  // Darkened before it is used as TEXT: the palette is chosen for filled dots
+  // and stripes, and two of its four fall under 4.5:1 on a light header. See
+  // the same treatment in TaskGroupHeader.
+  const nameColor =
+    typeof stageColor === 'string' && stageColor.startsWith('#')
+      ? deepFor(stageColor)
+      : 'var(--color-text-primary)';
   const isTerminal = shape.terminal.includes((group.name || '').trim().toLowerCase());
   const { setNodeRef, isOver } = useDroppable({
     id: `stage-col-${group._id}`,
@@ -259,17 +271,18 @@ const StageColumn = ({ group, tasks, cols, shape, board, openTotal, canEdit, dra
     >
       <div
         style={{
-          padding: '8px 10px',
           background: 'var(--color-bg-subtle)',
           border: '1px solid var(--color-border)',
           borderRadius: 'var(--radius-md)',
+          overflow: 'hidden',
         }}
       >
+        {/* A 3px cap in the stage's colour, edge to edge. The dot it replaces
+            said the same thing in 7px at the far left, where a row of columns
+            reads as a row of identical grey boxes. */}
+        <div aria-hidden="true" style={{ height: 3, background: stageColor }} />
+        <div style={{ padding: '8px 10px' }}>
         <p className="flex items-center gap-1.5">
-          <span
-            aria-hidden="true"
-            style={{ width: 7, height: 7, borderRadius: '50%', background: group.color || cols.accent, flex: 'none' }}
-          />
           <span
             className="font-body"
             style={{
@@ -277,7 +290,7 @@ const StageColumn = ({ group, tasks, cols, shape, board, openTotal, canEdit, dra
               fontWeight: 700,
               letterSpacing: '0.06em',
               textTransform: 'uppercase',
-              color: 'var(--color-text-primary)',
+              color: nameColor,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -307,6 +320,7 @@ const StageColumn = ({ group, tasks, cols, shape, board, openTotal, canEdit, dra
           {rowCountLabel(board, tasks.length).toUpperCase()}
           {isTerminal ? ' · CLOSED' : share != null ? ` · ${share}% OF OPEN` : ''}
         </p>
+        </div>
       </div>
 
       {/* Terminal stages stay collapsed: they are an archive, not a step. The
@@ -331,6 +345,7 @@ const StageColumn = ({ group, tasks, cols, shape, board, openTotal, canEdit, dra
                 key={task._id}
                 task={task}
                 cols={cols}
+                color={stageColor}
                 canDrag={dragEnabled}
                 onOpen={onOpenTask}
               />
@@ -492,10 +507,14 @@ const StagesView = ({
         className="flex gap-2.5 macan-mobile-scroll-row"
         style={{ overflowX: 'auto', alignItems: 'flex-start', paddingBottom: 6 }}
       >
-        {ordered.map((group) => (
+        {ordered.map((group, idx) => (
           <StageColumn
             key={group._id}
             group={group}
+            // Same palette, same ordered index as the board view — a group is
+            // the same group whichever way you are looking at it, so New Lead
+            // is the same blue on both.
+            color={groupColorAt(idx)}
             board={board}
             tasks={tasksByGroup[group._id] || []}
             cols={cols}

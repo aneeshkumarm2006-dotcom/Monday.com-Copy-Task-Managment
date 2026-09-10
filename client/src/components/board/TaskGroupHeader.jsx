@@ -9,7 +9,8 @@ import {
   UserPlus,
   MoreHorizontal,
 } from 'lucide-react';
-import { getColorPair } from '../../utils/priorityColors';
+import { getColorPair, deepFor } from '../../utils/priorityColors';
+import StatusSpreadBar from './StatusSpreadBar';
 import Avatar from '../ui/Avatar';
 
 /** Mirrors MAX_GROUP_NAME in the server's groupController. */
@@ -30,7 +31,9 @@ const MAX_NAME_LENGTH = 60;
  *
  * Props:
  *   name          — group name
- *   colorDot      — css color for the 8px dot (cycle through accent palette)
+ *   colorDot      — the group's colour, as a HEX from `groupColors.js`. Draws
+ *                   the name (darkened for contrast) and, via the caller, the
+ *                   card's left edge. Was an 8px dot; the dot is gone.
  *   totalCount    — total tasks in group
  *   doneCount     — done tasks in group
  *   collapsed     — whether the group is currently collapsed
@@ -82,10 +85,30 @@ const TaskGroupHeader = ({
   /** "5 invoices" — what one row is called on this board. Falls back to
    *  "items" so a plain task board is byte-identical to before. */
   countLabel = '',
+  /** `statusSpread(tasks, board).segments` — one entry per status present in
+   *  this group. Empty falls back to the old done-only progress bar, so any
+   *  caller that has not been taught to pass it still renders correctly. */
+  segments = [],
 }) => {
   const Chevron = collapsed ? ChevronRight : ChevronDown;
   const progressPct =
     totalCount === 0 ? 0 : Math.round((doneCount / totalCount) * 100);
+
+  /**
+   * The group's name, in the group's own colour — which is most of what makes
+   * a long board scannable without reading a word.
+   *
+   * DARKENED FIRST. The dot palette is picked for a filled 8px circle, and two
+   * of its four fail as TEXT on a white header: #16A34A is 3.30:1 and #EA580C
+   * is 3.56:1, both under the 4.5:1 that 14px bold needs. `deepFor` walks them
+   * down until they clear it (4.72 and 4.73) and leaves the blue and purple,
+   * which already pass, untouched. A CSS variable can't be measured, so those
+   * fall back to the ordinary ink rather than being trusted blind.
+   */
+  const nameColor =
+    typeof colorDot === 'string' && colorDot.startsWith('#')
+      ? deepFor(colorDot)
+      : 'var(--color-text-primary)';
 
   // Cap the chips so a heavily-tagged group can't push the progress bar and the
   // action buttons off the right edge of a 48px header. The overflow count is
@@ -191,10 +214,6 @@ const TaskGroupHeader = ({
         className="flex items-center gap-2.5"
         style={{ padding: '13px 14px 11px', cursor: 'pointer' }}
       >
-        <span
-          aria-hidden="true"
-          style={{ width: 9, height: 9, borderRadius: '50%', background: colorDot, flexShrink: 0 }}
-        />
         {editing ? (
           <input
             ref={inputRef}
@@ -235,7 +254,7 @@ const TaskGroupHeader = ({
           <span
             className="font-body flex-1 min-w-0 truncate"
             title={name}
-            style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--color-text-primary)' }}
+            style={{ fontSize: 13.5, fontWeight: 700, color: nameColor }}
           >
             {name}
           </span>
@@ -313,7 +332,12 @@ const TaskGroupHeader = ({
         <Chevron size={16} color="var(--color-text-muted)" aria-hidden="true" className="shrink-0" />
       </div>
 
-      {!collapsed && (
+      {!collapsed && segments.length > 0 && (
+        <div style={{ margin: '0 14px 6px' }}>
+          <StatusSpreadBar segments={segments} total={totalCount} doneCount={doneCount} width="100%" height={4} />
+        </div>
+      )}
+      {!collapsed && segments.length === 0 && (
         <div
           aria-hidden="true"
           style={{ height: 3, background: 'var(--color-bg-subtle)', borderRadius: 2, margin: '0 14px 4px' }}
@@ -336,11 +360,14 @@ const TaskGroupHeader = ({
       style={{
         height: 48,
         padding: '0 16px',
-        background: 'var(--color-bg-subtle)',
-        // Match the card's top corners so the grey header curves with the
-        // rounded card edge (matters while the card is overflow-visible during
-        // inline editing). A collapsed group has no table below it, so its
-        // bottom border would just double up the card's own border ring.
+        // WHITE, not grey. The colour now comes from the stripe on the card's
+        // edge and from the name itself; a grey header on a grey page under
+        // grey chips is why the board read flat.
+        background: 'var(--color-bg-surface, #FFFFFF)',
+        // Match the card's top corners so the header curves with the rounded
+        // card edge (matters while the card is overflow-visible during inline
+        // editing). A collapsed group has no table below it, so its bottom
+        // border would just double up the card's own border ring.
         borderTopLeftRadius: 'var(--radius-lg)',
         borderTopRightRadius: 'var(--radius-lg)',
         borderBottom: collapsed ? 'none' : '1px solid var(--color-border)',
@@ -365,17 +392,9 @@ const TaskGroupHeader = ({
         />
       </button>
 
-      {/* Color dot */}
-      <span
-        aria-hidden="true"
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: '50%',
-          background: colorDot,
-          flexShrink: 0,
-        }}
-      />
+      {/* No colour dot any more. The group's colour is on the card's 4px left
+          edge and in the name itself; an 8px circle saying it a third time is
+          the kind of detail that reads as clutter rather than care. */}
 
       {/* Group name — swaps for an input while renaming. Both share the same
           typography so the row doesn't jump between the two states.
@@ -433,10 +452,10 @@ const TaskGroupHeader = ({
             title={name}
             style={{
               fontSize: 14,
-              fontWeight: 600,
+              fontWeight: 700,
               letterSpacing: '0.05em',
               textTransform: 'uppercase',
-              color: 'var(--color-text-primary)',
+              color: nameColor,
             }}
           >
             {name}
@@ -463,32 +482,37 @@ const TaskGroupHeader = ({
               items is a board nobody has set up for the work. */}
           {countLabel || `${totalCount} ${totalCount === 1 ? 'item' : 'items'}`}
         </span>
-
-        {/* Column totals, beside the count.
-            The same numbers the table footer shows, lifted into the header so a
-            money board answers "what does this month come to" without scrolling
-            to the bottom of the group — which on a twelve-row invoice list is
-            the whole question. Only the first two, and only on desktop: this
-            row is a fixed-width slot and a board with six summed columns would
-            push the actions off the right edge. */}
-        {summaries.length > 0 && (
-          <span className="hidden md:flex items-center gap-3 shrink-0 ml-1">
-            {summaries.slice(0, 2).map((s) => (
-              <span
-                key={s.key}
-                className="font-body whitespace-nowrap"
-                style={{ fontSize: 11.5, color: 'var(--color-text-secondary)' }}
-                title={`${s.label} of ${s.name}`}
-              >
-                {s.name}{' '}
-                <b style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontVariantNumeric: 'tabular-nums' }}>
-                  {s.display}
-                </b>
-              </span>
-            ))}
-          </span>
-        )}
       </div>
+
+      {/* Column totals, beside the count.
+          The same numbers the table footer shows, lifted into the header so a
+          money board answers "what does this month come to" without scrolling
+          to the bottom of the group — which on a twelve-row invoice list is
+          the whole question. Only the first two, and only on desktop: a board
+          with six summed columns would push the actions off the right edge.
+
+          ITS OWN SLOT. These used to live inside the 78px count box above,
+          where "Amount ₹79,500" had nowhere to go but onto a second line —
+          inside a header that is 48px tall. Fixed width and clipped, so the
+          columns after it still line up down the board, and only rendered at
+          all when the board actually sums something. */}
+      {summaries.length > 0 && (
+        <div className="shrink-0 hidden md:flex items-center gap-3 w-[176px] overflow-hidden">
+          {summaries.slice(0, 2).map((s) => (
+            <span
+              key={s.key}
+              className="font-body whitespace-nowrap truncate"
+              style={{ fontSize: 11.5, color: 'var(--color-text-secondary)' }}
+              title={`${s.label} of ${s.name}`}
+            >
+              {s.name}{' '}
+              <b style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                {s.display}
+              </b>
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* Group owner (tracker boards). Deliberately on the LEFT, with the
           group's identity rather than with the action buttons: who is
@@ -557,33 +581,20 @@ const TaskGroupHeader = ({
         </div>
       )}
 
-      {/* Progress bar — hidden on small screens to save horizontal space. Last
-          of the fixed-width columns, so it lines up down the board. */}
-      <div
-        className="shrink-0 hidden sm:block"
-        role="progressbar"
-        aria-valuenow={progressPct}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={`${doneCount} of ${totalCount} done`}
-        title={`${doneCount} of ${totalCount} done`}
-        style={{
-          width: 80,
-          height: 4,
-          borderRadius: 'var(--radius-full)',
-          background: 'var(--color-border)',
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            width: `${progressPct}%`,
-            height: '100%',
-            background: progressPct === 100
-              ? 'var(--color-status-done)'
-              : 'var(--color-accent)',
-            transition: 'width 200ms ease-out',
-          }}
+      {/* Where the work stands — hidden on small screens to save horizontal
+          space. Last of the fixed-width columns, so it lines up down the board.
+
+          One segment per status rather than a done-only fill: the old bar could
+          not tell you that four of the seven are STUCK, which is the fact you
+          would actually act on. Falls back to the old bar when the caller
+          passes no segments. */}
+      <div className="shrink-0 hidden sm:block">
+        <StatusSpreadBar
+          segments={segments}
+          total={totalCount}
+          doneCount={doneCount}
+          width={110}
+          height={6}
         />
       </div>
 

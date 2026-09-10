@@ -54,6 +54,8 @@ import EmptyState from '../components/ui/EmptyState';
 import ErrorBoundary from '../components/ui/ErrorBoundary';
 import { SkeletonTaskGroup } from '../components/ui/Skeleton';
 import TaskGroupHeader from '../components/board/TaskGroupHeader';
+import { statusSpread } from '../utils/statusSpread';
+import { groupColorAt } from '../utils/groupColors';
 import TaskTable from '../components/board/TaskTable';
 import { InlineAssigneeMenu } from '../components/board/AssigneePicker';
 import DataGrid from '../components/board/DataGrid';
@@ -149,12 +151,7 @@ import { buildTaskLinks } from '../utils/taskLink';
  * Group color cycle — reuses the stat-card palette so groups are visually
  * distinct within a board.
  */
-const GROUP_DOT_CYCLE = [
-  'var(--color-card-blue)',
-  'var(--color-card-green)',
-  'var(--color-card-orange)',
-  'var(--color-card-purple)',
-];
+
 
 /**
  * localStorage key prefix for the per-board "completed groups last" view sort.
@@ -2819,17 +2816,14 @@ const BoardDetailPage = () => {
                 // still the ORDERED index, so the header dot colours don't
                 // reshuffle as groups come and go.
                 if (filtersActive && !isGroupVisible(group)) return null;
-                const doneStatusId =
-                  board && Array.isArray(board.statuses)
-                    ? (board.statuses.find((s) => s.key === 'done')?._id || null)
-                    : null;
-                const doneCount = groupTasks.filter((t) => {
-                  if (t.status == null) return false;
-                  if (doneStatusId) {
-                    return t.status.toString() === doneStatusId.toString();
-                  }
-                  return t.status === 'done';
-                }).length;
+                // One pass over the group's rows gives BOTH the done count the
+                // header has always shown and the per-status segments the
+                // spread bar draws. `statusSpread` resolves ObjectId statuses,
+                // legacy enum strings and missing ones alike, so this is the
+                // same call on a template board and a five-year-old task board.
+                const spread = statusSpread(groupTasks, board);
+                const doneCount = spread.doneCount;
+                const groupColor = groupColorAt(idx);
                 const isCollapsed = collapsed.has(group._id);
                 // Disable task DnD inside this group while it's hosting an
                 // inline create/edit row — but leave the group's own handle
@@ -2864,13 +2858,26 @@ const BoardDetailPage = () => {
                           ...style,
                           borderRadius: 'var(--radius-lg)',
                           boxShadow: 'var(--shadow-card)',
+                          // The group's colour, running the full height of the
+                          // card — header, every row, footer. This is the single
+                          // change that turns a list of rows into A GROUP, and
+                          // it is what lets you find your place on a long board
+                          // without reading a word.
+                          //
+                          // A BORDER rather than an inset shadow: an inset
+                          // shadow paints under the element's children, and the
+                          // header and rows are opaque white, so it would be
+                          // invisible everywhere it mattered. Borders are
+                          // border-box here, so this costs the card no width.
+                          borderLeft: `4px solid ${groupColor}`,
                           position: 'relative',
                           zIndex: isDragging ? 30 : 'auto',
                         }}
                       >
                         <TaskGroupHeader
                           name={group.name}
-                          colorDot={GROUP_DOT_CYCLE[idx % GROUP_DOT_CYCLE.length]}
+                          colorDot={groupColor}
+                          segments={spread.segments}
                           summaries={groupSummaries(board, groupTasks)}
                           countLabel={rowCountLabel(board, groupTasks.length)}
                           totalCount={groupTasks.length}
