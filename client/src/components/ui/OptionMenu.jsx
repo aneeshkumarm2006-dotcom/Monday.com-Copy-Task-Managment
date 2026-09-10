@@ -52,7 +52,14 @@ import { chipStyle } from '../../utils/chipStyle';
  *
  * `palette` is a `{ bg, text, solid, deep }` from `priorityColors.js` and makes
  * the option render as a chip. `icon` is a lucide component and makes it render
- * as a command. Neither is required — a bare label renders as plain text.
+ * as a command. `tile` is a `{ text, color }` and renders a small filled square
+ * before the label — what an avatar looks like when the thing being picked is a
+ * workspace or a person rather than a value. None is required; a bare label
+ * renders as plain text.
+ *
+ * `footer` takes one action or an array of them, so a menu can offer two ways
+ * out ("New workspace" and "Join with a code") without a caller reaching for
+ * its own panel.
  */
 
 const MENU_MAX_HEIGHT = 260;
@@ -85,6 +92,12 @@ const OptionMenu = ({
   });
 
   const showSearch = options.length >= SEARCH_THRESHOLD;
+  // One action or several — callers wrote `footer={{...}}` long before a menu
+  // needed two, and those calls keep working.
+  const footerActions = useMemo(
+    () => (footer ? (Array.isArray(footer) ? footer : [footer]) : []),
+    [footer]
+  );
   const visible = useMemo(() => filterOptions(options, query), [options, query]);
 
   const selected = useMemo(
@@ -201,6 +214,26 @@ const OptionMenu = ({
         }}
       >
         {Icon && <Icon size={14} aria-hidden="true" className="shrink-0" />}
+        {opt.tile && (
+          <span
+            aria-hidden="true"
+            className="shrink-0 flex items-center justify-center font-display"
+            style={{
+              width: 21,
+              height: 21,
+              borderRadius: 6,
+              // A tile is only ever a fallback identity, so it must stay legible
+              // whatever colour the caller derived: white on a saturated square.
+              background: opt.tile.color || 'var(--color-text-secondary)',
+              color: '#FFFFFF',
+              fontSize: 10.5,
+              fontWeight: 700,
+              lineHeight: 1,
+            }}
+          >
+            {opt.tile.text}
+          </span>
+        )}
         {opt.palette ? (
           <span style={chipStyle(opt.palette, chipVariant)}>{opt.label}</span>
         ) : (
@@ -327,24 +360,32 @@ const OptionMenu = ({
         )}
       </div>
 
-      {footer && (
-        <button
-          type="button"
-          onClick={footer.onClick}
-          className="w-full flex items-center gap-2 text-left"
-          style={{
-            padding: '8px 11px',
-            borderTop: '1px solid var(--color-border)',
-            background: 'var(--color-bg-subtle)',
-            border: 'none',
-            fontSize: 12.5,
-            color: 'var(--color-text-secondary)',
-            cursor: 'pointer',
-          }}
-        >
-          {footer.icon && <footer.icon size={13} aria-hidden="true" />}
-          {footer.label}
-        </button>
+      {footerActions.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--color-border)' }}>
+          {footerActions.map((action, i) => (
+            <button
+              key={action.label}
+              type="button"
+              onClick={action.onClick}
+              className="w-full flex items-center gap-2 text-left transition-colors duration-100 hover:bg-[color:var(--color-border)]"
+              style={{
+                padding: '8px 11px',
+                // The rule goes BETWEEN actions, never above the first one —
+                // the panel's own top border already separates them from the
+                // options above.
+                borderTop: i > 0 ? '1px solid var(--color-border)' : 'none',
+                background: 'var(--color-bg-subtle)',
+                border: 'none',
+                fontSize: 12.5,
+                color: 'var(--color-text-secondary)',
+                cursor: 'pointer',
+              }}
+            >
+              {action.icon && <action.icon size={13} aria-hidden="true" className="shrink-0" />}
+              <span className="truncate">{action.label}</span>
+            </button>
+          ))}
+        </div>
       )}
     </div>,
     document.body

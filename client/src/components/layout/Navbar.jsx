@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   Bell,
   Search,
@@ -16,7 +16,6 @@ import {
 import useAuthStore from '../../store/authStore';
 import useOrgStore from '../../store/orgStore';
 import useNotificationStore from '../../store/notificationStore';
-import usePermissions from '../../hooks/usePermissions';
 import api from '../../services/api';
 import Chip from '../ui/Chip';
 import Avatar from '../ui/Avatar';
@@ -27,8 +26,11 @@ import macanMark from '../../assets/macan-mark.svg';
 
 /**
  * Top navigation bar. Sticky, 56px tall, white, with:
- *   logo · nav links · search · bell/help/settings icons · avatar dropdown.
- * See Macan_Design.md Section 6.1.
+ *   logo · search · bell · avatar dropdown.
+ *
+ * The nav links used to live here too. They are in `SideRail` now; this bar
+ * deliberately keeps only the four things that belong to the window rather
+ * than to the app's structure. See Macan_Design.md Section 6.1.
  */
 
 /**
@@ -58,73 +60,6 @@ const Logo = () => (
     </span>
   </div>
 );
-
-const NavLinks = ({ onNavigate }) => {
-  const { can } = usePermissions();
-
-  // Each link asks for the capability its own page needs, not for "admin" — a
-  // role holding analytics.view but not productivity.view_others gets Analytics
-  // alone. Dashboard, Boards and My Work are open to everyone with an org.
-  const links = [
-    { to: '/dashboard', label: 'Dashboard' },
-    { to: '/boards', label: 'My Boards' },
-    { to: '/my-tasks', label: 'My Work' },
-    { to: '/chat', label: 'Chat' },
-    ...(can('org.view_members')
-      ? [{ to: '/members', label: 'Members' }]
-      : []),
-    ...(can('analytics.view')
-      ? [{ to: '/analytics', label: 'Analytics' }]
-      : []),
-    ...(can('productivity.view_others')
-      ? [{ to: '/productivity', label: 'Productivity' }]
-      : []),
-  ];
-
-  return (
-    // Scrolls sideways rather than widening the bar when the viewport is too
-    // narrow for every link — the same treatment the board view tabs and the
-    // settings tab bar already use.
-    <div className="flex items-center gap-1 min-w-0 overflow-x-auto">
-      {links.map((link) => (
-        <NavLink
-          key={link.to}
-          to={link.to}
-          onClick={onNavigate}
-          className={({ isActive }) =>
-            [
-              'relative font-body font-medium text-[14px] px-3 py-4 transition-colors duration-150 shrink-0 whitespace-nowrap',
-              'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]',
-              isActive
-                ? 'text-[color:var(--color-accent)] font-semibold'
-                : 'text-[color:var(--color-text-secondary)] hover:text-[color:var(--color-text-primary)]',
-            ].join(' ')
-          }
-        >
-          {({ isActive }) => (
-            <>
-              {link.label}
-              {/* Active underline — 2px, flush with nav bottom border */}
-              <span
-                aria-hidden="true"
-                className="absolute left-3 right-3 bottom-0"
-                style={{
-                  height: 2,
-                  background: 'var(--color-accent)',
-                  transition: 'transform 200ms ease-in-out, opacity 200ms ease-in-out',
-                  transform: isActive ? 'scaleX(1)' : 'scaleX(0)',
-                  transformOrigin: 'left center',
-                  opacity: isActive ? 1 : 0,
-                }}
-              />
-            </>
-          )}
-        </NavLink>
-      ))}
-    </div>
-  );
-};
-
 
 /** Dropdown panel shared by desktop and mobile search. */
 const SearchResultsDropdown = ({ results, loading, onBoardClick, onTaskClick }) => {
@@ -913,16 +848,12 @@ const Navbar = ({ className = '' }) => {
         <MobileSearchOverlay onClose={() => setMobileSearchOpen(false)} />
       ) : (
         <div className="h-full flex items-center gap-4">
-          {/* Logo + nav links (links hidden on mobile).
-              min-w-0 lets the link strip shrink instead of forcing the whole
-              bar wider than the viewport — with every admin link visible the
-              row wants ~830px, which overflowed an iPad in portrait. */}
-          <div className="flex items-center gap-4 min-w-0">
-            <Logo />
-            <div className="hidden md:block h-full min-w-0">
-              <NavLinks />
-            </div>
-          </div>
+          {/* Logo only. The links moved into the SideRail — see its header for
+              why: seven capability-gated links made the bar's width depend on
+              who was looking, and it had already resorted to scrolling
+              sideways. What is left here is what belongs to the WINDOW rather
+              than to the app's structure: identity, search, alerts, you. */}
+          <Logo />
 
           {/* Search — centered, hidden on mobile */}
           <div className="hidden md:flex flex-1 justify-center px-4">
