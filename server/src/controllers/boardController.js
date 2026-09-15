@@ -40,6 +40,13 @@ const { monthKeyOf } = require('../utils/monthKey');
 const { createNotification } = require('../services/notificationService');
 const { requireFeature } = require('../utils/userFeatures');
 const { cascadeDeleteVaults } = require('../services/vaultCascade');
+// The grant write and its revoke cleanup, shared with every other caller that
+// curates somebody's board list. See the header there: the guards below stay
+// here, the write does not.
+const {
+  grant: grantBoardAccess,
+  revoke: revokeBoardAccess,
+} = require('../services/boardGrants');
 const { deleteSurfacesForBoard } = require('../services/workstreamSurfaces');
 
 const VALID_VISIBILITIES = ['public', 'private'];
@@ -1859,47 +1866,22 @@ const setBoardAccess = async (req, res) => {
       });
     }
 
-    // Upsert: drop any existing grant for this user, then re-add unless 'none'.
-    board.memberAccess = (board.memberAccess || []).filter(
-      (e) => e.user.toString() !== targetUserId
-    );
-    if (level !== 'none') {
-      board.memberAccess.push({
-        user: targetUserId,
+    // The write itself — the upsert, the revoke cleanup and the first-time
+    // notification — lives in services/boardGrants.js. It is there because the
+    // executive view writes these same grants, and a second copy of the revoke
+    // cleanup would be a second place for the fan-out bug it fixes to come back.
+    //
+    // Everything ABOVE this line is authorisation, and it is about the caller,
+    // not the write — so it stays in the controller and the service is handed a
+    // decision that has already been made.
+    if (level === 'none') {
+      await revokeBoardAccess({ board, targetUserId });
+    } else {
+      await grantBoardAccess({
+        board,
+        targetUserId,
         level,
         canManage: nextManage,
-      });
-    }
-    await board.save();
-
-    // Revoking the grant used to strip `memberAccess` and stop there, leaving the
-    // user's derived subscriptions behind: their ItemFollow rows survived, so the
-    // task-audience fan-out kept pinging them with task names from a board they
-    // could no longer open, indefinitely. Tear those down with the grant.
-    if (level === 'none' && existing) {
-      const boardTaskIds = await Task.distinct('_id', { board: board._id });
-      if (boardTaskIds.length > 0) {
-        await ItemFollow.deleteMany({
-          user: targetUserId,
-          task: { $in: boardTaskIds },
-        });
-      }
-      await Notification.deleteMany({
-        user: targetUserId,
-        board: board._id,
-      });
-    }
-
-    const wasAlreadyGranted = !!existing;
-
-    // Notify the user the first time they're given access to this board.
-    if (level !== 'none' && !wasAlreadyGranted) {
-      await createNotification({
-        userId: targetUserId,
-        type: 'invited',
-        message: `You were given access to the board "${board.name}"`,
-        orgId: board.organisation,
-        boardId: board._id,
         actorId: userId,
       });
     }

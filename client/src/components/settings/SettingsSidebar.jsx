@@ -5,6 +5,7 @@ import {
   FlaskConical,
   Plug,
   CalendarDays,
+  LayoutDashboard,
 } from 'lucide-react';
 
 /**
@@ -24,11 +25,22 @@ import {
  *     reason: the holiday calendar has its own row in the permissions matrix,
  *     so a role can hold it WITHOUT holding org.manage_settings, and folding it
  *     into `showAdminTabs` would hide the tab from exactly those people.
+ *   canMyView: boolean — does this person have an executive view. A FOURTH flag,
+ *     and emphatically not a role check done in here: "is an Executive" is
+ *     `profile !== null` on `executiveViewStore`, which is a fetch with a
+ *     loading state and an org it was resolved for. A sidebar that reached for
+ *     that itself would render the tab, then unrender it, on every sign-in —
+ *     and would answer the question a second time, in a component whose job is
+ *     drawing buttons. The page owns the answer; this owns the row.
  */
 const TABS = [
   { key: 'organisation', label: 'Workspace', icon: Building2, adminOnly: true },
   { key: 'profile', label: 'Profile', icon: UserCircle2, adminOnly: false },
   { key: 'notifications', label: 'Notifications', icon: Bell, adminOnly: false },
+  // The executive's own view — their rail switches, board order and labels.
+  // Gated on having a profile at all rather than on a capability: the tab edits
+  // one document, and somebody with no document has nothing to edit.
+  { key: 'myview', label: 'My view', icon: LayoutDashboard, executiveTab: true },
   // Connecting an external account is credential handling for the whole
   // workspace, so it sits with Workspace on `adminOnly` rather than being a
   // personal setting. Switching a connector on for one board is a separate,
@@ -42,12 +54,13 @@ const TABS = [
   { key: 'features', label: 'Extra features', icon: FlaskConical, featureTab: true },
 ];
 
-const visibleTabs = (showAdminTabs, canExtraFeatures, canHolidays) =>
+const visibleTabs = (showAdminTabs, canExtraFeatures, canHolidays, canMyView) =>
   TABS.filter(
     (t) =>
       (showAdminTabs || !t.adminOnly) &&
       (!t.featureTab || canExtraFeatures) &&
-      (!t.holidayTab || canHolidays)
+      (!t.holidayTab || canHolidays) &&
+      (!t.executiveTab || canMyView)
   );
 
 const SettingsSidebar = ({
@@ -56,8 +69,12 @@ const SettingsSidebar = ({
   showAdminTabs = true,
   canExtraFeatures = false,
   canHolidays = false,
+  // Defaults to false, like the other three: a caller that has not been taught
+  // about this flag shows the tab to nobody, which is the state Settings was in
+  // before the tab existed.
+  canMyView = false,
 }) => {
-  const tabs = visibleTabs(showAdminTabs, canExtraFeatures, canHolidays);
+  const tabs = visibleTabs(showAdminTabs, canExtraFeatures, canHolidays, canMyView);
 
   return (
     <aside
@@ -124,8 +141,9 @@ export const SettingsTabBar = ({
   showAdminTabs = true,
   canExtraFeatures = false,
   canHolidays = false,
+  canMyView = false,
 }) => {
-  const tabs = visibleTabs(showAdminTabs, canExtraFeatures, canHolidays);
+  const tabs = visibleTabs(showAdminTabs, canExtraFeatures, canHolidays, canMyView);
   return (
     <div
       className="md:hidden flex items-center gap-1 overflow-x-auto"

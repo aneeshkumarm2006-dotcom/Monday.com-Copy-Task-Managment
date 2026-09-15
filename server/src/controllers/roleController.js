@@ -296,6 +296,147 @@ const deleteRole = async (req, res) => {
 };
 
 /**
+ * Apply a role change to an org document IN MEMORY — the decision half of
+ * `assignRole`, with the request and the response taken out of it.
+ *
+ * WHY THIS IS A FUNCTION AND NOT JUST THE HANDLER IT USED TO BE
+ *
+ * Declaring somebody an Executive (`controllers/executiveViewController.js`)
+ * is a role change AND a profile creation, and the two have to be one sequence
+ * over one loaded org document: assign, save once, then write the profile.
+ * The obvious way to get there is to copy the rules below into that controller,
+ * and the rules below are not the kind of thing to keep two copies of. Three of
+ * them — the owner's role is unchangeable, you cannot hand out a role holding
+ * capabilities you lack, you cannot change the role of somebody who outranks
+ * you — ARE the security value of this endpoint. A second copy is a second
+ * place for them to rot, and the rot would be silent: the copy keeps working,
+ * it just stops refusing things.
+ *
+ * So the rules live here once, and both callers ask the same function.
+ *
+ * IT DELIBERATELY DOES NOT SAVE. The caller owns the write, because only the
+ * caller knows whether this is the whole transaction (this endpoint: mutate,
+ * save, respond) or the first half of one (declare: mutate, save, then create
+ * the profile against the same document). A helper that saved would force
+ * declare into a second round trip and a window in which the role exists and
+ * the profile does not.
+ *
+ * @param {Object} org           A loaded Organisation document. MUTATED on success.
+ * @param {string} targetUserId  Whose role is changing.
+ * @param {Object} role          The role subdocument to give them, already looked
+ *                               up by the caller — by id, by key, however it found it.
+ * @param {Object} opts
+ * @param {string} opts.actorUserId  Who is doing this. The two no-escalation
+ *                                   checks are resolved against THEIR capabilities.
+ *
+ *                                   AN ID, AND NOT AN ALREADY-RESOLVED ACCESS
+ *                                   OBJECT, deliberately. Both call sites are
+ *                                   holding `ctx.access`, and passing it would
+ *                                   save one `resolveOrgAccess` call — but this
+ *                                   function is nothing except escalation
+ *                                   guards, and a guard has to be judged
+ *                                   against the org document it is about to
+ *                                   MUTATE. Taking the id means the actor and
+ *                                   the target are resolved the same way, here,
+ *                                   against that document, and there is no way
+ *                                   to hand this function a stale or
+ *                                   wrong-workspace set of capabilities and have
+ *                                   it quietly agree with them. A guard that can
+ *                                   be fed its own answer is not a guard, and
+ *                                   one `resolveOrgAccess` over an in-memory
+ *                                   document is not a cost worth trading for it.
+ * @param {boolean} opts.isOwner     Whether the actor is the workspace owner, in
+ *                                   which case both checks are skipped — they hold
+ *                                   every capability, so both pass trivially.
+ *                                   Passed rather than recomputed because the
+ *                                   caller already asked `loadOrgContext` and
+ *                                   the answer travels on the context it
+ *                                   returned; `isOrgOwner(org, actorUserId)`
+ *                                   would agree with it on every call.
+ * @returns {{status:number, error:string, missing?:string[]}|null}
+ *          A refusal, whose non-`status` keys are the HTTP response body
+ *          verbatim, or null when `org` has been mutated and is ready to save.
+ */
+const applyRoleAssignment = (
+  org,
+  targetUserId,
+  role,
+  { actorUserId, isOwner = false } = {}
+) => {
+  // `String(x?._id || x)` rather than `.toString()`: these refs arrive raw from
+  // `loadOrgContext` today, but a POPULATED ref's toString() is its inspect
+  // string and never the hex id. The safe idiom costs nothing here and removes
+  // the trap for whoever populates this org one day.
+  const idOf = (ref) => String(ref?._id || ref || '');
+  const target = String(targetUserId);
+
+  const isMember = org.members.some((m) => idOf(m) === target);
+  if (!isMember) {
+    return { status: 400, error: 'User is not a member of this workspace' };
+  }
+
+  // The owner's role is nobody's to change — not even their own. Demoting the
+  // owner here would orphan the workspace's root of trust. Ownership moves
+  // through POST /api/orgs/:id/transfer-ownership instead, which is one atomic
+  // write that can never leave the org with zero owners or two.
+  if (org.admin && idOf(org.admin) === target) {
+    return {
+      status: 400,
+      error: "The workspace owner's role cannot be changed",
+    };
+  }
+
+  if (!role) return { status: 400, error: 'Unknown role' };
+  if (role.key === OWNER_ROLE_KEY) {
+    return {
+      status: 400,
+      error:
+        'There can only be one owner — use Transfer ownership rather than assigning the role',
+    };
+  }
+
+  // You cannot hand out a role more powerful than your own. Without this an
+  // admin could mint a custom role holding capabilities they lack, assign it to
+  // an ally, and escalate by proxy. (The owner passes trivially — they hold
+  // everything.)
+  const mine = resolveOrgAccess(org, actorUserId).capabilities;
+  if (!isOwner) {
+    const excess = (role.permissions || []).filter((c) => !mine.has(c));
+    if (excess.length) {
+      return {
+        status: 403,
+        error:
+          'You cannot assign a role with permissions you do not have yourself',
+        missing: excess,
+      };
+    }
+    // Same reasoning in the other direction: you cannot demote someone whose
+    // current role outranks yours.
+    const current = resolveOrgAccess(org, targetUserId);
+    const targetExcess = [...current.capabilities].filter((c) => !mine.has(c));
+    if (targetExcess.length) {
+      return {
+        status: 403,
+        error: 'You cannot change the role of someone who outranks you',
+      };
+    }
+  }
+
+  org.memberRoles = (org.memberRoles || []).filter(
+    (m) => idOf(m.user) !== target
+  );
+  org.memberRoles.push({ user: targetUserId, role: role._id });
+
+  // Keep the legacy array truthful for the not-yet-migrated fallback path.
+  const admins = new Set((org.admins || []).map((a) => idOf(a)));
+  if (role.key === 'admin') admins.add(target);
+  else admins.delete(target);
+  org.admins = [...admins];
+
+  return null;
+};
+
+/**
  * PUT /api/orgs/:id/members/:userId/role — assign a role to a member.
  * Body: { roleId } — or the legacy { role: 'admin' | 'member' }.
  *
@@ -305,6 +446,11 @@ const deleteRole = async (req, res) => {
  * `org.admins[]` is kept in sync with the admin role. Nothing reads it for
  * permission decisions any more, but the resolver falls back to it for orgs that
  * have not been backfilled, and letting it rot would make that fallback lie.
+ *
+ * Everything from "is the target a member" down to that reconciliation now lives
+ * in `applyRoleAssignment` above, which the executive-view controller shares.
+ * What stays here is the HTTP shell: the capability gate, finding the role the
+ * body names, the save, and the response.
  */
 const assignRole = async (req, res) => {
   try {
@@ -320,23 +466,6 @@ const assignRole = async (req, res) => {
     const { org } = ctx;
     org.ensureSystemRoles();
 
-    const isMember = org.members.some((m) => m.toString() === targetUserId);
-    if (!isMember) {
-      return res
-        .status(400)
-        .json({ error: 'User is not a member of this workspace' });
-    }
-
-    // The owner's role is nobody's to change — not even their own. Demoting the
-    // owner here would orphan the workspace's root of trust. Ownership moves
-    // through POST /api/orgs/:id/transfer-ownership instead, which is one atomic
-    // write that can never leave the org with zero owners or two.
-    if (org.admin && org.admin.toString() === targetUserId) {
-      return res
-        .status(400)
-        .json({ error: "The workspace owner's role cannot be changed" });
-    }
-
     const { roleId, role: legacyRole } = req.body;
     let role = null;
     if (roleId) {
@@ -344,49 +473,17 @@ const assignRole = async (req, res) => {
     } else if (legacyRole) {
       role = org.roleByKey(legacyRole);
     }
-    if (!role) return res.status(400).json({ error: 'Unknown role' });
-    if (role.key === OWNER_ROLE_KEY) {
-      return res.status(400).json({
-        error:
-          'There can only be one owner — use Transfer ownership rather than assigning the role',
-      });
+
+    const denied = applyRoleAssignment(org, targetUserId, role, {
+      actorUserId: req.user.userId,
+      isOwner: ctx.isOwner,
+    });
+    if (denied) {
+      // Everything but `status` IS the body. The escalation refusal carries a
+      // `missing` list the matrix renders, and that shape is part of the API.
+      const { status, ...body } = denied;
+      return res.status(status).json(body);
     }
-
-    // You cannot hand out a role more powerful than your own. Without this an
-    // admin could mint a custom role holding capabilities they lack, assign it to
-    // an ally, and escalate by proxy. (The owner passes trivially — they hold
-    // everything.)
-    const mine = resolveOrgAccess(org, req.user.userId).capabilities;
-    if (!ctx.isOwner) {
-      const excess = (role.permissions || []).filter((c) => !mine.has(c));
-      if (excess.length) {
-        return res.status(403).json({
-          error:
-            'You cannot assign a role with permissions you do not have yourself',
-          missing: excess,
-        });
-      }
-      // Same reasoning in the other direction: you cannot demote someone whose
-      // current role outranks yours.
-      const current = resolveOrgAccess(org, targetUserId);
-      const targetExcess = [...current.capabilities].filter((c) => !mine.has(c));
-      if (targetExcess.length) {
-        return res.status(403).json({
-          error: 'You cannot change the role of someone who outranks you',
-        });
-      }
-    }
-
-    org.memberRoles = (org.memberRoles || []).filter(
-      (m) => m.user.toString() !== targetUserId
-    );
-    org.memberRoles.push({ user: targetUserId, role: role._id });
-
-    // Keep the legacy array truthful for the not-yet-migrated fallback path.
-    const admins = new Set((org.admins || []).map((a) => a.toString()));
-    if (role.key === 'admin') admins.add(targetUserId);
-    else admins.delete(targetUserId);
-    org.admins = [...admins];
 
     await org.save();
 
@@ -407,6 +504,10 @@ module.exports = {
   updateRole,
   deleteRole,
   assignRole,
+  // Exported for `executiveViewController.declare`, which assigns the Executive
+  // role and creates the profile as one sequence and must not carry its own copy
+  // of the escalation guards. See the function's header.
+  applyRoleAssignment,
   publicRole,
   ALL_CAPABILITIES,
 };

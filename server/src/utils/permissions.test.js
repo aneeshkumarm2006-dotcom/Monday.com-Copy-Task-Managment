@@ -28,6 +28,7 @@ const ADMIN = 'aaaaaaaaaaaaaaaaaaaaaaa2';
 const MEMBER = 'aaaaaaaaaaaaaaaaaaaaaaa3';
 const VIEWER = 'aaaaaaaaaaaaaaaaaaaaaaa4';
 const GUEST = 'aaaaaaaaaaaaaaaaaaaaaaa5';
+const EXECUTIVE = 'aaaaaaaaaaaaaaaaaaaaaaa6';
 const OUTSIDER = 'aaaaaaaaaaaaaaaaaaaaaaa9';
 
 /** Roles as they are seeded onto a fresh org, with stable fake _ids. */
@@ -45,16 +46,20 @@ const roleId = (key) => roles.find((r) => r.key === key)._id;
 const makeOrg = (overrides = {}) => ({
   admin: OWNER,
   admins: [],
-  members: [OWNER, ADMIN, MEMBER, VIEWER, GUEST],
+  members: [OWNER, ADMIN, MEMBER, VIEWER, GUEST, EXECUTIVE],
   roles,
   memberRoles: [
     { user: ADMIN, role: roleId('admin') },
     { user: MEMBER, role: roleId('member') },
     { user: VIEWER, role: roleId('viewer') },
     { user: GUEST, role: roleId('guest') },
+    { user: EXECUTIVE, role: roleId('executive') },
   ],
   ...overrides,
 });
+
+/** The preset list as SYSTEM_ROLES declares it, for the drift guards below. */
+const presetFor = (key) => SYSTEM_ROLES.find((r) => r.key === key).permissions;
 
 const makeBoard = (overrides = {}) => ({
   _id: 'board1',
@@ -626,6 +631,161 @@ test('guest: an explicit grant on a PUBLIC board still lets them in', () => {
   assert.ok(a.canRead);
   assert.equal(a.readOnly, true, 'and only at the rung they were given');
   assert.ok(!a.can('task.create'));
+});
+
+// --- the Executive ---------------------------------------------------------
+
+/**
+ * The Executive preset is the Admin preset with exactly two capabilities
+ * withheld, and both absences are load-bearing rather than tidy-up. These cases
+ * pin what those absences buy, because "an admin who happens to see fewer
+ * boards" is the wrong mental model — it is the model under which somebody
+ * helpfully ticks `board.view_public` back on in the matrix and quietly returns
+ * the whole workspace to a person whose screen was curated on purpose.
+ *
+ * Note the Guest cases above prove the same mechanism from the other end. That
+ * is deliberate: this role reuses a reach rule that already works end to end
+ * rather than inventing a second one.
+ */
+
+test('executive: a public board they were not given does not exist for them', () => {
+  // Without `board.view_public`, publicness confers nothing — the same rule that
+  // makes a Guest a Guest. This is why the curated board list is not a UI trick:
+  // the board list, the dashboard stats, My Work and the notification fan-out all
+  // ask `canRead`, so a board outside their reach never leaves the server.
+  const org = makeOrg();
+  const board = makeBoard({
+    createdBy: MEMBER,
+    visibility: 'public',
+    publicDefaultLevel: 'edit',
+  });
+  const a = resolveAccess(board, org, EXECUTIVE);
+
+  assert.equal(a.role.key, 'executive', 'fixture check: the role resolved');
+  assert.equal(a.canRead, false, 'public is not automatic for them');
+  assert.ok(!a.can('task.create'));
+  assert.ok(!a.can('column.manage'));
+});
+
+test('executive: on a public board, their grant is the ceiling — not "edit everywhere"', () => {
+  // This is what dropping `board.manage_public` buys, and the contrast at the
+  // bottom is the assertion that matters: the same board, the same fixture, and
+  // an Admin resolves to `edit` no matter what the grant said. An Executive
+  // stands exactly where they were put.
+  const org = makeOrg();
+  const board = makeBoard({
+    createdBy: MEMBER,
+    visibility: 'public',
+    publicDefaultLevel: 'edit',
+    memberAccess: [{ user: EXECUTIVE, level: 'view', canManage: false }],
+  });
+  const a = resolveAccess(board, org, EXECUTIVE);
+
+  assert.ok(a.canRead, 'the grant is what lets them in');
+  assert.equal(a.level, 'view', 'the grant, not the public default, not `edit`');
+  assert.equal(a.readOnly, true);
+  assert.ok(!a.can('task.change_status'));
+  assert.ok(!a.can('column.manage'));
+  assert.equal(
+    resolveAccess(board, org, ADMIN).level,
+    'edit',
+    'and an Admin on the very same board is still `edit` — the two differ by '
+    + 'board.manage_public alone'
+  );
+});
+
+test('executive: a full-access grant is admin-grade power on that board', () => {
+  // The other half of the design: reach is withheld, capability is not. On a
+  // board they ARE given at `edit` + canManage they restructure it, moderate it,
+  // and hand access to somebody else.
+  const org = makeOrg();
+  const board = makeBoard({
+    createdBy: MEMBER,
+    visibility: 'public',
+    publicDefaultLevel: 'view',
+    memberAccess: [{ user: EXECUTIVE, level: 'edit', canManage: true }],
+  });
+  const a = resolveAccess(board, org, EXECUTIVE);
+
+  assert.ok(a.canRead);
+  assert.equal(a.level, 'edit');
+  assert.equal(a.canEdit, true);
+  assert.equal(a.canManageAccess, true, 'full access shares');
+  assert.ok(a.can('task.edit_any'));
+  assert.ok(a.can('column.manage'));
+  assert.ok(a.can('goal.manage'), 'and can set targets on the board they watch');
+  assert.ok(a.can('tracker.view'));
+
+  // Worth pinning, because "full power, like an admin" reads as more than it is:
+  // board LIFECYCLE is conferred by no rung of the ladder, only by `createdBy`,
+  // by the org owner, or by the two matrix overrides. So an Executive cannot
+  // delete a board somebody else made — and neither can anyone else holding the
+  // same grant. That is the ladder behaving normally, not a gap in this role.
+  assert.ok(!a.can('board.delete'));
+  assert.ok(!a.can('board.change_visibility'));
+});
+
+test('executive: the owner short-circuit wins, even with the role assigned to them', () => {
+  // A mis-click in the Members table must not be able to curate the workspace
+  // away from the person who owns it. `roleForUser` resolves the owner to the
+  // `owner` role BEFORE it consults memberRoles, and `orgCapabilities` never
+  // trusts stored data for them — so the assignment is inert in both directions.
+  const base = makeOrg();
+  const org = makeOrg({
+    memberRoles: [...base.memberRoles, { user: OWNER, role: roleId('executive') }],
+  });
+  const orgAccess = resolveOrgAccess(org, OWNER);
+
+  assert.equal(orgAccess.role.key, 'owner', 'never resolved to the executive role');
+  assert.ok(orgAccess.can('board.view_public'), 'and keeps the reach that role drops');
+
+  const board = makeBoard({ createdBy: MEMBER, visibility: 'public', publicDefaultLevel: 'view' });
+  const a = resolveAccess(board, org, OWNER);
+  assert.ok(a.canRead, 'a public board with no grant still reaches the owner');
+  assert.equal(a.level, 'edit');
+});
+
+test('executive: the preset keeps org.view_members', () => {
+  // Regression guard with a very visible failure mode: strip this and every
+  // avatar, assignee chip and people picker on their boards renders "Unknown",
+  // because the roster endpoint is capability-gated.
+  const org = makeOrg();
+  assert.ok(presetFor('executive').includes('org.view_members'));
+  assert.ok(resolveOrgAccess(org, EXECUTIVE).can('org.view_members'));
+});
+
+test('executive: the preset is the admin preset minus exactly the two reach capabilities', () => {
+  // THE drift guard. capabilities.js derives one list from the other precisely so
+  // that a capability added to Admin cannot silently skip Executive; this is the
+  // assertion that notices if somebody ever re-types the list instead. Stated as
+  // a set operation rather than a hardcoded expected list, so it fails only for
+  // the one thing it is about — the DIFFERENCE between the two roles.
+  const WITHHELD = ['board.view_public', 'board.manage_public'];
+  const admin = presetFor('admin');
+  const executive = presetFor('executive');
+
+  for (const cap of WITHHELD) {
+    assert.ok(admin.includes(cap), `fixture check: admin must hold ${cap}`);
+    assert.ok(!executive.includes(cap), `${cap} is the whole point of the role`);
+  }
+
+  const expected = new Set(admin.filter((c) => !WITHHELD.includes(c)));
+  expected.add('org.manage_executive_views');
+  assert.deepEqual(
+    [...executive].sort(),
+    [...expected].sort(),
+    'executive === admin − { view_public, manage_public } + manage_executive_views'
+  );
+
+  // The new capability itself: held by the people who set these views up, and
+  // by nobody else by default. Setting up a view is not assigning a role — that
+  // is still `org.assign_roles` — so the two are granted separately on purpose.
+  const org = makeOrg();
+  assert.ok(resolveOrgAccess(org, EXECUTIVE).can('org.manage_executive_views'));
+  assert.ok(resolveOrgAccess(org, ADMIN).can('org.manage_executive_views'));
+  assert.ok(resolveOrgAccess(org, OWNER).can('org.manage_executive_views'));
+  assert.ok(!resolveOrgAccess(org, MEMBER).can('org.manage_executive_views'));
+  assert.ok(!resolveOrgAccess(org, VIEWER).can('org.manage_executive_views'));
 });
 
 // --- outsiders -------------------------------------------------------------

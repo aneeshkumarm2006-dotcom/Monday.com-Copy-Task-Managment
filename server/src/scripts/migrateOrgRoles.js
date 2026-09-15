@@ -10,7 +10,8 @@
  * explicit `Organisation.roles[]` + `Organisation.memberRoles[]`.
  *
  * For every organisation (optionally scoped with `--org <id>`):
- *   1. Seed the five system roles (owner/admin/member/viewer/guest) if absent.
+ *   1. Seed any missing `SYSTEM_ROLES` preset. (The list grows — it is six
+ *      today — so this step is written against the catalog, not a fixed set.)
  *   2. Map each member to a role:
  *        org.admin      → owner
  *        org.admins[]   → admin

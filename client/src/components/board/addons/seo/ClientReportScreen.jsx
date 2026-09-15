@@ -4,8 +4,7 @@ import { Download, FileText, Link2 } from 'lucide-react';
 import Button from '../../../ui/Button';
 import EmptyState from '../../../ui/EmptyState';
 import Modal from '../../../ui/Modal';
-import { ScrollTable, Td, Th } from '../connector/SectionShell';
-import { formatNumber } from '../../../../utils/connectorFormat';
+import { RENDERERS, Tile } from '../../../executive/ReportWidgetRenderer';
 import { downloadReportPdf } from '../../../../utils/reportExport';
 import {
   FRESHNESS_CAPTIONS,
@@ -47,232 +46,20 @@ import { Panel, PanelHead } from './LabsBits';
  * something a model would not: it cannot state a change that the panel beneath
  * it declined to draw, because it asks the identical `comparability` functions.
  * Every refusal becomes a printed caveat rather than a missing arrow.
+ *
+ * ---- The renderers moved out; the LAYOUT stayed ----------------------------
+ *
+ * `Tile` and `RENDERERS` are imported from
+ * `components/executive/ReportWidgetRenderer.jsx`. The executive home's
+ * `reportWidget` section draws ONE of the same five widgets, built by this same
+ * `buildReport` from the same readings — so a second copy of an SVG line and a
+ * bar row would be a promise that the two drift: identically captioned panels
+ * disagreeing about an inverted axis, or about whether a refused delta prints
+ * its reason. What did NOT move is the arrangement below, which is this
+ * screen's own decision and nobody else's: the `number` widgets of a section
+ * gridded together at its top, the other four each in a headed panel under the
+ * freshness sentence. A home tile has one widget and no layout to make.
  */
-
-const Tile = ({ widget }) => (
-  <div className="min-w-0">
-    <p
-      className="font-body"
-      style={{
-        fontSize: 11,
-        textTransform: 'uppercase',
-        letterSpacing: '0.04em',
-        color: 'var(--color-text-muted)',
-      }}
-    >
-      {widget.title}
-    </p>
-    <p
-      className="font-display font-semibold mt-0.5"
-      style={{ fontSize: 22, color: 'var(--color-text-primary)' }}
-    >
-      {formatNumber(widget.value)}
-    </p>
-    {typeof widget.delta === 'number' && widget.delta !== 0 ? (
-      <p
-        className="font-body mt-0.5"
-        style={{
-          fontSize: 12,
-          color:
-            widget.delta > 0 ? 'var(--color-status-done)' : 'var(--color-status-stuck)',
-        }}
-      >
-        {widget.delta > 0 ? '+' : ''}
-        {formatNumber(widget.delta)} since the last reading
-      </p>
-    ) : widget.deltaReason ? (
-      /*
-        THE REFUSAL, PRINTED. A missing arrow with no explanation reads as "no
-        change"; this says which two readings could not be subtracted and why.
-      */
-      <p
-        className="font-body mt-0.5"
-        style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
-        title={widget.deltaReason}
-      >
-        no comparable change — {widget.deltaReason.slice(0, 90)}…
-      </p>
-    ) : (
-      <p className="font-body mt-0.5" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>
-        {widget.sub || 'no change'}
-      </p>
-    )}
-  </div>
-);
-
-/** A line, drawn as plain SVG. The report has one; recharts is for the tab. */
-const LineChart = ({ widget }) => {
-  const points = widget.points.filter((p) => typeof p.y === 'number');
-  if (points.length < 2) {
-    return (
-      <p className="font-body px-4 py-4" style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}>
-        Not enough readings to draw a line yet.
-      </p>
-    );
-  }
-
-  const values = points.map((p) => p.y);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const width = 640;
-  const height = 130;
-
-  const path = points
-    .map((p, i) => {
-      const x = (i / (points.length - 1)) * (width - 16) + 8;
-      const t = (p.y - min) / span;
-      /**
-       * INVERTED FOR RANK ONLY. Position 1 belongs at the top, or an improvement
-       * draws as a cliff-fall — and a backlink count inverted the same way draws
-       * two years of link building as a collapse.
-       */
-      const y = widget.invertY ? t * (height - 20) + 10 : (1 - t) * (height - 20) + 10;
-      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
-
-  return (
-    <div className="px-4 py-4">
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} role="img" aria-label={widget.title}>
-        <path d={path} fill="none" stroke="var(--color-accent)" strokeWidth="2" />
-      </svg>
-      <p className="font-body" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>
-        {widget.yLabel} · {points[0].x} to {points[points.length - 1].x}
-        {widget.invertY ? ' · lower is better' : ''}
-      </p>
-    </div>
-  );
-};
-
-const BarChart = ({ widget }) => {
-  const max = Math.max(...widget.bars.map((b) => b.value || 0), 1);
-  return (
-    <div className="flex flex-col gap-2 px-4 py-4">
-      {widget.bars.map((bar) => (
-        <div key={bar.label} className="flex items-center gap-3">
-          <span
-            className="font-body"
-            style={{ fontSize: 12.5, minWidth: 78, color: 'var(--color-text-secondary)' }}
-          >
-            {bar.label}
-          </span>
-          <span
-            style={{
-              flex: 1,
-              height: 8,
-              borderRadius: 'var(--radius-full)',
-              background: 'var(--color-bg-subtle)',
-              overflow: 'hidden',
-            }}
-          >
-            <span
-              style={{
-                display: 'block',
-                width: bar.value === null ? 0 : `${Math.max(1, (bar.value / max) * 100)}%`,
-                height: '100%',
-                background:
-                  bar.tone === 'negative'
-                    ? 'var(--color-status-stuck)'
-                    : 'var(--color-accent)',
-              }}
-            />
-          </span>
-          <span
-            className="font-body text-right"
-            style={{ fontSize: 12.5, minWidth: 62, color: 'var(--color-text-primary)' }}
-          >
-            {formatNumber(bar.value)}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-};
-
-const DonutList = ({ widget }) => (
-  <div className="flex flex-col gap-1.5 px-4 py-4">
-    {widget.slices.map((slice) => (
-      <div key={slice.label} className="flex items-center gap-3">
-        <span
-          className="font-body truncate"
-          style={{ fontSize: 12.5, minWidth: 140, color: 'var(--color-text-secondary)' }}
-        >
-          {slice.label}
-        </span>
-        <span
-          style={{
-            flex: 1,
-            height: 8,
-            borderRadius: 'var(--radius-full)',
-            background: 'var(--color-bg-subtle)',
-            overflow: 'hidden',
-          }}
-        >
-          <span
-            style={{
-              display: 'block',
-              width: widget.total ? `${Math.max(1, (slice.value / widget.total) * 100)}%` : 0,
-              height: '100%',
-              background: slice.other ? 'var(--color-text-muted)' : 'var(--color-accent)',
-            }}
-          />
-        </span>
-        <span
-          className="font-body text-right"
-          style={{ fontSize: 12.5, minWidth: 52, color: 'var(--color-text-primary)' }}
-        >
-          {formatNumber(slice.value)}
-        </span>
-      </div>
-    ))}
-  </div>
-);
-
-const TableWidget = ({ widget }) => (
-  <>
-    <ScrollTable maxHeight={280}>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr>
-            {widget.columns.map((col) => (
-              <Th key={col.key} align={col.align}>
-                {col.label}
-              </Th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {widget.rows.map((row, i) => (
-            /*
-              Keyed on the title plus the index deliberately. A report table is
-              built fresh from a snapshot on every render and is never reordered,
-              filtered or edited in place, so there is no identity for a key to
-              preserve — and the rows genuinely have no stable id of their own.
-            */
-            <tr key={`${widget.title}-${row[widget.columns[0]?.key] ?? i}`}>
-              {widget.columns.map((col) => (
-                <Td key={col.key} align={col.align}>
-                  {col.format === 'number' ? formatNumber(row[col.key]) : row[col.key]}
-                </Td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </ScrollTable>
-    {widget.truncated && (
-      <p
-        className="font-body px-4 py-2"
-        style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
-      >
-        Showing {widget.rows.length} of {widget.totalRows}. A report is a page.
-      </p>
-    )}
-  </>
-);
-
-const RENDERERS = { line: LineChart, bar: BarChart, donut: DonutList, table: TableWidget };
 
 const ClientReportScreen = ({ data, label }) => {
   const [sharing, setSharing] = useState(false);

@@ -98,6 +98,7 @@ import {
   gateSignature,
   resolveView,
   resolveViewTabs,
+  viewParamFor,
 } from '../utils/boardViewTabs';
 import {
   TABLE as TABLE_VIEW,
@@ -127,6 +128,8 @@ import useBoardStore from '../store/boardStore';
 import useTaskStore from '../store/taskStore';
 import useNotificationStore from '../store/notificationStore';
 import useToastStore from '../store/toastStore';
+import useExecutiveViewStore, { selectBoardEntry } from '../store/executiveViewStore';
+import { displayName } from '../utils/executiveBoards';
 import usePermissions, { useBoardPermissions } from '../hooks/usePermissions';
 import * as taskService from '../services/taskService';
 import { formatDate, dateInputToISO } from '../utils/dateUtils';
@@ -767,6 +770,44 @@ const BoardDetailPage = () => {
     timezone: monthTimezone,
   } = useBoardMonths(boardId, { enabled: isTrackerBoard });
 
+  /**
+   * This reader's own presentation preset for THIS board, or null.
+   *
+   * `{ label, defaultTab, tabs }` off a curated profile — which tab the board
+   * opens on for them, which tabs they see at all, and what they call it in a
+   * list. Null for everybody who has no profile, which is everybody by default,
+   * and the three things below then resolve to exactly the values this page
+   * used before any of it existed.
+   *
+   * IT IS NOT A PERMISSION AND CANNOT BECOME ONE. The profile describes a view;
+   * reach is the org role AND the board grant, resolved server-side, and every
+   * gate key above was computed from `board.permissions` without consulting
+   * this. All a preset can do here is SUBTRACT from that answer — see
+   * `resolveViewTabs`, where that ordering is structural rather than promised.
+   *
+   * What it subtracts, it subtracts from `?view=` as well. There is ONE list:
+   * `resolveView` validates the URL against the same tabs the bar draws, so a
+   * preset-hidden tab is unreachable by typing its URL exactly as a
+   * capability-hidden one is. Worth knowing before building a link to one — the
+   * reader lands on their fallback and nothing on screen says why. It still is
+   * not secrecy and must never be mistaken for it: hiding here trims noise for
+   * one person, the data behind the tab is unchanged, and an admin who needs a
+   * tab genuinely closed takes the capability away, which the server enforces.
+   *
+   * The selector is memoised on the board id rather than rebuilt inline,
+   * because zustand keys its own memo on the selector's identity: a fresh
+   * closure every render would re-run the lookup on every store change of any
+   * kind. Correct either way — it returns the entry object out of the profile's
+   * own array, so the reference is stable while the profile is — just wasteful.
+   */
+  const executiveEntry = useExecutiveViewStore(
+    useMemo(() => selectBoardEntry(boardId), [boardId])
+  );
+  /** `null` = every tab this board's capabilities allow. Never widens them. */
+  const allowedTabs = executiveEntry?.tabs || null;
+  /** A preference for `resolveView`, which re-checks it. Never a decision. */
+  const executiveDefaultTab = executiveEntry?.defaultTab || null;
+
   // Which tabs exist on this board, resolved once so the bar and the view
   // validation below cannot disagree about it.
   /**
@@ -810,10 +851,43 @@ const BoardDetailPage = () => {
    */
   const gateKey = gateSignature(gate);
 
+  /**
+   * The allowlist's half of the memo key — and why the allowlist is NOT in the
+   * gate literal above.
+   *
+   * There were two ways to make the memo notice a preset, and they are not
+   * equivalent:
+   *
+   *   (i)  put `allowedTabs` in the gate. `gateSignature` would then carry it
+   *        for free and there would be nothing to add here.
+   *   (ii) keep it out of the gate and give the memo a second key.
+   *
+   * (ii), deliberately. The Proxy in `resolveViewTabs` throws only for keys a
+   * PREDICATE READS, and no predicate reads this one — the subtraction happens
+   * inside the resolver's loop, after the gate has spoken, which is the only
+   * ordering under which an allowlist can subtract but never add. So a gate
+   * entry for it would be a key with no reader: dead weight that still moves
+   * the signature, and worse, an open invitation for the next author to write
+   * `visible: (g) => g.allowedTabs?.includes('x')` and end up with the same
+   * subtraction expressed in two places that can disagree. The gate stays what
+   * its own comment says it is — everything a predicate may ask about.
+   *
+   * The price of (ii) is this line, and it is the line that has to be right.
+   * The third historical failure of this code was a memo that worked in dev,
+   * where something always changes, and not on a cold production load — so the
+   * key is derived from the allowlist's CONTENTS, exactly as `gateSignature` is
+   * from the gate's, and never from the array's identity. A cold load goes
+   * `null` (no profile yet) → `["board","goals"]` (profile lands), which is a
+   * different string, which re-resolves the tabs on the render that first knows
+   * about the preset. Nothing else on this page needs to have changed, and on a
+   * cold load nothing else has.
+   */
+  const allowKey = JSON.stringify(allowedTabs);
+
   const visibleTabs = useMemo(
-    () => resolveViewTabs(VIEW_TABS, gate),
+    () => resolveViewTabs(VIEW_TABS, gate, { allow: allowedTabs }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [gateKey]
+    [gateKey, allowKey]
   );
 
   // Derived from the URL rather than mirrored into state — two sources of truth
@@ -832,7 +906,21 @@ const BoardDetailPage = () => {
   // no tab is ever called 'stages' and `resolveView` checks the fallback
   // against the visible tabs — but inert and wrong is how the next person
   // wires up a real bug.
-  const view = resolveView(searchParams.get('view'), visibleTabs);
+  //
+  // The third argument IS a real fallback: this reader's own `defaultTab`, so a
+  // curated board can open on its scores rather than its rows. Passed straight
+  // through and NOT pre-checked here — `resolveView` already validates the
+  // fallback against `visibleTabs` exactly as it validates the URL's value, so
+  // a default that a capability or the allowlist has since removed lands on the
+  // board rather than on a blank pane. Re-implementing that test here would be
+  // a second copy of the one rule that keeps this page openable. `|| 'board'`
+  // only restates the function's own default, for the overwhelmingly common
+  // reader who has no preset at all.
+  const view = resolveView(
+    searchParams.get('view'),
+    visibleTabs,
+    executiveDefaultTab || 'board'
+  );
 
   /**
    * HOW the Board tab draws itself — table, stages, and the three still to
@@ -859,14 +947,55 @@ const BoardDetailPage = () => {
     },
     [searchParams, setSearchParams, board?.defaultView]
   );
+  /**
+   * Write "which tab" into a params object, in place.
+   *
+   * "The board tab" is no longer expressible by silence, and that is the whole
+   * reason this exists. It used to be: `resolveView`'s fallback was the board,
+   * so DELETING `?view=` said "show the rows", and the tab bar's own click said
+   * it that way — as did the two effects that route back through `setView`
+   * before revealing a row (`highlightGroup` from the People tab's drill-down,
+   * `highlightTask` from a notification) and Delivery's open-task, which wrote
+   * the delete out by hand.
+   *
+   * With a per-reader `defaultTab` the empty URL means THEIR tab, so a delete
+   * aimed at the board became a navigation to nowhere. The query string came
+   * out identical, `useSearchParams` memoises on `location.search`, and every
+   * one of those effects depends on that object — so the Board tab could not be
+   * reached by clicking at all, and each effect cleared the view to no effect
+   * and was never asked again, leaving the row unrevealed and `highlightTask`
+   * unconsumed with nothing on screen to say why. A silent no-op, which is the
+   * failure this whole corner of the codebase keeps being bitten by.
+   *
+   * `viewParamFor` holds the rule, `boardViewTabs.test.mjs` pins it, and it is
+   * handed the SAME `visibleTabs` and fallback `resolveView` gets above so the
+   * two cannot disagree about what an empty URL means. For a reader with no
+   * preset it returns exactly what the two lines it replaced returned.
+   *
+   * The two drill-downs further down — Goals' open-task and the People tab's
+   * open-group — already spell `view=board` out by hand, so they were never
+   * part of the bug and are correct under this rule as they stand. They are
+   * deliberately NOT routed through here: doing so would start deleting the
+   * parameter for readers who have no preset, which changes the URL text in
+   * everybody's address bar for no gain, and this change is not allowed to
+   * change anything for a reader without a profile.
+   */
+  const applyView = useCallback(
+    (params, next) => {
+      const param = viewParamFor(next, visibleTabs, executiveDefaultTab || 'board');
+      if (param === null) params.delete('view');
+      else params.set('view', param);
+      return params;
+    },
+    [visibleTabs, executiveDefaultTab]
+  );
   const setView = useCallback(
     (next) => {
-      const params = new URLSearchParams(searchParams);
-      if (next === 'board') params.delete('view');
-      else params.set('view', next);
-      setSearchParams(params, { replace: true });
+      setSearchParams(applyView(new URLSearchParams(searchParams), next), {
+        replace: true,
+      });
     },
-    [searchParams, setSearchParams]
+    [searchParams, setSearchParams, applyView]
   );
 
   // The board's tag catalog, keyed by id, for resolving each group's `tags`.
@@ -3014,11 +3143,20 @@ const BoardDetailPage = () => {
           color="var(--color-text-muted)"
           aria-hidden="true"
         />
+        {/* The breadcrumb is a TRAIL BACK — it retraces the list the reader
+            just came from — so it says whatever that list said. On a curated
+            board list that is the profile's label, which may share no letters
+            with the board's real name ("Q4 Retainer" for "Acme Digital —
+            2026"); a crumb that suddenly used the real name would read as a
+            different board from the card that was clicked. `displayName` is the
+            one place that choice is made, shared with `BoardCard` and the My
+            Boards search, so the card and the crumb cannot drift apart. With no
+            profile entry it is `board.name` and nothing has changed. */}
         <span
           style={{ fontWeight: 500, color: 'var(--color-text-primary)' }}
           className="truncate"
         >
-          {board?.name || 'Loading…'}
+          {displayName(board, executiveEntry) || 'Loading…'}
         </span>
       </nav>
 
@@ -3026,6 +3164,24 @@ const BoardDetailPage = () => {
       <header className="mt-4 flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3 flex-wrap">
+            {/* THE HEADING KEEPS THE BOARD'S REAL NAME, AND A LABEL MUST NEVER
+                REACH IT.
+
+                A label is a nickname for finding a board in a LIST — it earns
+                its place on a card and in the crumb that retraces that list,
+                where the alternative is a reader who cannot find the thing they
+                clicked. This is not a list. It is the board itself, the thing
+                everyone else on it is also looking at, and a heading that
+                disagrees with what the rest of the team calls the board is a
+                support ticket: two people on a call, one reading "Q4 Retainer"
+                off their screen and one reading "Acme Digital — 2026" off
+                theirs, with nothing on either screen to suggest they are on the
+                same page. The nickname is also this reader's alone, so it would
+                be the one word in a screenshot nobody else could resolve.
+
+                A rename is a rename — `board.name`, through the Edit form,
+                visible to everybody. `displayName`'s own header says the same
+                thing from the other side. */}
             <h1
               className="font-display truncate text-[20px] md:text-[26px]"
               style={{
@@ -3483,12 +3639,17 @@ const BoardDetailPage = () => {
             // the source of truth for which month this board is showing, and
             // the month seed in useBoardMonths only runs once per board, so
             // dropping it here leaves the board with no month at all — an empty
-            // "Pick a month" board with none of its groups loaded. Deleting
-            // `view` is what sends us back to the board (see setView).
+            // "Pick a month" board with none of its groups loaded.
+            //
+            // `applyView` is what sends us back to the board, rather than the
+            // `delete('view')` this used to be: deleting the parameter means
+            // "the board" only for a reader whose empty URL still resolves
+            // there, and for one whose preset opens this board on another tab
+            // it meant "stay exactly where you are", which is a click that
+            // highlights a task the reader cannot see.
             setSearchParams(
               (prev) => {
-                const next = new URLSearchParams(prev);
-                next.delete('view');
+                const next = applyView(new URLSearchParams(prev), 'board');
                 next.set('highlightTask', taskId);
                 // Delivery only ever counts top-level tasks, so any parent id
                 // still on the URL is stale from an earlier jump.

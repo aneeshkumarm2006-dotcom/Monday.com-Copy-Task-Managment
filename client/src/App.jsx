@@ -13,6 +13,9 @@ import useOrgStore from './store/orgStore';
 import useNotificationStore from './store/notificationStore';
 import useChatStore from './store/chatStore';
 import usePermissionStore from './store/permissionStore';
+import useExecutiveViewStore, {
+  selectIsExecutive,
+} from './store/executiveViewStore';
 import usePermissions from './hooks/usePermissions';
 import LoginPage from './pages/LoginPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
@@ -32,7 +35,11 @@ import SettingsPage from './pages/SettingsPage';
 import NotificationsPage from './pages/NotificationsPage';
 import ChatPage from './pages/ChatPage';
 import MembersPage from './pages/MembersPage';
+import ExecutiveHomePage from './pages/ExecutiveHomePage';
+import ExecutiveViewConfigPage from './pages/ExecutiveViewConfigPage';
 import NotFoundPage from './pages/NotFoundPage';
+import PageWrapper from './components/layout/PageWrapper';
+import Spinner from './components/ui/Spinner';
 import ToastContainer from './components/ui/Toast';
 import useNotificationPoll from './hooks/useNotificationPoll';
 import useNotificationStream from './hooks/useNotificationStream';
@@ -154,6 +161,67 @@ const RequireCapability = ({ capability }) => {
 };
 
 /**
+ * DashboardRoute — /dashboard is two different pages.
+ *
+ * An Executive gets `ExecutiveHomePage` (a composed page of the scores and
+ * boards an admin curated for them); everybody else gets the standard
+ * `DashboardPage`. The switch is `profile !== null` and nothing else — see
+ * `selectIsExecutive` in the store.
+ *
+ * ---- WHY THIS WAITS INSTEAD OF GUESSING ------------------------------------
+ *
+ * `isExecutive` is false before the profile loads, because "not an Executive" is
+ * what an absent profile means. Rendering on that would show every Executive the
+ * standard dashboard — greeting, four stat cards, the whole company's recent
+ * boards — for as long as one request takes, and then swap it out underneath
+ * them. That is the exact screen the feature exists to replace, so a flash of it
+ * is worse than a beat of nothing.
+ *
+ * `RequireCapability` above faces the opposite risk and therefore makes the
+ * opposite choice: it renders the Outlet while hydrating, because a premature
+ * "no" would BOUNCE somebody who does hold the capability, and a redirect is not
+ * something you can take back. Here nothing is lost by waiting — same reasoning,
+ * different answer, and both are written down so neither gets "fixed" into the
+ * other.
+ *
+ * The undecided test is four things, because there are four ways to not know yet:
+ * the session is still hydrating; the workspace has not been chosen yet (the
+ * beat between `user` arriving and `setOrgsFromUser` running — if they genuinely
+ * have no workspace, `RequireOrg` has already redirected and this never renders);
+ * a fetch is in flight; or the store holds a DIFFERENT org's answer, which is
+ * what an org switch looks like from here.
+ */
+const DashboardRoute = () => {
+  const user = useAuthStore((s) => s.user);
+  const authLoading = useAuthStore((s) => s.loading);
+  const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
+  const loading = useExecutiveViewStore((s) => s.loading);
+  const loadedForOrg = useExecutiveViewStore((s) => s.loadedForOrg);
+  const isExecutive = useExecutiveViewStore(selectIsExecutive);
+
+  const undecided =
+    authLoading ||
+    !user ||
+    !currentOrgId ||
+    loading ||
+    loadedForOrg !== currentOrgId;
+
+  if (undecided) {
+    // The app's page-level wait: the shell, so the rail and bar do not jump when
+    // the real page arrives, and one centred spinner where the content will be.
+    return (
+      <PageWrapper>
+        <div className="flex justify-center py-16">
+          <Spinner size="lg" label="Loading your home" />
+        </div>
+      </PageWrapper>
+    );
+  }
+
+  return isExecutive ? <ExecutiveHomePage /> : <DashboardPage />;
+};
+
+/**
  * PublicOnlyRoute — if already logged in, bounce to /dashboard.
  */
 const PublicOnlyRoute = ({ children }) => {
@@ -168,6 +236,8 @@ function App() {
   const setOrgsFromUser = useOrgStore((s) => s.setOrgsFromUser);
   const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
   const ensureHolidays = useOrgStore((s) => s.ensureHolidays);
+  const fetchExecutiveView = useExecutiveViewStore((s) => s.fetchMine);
+  const clearExecutiveView = useExecutiveViewStore((s) => s.clear);
   const fetchNotifications = useNotificationStore((s) => s.fetchNotifications);
   const clearNotifications = useNotificationStore((s) => s.clear);
   const fetchChannels = useChatStore((s) => s.fetchChannels);
@@ -210,6 +280,10 @@ function App() {
       // opened. No token is the real logout signal.
       clearNotifications();
       clearChat();
+      // Same signal, same reason: the executive shell decides which page
+      // /dashboard is, so a profile left behind after a sign-out would greet the
+      // NEXT person on this browser with the last one's home page.
+      clearExecutiveView();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?._id, currentOrgId]);
@@ -234,6 +308,22 @@ function App() {
   // no-op once loaded, so this costs one request per workspace per session.
   useEffect(() => {
     if (user && currentOrgId) ensureHolidays(currentOrgId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?._id, currentOrgId]);
+
+  // Resolve the caller's executive view once per (person, workspace), up here
+  // beside the holiday calendar and for the same kind of reason: it is not a
+  // page's data, it is CHROME. It decides which page /dashboard is, which
+  // entries the rail keeps, and which boards My Boards puts first — so it has to
+  // be answered before any of those render, and the org switch is the only event
+  // that invalidates the answer.
+  //
+  // Unconditional on purpose: this is also how the app learns that somebody is
+  // NOT an Executive, which is the common case and is what `loadedForOrg` then
+  // records. One request per workspace per session. `fetchMine` fails closed, so
+  // a blip puts the caller on the standard app rather than a half-built shell.
+  useEffect(() => {
+    if (user && currentOrgId) fetchExecutiveView(currentOrgId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?._id, currentOrgId]);
 
@@ -276,7 +366,10 @@ function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/onboarding" element={<OnboardingPage />} />
           <Route element={<RequireOrg />}>
-            <Route path="/dashboard" element={<DashboardPage />} />
+            {/* Not DashboardPage directly: /dashboard is the standard dashboard
+                for most people and the executive home for an Executive. See
+                DashboardRoute — it must not paint either one until it knows. */}
+            <Route path="/dashboard" element={<DashboardRoute />} />
             <Route path="/boards" element={<MyBoardsPage />} />
             <Route path="/boards/:id" element={<BoardDetailPage />} />
             <Route path="/my-tasks" element={<MyTasksPage />} />
@@ -296,6 +389,24 @@ function App() {
             </Route>
             <Route element={<RequireCapability capability="org.view_members" />}>
               <Route path="/members" element={<MembersPage />} />
+            </Route>
+            {/* The executive-view configurator. It hangs off /members because
+                that is where it is entered from (the per-row "Make executive" /
+                "Edit executive view" action), but it is gated on its OWN
+                capability rather than the members one: composing somebody's view
+                and being able to see the people list are different permissions,
+                and `org.manage_executive_views` is the one the server checks on
+                every route this page calls. Its own gate also means the two can
+                be given apart — which is the point of roles being data. */}
+            <Route
+              element={
+                <RequireCapability capability="org.manage_executive_views" />
+              }
+            >
+              <Route
+                path="/members/:userId/executive-view"
+                element={<ExecutiveViewConfigPage />}
+              />
             </Route>
             <Route path="/settings" element={<SettingsPage />} />
           </Route>

@@ -371,6 +371,113 @@ const describeGroupActivity = (entry) => {
 };
 
 /**
+ * The parts of an executive view, in the words the screens that edit them use.
+ * An unmapped key falls back to itself, so a writer recording a word nobody has
+ * labelled yet still produces a readable sentence.
+ */
+const EXEC_CHANGE_LABELS = {
+  boards: 'boards',
+  home: 'home page',
+  nav: 'navigation',
+  labels: 'board names',
+  presets: 'board presets',
+};
+
+/**
+ * Board levels, in the words the share dialog shows. Lower case because these
+ * appear mid-sentence; `read` is the pre-ladder spelling of `view`, which the
+ * server normalises but old rows still carry.
+ */
+const EXEC_LEVEL_LABELS = {
+  view: 'view',
+  comment: 'comment',
+  contribute: 'contribute',
+  edit: 'edit',
+  read: 'view',
+};
+
+/** "a", "a and b", "a, b and c" — a list as a sentence reads one. */
+const andList = (arr) => {
+  if (!arr.length) return '';
+  if (arr.length === 1) return arr[0];
+  return `${arr.slice(0, -1).join(', ')} and ${arr[arr.length - 1]}`;
+};
+
+/**
+ * One executive-view event as a sentence.
+ *
+ * Split out for the same reason the group and budget branches are: it shares
+ * none of the task vocabulary. Every sentence names the person the view belongs
+ * to from `metadata.targetUserName`, captured by the writer rather than looked
+ * up live — the profile is deletable by design, so by the time an
+ * `executive.removed` row is read there is nothing left to look up.
+ *
+ * NONE OF THESE MAY READ AS A CHANGE OF ACCESS. Adding a board changes a list;
+ * whether that person can open it is the share path's record, written
+ * separately, and `metadata.level` here says only what was asked for at the
+ * time — which is why the sentence says "requested" rather than stating a level
+ * as fact. The one exception is spelled out: a removal that also revoked the
+ * grant says so, because that IS somebody losing reach, and the caller sets that
+ * flag after the revoke rather than alongside the request for one.
+ */
+const describeExecutiveActivity = (entry) => {
+  const actor = entry.actor?.name || 'Someone';
+  const meta = entry.metadata || {};
+  // "for Bea" when the writer captured a name, nothing when it did not — never
+  // a bare id, which reads as data loss in an audit column.
+  const forWhom = meta.targetUserName
+    ? ` for ${quote(truncate(meta.targetUserName, 60))}`
+    : '';
+  const view = `the executive view${forWhom}`;
+  const boardName = meta.boardName ? quote(truncate(meta.boardName, 60)) : 'a board';
+
+  if (entry.type === 'executive.declared') {
+    return `${actor} created an executive view${forWhom}.`;
+  }
+
+  if (entry.type === 'executive.updated') {
+    // What moved, in the caller's own words. A save with no list still reads —
+    // see `logExecutiveUpdated` on why a detail-free row beats no row.
+    const parts = (Array.isArray(meta.changed) ? meta.changed : [])
+      .map((k) => EXEC_CHANGE_LABELS[k] || String(k));
+    const what = parts.length ? ` — ${andList(parts)}` : '';
+    return `${actor} updated ${view}${what}.`;
+  }
+
+  if (entry.type === 'executive.removed') {
+    return `${actor} removed ${view}.`;
+  }
+
+  if (entry.type === 'executive.board_added') {
+    // "Full access" and the level names are the words the share dialog puts on
+    // its own controls, so they are the words somebody reading this back will
+    // recognise. REQUESTED is the load-bearing part of the phrase, and it is not
+    // hedging: putting a board on a curated list and writing the grant that lets
+    // that person open it are two separate writes, and the guards that can
+    // refuse the second one (you cannot hand out a level above your own, the
+    // board's owner is untouchable, the target must be a member of the
+    // workspace) sit in the controller, not here. So the list can gain a board
+    // at a level the share path then declined. Saying "with full access" flat
+    // out would tell an auditor that somebody holds a level they may well have
+    // been refused — the one reading this branch's header forbids. The board's
+    // own share events, sitting in this same export minutes away, are where
+    // whether it was actually applied is recorded.
+    const level = EXEC_LEVEL_LABELS[meta.level] || null;
+    let access = '';
+    if (meta.canManage) access = ', with full access requested';
+    else if (level) access = `, with ${level} access requested`;
+    return `${actor} added ${boardName} to ${view}${access}.`;
+  }
+
+  if (entry.type === 'executive.board_removed') {
+    const revoked = meta.revoked ? ' and revoked their access to it' : '';
+    return `${actor} removed ${boardName} from ${view}${revoked}.`;
+  }
+
+  return `${actor} changed ${view}.`;
+};
+
+/**
  * One goal event as a sentence. Split out of `describeActivity` because it is
  * the longest branch by far and shares none of the task vocabulary.
  */
@@ -491,6 +598,11 @@ const describeActivity = (entry, { oldGroupName, newGroupName } = {}) => {
   }
   if (typeof entry.type === 'string' && entry.type.startsWith('ads_budget.')) {
     return describeAdsBudgetActivity(entry);
+  }
+  // Org-level rows: the subject is somebody's executive view, not anything on
+  // a board. Only the two board_* types can reach a board export at all.
+  if (typeof entry.type === 'string' && entry.type.startsWith('executive.')) {
+    return describeExecutiveActivity(entry);
   }
 
   switch (entry.type) {
@@ -630,6 +742,14 @@ const EVENT_LABELS = {
   'group.created': 'Group created',
   'group.renamed': 'Group renamed',
   'group.deleted': 'Group deleted',
+  // Executive views. The label names the VIEW that changed, never the person or
+  // what they do — the profile describes a screen, and a column that implied
+  // otherwise would be both wrong and unkind.
+  'executive.declared': 'Executive view created',
+  'executive.updated': 'Executive view updated',
+  'executive.removed': 'Executive view removed',
+  'executive.board_added': 'Board added to an executive view',
+  'executive.board_removed': 'Board removed from an executive view',
 };
 
 const eventLabel = (type) => EVENT_LABELS[type] || type;
@@ -640,6 +760,7 @@ module.exports = {
   describeActivity,
   describeGoalActivity,
   describeAdsBudgetActivity,
+  describeExecutiveActivity,
   describeGoalValue,
   goalFieldLabel,
   eventLabel,

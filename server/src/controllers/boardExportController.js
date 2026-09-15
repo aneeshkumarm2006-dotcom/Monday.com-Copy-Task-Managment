@@ -36,13 +36,21 @@ const { buildTaskThreads } = require('../services/updateThread');
  * flag is the switch they were asked to throw, and honouring it only in the UI
  * would make it decorative.
  *
- * THREE KINDS OF ROW come back from one query. A tracker board's monthly goals
- * write to the same `ActivityLog` collection under `goal` instead of `task`,
- * and a group's own lifecycle writes under `group`, so "everything recorded
- * against this board" now genuinely means everything — including who moved a
- * target and who deleted a whole client. `itemType` is what tells them apart in
- * the sheet; the task-field columns are simply blank on a goal or group row,
- * exactly as they are for a task that has been deleted.
+ * FOUR KINDS OF ROW come back from one query. A tracker board's monthly goals
+ * write to the same `ActivityLog` collection under `goal` instead of `task`, a
+ * group's own lifecycle writes under `group`, and an executive view's writes
+ * under `organisation` — so "everything recorded against this board" now
+ * genuinely means everything, including who moved a target, who deleted a whole
+ * client, and who put this board on somebody's curated list. `itemType` is what
+ * tells them apart in the sheet; the task-field columns are simply blank on a
+ * goal, group or org row, exactly as they are for a task that has been deleted.
+ *
+ * ONLY TWO OF THE FIVE executive types can ever appear here. `board_added` and
+ * `board_removed` each concern one board and carry it; `declared`, `updated`
+ * and `removed` are org-level, carry no board, and so are invisible to a query
+ * that reads by board id. That is intended — a rearranged home page is not an
+ * event about any one board — and it is why an org row in this loop is always
+ * about THIS board.
  */
 
 /** Hard ceiling on rows in one export. Beyond this the response is truncated. */
@@ -286,6 +294,15 @@ const getActivityExport = async (req, res) => {
       // filter's own rationale ("an audit export exists for exactly this") most
       // wants kept.
       const isGroupRow = !!e.group;
+      // An executive-view row: a board added to or removed from somebody's
+      // curated list. It belongs to a workspace rather than to anything on the
+      // board, so it has no task, no goal and no group — and is EXEMPT from the
+      // orphaned-group filter below for a stronger version of the group row's
+      // reason: it was never in a group at all, so a rule about groups that no
+      // longer exist can only ever drop it by accident. The filters below are
+      // written so that exemption holds by construction (each one needs a task
+      // or a goal to fire), and this comment is here so it stays that way.
+      const isOrgRow = !!e.organisation;
       const task = e.task ? taskMap.get(e.task.toString()) : null;
       const goal = e.goal ? goalMap.get(e.goal.toString()) : null;
 
@@ -338,24 +355,47 @@ const getActivityExport = async (req, res) => {
       const liveGroupName = e.group ? groupMap.get(e.group.toString()) : null;
       const groupRowName = liveGroupName || e.metadata?.groupName || '(deleted group)';
 
+      // An org row names ITSELF the same way a group row does, and for the same
+      // reason: the executive view is the item, so a blank item column would
+      // read as a missing join rather than as "this row is not about a task".
+      // There is no live document to prefer here — a profile is deletable by
+      // design, so the name the writer captured is the only name there will ever
+      // be. It names the view and the person it belongs to, never a title.
+      const orgRowName = e.metadata?.targetUserName
+        ? `Executive view — ${e.metadata.targetUserName}`
+        : 'Executive view';
+
       let itemName;
-      if (isGroupRow) itemName = groupRowName;
+      if (isOrgRow) itemName = orgRowName;
+      else if (isGroupRow) itemName = groupRowName;
       else if (isGoalRow) itemName = goal?.name || e.metadata?.goalName || '(deleted goal)';
       else itemName = task?.name || e.metadata?.taskName || '(deleted task)';
 
       let groupName;
-      if (isGroupRow) groupName = groupRowName;
+      // An org row sits in no group — it is about the board itself — so it
+      // repeats its own name here rather than leaving the column blank, exactly
+      // as a group row does.
+      if (isOrgRow) groupName = orgRowName;
+      else if (isGroupRow) groupName = groupRowName;
       else if (isGoalRow) {
         groupName = (goalGroupId && groupMap.get(goalGroupId)) || e.metadata?.groupName || '';
       } else groupName = (task?.group && groupMap.get(task.group.toString())) || '';
 
+      // Which of the four kinds this row is. The sheet stays one table; this is
+      // the column that says what each row is about.
+      let itemType = 'task';
+      if (isOrgRow) itemType = 'org';
+      else if (isGroupRow) itemType = 'group';
+      else if (isGoalRow) itemType = 'goal';
+
       rows.push({
         at: e.createdAt,
-        // The join key for `threads`; blank on a goal row, which has no thread.
+        // The join key for `threads`; blank on a goal, group or org row, none
+        // of which has a thread.
         taskId: e.task ? e.task.toString() : '',
         actorName,
         actorType: e.actorType || 'user',
-        itemType: isGroupRow ? 'group' : (isGoalRow ? 'goal' : 'task'),
+        itemType,
         // Which month a goal belongs to — the one thing about it that has no
         // task equivalent, and the thing that makes a row of them sortable.
         monthKey: isGoalRow ? (goal?.monthKey || e.metadata?.monthKey || '') : '',

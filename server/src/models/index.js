@@ -1,6 +1,13 @@
 // Register all Mongoose models at startup so refs/populate() work everywhere.
 require('./User');
 require('./Organisation');
+// One person's curated view of one workspace: which boards are on their list,
+// what their home page is made of, which rail entries they kept. Per
+// (organisation, user), which is why it sits beside Organisation rather than
+// inside it — see the model header for why the org deliberately holds no
+// settings blob. It DESCRIBES a view and never grants one; reach is still the
+// org role AND the board's own grants, resolved by `resolveAccess`.
+require('./ExecutiveView');
 require('./Board');
 require('./BoardConnection');
 require('./TaskGroup');

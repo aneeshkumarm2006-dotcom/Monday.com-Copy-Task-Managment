@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -43,6 +43,9 @@ import SortableItem from '../components/dnd/SortableItem';
 import useOrgStore from '../store/orgStore';
 import useBoardStore from '../store/boardStore';
 import useToastStore from '../store/toastStore';
+import useExecutiveViewStore, {
+  selectIsExecutive,
+} from '../store/executiveViewStore';
 import usePermissions from '../hooks/usePermissions';
 import { convertBoard } from '../services/monthService';
 import { timeAgo } from '../utils/dateUtils';
@@ -51,6 +54,12 @@ import {
   boardMatchesFilters,
   countActiveBoardFilters,
 } from '../utils/boardFilters';
+import {
+  orderBoardsForProfile,
+  displayName,
+  boardIdOf,
+  labelsByBoardId,
+} from '../utils/executiveBoards';
 
 /**
  * Rotating palette for the top accent bar on each card.
@@ -70,6 +79,14 @@ const ACCENT_CYCLE = [
  */
 const DETAILED_VIEW_KEY = 'myBoards:detailedView';
 
+/**
+ * The label map for somebody who has no executive view: empty, and the SAME
+ * empty map every time. A `new Map()` built per render would be a new identity
+ * per render, which re-runs the search memo that depends on it on every keystroke
+ * anywhere on the page — for the people who have no labels at all.
+ */
+const NO_LABELS = new Map();
+
 const readDetailedView = () => {
   try {
     return localStorage.getItem(DETAILED_VIEW_KEY) !== '0';
@@ -85,10 +102,31 @@ const MyBoardsPage = () => {
   const loading = useBoardStore((s) => s.loading);
   const fetchBoards = useBoardStore((s) => s.fetchBoards);
   const toastSuccess = useToastStore((s) => s.success);
+  const toastError = useToastStore((s) => s.error);
   const createBoardAction = useBoardStore((s) => s.createBoard);
   const updateBoardAction = useBoardStore((s) => s.updateBoard);
   const deleteBoardAction = useBoardStore((s) => s.deleteBoard);
   const reorderBoardsAction = useBoardStore((s) => s.reorderBoards);
+
+  /**
+   * The executive view, if this person has one.
+   *
+   * `isExecutive` comes from the store's own `selectIsExecutive` rather than
+   * from a `!!execProfile` written here: "a profile exists" is the definition of
+   * being an Executive, it is answered in one expression in the store, and a
+   * second copy of it in a page is how two screens end up disagreeing about who
+   * one person is. With no profile every executive line below is inert and this
+   * page renders exactly as it always has — same DOM, same handlers, same order.
+   */
+  const execProfile = useExecutiveViewStore((s) => s.profile);
+  const saveMine = useExecutiveViewStore((s) => s.saveMine);
+  const isExecutive = useExecutiveViewStore(selectIsExecutive);
+  // The two fields that say whether `isExecutive` is an ANSWER or just the
+  // absence of one yet. Read here for the same reason `DashboardRoute` reads
+  // them in App.jsx — see `execUndecided` below, where the cost of guessing is
+  // a write to every member of the workspace's board list.
+  const execLoading = useExecutiveViewStore((s) => s.loading);
+  const execLoadedForOrg = useExecutiveViewStore((s) => s.loadedForOrg);
 
   const { can } = usePermissions();
   const canCreateBoard = can('board.create');
@@ -128,6 +166,40 @@ const MyBoardsPage = () => {
   const [editTarget, setEditTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
+  // The profile board entries a drag has just written, held here until the save
+  // settles. This is the optimistic half of the optimistic-then-revert that the
+  // workspace-wide reorder does inside `boardStore` — the executive save writes
+  // a different document, so the buffer lives here instead.
+  const [execOrder, setExecOrder] = useState(null);
+
+  /**
+   * Which drag owns that buffer, and the queue its saves go through.
+   *
+   * `execOrder` is a SINGLE optimistic slot, so two drags in quick succession
+   * need both of these or the second one appears to undo itself:
+   *
+   *  - THE TICKET says whose order is on screen. Without it the first save's
+   *    `.finally` puts the buffer down while the second drag is still unsaved,
+   *    and the list snaps back to the first order in front of the person who
+   *    just made the second one.
+   *  - THE QUEUE says the saves reach the server in the order they were made.
+   *    `PUT /api/me/executive-view` REPLACES the document, and `saveMine`
+   *    writes whatever comes back into the store, so two in flight at once can
+   *    cross: the slower FIRST response lands last, and the store — and the
+   *    screen, once the buffer clears — ends up showing an order the server
+   *    does not have, with nothing to re-fetch it until the org or the user
+   *    changes. A chain is enough because each body is the WHOLE list rather
+   *    than a delta: the last one queued is the whole truth, even if an earlier
+   *    one failed.
+   *
+   * Refs, not state: neither is rendered, and both are read inside a callback
+   * that must see the newest value rather than the one its closure captured.
+   * `executiveViewStore`'s own `fetchTicket` is the same device for the same
+   * class of bug on the read side.
+   */
+  const dragTicket = useRef(0);
+  const saveQueue = useRef(Promise.resolve());
+
   const orgId = currentOrg?._id || null;
 
   // Fetch boards whenever the current org changes
@@ -140,15 +212,43 @@ const MyBoardsPage = () => {
 
   const activeFilterCount = countActiveBoardFilters(filters);
 
+  /**
+   * The profile's labels by board id — an empty map for everybody else.
+   *
+   * The search below matches this AS WELL AS the board's real name. A label is
+   * a nickname for finding a board in a list, so the case that matters is the
+   * one where it shares nothing with the real name: a board called "Acme
+   * Digital — 2026" that this person's profile calls "Q4 Retainer". They read
+   * the card, type "Q4", and a name-only filter answers "Nothing found" about a
+   * card that was on screen one keystroke earlier. The real name still matches
+   * too — it is what everybody else calls the board, and it is what they will
+   * be told to look for.
+   *
+   * `execProfile`, not `execProfileNow`: a drag reorders entries and never
+   * renames one, so labels do not move while a save is in flight, and the
+   * search must not re-run every time the order does.
+   */
+  const execLabels = useMemo(
+    () => (isExecutive ? labelsByBoardId(execProfile) : NO_LABELS),
+    [isExecutive, execProfile]
+  );
+
   // Client-side search (Task 7.8) + Filter popup categories. A board must pass
   // the name search AND every active filter category.
   const filteredBoards = useMemo(() => {
     const q = search.trim().toLowerCase();
     return boards.filter((b) => {
-      if (q && !(b.name || '').toLowerCase().includes(q)) return false;
+      if (q) {
+        // The board's own name, or the name THIS person sees on the card. The
+        // label map is empty unless they are an Executive, so for everybody
+        // else this stays the single `name` test it has always been.
+        const name = (b.name || '').toLowerCase();
+        const label = (execLabels.get(String(b._id)) || '').toLowerCase();
+        if (!name.includes(q) && !label.includes(q)) return false;
+      }
       return boardMatchesFilters(b, filters);
     });
-  }, [boards, search, filters]);
+  }, [boards, search, filters, execLabels]);
 
   const handleCreateSubmit = async (values) => {
     await createBoardAction({
@@ -234,9 +334,52 @@ const MyBoardsPage = () => {
   // "nothing found" state.
   const narrowed = searching || activeFilterCount > 0;
 
+  /**
+   * "We do not know yet whether this person is an Executive."
+   *
+   * `isExecutive` is `profile !== null`, so it reads FALSE for two different
+   * people: somebody who is not an Executive, and an Executive whose profile
+   * has not arrived yet. On this page those two answers pick different DRAG
+   * HANDLERS, and one of them writes to every member of the workspace.
+   *
+   * The standard drag calls `reorderBoards`, which rewrites `Board.order` —
+   * the workspace-wide number — for the whole org. Its server-side check is
+   * only that the ids form a permutation of the boards THE CALLER can see, and
+   * an Executive's visible set is exactly their curated handful (they hold no
+   * `board.view_public`), so a four-card drag is accepted and those four boards
+   * take orders 0-3 on everybody's screen. That is invariant 7 — nobody else's
+   * screen changes — broken by a page that guessed while it was still loading.
+   * The trap is written up in full in `utils/executiveBoards.js`.
+   *
+   * So the drag waits. This is the same undecided test `DashboardRoute` makes
+   * in `App.jsx` before it picks a home page, for the same reason, and the two
+   * want to stay in step: a fetch in flight, or a store still holding another
+   * workspace's answer, is not an answer.
+   *
+   * It costs a non-executive nothing worth seeing. The grip handle is
+   * `opacity-0` until the card is hovered, the profile is fetched once per
+   * (person, workspace) from an App-level effect that runs while this page is
+   * still drawing skeletons, and the alternative — let the drag run and
+   * silently discard it — is the "handle that does nothing when pulled" this
+   * file refuses everywhere else.
+   *
+   * WHAT THIS DOES NOT COVER, and why the fix is not in this file: the store
+   * FAILS CLOSED, so a profile fetch that 500s resolves to `profile: null`
+   * with `loadedForOrg` set, which reads here as decided-and-not-an-Executive
+   * for the rest of the session. Closing that needs either an error flag on
+   * `executiveViewStore` or — better, because it covers every caller rather
+   * than this one screen — `reorderBoards` refusing a caller without
+   * `board.view_public`, for whom "every visible board" is a curated subset
+   * and not the workspace's list at all.
+   */
+  const execUndecided = !orgId || execLoading || execLoadedForOrg !== orgId;
+
   // Reordering is disabled while the list is narrowed so the user doesn't
-  // accidentally rewrite the full order using a partial slice.
-  const dndDisabled = narrowed;
+  // accidentally rewrite the full order using a partial slice — and while the
+  // executive profile is undecided, for the reason above. Both groups read
+  // this: it is also what stops an executive drag being saved into the profile
+  // of the workspace they just switched away from.
+  const dndDisabled = narrowed || execUndecided;
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -257,6 +400,158 @@ const MyBoardsPage = () => {
   };
 
   const boardIds = useMemo(() => filteredBoards.map((b) => b._id), [filteredBoards]);
+
+  // ---- Executive view: two groups, and a drag that writes the PROFILE ------
+
+  /**
+   * The profile as it should read right now: the store's copy, unless a drag is
+   * in flight, in which case the order the person just made with their hands.
+   */
+  const execProfileNow = useMemo(
+    () => (execOrder ? { ...execProfile, boards: execOrder } : execProfile),
+    [execProfile, execOrder]
+  );
+
+  /**
+   * The split into "their list" and "everything else they can read".
+   *
+   * It runs on `filteredBoards`, AFTER the search box and the filter popup: a
+   * listed board the search hid stays hidden rather than being promoted into
+   * "Other boards", and reordering is already disabled while the list is
+   * narrowed, so a partial list can never be saved as the whole order.
+   *
+   * For everybody else this is `{ listed: [], other: filteredBoards }` with
+   * `other` being the very same array — nothing is copied, and nothing on the
+   * non-executive path reads either half.
+   */
+  const { listed: execListed, other: execOther } = useMemo(
+    () => orderBoardsForProfile(filteredBoards, isExecutive ? execProfileNow : null),
+    [filteredBoards, isExecutive, execProfileNow]
+  );
+
+  /**
+   * The real board behind a card. The executive grid renders COPIES carrying
+   * the profile's label in `name`, so anything that acts ON a board has to come
+   * back through here first: `setEditTarget` on a copy would open the Edit form
+   * with the nickname in the name field, and saving that form would rename the
+   * board for the entire workspace.
+   */
+  const boardsById = useMemo(
+    () => new Map(boards.map((b) => [b._id, b])),
+    [boards]
+  );
+  const realBoard = useCallback((b) => boardsById.get(b?._id) || b, [boardsById]);
+
+  /**
+   * Drag-reorder for an Executive — the one place in this file where the order
+   * being written is NOT `Board.order`.
+   *
+   * `reorderBoardsAction` (the handler above) rewrites the workspace-wide order
+   * for every member of the org. On this list that would mean one person tidying
+   * their own four cards silently rearranging the whole company's board list, so
+   * this path calls `saveMine({ boards })` instead, which writes
+   * `ExecutiveView.boards[].order` and touches nobody else's screen. The full
+   * trap is written up in `utils/executiveBoards.js`.
+   *
+   * THREE things here are load-bearing:
+   *
+   *  1. The move is applied to `execProfileNow.boards` — the PROFILE's entries —
+   *     and not to the rendered cards. An entry is more than an id: it carries
+   *     the label, the default tab and the tab allowlist, and what is on screen
+   *     are RELABELLED COPIES of boards with no entry behind them. Rebuilding
+   *     the array out of the cards would save a list of board ids and drop every
+   *     preset hanging off them.
+   *
+   *     What it does NOT do — an earlier version of this comment claimed it did,
+   *     and the claim was worth correcting rather than deleting — is preserve an
+   *     entry for a board this person cannot currently read. `resolveForViewer`
+   *     has already removed those from the profile the client was handed (they
+   *     arrive separately, in `skipped[]`), so they are not in
+   *     `execProfileNow.boards` to be preserved, and the self PUT drops them
+   *     again on the way in. A drag made while a grant is revoked therefore
+   *     SAVES THE LIST WITHOUT THAT ENTRY — label, default tab, allowlist and
+   *     all — and restoring the grant brings the board back bare. That is the
+   *     self plane behaving as specified (invariant 2: it may not write what it
+   *     cannot see), not something this handler can fix. The place that loss is
+   *     visible, and the place to put it back, is the admin's configurator.
+   *  2. `order` is renumbered from the new positions before sending. The server
+   *     re-sorts by `order` on save (`withDenseOrder`), so entries carrying
+   *     their OLD numbers in a NEW array order come back out in the old order —
+   *     a drag that saves successfully and changes nothing.
+   *  3. The optimistic copy is dropped once the LATEST save settles, whichever
+   *     way it went: on success the store holds the saved order, on failure it
+   *     still holds the old one, and the store is the truth in both cases.
+   *     "Latest" is the whole of it — a save settling while a later drag is
+   *     still unsaved must not hand the screen back, or the person watches the
+   *     drag they just made undo itself. That, and the queue that stops two of
+   *     these crossing on the wire, are `dragTicket` and `saveQueue` above.
+   *
+   * AND WHY `home` AND `nav` RIDE ALONG: `PUT /api/me/executive-view` REPLACES
+   * the document from the validated body — nothing merges, on the client or the
+   * server — and the validator reads an absent `home` as "no sections" and an
+   * absent `nav` as "every switch on". A body of `{ boards }` alone would
+   * therefore save this new order and wipe the person's home layout and rail
+   * switches on the way past. In phase 1 that damage is invisible (the home is
+   * empty and the switches are all on anyway), which is exactly why it has to
+   * be written down now rather than discovered the week phase 2 ships. Both
+   * fields round-trip safely by design: a home section keeps its `_id` through
+   * the validator, and `nav` is stored `_id: false`, so sending them straight
+   * back is a no-op.
+   */
+  const handleExecutiveDragEnd = (event) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id || dndDisabled) return;
+
+    const entries = Array.isArray(execProfileNow?.boards)
+      ? execProfileNow.boards
+      : [];
+    const oldIndex = entries.findIndex(
+      (e) => boardIdOf(e?.board) === String(active.id)
+    );
+    const newIndex = entries.findIndex(
+      (e) => boardIdOf(e?.board) === String(over.id)
+    );
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const next = arrayMove(entries, oldIndex, newIndex).map((entry, i) => ({
+      ...entry,
+      order: i,
+    }));
+
+    // Whose optimistic order is on screen, from here on.
+    const ticket = (dragTicket.current += 1);
+    setExecOrder(next);
+
+    // QUEUED, not fired. See `saveQueue` for why two of these must never be in
+    // flight together. The body was computed above, synchronously, from the
+    // order the person is looking at — waiting for a turn changes when it is
+    // sent, never what is sent.
+    saveQueue.current = saveQueue.current
+      // An earlier save that failed was reported when it failed; it must not
+      // also poison the queue for the drag after it.
+      .catch(() => {})
+      .then(() =>
+        saveMine({
+          boards: next,
+          // Carried back unchanged — see the header. This page edits the order
+          // and only the order; these two ride along so the save does not
+          // delete them.
+          home: execProfileNow?.home || [],
+          nav: execProfileNow?.nav,
+        })
+      )
+      .catch((err) => {
+        console.error('Failed to save your board order:', err);
+        toastError('Could not save your board order.');
+      })
+      .finally(() => {
+        // ONLY the latest drag may put the buffer down. A save settling while a
+        // later drag is still unsaved would otherwise hand the screen back to
+        // the store, which holds the EARLIER order — the person watches their
+        // second drag undo itself, then redo itself when that save lands.
+        if (dragTicket.current === ticket) setExecOrder(null);
+      });
+  };
 
   return (
     <PageWrapper>
@@ -449,6 +744,22 @@ const MyBoardsPage = () => {
               }
             />
           </div>
+        ) : isExecutive ? (
+          <ExecutiveBoardGroups
+            listed={execListed}
+            other={execOther}
+            view={view}
+            accents={ACCENT_CYCLE}
+            sensors={sensors}
+            onDragEnd={handleExecutiveDragEnd}
+            dndDisabled={dndDisabled}
+            canManageBoard={canManageBoard}
+            onOpen={openBoard}
+            // Re-pointed at the real board: see `realBoard` above.
+            onEdit={(b) => setEditTarget(realBoard(b))}
+            onDelete={(b) => setDeleteTarget(realBoard(b))}
+            showProgress={detailedView}
+          />
         ) : view === 'grid' ? (
           <DndContext
             sensors={sensors}
@@ -534,11 +845,174 @@ const MyBoardsPage = () => {
 };
 
 /**
+ * ExecutiveBoardGroups — My Boards for somebody who has an executive view.
+ *
+ * Two groups, in this order:
+ *
+ *   YOUR BOARDS   the profile's list, in the profile's order and under the
+ *                 profile's labels. Draggable, and the drag writes the PROFILE
+ *                 (see `handleExecutiveDragEnd`, and `utils/executiveBoards.js`
+ *                 for why it must never reach `reorderBoards`).
+ *   OTHER BOARDS  everything else this person can still read — a board they
+ *                 made themselves, or one somebody shared with them directly.
+ *                 Spec section 4.2: these are reachable and must not vanish.
+ *                 Not draggable, because there is nowhere to put the order: the
+ *                 profile orders the boards it names, and these are the boards
+ *                 it does not name.
+ *
+ * "Not draggable" is RENDERED rather than explained. The group is wrapped in a
+ * sortable context with dragging disabled — the same switch the search box
+ * already flips — and both the card and the row answer that by not drawing a
+ * grip handle at all. A handle that does nothing when pulled is worse than no
+ * handle, and a tooltip explaining why is worse than both.
+ *
+ * The headings appear only when there is something to tell apart. With no other
+ * boards this page is just the curated list, and a lone "Your boards" heading
+ * over the only group on screen is noise; with no listed boards the "Other
+ * boards" heading stays, because then it is the line that explains why none of
+ * these cards can be dragged.
+ */
+const ExecutiveBoardGroups = ({
+  listed,
+  other,
+  view,
+  accents,
+  sensors,
+  onDragEnd,
+  dndDisabled = false,
+  canManageBoard,
+  onOpen,
+  onEdit,
+  onDelete,
+  showProgress = true,
+}) => {
+  /**
+   * The nickname, looked up by board id — NOT written over `board.name`.
+   *
+   * The obvious shape is a shallow copy carrying the label in `name`, and it is
+   * wrong twice. The card's `title` attribute exists to answer "which board am
+   * I actually opening" by naming BOTH, and a copy whose `name` is already the
+   * nickname has nothing left to answer with. And every handler below —
+   * `onOpen`, `onEdit`, `onDelete`, `canManageBoard` — would then be holding a
+   * board whose name is a private nickname, which is how a rename dialog opens
+   * pre-filled with a name only one person uses.
+   *
+   * So the real board goes everywhere, and the label rides beside it as a prop.
+   */
+  const labelById = useMemo(() => {
+    const map = new Map();
+    for (const { board, label } of listed) {
+      if (label) map.set(board._id, displayName(board, { label }));
+    }
+    return map;
+  }, [listed]);
+
+  const listedBoards = useMemo(() => listed.map(({ board }) => board), [listed]);
+
+  const listedIds = useMemo(() => listedBoards.map((b) => b._id), [listedBoards]);
+  const otherIds = useMemo(() => other.map((b) => b._id), [other]);
+
+  const strategy =
+    view === 'grid' ? rectSortingStrategy : verticalListSortingStrategy;
+
+  // Both groups render identically apart from whether they can be dragged, so
+  // the grid/list fork lives in one place rather than in four.
+  const renderBoards = (rows, disabled) =>
+    view === 'grid' ? (
+      <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+        {rows.map((board, i) => (
+          <SortableBoardCard
+            key={board._id}
+            board={board}
+            label={labelById.get(board._id) || ''}
+            accentColor={accents[i % accents.length]}
+            onOpen={onOpen}
+            canManage={canManageBoard(board)}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            dndDisabled={disabled}
+            showProgress={showProgress}
+          />
+        ))}
+      </div>
+    ) : (
+      <BoardListView
+        boards={rows}
+        labelById={labelById}
+        accents={accents}
+        onOpen={onOpen}
+        canManageBoard={canManageBoard}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        dndDisabled={disabled}
+        showProgress={showProgress}
+      />
+    );
+
+  return (
+    <div className="flex flex-col gap-8">
+      {listedBoards.length > 0 && (
+        <section aria-label="Your boards">
+          {other.length > 0 && <BoardGroupHeading title="Your boards" />}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={onDragEnd}
+          >
+            <SortableContext items={listedIds} strategy={strategy}>
+              {renderBoards(listedBoards, dndDisabled)}
+            </SortableContext>
+          </DndContext>
+        </section>
+      )}
+
+      {other.length > 0 && (
+        <section aria-label="Other boards">
+          <BoardGroupHeading
+            title="Other boards"
+            description="Boards you can open that are not on your list — ones you created, or that someone shared with you directly. They have no order of their own, so they cannot be dragged."
+          />
+          {/* Dragging off, deliberately. The context is still here because both
+              the card and the row are sortable-aware components; disabled, they
+              render with no grip and nothing can move. */}
+          <DndContext sensors={sensors} collisionDetection={closestCenter}>
+            <SortableContext items={otherIds} strategy={strategy}>
+              {renderBoards(other, true)}
+            </SortableContext>
+          </DndContext>
+        </section>
+      )}
+    </div>
+  );
+};
+
+/** The heading over one board group, and the line explaining what it holds. */
+const BoardGroupHeading = ({ title, description }) => (
+  <div className="mb-3">
+    <h2
+      className="font-display font-bold"
+      style={{ fontSize: 15, color: 'var(--color-text-primary)' }}
+    >
+      {title}
+    </h2>
+    {description && (
+      <p
+        className="mt-0.5 font-body"
+        style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+      >
+        {description}
+      </p>
+    )}
+  </div>
+);
+
+/**
  * Lightweight list view — one row per board. Uses the same card shell
  * visually so the grid/list toggle feels consistent.
  */
 const BoardListView = ({
   boards,
+  labelById,
   accents,
   onOpen,
   canManageBoard,
@@ -562,6 +1036,7 @@ const BoardListView = ({
           <BoardListRow
             key={b._id}
             board={b}
+            label={labelById?.get(b._id) || ''}
             accent={accents[i % accents.length]}
             isLast={i === boards.length - 1}
             isPublic={isPublic}
@@ -586,6 +1061,7 @@ const BoardListView = ({
  */
 const SortableBoardCard = ({
   board,
+  label = '',
   accentColor,
   onOpen,
   canManage,
@@ -627,6 +1103,7 @@ const SortableBoardCard = ({
         )}
         <BoardCard
           board={board}
+          label={label}
           accentColor={accentColor}
           onOpen={onOpen}
           canManage={canManage}
@@ -641,6 +1118,7 @@ const SortableBoardCard = ({
 
 const BoardListRow = ({
   board,
+  label = '',
   accent,
   isLast,
   isPublic,
@@ -653,6 +1131,15 @@ const BoardListRow = ({
   showProgress = true,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
+  // The same rule BoardCard applies, for the same reason: an empty label means
+  // "use the board's own name", a label equal to the name is not a nickname,
+  // and where the two differ the row titles itself with the nickname while the
+  // tooltip still answers which board this really is.
+  const nickname = label && label !== board.name ? label : '';
+  const shownName = nickname || board.name;
+  const nameTitle = nickname
+    ? `${nickname} — the board's own name is “${board.name}”`
+    : board.name;
   return (
     <SortableItem id={board._id} data={{ type: 'board' }} disabled={dndDisabled}>
       {({ ref, setActivatorNodeRef, style, attributes, listeners, isDragging }) => (
@@ -724,9 +1211,10 @@ const BoardListRow = ({
       <div className="min-w-0 flex-1">
         <p
           className="font-body font-semibold truncate"
+          title={nameTitle}
           style={{ fontSize: 14, color: 'var(--color-text-primary)' }}
         >
-          {board.name}
+          {shownName}
         </p>
         <p
           className="font-body truncate"

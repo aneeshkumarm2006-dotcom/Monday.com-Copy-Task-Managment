@@ -16,7 +16,9 @@ import {
 import useOrgStore from '../../store/orgStore';
 import useAuthStore from '../../store/authStore';
 import useChatStore from '../../store/chatStore';
+import useExecutiveViewStore from '../../store/executiveViewStore';
 import usePermissions from '../../hooks/usePermissions';
+import { applyNavSwitches } from '../../utils/executiveNav';
 import OptionMenu from '../ui/OptionMenu';
 
 /**
@@ -45,6 +47,15 @@ import OptionMenu from '../ui/OptionMenu';
  * opens in the content column exactly as it always has. A rail that also lists
  * boards is two doors to the same room, and it starts scrolling the moment an
  * agency passes a dozen boards.
+ *
+ * TWO FILTERS, IN THIS ORDER: a row must survive the CAPABILITY it asks for,
+ * and then the Executive profile's switch for it (`utils/executiveNav.js`).
+ * The order is the whole safety argument — the switches are applied to what the
+ * gates left, so a profile can only ever subtract, and the Executive edits
+ * their own profile. For everybody else there is no profile, the switch pass
+ * hands back the very same array, and this rail is the one that shipped before
+ * that feature existed. See `executiveNav.js` for why that is a filter and not
+ * a list.
  *
  * Desktop only. Below `md` the bottom `TabBar` is the navigation and this
  * whole column is unmounted by `PageWrapper` — not one line of mobile changes.
@@ -468,23 +479,54 @@ const SideRail = ({ collapsed = false, onExpand }) => {
   const mentionCount = useChatStore((s) => s.mentionCount);
   const chatBadge = mentionCount > 0 ? mentionCount : chatUnread;
 
+  /**
+   * The Executive profile's rail switches, or null for everyone else.
+   *
+   * The narrowest subscription that answers the question: this component needs
+   * `nav` and nothing else off the profile, and `nav` is a stable sub-object of
+   * it, so the rail re-renders when the switches change and not when a board
+   * label or a home section does.
+   *
+   * There is deliberately NO `isExecutive` branch below. `applyNavSwitches`
+   * already reads a null `nav` as "not an Executive" and returns the array it
+   * was given, unchanged and by identity — so the non-executive path is one
+   * function call that provably cannot alter anything, rather than a second
+   * rendering path that has to be kept in step with the first.
+   */
+  const nav = useExecutiveViewStore((s) => s.profile?.nav || null);
+
   // Every link asks for the capability its own page needs — copied verbatim
   // from the navbar row this replaces, so nobody gains or loses a door.
-  const primaryLinks = [
-    { to: '/dashboard', label: 'Dashboard', icon: Home },
-    { to: '/boards', label: 'My Boards', icon: Folder },
-    { to: '/my-tasks', label: 'My Work', icon: CheckSquare },
-    { to: '/chat', label: 'Chat', icon: MessageCircle, badge: chatBadge },
-  ];
+  //
+  // The capability gates stay exactly where they were, INSIDE the literal, and
+  // the profile's switches are applied to the result. That ordering is what
+  // makes a switch unable to reveal anything: by the time `applyNavSwitches`
+  // sees the list, a row the capability forbade is already not in it, and a
+  // filter cannot put it back (spec invariant 6).
+  const primaryLinks = applyNavSwitches(
+    [
+      { to: '/dashboard', label: 'Dashboard', icon: Home },
+      { to: '/boards', label: 'My Boards', icon: Folder },
+      { to: '/my-tasks', label: 'My Work', icon: CheckSquare },
+      { to: '/chat', label: 'Chat', icon: MessageCircle, badge: chatBadge },
+    ],
+    nav
+  );
 
-  const secondaryLinks = [
-    ...(can('org.view_members') ? [{ to: '/members', label: 'Members', icon: Users }] : []),
-    ...(can('analytics.view') ? [{ to: '/analytics', label: 'Analytics', icon: BarChart3 }] : []),
-    ...(can('productivity.view_others')
-      ? [{ to: '/productivity', label: 'Productivity', icon: Activity }]
-      : []),
-    { to: '/settings', label: 'Settings', icon: Settings },
-  ];
+  // Settings is in the always-visible list for the same reason Dashboard is:
+  // the switches themselves are edited from Settings, and a rail that could
+  // hide the way back to them would be a one-way door.
+  const secondaryLinks = applyNavSwitches(
+    [
+      ...(can('org.view_members') ? [{ to: '/members', label: 'Members', icon: Users }] : []),
+      ...(can('analytics.view') ? [{ to: '/analytics', label: 'Analytics', icon: BarChart3 }] : []),
+      ...(can('productivity.view_others')
+        ? [{ to: '/productivity', label: 'Productivity', icon: Activity }]
+        : []),
+      { to: '/settings', label: 'Settings', icon: Settings },
+    ],
+    nav
+  );
 
   return (
     <div

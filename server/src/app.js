@@ -129,6 +129,11 @@ app.use('/api', require('./routes/scoreboard'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api', require('./routes/updates'));
 app.use('/api', require('./routes/notes'));
+// Executive views — bare at /api like the rest of this group, spelling its own
+// `/orgs/:orgId/executive-views/...` and `/me/executive-view` paths. Ordinary
+// authenticated routes with nothing public in them, so anywhere in this group
+// works; the router's header explains why it is not part of routes/orgs.js.
+app.use('/api', require('./routes/executiveViews'));
 app.use('/api', require('./routes/vault'));
 app.use('/api', require('./routes/activity'));
 app.use('/api/chat', require('./routes/chat'));

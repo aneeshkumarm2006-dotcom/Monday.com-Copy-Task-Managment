@@ -6,6 +6,10 @@ const { sendInviteEmail } = require('../services/emailService');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
 const { listCatalog } = require('../services/serviceCatalogService');
 const { createNotificationsForUsers } = require('../services/notificationService');
+// Ownership transfer is the one event that can leave an executive view on the
+// workspace owner, which invariant 8 forbids. See `transferOrgOwnership`.
+const executiveView = require('../services/executiveView');
+const { logExecutiveRemoved } = require('../services/executiveActivity');
 const { resolveOrgAccess, isOrgOwner } = require('../utils/permissions');
 const { DEFAULT_ROLE_KEY, OWNER_ROLE_KEY } = require('../utils/capabilities');
 const {
@@ -47,9 +51,10 @@ const createOrg = async (req, res) => {
       inviteCode: generateInviteCode(),
     });
 
-    // Seed the permissions matrix. Every org gets the five presets
-    // (owner/admin/member/viewer/guest) up front, so the matrix is never empty
-    // and the creator lands on `owner` without any assignment being written.
+    // Seed the permissions matrix. Every org gets every `SYSTEM_ROLES` preset
+    // up front, so the matrix is never empty and the creator lands on `owner`
+    // without any assignment being written. The preset list grows (executive was
+    // the sixth), which is why nothing here names them.
     org.ensureSystemRoles();
     await org.save();
 
@@ -386,6 +391,12 @@ const sendInvite = async (req, res) => {
  * title, and silently demoting them to Member would strip the invite, role and
  * settings powers they had a minute ago. The new owner can change it like any
  * other role assignment.
+ *
+ * THE INCOMING OWNER LOSES THEIR EXECUTIVE VIEW, if they had one. That is the
+ * opposite decision for the opposite reason, and it is spelled out at the line
+ * that does it below: the outgoing owner keeps powers they still need, while
+ * the incoming owner's curated view describes a smaller workspace than the one
+ * they now reach in full.
  */
 const transferOrgOwnership = async (req, res) => {
   try {
@@ -442,6 +453,55 @@ const transferOrgOwnership = async (req, res) => {
     org.admins = [...admins];
 
     await org.save();
+
+    // THE NEW OWNER CANNOT HAVE AN EXECUTIVE VIEW — invariant 8 — and this
+    // endpoint is the only way in the app to break that rule, because it is the
+    // only one that makes somebody an owner AFTER they already have a profile.
+    // An Executive handed the workspace would otherwise keep a curated list of
+    // four boards on the very day they started implicitly reaching all of them,
+    // and would lose the dashboard and the full board list at the moment they
+    // became the one person who cannot be locked out of anything.
+    //
+    // DELETED rather than left to the read guard. `executiveViewController`
+    // already refuses to serve an owner's profile (`ownerIsNeverAnExecutive`),
+    // so leaving the document would not reach their screen — but it would keep
+    // them in the workspace's Executives strip as somebody every other surface
+    // says is not one, and it would be a document no read will ever serve
+    // again. Deleting it is honest and it is cheap: a profile is a VIEW, not
+    // data (invariant 3), so removing it restores the standard app with nothing
+    // to migrate. The header above is careful not to strand the OUTGOING owner,
+    // who genuinely loses powers here; this strands nobody, because the
+    // incoming owner gains every board and every capability in the same write.
+    // There is nothing in the deleted document they can no longer reach.
+    //
+    // AFTER the save, never before: had the transfer failed we would have
+    // deleted the view of somebody who is still not the owner, which is real
+    // loss for no reason. And its own failure is not the transfer's failure —
+    // ownership has already moved and the read guard makes the state correct
+    // either way — so it is caught here rather than allowed to 500 a workspace
+    // that has just changed hands.
+    try {
+      const { removed, profile } = await executiveView.remove(
+        org,
+        targetUserId,
+        { actor: req.user.userId }
+      );
+      if (removed) {
+        // One projected read, and only when something was actually deleted: the
+        // row has to keep reading after the profile it describes is gone, which
+        // is why every executive row denormalises the name.
+        const target = await User.findById(targetUserId).select('name').lean();
+        logExecutiveRemoved({
+          organisation: org._id,
+          targetUser: { _id: targetUserId, name: target?.name || '' },
+          // The outgoing owner: they pressed the button this followed from.
+          actor: req.user.userId,
+          boardCount: (profile?.boards || []).length,
+        });
+      }
+    } catch (err) {
+      console.error('transferOrgOwnership: executive view cleanup failed:', err);
+    }
 
     const actor = await User.findById(previousOwnerId).select('name email').lean();
     const actorName = actor?.name || actor?.email || 'The previous owner';

@@ -10,10 +10,14 @@ import NotificationPreferences from '../components/notifications/NotificationPre
 import ExtraFeaturesTab from '../components/settings/ExtraFeaturesTab';
 import ConnectorsTab from '../components/settings/ConnectorsTab';
 import HolidaysTab from '../components/settings/HolidaysTab';
+import MyViewTab from '../components/settings/MyViewTab';
 import { hasAnyExtraFeature } from '../utils/extraFeatures';
 import useAuthStore from '../store/authStore';
 import useOrgStore from '../store/orgStore';
 import usePermissionStore from '../store/permissionStore';
+import useExecutiveViewStore, {
+  selectIsExecutive,
+} from '../store/executiveViewStore';
 import usePermissions from '../hooks/usePermissions';
 import * as orgService from '../services/orgService';
 import * as profileService from '../services/profileService';
@@ -732,6 +736,29 @@ const SettingsPage = () => {
   const permissionsResolved =
     !!currentOrg && !permissionsLoading && loadedForOrg === currentOrg._id;
 
+  /**
+   * "My view" — the Settings half of the executive view (its rail switches,
+   * board order and labels).
+   *
+   * NOT a capability. `isExecutive` is `profile !== null` and nothing else, and
+   * the profile is fetched once per (user, org) from `App.jsx`; a person with no
+   * profile has no document for this tab to edit, so the tab is simply not
+   * theirs. Everything below that touches it is inside this flag, which is what
+   * makes this page byte-identical for everybody else.
+   *
+   * It has its own "has it resolved yet" test for exactly the reason the
+   * permissions one above has: the store starts at `profile: null`, which is
+   * indistinguishable from "not an Executive", so a redirect decided before the
+   * fetch lands would bounce an Executive off `?tab=myview` on every cold load.
+   */
+  const isExecutive = useExecutiveViewStore(selectIsExecutive);
+  const executiveLoading = useExecutiveViewStore((s) => s.loading);
+  const executiveLoadedForOrg = useExecutiveViewStore((s) => s.loadedForOrg);
+  const executiveResolved =
+    !!currentOrg &&
+    !executiveLoading &&
+    executiveLoadedForOrg === currentOrg._id;
+
   // Seeded from `?tab=` so a link can point at one section — the connector OAuth
   // callback returns to `/settings?tab=connectors`, and landing on Workspace
   // instead would leave the user staring at the wrong screen after a consent.
@@ -756,7 +783,21 @@ const SettingsPage = () => {
     if (!canManageOrg && activeTab === 'connectors') setActiveTab('profile');
     if (!canManageHolidays && activeTab === 'holidays') setActiveTab('profile');
     if (!canExtraFeatures && activeTab === 'features') setActiveTab('profile');
-  }, [permissionsResolved, canManageOrg, canExtraFeatures, canManageHolidays, activeTab]);
+    // Gated on its OWN resolution, not on the permissions one: the two loads are
+    // independent, and deciding this from an unresolved store would bounce every
+    // Executive who followed a `?tab=myview` link.
+    if (executiveResolved && !isExecutive && activeTab === 'myview') {
+      setActiveTab('profile');
+    }
+  }, [
+    permissionsResolved,
+    canManageOrg,
+    canExtraFeatures,
+    canManageHolidays,
+    executiveResolved,
+    isExecutive,
+    activeTab,
+  ]);
 
   // Fetch org details (with inviteCode) for Workspace tab
   useEffect(() => {
@@ -835,6 +876,9 @@ const SettingsPage = () => {
     if (activeTab === 'features' && canExtraFeatures) {
       return <ExtraFeaturesTab />;
     }
+    if (activeTab === 'myview' && isExecutive) {
+      return <MyViewTab />;
+    }
     // Deliberate fall-through: anything unrecognised lands on Profile, which is
     // the one tab every member can always see.
     return (
@@ -877,6 +921,7 @@ const SettingsPage = () => {
             showAdminTabs={canManageOrg}
             canExtraFeatures={canExtraFeatures}
             canHolidays={canManageHolidays}
+            canMyView={isExecutive}
           />
           <SettingsTabBar
             activeTab={activeTab}
@@ -884,6 +929,7 @@ const SettingsPage = () => {
             showAdminTabs={canManageOrg}
             canExtraFeatures={canExtraFeatures}
             canHolidays={canManageHolidays}
+            canMyView={isExecutive}
           />
           <div className="flex-1 p-5 md:p-8">
             {renderTab()}

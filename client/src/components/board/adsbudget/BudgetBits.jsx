@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { stateMeta, barPct } from '../../../utils/adsBudgetDisplay';
+import { formatPct, stateMeta, barPct } from '../../../utils/adsBudgetDisplay';
+import { formatMoney } from '../../../utils/connectorFormat';
 
 /**
  * The small shared pieces of the Ads Budget tab.
@@ -194,6 +195,167 @@ export const BudgetBar = ({ usedPct, state, label, height = 8, marker = null }) 
           }}
         />
       )}
+    </div>
+  );
+};
+
+/**
+ * THE PACING PANEL — spend against budget for one month, as one block.
+ *
+ * ---- WHY IT LIVES HERE AND NOT IN `BudgetOverviewCard` --------------------
+ *
+ * Two surfaces draw this exact block and neither may be allowed to drift from
+ * the other: the Ads Budget tab's overview card (where it is the left of two
+ * panels) and the executive home page's `adsBudgetPacing` tile (where it is the
+ * whole tile, because the card's RIGHT panel counts PLATFORMS and the home
+ * composer ships no platform rows — four confident zeroes under "Budget health"
+ * would be an absence rendered as a measurement).
+ *
+ * It was copied once, and one sentence had already drifted apart by a capital
+ * letter before anybody noticed. That is the cheap version of the failure; the
+ * expensive one is the day somebody fixes the projection wording, or the rule
+ * about which colour a forecast may be painted in, on one of the two copies.
+ * Both surfaces report MONEY, and two screens in one app quoting the same month
+ * differently is not a cosmetic bug.
+ *
+ * So: one component, two callers, and the differences between them expressed as
+ * props rather than as a second copy.
+ *
+ *   `framed`    draws the white card chrome. The tab needs it (the panel IS the
+ *               card); the home tile does not — `SectionFrame` already drew one,
+ *               and a card inside a card is a border nobody asked for.
+ *   `note`      an extra clause in front of the days-remaining line, middot
+ *               separated. The home tile says how many platforms are behind the
+ *               number; the tab has a table of them directly underneath.
+ *   `className` merged onto the root, so the tab keeps its grid placement
+ *               (`lg:col-span-2`) without a wrapper element appearing between
+ *               the grid and its child.
+ *
+ * ---- WHY THE PROJECTION AND THE VERDICT CAN DISAGREE ----------------------
+ *
+ * They measure different things and the labels say so. "Healthy pacing" is
+ * about the drift SO FAR: spend is within a band of the fraction of the month
+ * that has elapsed. "Over budget by X at this rate" is about the FINISH: a
+ * straight-line run rate carried to month end. A month can be inside the band
+ * today and still finish over, and the two lines sitting apart — projection
+ * top-right, verdict bottom-left — is what keeps that legible rather than
+ * contradictory.
+ *
+ * NOTHING HERE COMPUTES EITHER ONE. `utils/adsBudgetPacing.js` does, once, on
+ * the server; this draws `rollUp(...)`'s answer and the window it measured.
+ */
+export const BudgetPacingPanel = ({
+  totals = {},
+  window: win = null,
+  currency,
+  note = null,
+  framed = true,
+  className = '',
+}) => {
+  const meta = stateMeta(totals.state, totals.label);
+  const money = (v) => formatMoney(v, currency);
+
+  /**
+   * Over or under, at the current rate. Null when too little of the month has
+   * run for a run rate to mean anything — the server returns `projected: null`
+   * rather than dividing by zero elapsed days, and a month that has not started
+   * must not be painted as finishing over.
+   */
+  const overBy =
+    typeof totals.projected === 'number' && totals.allocated > 0
+      ? totals.projected - totals.allocated
+      : null;
+
+  const remaining =
+    win && win.remainingDays > 0
+      ? `${win.remainingDays} day${win.remainingDays === 1 ? '' : 's'} remaining`
+      : 'This month is over';
+
+  return (
+    <div
+      className={['flex flex-col gap-4', className].filter(Boolean).join(' ')}
+      style={
+        framed
+          ? {
+            background: 'var(--color-bg-surface)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-lg)',
+            padding: '18px 20px',
+          }
+          : undefined
+      }
+    >
+      <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
+        <div className="min-w-0">
+          <p className="font-body" style={{ fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
+            Budget utilized
+          </p>
+          <p
+            className="font-display font-bold mt-1"
+            style={{ fontSize: 28, lineHeight: 1.1, color: 'var(--color-text-primary)' }}
+          >
+            {formatPct(totals.usedPct)}
+          </p>
+          <p className="font-body mt-1 tabular-nums" style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}>
+            {money(totals.spent)} / {money(totals.allocated)}
+          </p>
+        </div>
+
+        <div className="min-w-0">
+          <p className="font-body" style={{ fontSize: 12.5, color: 'var(--color-text-secondary)' }}>
+            Projected month-end
+          </p>
+          <p
+            className="font-display font-bold mt-1"
+            style={{ fontSize: 28, lineHeight: 1.1, color: 'var(--color-text-primary)' }}
+          >
+            {/* `== null` on purpose: the server sends null, and a fixture or an
+                older payload can leave the key off entirely. An em dash is the
+                right answer to both. */}
+            {totals.projected == null ? '—' : money(totals.projected)}
+          </p>
+          {/* Green under, amber over — never red. Red is reserved for money
+              ALREADY spent past the budget; this is a forecast, and a forecast
+              painted as a failure stops being read as a forecast. */}
+          <p
+            className="font-body mt-1"
+            style={{
+              fontSize: 12.5,
+              color:
+                overBy === null
+                  ? 'var(--color-text-muted)'
+                  : overBy > 0
+                    ? 'var(--color-status-working)'
+                    : 'var(--color-status-done)',
+            }}
+          >
+            {overBy === null
+              ? 'Not enough of the month has run'
+              : overBy > 0
+                ? `Over budget by ${money(overBy)} at this rate`
+                : `Under budget by ${money(Math.abs(overBy))} at this rate`}
+          </p>
+        </div>
+      </div>
+
+      <BudgetBar
+        usedPct={totals.usedPct}
+        state={totals.state}
+        label={totals.label}
+        /* The tick is where "today" sits on the same track. It is what makes
+           this a PACING bar rather than a spend bar: fill ahead of the tick is
+           spending faster than the calendar. */
+        marker={win?.elapsedPct}
+      />
+
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="font-body font-medium" style={{ fontSize: 13, color: meta.color }}>
+          {totals.verdict}
+        </span>
+        <span className="font-body" style={{ fontSize: 12.5, color: 'var(--color-text-muted)' }}>
+          {[note, remaining].filter(Boolean).join(' · ')}
+        </span>
+      </div>
     </div>
   );
 };

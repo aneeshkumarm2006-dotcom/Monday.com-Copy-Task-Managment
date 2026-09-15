@@ -46,6 +46,21 @@ const CAPABILITY_GROUPS = [
       // an ops lead may well need to do without also being able to rename the
       // organisation or rotate its invite code.
       ['org.manage_holidays', 'Set the company holiday calendar'],
+      // Its own capability rather than riding on `org.assign_roles`, because the
+      // two are different powers and the split matters in BOTH directions.
+      //
+      // Composing somebody's home page, trimming their nav rail and ordering the
+      // boards in their list is presentation work. An ops lead is often exactly
+      // the right person to do it, and is often exactly the wrong person to
+      // decide who is an admin — so this must be grantable without handing over
+      // role assignment.
+      //
+      // And the reverse, which is the load-bearing half: holding this confers no
+      // REACH. Making somebody an executive still needs `org.assign_roles`
+      // (that is a role change), and putting a board into their view still has
+      // to pass the actor's own `resolveAccess(board).canManageAccess` on that
+      // board. This capability buys the editor, never the access.
+      ['org.manage_executive_views', 'Set up and edit executive views'],
     ],
   },
   {
@@ -543,6 +558,118 @@ const NEVER_IMPLICIT = new Set([]);
 // ---------------------------------------------------------------------------
 
 /**
+ * The Admin preset's capability list, hoisted OUT of SYSTEM_ROLES so that the
+ * `executive` preset below can be derived from it instead of re-typed.
+ *
+ * Re-typing is the obvious thing to do and it is the thing that rots. "Admin
+ * minus two capabilities" is only true on the day somebody types it out: the
+ * next capability added to Admin would silently skip Executive, and the result
+ * is a role quietly weaker than the one it claims to mirror, with nothing to
+ * say so — no error, no test, just a button missing for whoever holds it.
+ * One list, two readers, and the difference between them stated as a set
+ * operation that cannot drift.
+ */
+const ADMIN_CAPABILITIES = [
+  'org.view_members',
+  'org.invite_members',
+  'org.remove_members',
+  'org.assign_roles',
+  'org.manage_roles',
+  'org.manage_settings',
+  'org.manage_holidays',
+  // Setting up somebody's executive view is workspace administration, so it
+  // lands here with the rest of the org.* family. Note this does NOT let an
+  // admin widen anyone's reach: see the note beside the capability itself.
+  'org.manage_executive_views',
+  'board.create',
+  'board.rename',
+  'board.delete',
+  'board.change_visibility',
+  'board.manage_access',
+  'board.view_public',
+  // Preserves the old `canEdit = isPublic && orgAdmin` rule: admins run the
+  // org's public boards outright, above whatever rung the board opens to
+  // everyone else.
+  'board.manage_public',
+  'task.create',
+  'task.edit_assigned',
+  'task.edit_any',
+  'task.change_status',
+  'task.assign',
+  'task.delete',
+  'task.move',
+  'group.manage',
+  'column.manage',
+  'note.manage',
+  'update.create',
+  'update.delete_any',
+  'automation.view',
+  'automation.manage',
+  'tracker.view',
+  'tracker.manage',
+  'goal.view',
+  'goal.track',
+  'goal.create',
+  'goal.manage',
+  'adsBudget.view',
+  'adsBudget.track',
+  'adsBudget.manage',
+  'vault.view',
+  'vault.manage',
+  'connector.view',
+  'connector.manage',
+  'analytics.view',
+  'productivity.view_others',
+  // Holding this only makes the export *possible*. Each admin still has to
+  // switch `features.activityExport` on for themselves in Settings → Extra
+  // features before the button appears or the endpoint answers.
+  'board.export_activity',
+];
+
+/**
+ * The two capabilities the `executive` preset gives up relative to Admin — and
+ * the entire reason that role exists.
+ *
+ * `board.view_public` is the capability that decides whether the workspace's
+ * public boards exist for you AT ALL; the Guest role's lack of it is the same
+ * mechanism, already proven end to end. Without it, an executive's board list is
+ * exactly the boards granted to them. That is not a UI filter, it is a fact
+ * about reach: the board list, the dashboard stats, My Work and the notification
+ * fan-out all run through `resolveAccess(...).canRead`, so a board they cannot
+ * reach never leaves the server in the first place.
+ *
+ * `board.manage_public` is what raises an admin to `edit` on every public board.
+ * Keeping it would quietly undo the first: a public board they were granted
+ * `view` on would resolve to `edit` regardless of the grant (see
+ * `effectiveBoardLevel` in permissions.js). Dropping it makes their standing on
+ * a board be their grant and nothing else.
+ *
+ * Everything else an admin holds stays, deliberately. Withheld REACH, not
+ * withheld power — on the boards they are actually given they are as capable as
+ * an admin. And because roles are data, a workspace that disagrees can trim this
+ * in the matrix without a code change.
+ */
+const EXECUTIVE_WITHHELD = new Set(['board.view_public', 'board.manage_public']);
+
+/**
+ * Admin, minus reach, plus the ability to set up the NEXT executive view.
+ *
+ * The union with `org.manage_executive_views` is a no-op today — it is already
+ * in ADMIN_CAPABILITIES above — and it is spelled out anyway, de-duped through a
+ * Set, because it is part of the preset's definition rather than an accident of
+ * Admin's. If a workspace ever decides admins should not configure these views,
+ * the capability comes off the Admin list and an executive still keeps it, which
+ * is the intended behaviour and not something a reader should have to infer by
+ * diffing two arrays.
+ */
+const EXECUTIVE_CAPABILITIES = [
+  ...new Set([
+    ...ADMIN_CAPABILITIES.filter((c) => !EXECUTIVE_WITHHELD.has(c)),
+    'org.manage_executive_views',
+  ]),
+];
+
+/**
  * `owner` is special and deliberately NOT listed with a capability set: the owner
  * implicitly holds every capability, always. A role that could revoke the owner's
  * rights is a lockout bug waiting to happen, so the resolver short-circuits for
@@ -572,58 +699,10 @@ const SYSTEM_ROLES = [
     isSystem: true,
     color: '#2563EB',
     description: 'Runs the workspace day to day.',
-    permissions: [
-      'org.view_members',
-      'org.invite_members',
-      'org.remove_members',
-      'org.assign_roles',
-      'org.manage_roles',
-      'org.manage_settings',
-      'org.manage_holidays',
-      'board.create',
-      'board.rename',
-      'board.delete',
-      'board.change_visibility',
-      'board.manage_access',
-      'board.view_public',
-      // Preserves the old `canEdit = isPublic && orgAdmin` rule: admins run the
-      // org's public boards outright, above whatever rung the board opens to
-      // everyone else.
-      'board.manage_public',
-      'task.create',
-      'task.edit_assigned',
-      'task.edit_any',
-      'task.change_status',
-      'task.assign',
-      'task.delete',
-      'task.move',
-      'group.manage',
-      'column.manage',
-      'note.manage',
-      'update.create',
-      'update.delete_any',
-      'automation.view',
-      'automation.manage',
-      'tracker.view',
-      'tracker.manage',
-      'goal.view',
-      'goal.track',
-      'goal.create',
-      'goal.manage',
-      'adsBudget.view',
-      'adsBudget.track',
-      'adsBudget.manage',
-      'vault.view',
-      'vault.manage',
-      'connector.view',
-      'connector.manage',
-      'analytics.view',
-      'productivity.view_others',
-      // Holding this only makes the export *possible*. Each admin still has to
-      // switch `features.activityExport` on for themselves in Settings → Extra
-      // features before the button appears or the endpoint answers.
-      'board.export_activity',
-    ],
+    // Copied, not shared. The array itself is the executive preset's input, and
+    // nothing that mutates a role's stored permissions should be able to reach
+    // back through this reference and rewrite what the other preset derives from.
+    permissions: [...ADMIN_CAPABILITIES],
     // NOT granted by default, on purpose: `board.view_all_private` (private
     // stays private until you say otherwise).
     //
@@ -633,6 +712,29 @@ const SYSTEM_ROLES = [
     // list, and an admin there has to tick `board.export_activity` on once in
     // Members → Permissions. The owner is unaffected — the resolver
     // short-circuits them to the full catalog.
+    //
+    // `org.manage_executive_views` is in exactly the same position, which is why
+    // `scripts/grantExecutiveCapabilities.js` exists: without it, no admin in an
+    // existing workspace ever sees the button.
+  },
+  {
+    key: 'executive',
+    name: 'Executive',
+    isSystem: true,
+    color: '#0F766E',
+    description:
+      'Curated reach: only the boards they are given, with full power on those.',
+    // Derived, never typed out — see ADMIN_CAPABILITIES and EXECUTIVE_WITHHELD
+    // above for why the difference between the two roles is expressed as a set
+    // operation rather than a second list.
+    permissions: EXECUTIVE_CAPABILITIES,
+    // Worth stating plainly, because "an admin who sees fewer boards" is the
+    // wrong mental model: a role cannot pick WHICH boards you reach. It can only
+    // say whether public boards are automatic for you. The curation itself is
+    // ordinary per-board grants in `Board.memberAccess`, resolved by the same
+    // `resolveAccess` as everyone else's — which is what keeps this from becoming
+    // a second permission system, and what makes the curated list honest on every
+    // surface at once rather than only on the board list.
   },
   {
     key: 'member',
@@ -759,6 +861,11 @@ const SYSTEM_ROLES = [
 /** The role a member gets when nothing else is specified. */
 const DEFAULT_ROLE_KEY = 'member';
 const OWNER_ROLE_KEY = 'owner';
+// Named for the same reason the two above are: the code that assigns this role
+// looks it up by key, and a key spelled out at each call site is a typo waiting
+// to resolve to `undefined` and fall back to the default role — silently, since
+// `roleForUser` is deliberately forgiving about roles it cannot find.
+const EXECUTIVE_ROLE_KEY = 'executive';
 
 /** Strip anything that isn't a real capability, and de-dupe. */
 const sanitizePermissions = (permissions) => {
@@ -780,6 +887,7 @@ module.exports = {
   SYSTEM_ROLES,
   DEFAULT_ROLE_KEY,
   OWNER_ROLE_KEY,
+  EXECUTIVE_ROLE_KEY,
   capabilitiesForLevel,
   expandImplied,
   normaliseLevel,

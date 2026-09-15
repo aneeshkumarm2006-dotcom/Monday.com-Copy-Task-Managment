@@ -17,8 +17,10 @@ const dayKeyField = (extra = {}) => ({
  * A role is a NAMED BUNDLE OF CAPABILITY KEYS — see
  * [capabilities.js](../utils/capabilities.js) for the catalog.
  *
- * `key` is a stable slug. The five system roles (owner/admin/member/viewer/guest)
- * keep their well-known keys forever; custom roles get a generated slug. Members
+ * `key` is a stable slug. The seeded system roles (owner/admin/executive/member/
+ * viewer/guest) keep their well-known keys forever; custom roles get a generated
+ * slug. The list is `SYSTEM_ROLES` in capabilities.js and it grows — do not
+ * hardcode a count or an exhaustive key list anywhere. Members
  * point at a role by its `_id`, not its key, so renaming a custom role never
  * orphans anyone.
  *

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import * as orgService from '../services/orgService';
 import * as authService from '../services/authService';
 import usePermissionStore from './permissionStore';
+import useExecutiveViewStore from './executiveViewStore';
 
 const CURRENT_ORG_KEY = 'macan_current_org';
 
@@ -219,6 +220,13 @@ const useOrgStore = create((set, get) => ({
   clearOrgs: () => {
     localStorage.removeItem(CURRENT_ORG_KEY);
     usePermissionStore.getState().clear();
+    // The executive view is per (org, user) like the capabilities above, and it
+    // decides which page /dashboard is — so a profile left standing after the
+    // workspace went away would put the next session on a home page composed for
+    // somebody who is no longer signed in. Cleared, never re-fetched from here:
+    // one effect in App.jsx owns loading it, keyed on the user and the selected
+    // org, so a second caller here would only race it.
+    useExecutiveViewStore.getState().clear();
     set({
       currentOrg: null,
       orgs: [],

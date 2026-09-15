@@ -49,6 +49,41 @@ const ACTIVITY_TYPES = [
   'group.created',
   'group.renamed',
   'group.deleted',
+  // An executive view — the FIFTH subject, and the first that is not a thing
+  // living on a board at all. These rows carry `organisation` and no task: the
+  // subject is a per-(organisation, user) PROFILE describing what one person's
+  // screen looks like, which is not a task, a goal, a budget row or a group.
+  //
+  // WHAT THESE ROWS DO NOT SAY. The profile describes a VIEW and never a grant.
+  // Reach stays exactly where it has always been — the org role AND the board's
+  // own `memberAccess`, resolved by `resolveAccess` — so none of these rows may
+  // ever be read as "this person was given access to that board".
+  // `executive.board_added` records that a board was put on somebody's curated
+  // list; whether they can open it is a separate fact with a separate writer
+  // (the share path), and the two are deliberately not merged into one event.
+  //
+  // WHERE THEY SHOW UP. `executive.board_added` and `executive.board_removed`
+  // each concern exactly one board, so they ALSO carry `board` and therefore
+  // appear in that board's activity export, which reads by board id. The other
+  // three are org-level, carry no board, and so appear in NO board export. That
+  // is intended rather than an omission: "somebody's home page was rearranged"
+  // is not an event about any one board, and hanging it off a board picked at
+  // random would be worse than leaving it out.
+  //
+  // WHO WRITES THEM. `services/executiveActivity.js`, and not
+  // `activityService.logActivity` like the other four subjects. That helper's
+  // guard admits a row only when one of task / goal / adsBudget / group is
+  // present and it never passes an `organisation` through, so handing it an
+  // executive row does not fail — it returns null and writes nothing, and since
+  // it swallows its own errors nobody finds out. If you are adding an
+  // executive event, call the writers in that file. If you are widening
+  // `logActivity` to admit this subject, that file's `writeRow` is written to
+  // collapse into a delegation to it.
+  'executive.declared',
+  'executive.updated',
+  'executive.removed',
+  'executive.board_added',
+  'executive.board_removed',
 ];
 
 // NOTE: this list is a VALIDATOR, and `activityService.logActivity` swallows its
@@ -125,18 +160,20 @@ const COLUMN_FIELD_RE = /^column:[\w.-]+$/;
 const CONFIG_FIELD_RE = /^config:[\w.-]+$/;
 
 const activityLogSchema = new mongoose.Schema({
-  // Required for every event EXCEPT a goal's, a budget row's or a group's, none
-  // of which has a task to hang off. Exactly one of `task` / `goal` /
-  // `adsBudget` / `group` is set on any row.
+  // Required for every event EXCEPT a goal's, a budget row's, a group's or an
+  // executive view's, none of which has a task to hang off. Exactly one of
+  // `task` / `goal` / `adsBudget` / `group` / `organisation` is set on any row.
+  // (`board` is not on that list: it is the SCOPE a row is exported under, and
+  // a task row carries one too.)
   //
   // Every new subject widens this condition. Forgetting to is not a subtle
-  // failure: `logActivity` swallows its own errors, so the row would simply
+  // failure: the writers swallow their own errors, so the row would simply
   // never be written and the feature's history would come back empty.
   task: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Task',
     required: function requireTaskUnlessSubjectRow() {
-      return !this.goal && !this.adsBudget && !this.group;
+      return !this.goal && !this.adsBudget && !this.group && !this.organisation;
     },
     default: null,
     index: true,
@@ -175,6 +212,26 @@ const activityLogSchema = new mongoose.Schema({
   group: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'TaskGroup',
+    default: null,
+  },
+  // Set only on `executive.*` rows — the workspace whose executive view was
+  // declared, changed or removed. Its own pointer for the same reason the four
+  // above have one: a per-task query must never be able to return one of these.
+  //
+  // NOT indexed, on exactly the reasoning written over `group`. No per-org
+  // history view exists: the two board-scoped executive rows are read through
+  // the board activity export's `{ board, createdAt }` index like every other
+  // row, and the three org-level ones are read by nobody today. An index here
+  // would tax every write in this collection — task events included, since they
+  // all share it — to serve a query nobody makes. Add one the day a workspace
+  // history screen exists, not before.
+  //
+  // Like a `group.deleted` row, an `executive.removed` row deliberately outlives
+  // its subject: the profile document is gone, and `metadata.targetUserName` is
+  // what the row is read by. The pointer only ties a workspace's events together.
+  organisation: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Organisation',
     default: null,
   },
   // Null for personal tasks (no board).
