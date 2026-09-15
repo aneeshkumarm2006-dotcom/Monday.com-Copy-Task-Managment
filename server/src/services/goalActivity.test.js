@@ -99,6 +99,53 @@ test('an extra column carries its name and type, keyed by column id', () => {
   assert.strictEqual(rows[0].metadata.columnType, 'dropdown');
 });
 
+test('a dropdown logs the CHOICE’S WORD beside its id, resolved now', () => {
+  // Resolved at write time on purpose: the choice can be renamed or deleted
+  // later, and a history that re-looks-up its own labels goes blank exactly
+  // when it is most needed — right after somebody removed the tag.
+  const columns = [{
+    _id: 'c1',
+    name: 'Channel',
+    type: 'dropdown',
+    settings: {
+      options: [
+        { id: 'tech_a1b2c3', label: 'Technical' },
+        { id: 'content_d4e5f6', label: 'Content' },
+      ],
+    },
+  }];
+  const before = snapshotGoal(goal({ columnValues: { c1: 'tech_a1b2c3' } }));
+  const after = snapshotGoal(goal({ columnValues: { c1: 'content_d4e5f6' } }));
+  const [row] = diffGoal(before, after, columns);
+  assert.strictEqual(row.oldValue, 'tech_a1b2c3', 'the id is still what is stored');
+  assert.strictEqual(row.metadata.oldLabel, 'Technical');
+  assert.strictEqual(row.metadata.newLabel, 'Content');
+});
+
+test('clearing a dropdown names what was lost and nothing on the other side', () => {
+  const columns = [{
+    _id: 'c1',
+    name: 'Channel',
+    type: 'dropdown',
+    settings: { options: [{ id: 'tech_a1b2c3', label: 'Technical' }] },
+  }];
+  const before = snapshotGoal(goal({ columnValues: { c1: 'tech_a1b2c3' } }));
+  const after = snapshotGoal(goal({ columnValues: {} }));
+  const [row] = diffGoal(before, after, columns);
+  assert.strictEqual(row.metadata.oldLabel, 'Technical');
+  assert.strictEqual(row.metadata.newLabel, null);
+});
+
+test('an id with no matching choice falls back to itself rather than vanishing', () => {
+  const columns = [{
+    _id: 'c1', name: 'Channel', type: 'dropdown', settings: { options: [] },
+  }];
+  const before = snapshotGoal(goal({ columnValues: {} }));
+  const after = snapshotGoal(goal({ columnValues: { c1: 'gone_999' } }));
+  const [row] = diffGoal(before, after, columns);
+  assert.strictEqual(row.metadata.newLabel, 'gone_999');
+});
+
 test('a person column with the same ids in the same order is not a change', () => {
   const before = snapshotGoal(goal({ columnValues: { c1: ['u1', 'u2'] } }));
   const after = snapshotGoal(goal({ columnValues: { c1: ['u1', 'u2'] } }));

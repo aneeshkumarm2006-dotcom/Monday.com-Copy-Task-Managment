@@ -1,16 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
-import { cellWrapperStyle, optionSorted, findOption } from './cellShared';
+import { cellWrapperStyle, optionSorted, pickableOptions, findOption } from './cellShared';
 import { getColorPair } from '../../../utils/priorityColors';
 
 /**
  * StatusCell — renders the selected option as a coloured chip. Clicking
- * opens a popover listing every configured option.
+ * opens a popover listing every option somebody may still choose.
+ *
+ * TWO lists, deliberately. The chip is looked up in EVERY option the column
+ * has; the popover is built only from the pickable ones. That is what lets a
+ * vocabulary shrink without erasing history — a retired choice keeps rendering
+ * on the rows that already hold it (marked as retired, so nobody wonders why
+ * they cannot find it in the list) and is simply no longer offered. Clearing
+ * the cell is still reachable, which is how a row leaves a retired choice
+ * behind.
  */
 const StatusCell = ({ value, column, readOnly, onChange }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const options = optionSorted(column?.settings?.options);
+  const pickable = pickableOptions(column?.settings?.options);
   const selected = findOption(options, value);
+  const selectedRetired = !!selected?.archived;
 
   useEffect(() => {
     if (!open) return undefined;
@@ -47,7 +57,14 @@ const StatusCell = ({ value, column, readOnly, onChange }) => {
         style={{ ...cellWrapperStyle, cursor: readOnly ? 'default' : 'pointer' }}
         onClick={() => !readOnly && setOpen((v) => !v)}
       >
-        {selected ? chip(selected.label, selected.color) : (
+        {selected ? (
+          <span
+            title={selectedRetired ? `${selected.label} — retired, so it can no longer be chosen` : undefined}
+            style={selectedRetired ? { opacity: 0.6, textDecoration: 'line-through' } : undefined}
+          >
+            {chip(selected.label, selected.color)}
+          </span>
+        ) : (
           <span style={{ color: 'var(--color-text-muted)' }}>—</span>
         )}
       </div>
@@ -67,7 +84,19 @@ const StatusCell = ({ value, column, readOnly, onChange }) => {
             padding: 6,
           }}
         >
-          {options.map((opt) => (
+          {pickable.length === 0 && (
+            <p
+              style={{
+                padding: '6px 8px',
+                fontSize: 11,
+                color: 'var(--color-text-muted)',
+                margin: 0,
+              }}
+            >
+              No choices left to pick.
+            </p>
+          )}
+          {pickable.map((opt) => (
             <button
               key={opt.id}
               type="button"

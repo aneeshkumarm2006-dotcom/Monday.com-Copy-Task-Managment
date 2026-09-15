@@ -177,6 +177,81 @@ export const deleteGoalColumn = async (boardId, columnId, { purge = false } = {}
   return data;
 };
 
+// --- The choices inside one `dropdown` column -------------------------------
+//
+// The board's own tag vocabulary. Every one of these resolves to the SAME
+// payload — `{ columnId, options, usage, columns }` — so the editor has one
+// repaint path whatever it just did, and `usage` (how many goals hold each
+// choice) never goes stale behind a delete button.
+//
+// `suppressErrorToast` throughout: these all render their message inside the
+// editor, beside the row that caused it, which is where a "that name is already
+// taken" belongs.
+
+export const listGoalColumnOptions = async (boardId, columnId) => {
+  const { data } = await api.get(
+    `/api/boards/${boardId}/goal-columns/${columnId}/options`,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+export const addGoalColumnOption = async (boardId, columnId, payload) => {
+  const { data } = await api.post(
+    `/api/boards/${boardId}/goal-columns/${columnId}/options`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/** `{ label }` renames, `{ color }` recolours, `{ archived }` retires or restores. */
+export const updateGoalColumnOption = async (boardId, columnId, optionId, payload) => {
+  const { data } = await api.patch(
+    `/api/boards/${boardId}/goal-columns/${columnId}/options/${optionId}`,
+    payload,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+export const reorderGoalColumnOptions = async (boardId, columnId, orderedIds) => {
+  const { data } = await api.patch(
+    `/api/boards/${boardId}/goal-columns/${columnId}/options/reorder`,
+    { orderedIds },
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
+ * Remove one choice.
+ *
+ * THREE outcomes, and the caller has to read the response to know which it got:
+ *   - `removed: true`                 — it is gone (and `clearedCount` goals
+ *                                        lost their value, if purge was asked
+ *                                        for).
+ *   - `confirmRequired: true`         — NOTHING changed. `usedByCount` goals
+ *                                        hold it; ask whether to retire it
+ *                                        (`updateGoalColumnOption(..., {
+ *                                        archived: true })`) or call again with
+ *                                        `purge`.
+ *   - a thrown error                  — refused, e.g. the last choice on a
+ *                                        required column.
+ */
+export const deleteGoalColumnOption = async (
+  boardId,
+  columnId,
+  optionId,
+  { purge = false } = {}
+) => {
+  const { data } = await api.delete(
+    `/api/boards/${boardId}/goal-columns/${columnId}/options/${optionId}`,
+    { params: purge ? { purge: 'true' } : undefined, suppressErrorToast: true }
+  );
+  return data;
+};
+
 /**
  * How much work was attached to each goal this month, and each group's coverage.
  *

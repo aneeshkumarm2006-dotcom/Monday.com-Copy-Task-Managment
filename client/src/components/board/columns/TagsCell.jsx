@@ -1,17 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
-import { cellWrapperStyle, optionSorted } from './cellShared';
+import { cellWrapperStyle, optionSorted, pickableOptions } from './cellShared';
 import { getColorPair } from '../../../utils/priorityColors';
 
 /**
  * TagsCell — multi-select over `settings.options`. Renders each selected tag
  * as a coloured chip; clicking opens a checklist popover.
+ *
+ * Like StatusCell it keeps TWO lists: the chips are drawn from every option the
+ * column has, the checklist only from the pickable ones. A retired tag
+ * therefore stays visible (and removable) on the rows already carrying it
+ * without being offered to anybody new — see `pickableOptions`.
  */
 const TagsCell = ({ value, column, readOnly, onChange }) => {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const options = optionSorted(column?.settings?.options);
+  const pickable = pickableOptions(column?.settings?.options);
   const selected = Array.isArray(value) ? value.map((v) => v.toString()) : [];
+  // A retired tag still on this row gets its own checklist entry, so the only
+  // way to take it off is not "clear the whole cell".
+  const retiredSelected = options.filter(
+    (o) => o.archived && selected.includes(o.id.toString())
+  );
 
   useEffect(() => {
     if (!open) return undefined;
@@ -62,7 +73,15 @@ const TagsCell = ({ value, column, readOnly, onChange }) => {
           selected.map((id) => {
             const opt = options.find((o) => o.id.toString() === id);
             if (!opt) return null;
-            return <span key={id}>{chip(opt.label, opt.color)}</span>;
+            return (
+              <span
+                key={id}
+                title={opt.archived ? `${opt.label} — retired, so it can no longer be chosen` : undefined}
+                style={opt.archived ? { opacity: 0.6, textDecoration: 'line-through' } : undefined}
+              >
+                {chip(opt.label, opt.color)}
+              </span>
+            );
           })
         )}
       </div>
@@ -84,7 +103,7 @@ const TagsCell = ({ value, column, readOnly, onChange }) => {
             padding: 6,
           }}
         >
-          {options.map((opt) => {
+          {[...pickable, ...retiredSelected].map((opt) => {
             const checked = selected.includes(opt.id.toString());
             return (
               <button
@@ -105,7 +124,14 @@ const TagsCell = ({ value, column, readOnly, onChange }) => {
                   borderRadius: 'var(--radius-sm)',
                 }}
               >
-                <span style={{ flex: 1, textAlign: 'left' }}>
+                <span
+                  style={{
+                    flex: 1,
+                    textAlign: 'left',
+                    ...(opt.archived ? { opacity: 0.6, textDecoration: 'line-through' } : null),
+                  }}
+                  title={opt.archived ? 'Retired — you can take it off, but not add it back' : undefined}
+                >
                   {chip(opt.label, opt.color)}
                 </span>
                 {checked && <Check size={14} aria-hidden="true" />}

@@ -195,6 +195,12 @@ const renderGoalValue = (field, value, typeKey, meta = {}, typeLabels = {}) => {
     return <Quoted muted>none</Quoted>;
   }
 
+  // A column with a vocabulary stores the CHOICE'S ID. The writer resolved the
+  // word at the time of the change and put it here, which is also why a choice
+  // that has since been deleted still reads as itself in this sentence rather
+  // than as "technical_a1b2c3".
+  if (meta.optionLabel) return <Quoted>{meta.optionLabel}</Quoted>;
+
   if (field === 'actualDayKey' || field === 'config:dueDayKey') {
     return <Quoted>{formatDate(value) || String(value)}</Quoted>;
   }
@@ -263,8 +269,14 @@ const renderGoalBody = (entry, typeLabels) => {
   }
 
   const { field } = entry;
-  const from = renderGoalValue(field, entry.oldValue, typeKey, meta, typeLabels);
-  const to = renderGoalValue(field, entry.newValue, typeKey, meta, typeLabels);
+  // `oldLabel` / `newLabel` are the readable form of a dropdown value, one per
+  // side, so each is handed only to the side it describes.
+  const from = renderGoalValue(
+    field, entry.oldValue, typeKey, { ...meta, optionLabel: meta.oldLabel }, typeLabels
+  );
+  const to = renderGoalValue(
+    field, entry.newValue, typeKey, { ...meta, optionLabel: meta.newLabel }, typeLabels
+  );
 
   if (field === 'name') {
     return <span>{Actor} renamed this from {from}<Arrow />{to}.</span>;

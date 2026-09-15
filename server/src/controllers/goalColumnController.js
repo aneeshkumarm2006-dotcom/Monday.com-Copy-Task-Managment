@@ -24,10 +24,12 @@
  * AND for board-scoped capabilities and passes org-scoped ones straight through.
  */
 
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Goal = require('../models/Goal');
 const ConnectorFieldMapping = require('../models/ConnectorFieldMapping');
 const { loadBoardContext } = require('../utils/boardContext');
+const { snapshotGoal, logGoalChanges } = require('../services/goalActivity');
 
 const COLUMN_TYPES = ['text', 'number', 'date', 'dropdown', 'link', 'person'];
 const MAX_COLUMNS = 20;
@@ -80,17 +82,479 @@ const gateColumns = async (req, res, { write = true } = {}) => {
   return ctx;
 };
 
+/* ===========================================================================
+ * The CHOICES inside one `dropdown` column — the board's own tag vocabulary.
+ *
+ * A dropdown column used to be write-once: you named its choices when you
+ * created it and that was the last word. These handlers make the list editable,
+ * and the whole design turns on one fact — A GOAL STORES THE OPTION'S `id`, NOT
+ * ITS LABEL. That is what makes a rename or a recolour free, and it is also
+ * what makes a removal dangerous, because a value pointing at an id that no
+ * longer exists renders as an empty cell and says nothing about what it lost.
+ *
+ * So removal is THREE outcomes, not one, mirroring how a whole column is
+ * removed further down this file:
+ *
+ *   nobody uses it           → gone, no questions asked
+ *   somebody uses it, RETIRE → `archived: true`. Out of every picker so it can
+ *                              never be chosen again; still rendered on the rows
+ *                              that already hold it. Nothing is lost.
+ *   somebody uses it, PURGE  → gone, and the value is cleared from every goal
+ *                              holding it, each clear written to that goal's own
+ *                              history so a number that vanished from a client
+ *                              report is still attributable.
+ *
+ * Retire is the default the UI offers, for the reason the column delete gives:
+ * losing a chip is a nuisance, losing something already reported is not.
+ *
+ * Two guards that are easy to miss:
+ *   - A REQUIRED column must always keep at least one choosable option, or it
+ *     becomes a permanent block on closing the month — nobody can satisfy a
+ *     rule that has nothing to pick. Retiring or deleting the last live option
+ *     is refused while `required` is on.
+ *   - Ids are minted with a RANDOM suffix and never reused. A counter would
+ *     eventually hand a new option the id of a deleted one, and any goal still
+ *     holding that dead value would silently light up with a tag nobody gave it.
+ *
+ * Connector field mappings are deliberately NOT considered here: a mapping can
+ * never target a dropdown column in the first place (see `fieldMapping.js` —
+ * "a value from the connector would not match one"), so there is no binding to
+ * this vocabulary anywhere for an option change to break.
+ * ========================================================================= */
+
+const HEX_RE = /^#[0-9A-Fa-f]{6}$/;
+const DEFAULT_OPTION_COLOR = '#6B7280';
+
+/**
+ * How many goals a purge writes a history row for.
+ *
+ * The CLEAR itself is a single `updateMany` and is never capped — leaving dead
+ * ids behind to keep a log tidy would be the wrong way round. This caps only
+ * the per-goal history rows, so purging a tag used by a thousand goals cannot
+ * turn into a thousand-row activity feed nobody can read.
+ */
+const MAX_LOGGED_CLEARS = 200;
+
+const normaliseColor = (c) =>
+  (typeof c === 'string' && HEX_RE.test(c.trim()) ? c.trim() : DEFAULT_OPTION_COLOR);
+
+const byOrder = (a, b) => (a.order ?? 0) - (b.order ?? 0);
+
+const optionsOf = (col) => (Array.isArray(col?.settings?.options) ? col.settings.options : []);
+
+/** Options somebody may still CHOOSE. Retired ones stay renderable, not pickable. */
+const liveOptions = (col) => optionsOf(col).filter((o) => !o.archived);
+
+/**
+ * `settings` is a Mixed path, so an array mutated in place inside it is
+ * invisible to mongoose. Every write goes through here: fresh array, explicit
+ * markModified.
+ */
+const writeOptions = (col, options) => {
+  col.settings = { ...(col.settings || {}), options };
+  col.markModified('settings');
+};
+
+const sameLabel = (a, b) =>
+  String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+
+/** A stable id that is never handed out twice on this column — see the note above. */
+const mintOptionId = (col, label) => {
+  const base = slugify(label).slice(0, 24);
+  const taken = new Set(optionsOf(col).map((o) => String(o.id)));
+  for (let i = 0; i < 12; i += 1) {
+    const id = `${base}_${crypto.randomBytes(3).toString('hex')}`;
+    if (!taken.has(id)) return id;
+  }
+  return `${base}_${Date.now().toString(36)}`;
+};
+
+/**
+ * How many goals hold each option of this column, in ONE query.
+ *
+ * Counted per option rather than per row because that is the number the editor
+ * has to show beside a delete button, and asking it forty times would be forty
+ * round trips. The array branch is defensive: a goal dropdown is single-valued
+ * today, but a multi-select column would group by the whole array and the
+ * counts would then be silently wrong rather than absent.
+ */
+const optionUsage = async (boardId, colId) => {
+  const key = `columnValues.${colId}`;
+  const rows = await Goal.aggregate([
+    {
+      $match: {
+        board: new mongoose.Types.ObjectId(String(boardId)),
+        [key]: { $exists: true, $nin: [null, ''] },
+      },
+    },
+    { $group: { _id: `$${key}`, count: { $sum: 1 } } },
+  ]);
+  const usage = {};
+  for (const row of rows) {
+    const ids = Array.isArray(row._id) ? row._id : [row._id];
+    for (const id of ids) {
+      if (id === null || id === undefined || typeof id === 'object') continue;
+      const k = String(id);
+      usage[k] = (usage[k] || 0) + row.count;
+    }
+  }
+  return usage;
+};
+
+/** Board read + `goal.manage` + "this column actually has choices". */
+const gateOptions = async (req, res, { write = true } = {}) => {
+  const ctx = await gateColumns(req, res, { write });
+  if (!ctx) return null;
+  const col = ctx.board.goalColumns.id(req.params.cid);
+  if (!col) {
+    res.status(404).json({ error: 'Column not found' });
+    return null;
+  }
+  if (col.type !== 'dropdown') {
+    res.status(400).json({
+      error: `“${col.name}” does not hold a list of choices, so there are none to edit.`,
+    });
+    return null;
+  }
+  return { ctx, col };
+};
+
+/** Every options response has the same shape, so one repaint path covers all of them. */
+const optionsResponse = async (board, col, extra = {}) => ({
+  columns: board.goalColumns,
+  columnId: String(col._id),
+  options: optionsOf(col).slice().sort(byOrder),
+  usage: await optionUsage(board._id, col._id),
+  ...extra,
+});
+
+/**
+ * Drop one option's value from every goal that holds it, and say so in each
+ * goal's history.
+ *
+ * ORDER MATTERS. `{ field: id }` in mongo matches an array CONTAINING the id as
+ * well as a scalar equal to it, so `$unset` first would blow away a whole
+ * multi-value cell to remove one tag from it. Pulling from arrays first leaves
+ * only scalars for the unset to find.
+ */
+const clearOptionValues = async ({ board, col, optionId, actor, columns }) => {
+  const key = `columnValues.${col._id}`;
+  const filter = { board: board._id, [key]: optionId };
+
+  // Read BEFORE the write — afterwards there is nothing left to diff against.
+  const affected = await Goal.find(filter)
+    .select('name type weight owner note unit unitLabel actual actualDayKey config columnValues monthKey group board')
+    .limit(MAX_LOGGED_CLEARS)
+    .lean();
+
+  await Goal.updateMany(
+    { board: board._id, [key]: { $elemMatch: { $eq: optionId } } },
+    { $pull: { [key]: optionId } }
+  );
+  const result = await Goal.updateMany(filter, { $unset: { [key]: '' } });
+
+  const cid = String(col._id);
+  await Promise.all(affected.map((goal) => {
+    const before = snapshotGoal(goal);
+    const values = { ...before.columnValues };
+    const current = values[cid];
+    if (Array.isArray(current)) {
+      const next = current.filter((v) => String(v) !== optionId);
+      if (next.length) values[cid] = next;
+      else delete values[cid];
+    } else {
+      delete values[cid];
+    }
+    return logGoalChanges({
+      goal,
+      before,
+      after: { ...before, columnValues: values },
+      columns,
+      actor,
+    });
+  }));
+
+  return result.modifiedCount ?? result.nModified ?? 0;
+};
+
+/** GET /api/boards/:boardId/goal-columns/:cid/options */
+const listGoalColumnOptions = async (req, res) => {
+  try {
+    const gated = await gateOptions(req, res, { write: false });
+    if (!gated) return undefined;
+    return res.json({
+      ...(await optionsResponse(gated.ctx.board, gated.col)),
+      canManage: gated.ctx.can('goal.manage'),
+    });
+  } catch (err) {
+    console.error('listGoalColumnOptions error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/** POST /api/boards/:boardId/goal-columns/:cid/options — one new choice. */
+const addGoalColumnOption = async (req, res) => {
+  try {
+    const gated = await gateOptions(req, res);
+    if (!gated) return undefined;
+    const { board } = gated.ctx;
+    const { col } = gated;
+    const label = String(req.body?.label || '').trim();
+
+    if (!label) return res.status(400).json({ error: 'Give the choice a name.' });
+
+    const options = optionsOf(col);
+    if (options.length >= MAX_OPTIONS) {
+      return res.status(400).json({ error: `A column can hold ${MAX_OPTIONS} choices.` });
+    }
+
+    const clash = options.find((o) => sameLabel(o.label, label));
+    if (clash) {
+      // A retired twin is offered back rather than duplicated: two chips
+      // reading the same word, one of them unpickable, is unreadable on a row.
+      return res.status(400).json({
+        error: clash.archived
+          ? `“${clash.label}” is retired on this column. Restore it instead of adding a second one.`
+          : `“${clash.label}” is already a choice here.`,
+        restorableId: clash.archived ? String(clash.id) : undefined,
+      });
+    }
+
+    const next = [...options, {
+      id: mintOptionId(col, label),
+      label: label.slice(0, 60),
+      color: normaliseColor(req.body?.color),
+      archived: false,
+      order: options.length,
+    }];
+    writeOptions(col, next);
+    await board.save();
+
+    return res.status(201).json(await optionsResponse(board, col));
+  } catch (err) {
+    console.error('addGoalColumnOption error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PATCH /api/boards/:boardId/goal-columns/:cid/options/reorder — must precede /:oid
+ *
+ * Reordering is free for the same reason renaming is: the stored value is the
+ * id, and `order` only decides what the picker looks like.
+ */
+const reorderGoalColumnOptions = async (req, res) => {
+  try {
+    const gated = await gateOptions(req, res);
+    if (!gated) return undefined;
+    const { orderedIds } = req.body || {};
+    if (!Array.isArray(orderedIds)) {
+      return res.status(400).json({ error: 'orderedIds must be an array' });
+    }
+    const index = new Map(orderedIds.map((id, i) => [String(id), i]));
+    const next = optionsOf(gated.col).map((o) => {
+      const at = index.get(String(o.id));
+      return at === undefined ? o : { ...o, order: at };
+    });
+    writeOptions(gated.col, next);
+    await gated.ctx.board.save();
+    return res.json(await optionsResponse(gated.ctx.board, gated.col));
+  } catch (err) {
+    console.error('reorderGoalColumnOptions error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PATCH /api/boards/:boardId/goal-columns/:cid/options/:oid
+ *
+ * Rename, recolour, retire and restore. The first two touch no goal at all —
+ * every row holding this option is keyed by its id and simply renders the new
+ * word in the new colour, which is the whole reason the id is what gets stored.
+ */
+const updateGoalColumnOption = async (req, res) => {
+  try {
+    const gated = await gateOptions(req, res);
+    if (!gated) return undefined;
+    const { board } = gated.ctx;
+    const { col } = gated;
+    const oid = String(req.params.oid);
+
+    const options = optionsOf(col);
+    const target = options.find((o) => String(o.id) === oid);
+    if (!target) return res.status(404).json({ error: 'That choice is not on this column.' });
+
+    const { label, color, archived } = req.body || {};
+    const patch = {};
+
+    if (label !== undefined) {
+      const trimmed = String(label).trim();
+      if (!trimmed) return res.status(400).json({ error: 'Give the choice a name.' });
+      const clash = options.find((o) => String(o.id) !== oid && sameLabel(o.label, trimmed));
+      if (clash) {
+        return res.status(400).json({
+          error: clash.archived
+            ? `A retired choice is already called “${clash.label}”.`
+            : `“${clash.label}” is already a choice here.`,
+        });
+      }
+      patch.label = trimmed.slice(0, 60);
+    }
+
+    if (color !== undefined) patch.color = normaliseColor(color);
+
+    if (archived !== undefined) {
+      const next = archived === true;
+      // The guard that keeps a required column satisfiable — see the header.
+      if (next && col.required && liveOptions(col).filter((o) => String(o.id) !== oid).length === 0) {
+        return res.status(400).json({
+          error: `“${col.name}” is required, so it has to keep at least one choice. `
+            + 'Add another choice first, or turn Required off.',
+        });
+      }
+      if (!next) {
+        const clash = options.find(
+          (o) => String(o.id) !== oid && !o.archived && sameLabel(o.label, target.label)
+        );
+        if (clash) {
+          return res.status(400).json({
+            error: `There is already a live choice called “${clash.label}”. `
+              + 'Rename one of them first.',
+          });
+        }
+      }
+      patch.archived = next;
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return res.json(await optionsResponse(board, col));
+    }
+
+    writeOptions(col, options.map((o) => (String(o.id) === oid ? { ...o, ...patch } : o)));
+    await board.save();
+
+    return res.json(await optionsResponse(board, col));
+  } catch (err) {
+    console.error('updateGoalColumnOption error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * DELETE /api/boards/:boardId/goal-columns/:cid/options/:oid[?purge=true]
+ *
+ * Three outcomes, described in full in the header of this section. An option
+ * nobody uses just goes; one somebody uses comes back with `confirmRequired`
+ * and a count, and changes NOTHING until the caller says which of retire or
+ * purge it meant.
+ */
+const deleteGoalColumnOption = async (req, res) => {
+  try {
+    const gated = await gateOptions(req, res);
+    if (!gated) return undefined;
+    const { board } = gated.ctx;
+    const { col } = gated;
+    const oid = String(req.params.oid);
+
+    const options = optionsOf(col);
+    const target = options.find((o) => String(o.id) === oid);
+    if (!target) return res.status(404).json({ error: 'That choice is not on this column.' });
+
+    // Same guard as retiring, and it applies even to an unused option: a
+    // required column with nothing to pick can never be filled in.
+    if (col.required && !target.archived
+      && liveOptions(col).filter((o) => String(o.id) !== oid).length === 0) {
+      return res.status(400).json({
+        error: `“${col.name}” is required, so it has to keep at least one choice. `
+          + 'Add another choice first, or turn Required off.',
+      });
+    }
+
+    const usage = await optionUsage(board._id, col._id);
+    const usedByCount = usage[oid] || 0;
+
+    if (usedByCount > 0 && req.query.purge !== 'true') {
+      return res.json(await optionsResponse(board, col, {
+        confirmRequired: true,
+        usedByCount,
+        columnRequired: col.required === true,
+      }));
+    }
+
+    // The column list handed to the history, pinned to the vocabulary as it is
+    // RIGHT NOW. `goalActivity` resolves the choice's word from this list, and
+    // by the time the clear runs the word has been taken off the column — so
+    // passing the live subdoc would log the bare id and the one row that
+    // explains what a goal lost would be the one row nobody can read.
+    const columnsForLog = (board.goalColumns || [])
+      .filter((c) => !c.archived)
+      .map((c) => (String(c._id) === String(col._id)
+        ? { _id: c._id, name: col.name, type: col.type, settings: { options } }
+        : c));
+
+    writeOptions(col, options.filter((o) => String(o.id) !== oid));
+    await board.save();
+
+    const clearedCount = usedByCount > 0
+      ? await clearOptionValues({
+        board,
+        col,
+        optionId: oid,
+        actor: req.user.userId,
+        columns: columnsForLog,
+      })
+      : 0;
+
+    return res.json(await optionsResponse(board, col, {
+      removed: true,
+      clearedCount,
+      // What the caller has to warn about next: those goals are now empty in a
+      // column the month is waiting on.
+      columnRequired: col.required === true,
+    }));
+  } catch (err) {
+    console.error('deleteGoalColumnOption error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 const sanitizeOptions = (settings) => {
   const options = Array.isArray(settings?.options) ? settings.options : [];
   return options
     .map((o, i) => ({
       id: String(o?.id || o?.label || i).slice(0, 60),
       label: String(o?.label || '').trim().slice(0, 60),
-      color: typeof o?.color === 'string' ? o.color : '#6B7280',
+      color: normaliseColor(o?.color),
+      // Carried through rather than dropped: a retired choice that came back as
+      // a live one would reappear in every picker on the board the first time
+      // anybody renamed the column.
+      archived: o?.archived === true,
       order: Number.isFinite(o?.order) ? o.order : i,
     }))
     .filter((o) => o.label)
     .slice(0, MAX_OPTIONS);
+};
+
+/**
+ * The choices on a BRAND NEW column.
+ *
+ * Ids are minted HERE rather than accepted from the caller, so every option id
+ * on the board has one shape and no caller can hand us two the same. Duplicate
+ * labels are dropped for the reason the add-a-choice handler refuses them: a
+ * comma list with the same word twice is a typo, and two identical chips on a
+ * row cannot be told apart.
+ */
+const initialOptions = (settings) => {
+  const out = [];
+  for (const o of sanitizeOptions(settings)) {
+    if (out.some((x) => sameLabel(x.label, o.label))) continue;
+    out.push({
+      ...o,
+      id: mintOptionId({ settings: { options: out } }, o.label),
+      order: out.length,
+    });
+  }
+  return out;
 };
 
 /** GET /api/boards/:boardId/goal-columns */
@@ -131,7 +595,7 @@ const addGoalColumn = async (req, res) => {
       key: uniqueSlug(board, slugify(name)),
       name: String(name).trim().slice(0, 60),
       type,
-      settings: type === 'dropdown' ? { options: sanitizeOptions(settings) } : {},
+      settings: type === 'dropdown' ? { options: initialOptions(settings) } : {},
       required: isRequired,
       // Stamped now, so goals created BEFORE this moment are never retroactively
       // blocked for a value the rule did not exist to ask for.
@@ -190,10 +654,32 @@ const updateGoalColumn = async (req, res) => {
       // a stable key is what lets a rename be free.
     }
     if (settings !== undefined && col.type === 'dropdown') {
-      col.settings = { options: sanitizeOptions(settings) };
+      // Only reachable for a column that has no choices yet. Editing an
+      // existing vocabulary goes through the per-option routes instead, because
+      // a whole-list write cannot say which incoming entry is which existing
+      // one — and getting that wrong silently orphans every goal pointing at
+      // the id it re-minted. Refused rather than accepted-and-hoped-for.
+      if (optionsOf(col).length > 0) {
+        return res.status(400).json({
+          error: 'Edit this column’s choices one at a time — adding, renaming or '
+            + 'removing them individually is what keeps the goals already using '
+            + 'them attached.',
+        });
+      }
+      writeOptions(col, initialOptions(settings));
     }
     if (required !== undefined) {
       const next = required === true;
+      // The same unsatisfiable state the option handlers guard against, reached
+      // from the other side: a list column with nothing to pick, marked
+      // required, is a permanent block on closing the month that nobody can
+      // clear from the goals table.
+      if (next && col.type === 'dropdown' && liveOptions(col).length === 0) {
+        return res.status(400).json({
+          error: `“${col.name}” has no choices to pick from yet, so nobody could `
+            + 'fill it in. Add a choice first.',
+        });
+      }
       // Stamp only on the false → true transition, so toggling it off and back
       // on does not silently forgive rows written in between.
       if (next && !col.required) col.requiredSince = new Date();
@@ -268,9 +754,16 @@ const deleteGoalColumn = async (req, res) => {
 
 module.exports = {
   COLUMN_TYPES,
+  MAX_OPTIONS,
   listGoalColumns,
   addGoalColumn,
   updateGoalColumn,
   reorderGoalColumns,
   deleteGoalColumn,
+  // The choices inside one dropdown column — see the section header above.
+  listGoalColumnOptions,
+  addGoalColumnOption,
+  updateGoalColumnOption,
+  reorderGoalColumnOptions,
+  deleteGoalColumnOption,
 };

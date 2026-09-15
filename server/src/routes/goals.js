@@ -19,6 +19,11 @@ const {
   updateGoalColumn,
   reorderGoalColumns,
   deleteGoalColumn,
+  listGoalColumnOptions,
+  addGoalColumnOption,
+  updateGoalColumnOption,
+  reorderGoalColumnOptions,
+  deleteGoalColumnOption,
 } = require('../controllers/goalColumnController');
 
 /**
@@ -73,5 +78,20 @@ router.post('/boards/:boardId/goal-columns', addGoalColumn);
 router.patch('/boards/:boardId/goal-columns/reorder', reorderGoalColumns);
 router.patch('/boards/:boardId/goal-columns/:cid', updateGoalColumn);
 router.delete('/boards/:boardId/goal-columns/:cid', deleteGoalColumn);
+
+// --- The choices inside one `dropdown` goal column --------------------------
+// The board's own tag vocabulary. Mounted UNDER the column rather than folded
+// into the column PATCH's `settings` blob, because an option carries a stable
+// `id` that goals store: a blob write re-sends the whole list and can silently
+// re-mint an id, which orphans every value pointing at the old one. One route
+// per intent keeps the ids the server's business.
+//
+// `reorder` before `/:oid` so it is not parsed as an option id, exactly as
+// above.
+router.get('/boards/:boardId/goal-columns/:cid/options', listGoalColumnOptions);
+router.post('/boards/:boardId/goal-columns/:cid/options', addGoalColumnOption);
+router.patch('/boards/:boardId/goal-columns/:cid/options/reorder', reorderGoalColumnOptions);
+router.patch('/boards/:boardId/goal-columns/:cid/options/:oid', updateGoalColumnOption);
+router.delete('/boards/:boardId/goal-columns/:cid/options/:oid', deleteGoalColumnOption);
 
 module.exports = router;

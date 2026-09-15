@@ -50,6 +50,22 @@ export const findOption = (options, id) =>
     ? options.find((o) => o.id != null && o.id.toString() === id.toString())
     : null;
 
+/**
+ * The options somebody may still CHOOSE, as opposed to the ones a cell may
+ * still have to RENDER.
+ *
+ * A retired option (`archived: true`) is one that was removed from a column's
+ * vocabulary without throwing away the rows that already held it — see the
+ * goal-column options section in `server/src/controllers/goalColumnController.js`.
+ * So a picker is built from this, while the chip beside it is still looked up
+ * in the FULL list with `findOption`: otherwise retiring a tag would blank
+ * every cell carrying it, which is precisely what retiring exists to avoid.
+ *
+ * Task columns never set the flag, so this is a no-op for them.
+ */
+export const pickableOptions = (options) =>
+  optionSorted(options).filter((o) => !o.archived);
+
 export const formatDate = (value) => {
   if (!value) return '';
   const d = new Date(value);

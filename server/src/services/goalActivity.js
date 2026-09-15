@@ -212,11 +212,29 @@ const diffGoal = (before, after, columns = []) => {
   for (const key of columnKeys) {
     if (same(before.columnValues[key], after.columnValues[key])) continue;
     const col = columnById.get(String(key));
-    push(`column:${key}`, before.columnValues[key], after.columnValues[key], {
+    const metadata = {
       columnId: String(key),
       columnLabel: col?.name || 'a column',
       columnType: col?.type || null,
-    });
+    };
+    // A column with a vocabulary stores the CHOICE'S ID, so the raw values read
+    // as gibberish in a sentence — "changed Channel from technical_a1b2c3".
+    // The words are resolved HERE, at the moment of the change, and stored
+    // beside the ids: a choice can be renamed or removed later, and a history
+    // that has to re-look-up its own labels goes blank exactly when it is most
+    // needed (after somebody deleted the tag).
+    const options = Array.isArray(col?.settings?.options) ? col.settings.options : null;
+    if (options) {
+      const words = (v) => {
+        if (isBlank(v)) return null;
+        return (Array.isArray(v) ? v : [v])
+          .map((id) => options.find((o) => String(o.id) === String(id))?.label || String(id))
+          .join(', ');
+      };
+      metadata.oldLabel = words(before.columnValues[key]);
+      metadata.newLabel = words(after.columnValues[key]);
+    }
+    push(`column:${key}`, before.columnValues[key], after.columnValues[key], metadata);
   }
 
   return rows;

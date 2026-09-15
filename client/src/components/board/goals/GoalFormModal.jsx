@@ -431,9 +431,15 @@ const GoalFormModal = ({
     }
 
     if (col.type === 'dropdown') {
-      const options = (col.settings?.options || [])
+      const all = (col.settings?.options || [])
         .slice()
         .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      // Retired choices are not offered — but one the goal ALREADY holds stays
+      // in the list, or opening this form and saving it would quietly drop a
+      // value nobody meant to touch. It is labelled so the reason it cannot be
+      // picked again is visible rather than mysterious.
+      const held = value == null ? '' : String(value);
+      const options = all.filter((o) => !o.archived || String(o.id) === held);
       return (
         <div key={key}>
           {columnLabel(col)}
@@ -441,10 +447,13 @@ const GoalFormModal = ({
               clearing a value someone already chose has to be reachable — a
               placeholder only shows while nothing is selected. */}
           <Dropdown
-            value={value == null ? '' : String(value)}
+            value={held}
             options={[
               { value: '', label: 'Not set' },
-              ...options.map((o) => ({ value: o.id, label: o.label })),
+              ...options.map((o) => ({
+                value: o.id,
+                label: o.archived ? `${o.label} (retired)` : o.label,
+              })),
             ]}
             onChange={(next) => set(next || null)}
             ariaLabel={col.name}

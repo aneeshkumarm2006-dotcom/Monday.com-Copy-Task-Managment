@@ -1,9 +1,12 @@
 import { useState } from 'react';
-import { Trash2, Plus, ArrowUp, ArrowDown } from 'lucide-react';
+import {
+  Trash2, Plus, ArrowUp, ArrowDown, ChevronDown, ChevronRight,
+} from 'lucide-react';
 import Modal from '../../ui/Modal';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { Toggle } from '../../ui/FormControls';
+import GoalColumnOptionsEditor from './GoalColumnOptionsEditor';
 import * as goalService from '../../../services/goalService';
 
 /**
@@ -17,6 +20,12 @@ import * as goalService from '../../../services/goalService';
  * Deleting ARCHIVES by default. Losing a chip is a nuisance; losing a number
  * somebody already reported to a client is not, so the hard delete is a second,
  * explicit confirmation that names how many rows hold a value.
+ *
+ * A "Choose from a list" column carries its own vocabulary of choices, and those
+ * are editable in place too — expand the column to get
+ * [GoalColumnOptionsEditor](./GoalColumnOptionsEditor.jsx), which applies the
+ * same reasoning one level down (a choice somebody has used can be retired or
+ * deleted, and it says which it is doing).
  *
  * ---- `prefill` and `onAdded` -----------------------------------------------
  *
@@ -57,6 +66,10 @@ const GoalColumnsModal = ({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [confirmPurge, setConfirmPurge] = useState(null);
+  // One column's choices open at a time. The editor fetches usage counts when it
+  // mounts, so leaving them all expanded would be a request per dropdown column
+  // for a panel most visits never touch.
+  const [openChoices, setOpenChoices] = useState(null);
 
   const apply = (next) => {
     setRows(next);
@@ -78,13 +91,17 @@ const GoalColumnsModal = ({
   const addColumn = () => {
     if (!draft.name.trim()) { setError('Give the column a name.'); return; }
     guard(async () => {
+      // Labels only — the SERVER mints the ids. Every goal stores the id of the
+      // choice it holds, so who invents them is not cosmetic: one shape, minted
+      // in one place, is what lets the choices be edited afterwards without
+      // orphaning the rows that already point at them.
       const settings = draft.type === 'dropdown'
         ? {
           options: draft.options
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean)
-            .map((label, i) => ({ id: `${i}_${label.toLowerCase()}`, label, order: i })),
+            .map((label, i) => ({ label, order: i })),
         }
         : undefined;
       // Which ids existed before, so the new column can be handed back to a
@@ -148,38 +165,80 @@ const GoalColumnsModal = ({
           {live.map((col, i) => (
             <div
               key={col._id}
-              className="flex items-center gap-2 p-2"
+              className="p-2"
               style={{ border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}
             >
-              <div className="flex flex-col">
-                <button type="button" onClick={() => move(i, -1)} disabled={i === 0 || busy} aria-label="Move up">
-                  <ArrowUp size={12} color="var(--color-text-muted)" />
-                </button>
-                <button type="button" onClick={() => move(i, 1)} disabled={i === live.length - 1 || busy} aria-label="Move down">
-                  <ArrowDown size={12} color="var(--color-text-muted)" />
+              <div className="flex items-center gap-2">
+                <div className="flex flex-col">
+                  <button type="button" onClick={() => move(i, -1)} disabled={i === 0 || busy} aria-label="Move up">
+                    <ArrowUp size={12} color="var(--color-text-muted)" />
+                  </button>
+                  <button type="button" onClick={() => move(i, 1)} disabled={i === live.length - 1 || busy} aria-label="Move down">
+                    <ArrowDown size={12} color="var(--color-text-muted)" />
+                  </button>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-body font-medium truncate" style={{ fontSize: 13 }}>{col.name}</p>
+                  <p className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
+                    {COLUMN_KINDS.find((k) => k.type === col.type)?.label || col.type}
+                    {col.type === 'dropdown' && (
+                      <>
+                        {' · '}
+                        {(col.settings?.options || []).filter((o) => !o.archived).length} choices
+                      </>
+                    )}
+                  </p>
+                </div>
+                {/* Only a list column has a vocabulary to edit; every other type
+                    keeps the row it always had. */}
+                {col.type === 'dropdown' && (
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 shrink-0"
+                    onClick={() => setOpenChoices((id) => (id === String(col._id) ? null : String(col._id)))}
+                    aria-expanded={openChoices === String(col._id)}
+                    style={{
+                      fontSize: 12,
+                      padding: '2px 6px',
+                      background: 'transparent',
+                      border: 'none',
+                      borderRadius: 'var(--radius-sm)',
+                      color: 'var(--color-text-secondary)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {openChoices === String(col._id)
+                      ? <ChevronDown size={13} aria-hidden="true" />
+                      : <ChevronRight size={13} aria-hidden="true" />}
+                    Choices
+                  </button>
+                )}
+                <label className="flex items-center gap-2 shrink-0">
+                  <span className="font-body" style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
+                    Required
+                  </span>
+                  <Toggle
+                    checked={col.required}
+                    disabled={busy}
+                    onChange={(v) =>
+                      guard(() => goalService.updateGoalColumn(boardId, col._id, { required: v }))
+                    }
+                  />
+                </label>
+                <button type="button" onClick={() => remove(col, false)} disabled={busy} aria-label={`Remove ${col.name}`}>
+                  <Trash2 size={14} color="var(--color-status-stuck)" />
                 </button>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-body font-medium truncate" style={{ fontSize: 13 }}>{col.name}</p>
-                <p className="font-body" style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-                  {COLUMN_KINDS.find((k) => k.type === col.type)?.label || col.type}
-                </p>
-              </div>
-              <label className="flex items-center gap-2 shrink-0">
-                <span className="font-body" style={{ fontSize: 12, color: 'var(--color-text-secondary)' }}>
-                  Required
-                </span>
-                <Toggle
-                  checked={col.required}
-                  disabled={busy}
-                  onChange={(v) =>
-                    guard(() => goalService.updateGoalColumn(boardId, col._id, { required: v }))
-                  }
+              {col.type === 'dropdown' && openChoices === String(col._id) && (
+                <GoalColumnOptionsEditor
+                  boardId={boardId}
+                  column={col}
+                  // The options responses carry the whole column list, so an
+                  // option edit repaints the grid behind this modal through the
+                  // same path a column edit does.
+                  onColumnsChanged={apply}
                 />
-              </label>
-              <button type="button" onClick={() => remove(col, false)} disabled={busy} aria-label={`Remove ${col.name}`}>
-                <Trash2 size={14} color="var(--color-status-stuck)" />
-              </button>
+              )}
             </div>
           ))}
         </div>
@@ -253,7 +312,7 @@ const GoalColumnsModal = ({
               <Input
                 label="What are the choices?"
                 placeholder="Not started, In progress, Done"
-                helperText="Separate them with commas."
+                helperText="Separate them with commas. You can add, rename and remove them later."
                 value={draft.options}
                 onChange={(e) => setDraft((d) => ({ ...d, options: e.target.value }))}
               />
