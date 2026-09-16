@@ -60,7 +60,11 @@ const LabelPicker = ({
       options={options}
       selectedValues={selected}
       multiple
-      onSelect={(v) => onToggle?.(v)}
+      // Labels toggle, so the handler needs to know which WAY. `OptionMenu`'s
+      // second argument is the option, not a checked flag — deriving it here
+      // from the selection we were handed is what makes an unchecked label
+      // turn ON rather than be filtered out of a list it was never in.
+      onSelect={(v) => onToggle?.(v, !selected.includes(String(v)))}
       onClose={onClose}
       layout="rows"
       chipVariant="tag"
