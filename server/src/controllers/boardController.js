@@ -901,6 +901,7 @@ const createBoard = async (req, res) => {
  * other and the matrix is a first-class feature:
  *
  *   name, description                 → `board.rename`
+ *   groupCompletedLabel               → `board.rename`
  *   visibility, publicDefaultLevel    → `board.change_visibility`
  *
  * `publicDefaultLevel` is the rung a public board opens to the org, so it is the
@@ -916,6 +917,7 @@ const updateBoard = async (req, res) => {
     const { id } = req.params;
     const {
       name, visibility, description, publicDefaultLevel, goalVocabulary,
+      groupCompletedLabel,
     } = req.body;
 
     const ctx = await loadBoard(id, userId);
@@ -923,7 +925,8 @@ const updateBoard = async (req, res) => {
     const { board } = ctx;
 
     const changesNaming =
-      typeof name === 'string' || typeof description === 'string';
+      typeof name === 'string' || typeof description === 'string'
+      || groupCompletedLabel !== undefined;
     if (changesNaming) {
       const denied = requireCapability(
         ctx,
@@ -963,6 +966,33 @@ const updateBoard = async (req, res) => {
     }
     if (typeof description === 'string') {
       board.description = description.trim();
+    }
+
+    /**
+     * What a finished group says instead of its bar — see
+     * `Board.groupCompletedLabel`.
+     *
+     * `board.rename`, with the naming fields above, because that is what this
+     * is: board-wide text the owner authors, sitting in the same dialog as the
+     * name and the description and reaching no further than this board's own
+     * headers. The neighbouring `canManageAccess` gate that `goalVocabulary`
+     * uses was considered and rejected — that field selects a VOCABULARY that
+     * renames controls under people, while this one only fills in a label that
+     * is empty by default, and gating it higher than the dialog it lives in
+     * would 403 the rename that opened the dialog.
+     *
+     * CLAMPED, never rejected. `maxlength` on the schema throws a
+     * ValidationError, which this handler's catch would turn into a 500 with
+     * nothing useful in it; a 200 with the text cut to 22 is the right answer
+     * to a long paste. `''` is the off switch and needs no special case.
+     */
+    if (groupCompletedLabel !== undefined) {
+      if (groupCompletedLabel !== null && typeof groupCompletedLabel !== 'string') {
+        return res.status(400).json({ error: 'That label must be text.' });
+      }
+      board.groupCompletedLabel = String(groupCompletedLabel || '')
+        .trim()
+        .slice(0, 22);
     }
 
     /**

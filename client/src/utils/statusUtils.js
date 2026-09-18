@@ -26,4 +26,22 @@ export const isStatusDone = (board, statusRef) => {
   return statusRef === 'done';
 };
 
-export default { isStatusDone };
+/**
+ * Is EVERY task in this list done?
+ *
+ * `tasks` MUST be the UNFILTERED bucket. Deciding this from the rows currently
+ * on screen would make a group announce itself finished the moment somebody
+ * filters to Status = Done, and un-finish it under a filter for Stuck — the
+ * completion is a fact about the group, not about what the filter bar is
+ * showing. That is the whole reason this is a named helper rather than an
+ * inline `.every()` a later edit can quietly repoint at the wrong array.
+ *
+ * An EMPTY group is not complete. Nothing has been completed, and the other
+ * answer fires the banner the instant somebody creates a group.
+ */
+export const isGroupComplete = (tasks, board) =>
+  Array.isArray(tasks)
+  && tasks.length > 0
+  && tasks.every((t) => t && t.status != null && isStatusDone(board, t.status));
+
+export default { isStatusDone, isGroupComplete };

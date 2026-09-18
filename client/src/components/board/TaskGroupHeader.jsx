@@ -11,10 +11,31 @@ import {
 } from 'lucide-react';
 import { getColorPair, deepFor } from '../../utils/priorityColors';
 import StatusSpreadBar from './StatusSpreadBar';
+import GroupCompletedLabel from './GroupCompletedLabel';
 import Avatar from '../ui/Avatar';
 
 /** Mirrors MAX_GROUP_NAME in the server's groupController. */
 const MAX_NAME_LENGTH = 60;
+
+/**
+ * The status bar's column, in px.
+ *
+ * It widens for a board that has a completion label — for EVERY header on that
+ * board at once, never per group, because the width is derived from the BOARD
+ * value and not from whether this particular group is finished. That is what
+ * keeps the column edge straight down the page while individual groups flip
+ * between a bar and a label. A board with no label gets exactly the old 110.
+ */
+const BAR_SLOT = 110;
+/**
+ * 184 is measured, not chosen: "ONBOARDING COMPLETED" — the wording this was
+ * built for — renders 146px wide at the pill's 11px/700/0.02em, and the pill
+ * adds 18px of padding plus 15px of tick and gap. A 22-character label in
+ * ordinary words lands between 172 and 180. Anything wider than that
+ * ellipsizes, and the Edit Board dialog renders the real pill at this exact
+ * width while you type, so that is visible before it is saved.
+ */
+const BAR_SLOT_WITH_LABEL = 184;
 
 /**
  * TaskGroupHeader — collapsible header for a group within a board.
@@ -89,10 +110,25 @@ const TaskGroupHeader = ({
    *  this group. Empty falls back to the old done-only progress bar, so any
    *  caller that has not been taught to pass it still renders correctly. */
   segments = [],
+  /** What this BOARD says in place of the status bar once a group is finished
+   *  — "ONBOARDING COMPLETED". `board.groupCompletedLabel` verbatim, and empty
+   *  on every board that has not set one, which is what makes those boards
+   *  render byte-identically to before. Being a board-level value, it also
+   *  decides the bar column's width for every header alike. */
+  completedLabel = '',
+  /** Whether THIS group is finished. Computed by the caller from the
+   *  UNFILTERED rows — `totalCount`/`doneCount` describe what is on screen
+   *  under the current filter, so they cannot be trusted with this. */
+  isComplete = false,
 }) => {
   const Chevron = collapsed ? ChevronRight : ChevronDown;
   const progressPct =
     totalCount === 0 ? 0 : Math.round((doneCount / totalCount) * 100);
+
+  // Both halves have to be true: the board has to have something to say, and
+  // this group has to have finished. Either one alone leaves the bar alone.
+  const showCompleted = !!completedLabel && isComplete;
+  const barSlotWidth = completedLabel ? BAR_SLOT_WITH_LABEL : BAR_SLOT;
 
   /**
    * The group's name, in the group's own colour — which is most of what makes
@@ -332,12 +368,21 @@ const TaskGroupHeader = ({
         <Chevron size={16} color="var(--color-text-muted)" aria-hidden="true" className="shrink-0" />
       </div>
 
-      {!collapsed && segments.length > 0 && (
+      {/* Phones keep the bar's own rule — hidden while collapsed — because
+          here it is a separate strip BELOW the row, and showing it on every
+          collapsed group would make the whole list taller. The `9/9` pill in
+          the row above already carries the fact on a collapsed row. */}
+      {!collapsed && showCompleted && (
+        <div style={{ margin: '0 14px 8px' }}>
+          <GroupCompletedLabel label={completedLabel} total={totalCount} />
+        </div>
+      )}
+      {!collapsed && !showCompleted && segments.length > 0 && (
         <div style={{ margin: '0 14px 6px' }}>
           <StatusSpreadBar segments={segments} total={totalCount} doneCount={doneCount} width="100%" height={4} />
         </div>
       )}
-      {!collapsed && segments.length === 0 && (
+      {!collapsed && !showCompleted && segments.length === 0 && (
         <div
           aria-hidden="true"
           style={{ height: 3, background: 'var(--color-bg-subtle)', borderRadius: 2, margin: '0 14px 4px' }}
@@ -588,14 +633,23 @@ const TaskGroupHeader = ({
           not tell you that four of the seven are STUCK, which is the fact you
           would actually act on. Falls back to the old bar when the caller
           passes no segments. */}
-      <div className="shrink-0 hidden sm:block">
-        <StatusSpreadBar
-          segments={segments}
-          total={totalCount}
-          doneCount={doneCount}
-          width={110}
-          height={6}
-        />
+      {/* The slot's width is pinned here rather than taken from the bar's own
+          `width`, because the label that can replace it is variable-width and
+          would otherwise let this column go ragged group by group. Shown on a
+          COLLAPSED group too, which is where "this one is finished" is worth
+          most. */}
+      <div className="shrink-0 hidden sm:block" style={{ width: barSlotWidth }}>
+        {showCompleted ? (
+          <GroupCompletedLabel label={completedLabel} total={totalCount} />
+        ) : (
+          <StatusSpreadBar
+            segments={segments}
+            total={totalCount}
+            doneCount={doneCount}
+            width={110}
+            height={6}
+          />
+        )}
       </div>
 
       {/* Group tag chips. Rendered only when the viewer has the `groupTags`

@@ -141,7 +141,7 @@ import {
   taskMatchesFilters,
   groupMatchesFilters,
 } from '../utils/taskFilters';
-import { isStatusDone } from '../utils/statusUtils';
+import { isStatusDone, isGroupComplete } from '../utils/statusUtils';
 import {
   loadPersonalPins,
   savePersonalPins,
@@ -554,6 +554,11 @@ const BoardDetailPage = () => {
   // "May I restructure this board" — the old `canEdit` bit, now derived from the
   // capabilities rather than re-guessed.
   const canEdit = canOnBoard('task.edit_any') && canOnBoard('group.manage');
+
+  // What a finished group says instead of its status bar, set in Edit Board.
+  // Empty on every board that has not set one, and empty is the off switch, so
+  // those boards render their headers exactly as they always have.
+  const groupCompletedLabel = (board?.groupCompletedLabel || '').trim();
 
   // Adding a row is the `contribute` rung, NOT `edit`. These were one bit for a
   // while and it silently broke the whole middle of the ladder: a plain member
@@ -1422,12 +1427,24 @@ const BoardDetailPage = () => {
         (t) => t.status != null && isStatusDone(board, t.status)
       ).length;
       out.set(String(group._id), {
+        // WHAT IS ON SCREEN. Drives the "completed last" sort, which has to
+        // agree with the coloured bar the user is looking at — hence the
+        // filtered bucket.
         complete: total > 0 && done === total, // green == 100% AND non-empty
         pct: total === 0 ? 0 : done / total,
+        // WHAT IS TRUE. Drives the completed label, which is a claim about the
+        // group rather than about the filter bar, so it reads the UNFILTERED
+        // rows: otherwise filtering to Status = Done would announce every
+        // group finished. The two can legitimately disagree while a filter is
+        // on, and that divergence is the reason both exist.
+        allComplete: isGroupComplete(tasksByGroup[group._id], board),
       });
     }
     return out;
-  }, [groups, filteredTasksByGroup, board]);
+    // `tasksByGroup` costs no extra invalidation: with no filter active it IS
+    // `filteredTasksByGroup` by identity, and with one active it only changes
+    // when tasks change, which changes the filtered buckets too.
+  }, [groups, filteredTasksByGroup, tasksByGroup, board]);
 
   // The metrics we last sorted on, tagged with the board/month they describe.
   const settledMetricsRef = useRef({ key: null, metrics: null });
@@ -3007,6 +3024,14 @@ const BoardDetailPage = () => {
                           name={group.name}
                           colorDot={groupColor}
                           segments={spread.segments}
+                          completedLabel={groupCompletedLabel}
+                          // `groupMetrics`, never `heldGroupMetrics` — the
+                          // held snapshot is frozen to stop a group sliding
+                          // out from under the cursor, and a label reading
+                          // from it would go stale mid-hold.
+                          isComplete={
+                            !!groupMetrics.get(String(group._id))?.allComplete
+                          }
                           summaries={groupSummaries(board, groupTasks)}
                           countLabel={rowCountLabel(board, groupTasks.length)}
                           totalCount={groupTasks.length}

@@ -6,6 +6,7 @@ import Spinner from '../ui/Spinner';
 import MonthSplitPreview from './MonthSplitPreview';
 import { previewBoardConversion } from '../../services/monthService';
 import TemplatePicker from './TemplatePicker';
+import GroupCompletedLabel from './GroupCompletedLabel';
 
 /**
  * BoardFormModal — used for both creating and editing a board.
@@ -34,7 +35,15 @@ const DEFAULTS = {
   // Which template seeds the board. Create-only — a template has no meaning
   // once a board exists, so editing never shows this.
   template: 'blank',
+  // EDIT ONLY. What a finished group says in place of its status bar. Empty is
+  // the off switch and the default, so a board nobody has set this on keeps the
+  // bar. Not offered on create: you cannot judge the wording before you can see
+  // which groups the board holds.
+  groupCompletedLabel: '',
 };
+
+/** Mirrors `Board.groupCompletedLabel`'s maxlength, which the server clamps to. */
+const MAX_COMPLETED_LABEL = 22;
 
 const BoardFormModal = ({
   isOpen,
@@ -65,6 +74,7 @@ const BoardFormModal = ({
       visibility: initialValues?.visibility || 'private',
       description: initialValues?.description || '',
       boardType: initialValues?.boardType || 'standard',
+      groupCompletedLabel: initialValues?.groupCompletedLabel || '',
     });
     setError(null);
     setSubmitting(false);
@@ -148,6 +158,9 @@ const BoardFormModal = ({
         name: trimmed,
         description: values.description.trim(),
         boardType: values.boardType,
+        // Edit only — the field is not rendered on create, so this is '' there
+        // and the caller's "only when changed" test never fires.
+        groupCompletedLabel: values.groupCompletedLabel.trim(),
         // Create only. The server refuses an unknown key, and 'blank' is the
         // no-op that reproduces the old behaviour exactly.
         template: mode === 'create' ? values.template : undefined,
@@ -600,6 +613,50 @@ const BoardFormModal = ({
             setValues((v) => ({ ...v, description: e.target.value }))
           }
         />
+
+        {/* What a FINISHED group says instead of its status bar. Edit only:
+            on create there are no groups yet, so there is nothing to judge the
+            wording against.
+
+            Typed, never derived. "{GROUP} COMPLETED" would read as nonsense on
+            a Backlog or a Templates group, which is exactly why the board says
+            one thing in its own words instead. */}
+        {mode === 'edit' && (
+          <div>
+            <Input
+              label="When a group is finished (optional)"
+              placeholder="e.g. ONBOARDING COMPLETED"
+              maxLength={MAX_COMPLETED_LABEL}
+              value={values.groupCompletedLabel}
+              onChange={(e) =>
+                setValues((v) => ({ ...v, groupCompletedLabel: e.target.value }))
+              }
+              helperText="Replaces the status bar once every task in a group is done. Leave empty to keep the bar."
+            />
+            {/* The real component at the real slot width, so any truncation is
+                visible while you type rather than discovered on the board. */}
+            {values.groupCompletedLabel.trim() && (
+              <div className="mt-2 flex items-center gap-2">
+                <div
+                  className="flex items-center"
+                  // The board header's slot width exactly, so what truncates
+                  // here is what truncates there.
+                  style={{ width: 184 }}
+                >
+                  <GroupCompletedLabel
+                    label={values.groupCompletedLabel.trim()}
+                  />
+                </div>
+                <span
+                  className="font-body"
+                  style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
+                >
+                  {values.groupCompletedLabel.length}/{MAX_COMPLETED_LABEL}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
         {error && (
           <p

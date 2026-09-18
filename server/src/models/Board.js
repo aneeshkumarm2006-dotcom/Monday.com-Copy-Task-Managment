@@ -477,6 +477,34 @@ const boardSchema = new mongoose.Schema(
      * be a third answer free to contradict both.
      */
     goalVocabulary: { type: String, default: null, trim: true, maxlength: 40 },
+
+    /**
+     * What a FINISHED group says in place of its status bar — "ONBOARDING
+     * COMPLETED" on a board whose every group is one client's onboarding.
+     *
+     * EMPTY IS THE OFF SWITCH, and it is the default, so every board that
+     * already exists renders its group headers exactly as it did before this
+     * field existed. There is no second representation of "off": `trim: true`
+     * turns a spacebar into `''` too.
+     *
+     * Deliberately NOT derived from the group's name. "{GROUP} COMPLETED"
+     * reads as nonsense for a group that is not a unit of work you finish —
+     * a Backlog, a Templates group — so the wording is typed once, by someone
+     * who can see which groups this board holds.
+     *
+     * ONE STRING FOR THE BOARD rather than one per group: a board is already
+     * single-purpose in practice (every group on an onboarding board is an
+     * onboarding), and N strings are N things to keep in step. If a board ever
+     * genuinely mixes kinds, the answer is a per-group suppression boolean,
+     * not a per-group copy of this text free to contradict it.
+     *
+     * 22 characters because it renders inside the fixed-width column that
+     * keeps the group headers aligned down the page — 184px there, which fits
+     * "ONBOARDING COMPLETED" and a little more. The controller CLAMPS to the
+     * same number rather than rejecting, so `maxlength` here is an invariant
+     * that can never fire and turn a long paste into a 500.
+     */
+    groupCompletedLabel: { type: String, default: '', trim: true, maxlength: 22 },
   },
   { timestamps: true }
 );

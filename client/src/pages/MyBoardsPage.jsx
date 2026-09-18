@@ -296,6 +296,13 @@ const MyBoardsPage = () => {
     if (values.visibility !== editTarget.visibility) {
       patch.visibility = values.visibility;
     }
+    // Same "only when changed" rule as visibility, for a different reason: the
+    // server gates this on `board.rename` like the two fields above it, so an
+    // unchanged value is harmless — but sending it on every save would rewrite
+    // the stored string from a form that may be showing a stale board.
+    if ((values.groupCompletedLabel || '') !== (editTarget.groupCompletedLabel || '')) {
+      patch.groupCompletedLabel = values.groupCompletedLabel || '';
+    }
     await updateBoardAction(editTarget._id, patch);
 
     if (values.typeChanged) {
