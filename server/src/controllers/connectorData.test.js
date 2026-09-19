@@ -163,9 +163,21 @@ const stubModels = ({
   board = makeBoard(),
   org = makeOrg(),
   mappedProjects = [makeProject()],
-  extraProjects = [],
+  /**
+   * EVERY site the workspace holds for this provider, mapped or not.
+   *
+   * This replaced a `withData` list of project ids that the handler used to look
+   * up through `ConnectorSnapshot.distinct`. The read no longer asks that
+   * question: the picker is the org's whole pool now, because a site that is not
+   * mapped to any group — a prospect, a competitor, the agency's own domain —
+   * has to be reachable before it has ever been collected for, and "has a
+   * snapshot" could never be true of one.
+   *
+   * Defaults to the mapped list so every test that does not care about the
+   * distinction sees exactly what it saw before.
+   */
+  poolProjects = null,
   snapshots = [makeSnapshot()],
-  withData = [],
   boardConnector = { enabled: true, kinds: [], lastRefreshAt: null },
 } = {}) => {
   const originals = {
@@ -173,18 +185,16 @@ const stubModels = ({
     orgFindById: Organisation.findById,
     projectFind: ConnectorProject.find,
     snapshotFind: ConnectorSnapshot.find,
-    snapshotDistinct: ConnectorSnapshot.distinct,
     bcFindOne: BoardConnector.findOne,
   };
 
   Board.findById = () => Promise.resolve(board);
   Organisation.findById = () => Promise.resolve(org);
-  // Two different call shapes: `projectsForBoard` filters by board, the
-  // has-data top-up filters by `_id.$in`.
+  // Two different call shapes: `projectsForBoard` filters by BOARD, the pool
+  // read filters by organisation and excludes drafts.
   ConnectorProject.find = (filter) =>
-    chain(filter && filter._id?.$in ? extraProjects : mappedProjects);
+    chain(filter && filter.board ? mappedProjects : poolProjects ?? mappedProjects);
   ConnectorSnapshot.find = () => chain(snapshots);
-  ConnectorSnapshot.distinct = () => Promise.resolve(withData);
   BoardConnector.findOne = () => chain(boardConnector);
 
   return () => {
@@ -192,7 +202,6 @@ const stubModels = ({
     Organisation.findById = originals.orgFindById;
     ConnectorProject.find = originals.projectFind;
     ConnectorSnapshot.find = originals.snapshotFind;
-    ConnectorSnapshot.distinct = originals.snapshotDistinct;
     BoardConnector.findOne = originals.bcFindOne;
   };
 };
@@ -404,8 +413,7 @@ test('a project that was unmapped keeps its history reachable', async () => {
   // mapping. Hiding it would leave the rows on disk forever with no way in.
   const restore = stubModels({
     mappedProjects: [],
-    withData: [OTHER_PROJECT],
-    extraProjects: [makeProject({ _id: OTHER_PROJECT, group: null, board: null })],
+    poolProjects: [makeProject({ _id: OTHER_PROJECT, group: null, board: null })],
   });
   try {
     const res = fakeRes();
@@ -418,10 +426,63 @@ test('a project that was unmapped keeps its history reachable', async () => {
   }
 });
 
+test('a site that has never been collected for is still reachable', async () => {
+  /**
+   * The gap this closed. A Site could be added for a prospect, a competitor or
+   * the agency's own domain and left unmapped — which is a supported thing to do
+   * and the only way to look at a domain before committing it to a client —
+   * and it was then invisible to the dashboard entirely. It was not mapped, so
+   * it failed the first half of the old query; it had never been collected for,
+   * so it failed the second. There was no way in.
+   */
+  const restore = stubModels({
+    mappedProjects: [],
+    poolProjects: [
+      makeProject({ _id: OTHER_PROJECT, group: null, board: null, lastFetchedAt: null }),
+    ],
+    snapshots: [],
+  });
+  try {
+    const res = fakeRes();
+    await getConnectorData(req({ query: { project: OTHER_PROJECT } }), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(String(res.body.project._id), OTHER_PROJECT);
+    assert.equal(res.body.projects[0].mappedHere, false);
+  } finally {
+    restore();
+  }
+});
+
+test('the mapped sites sort ahead of the rest of the pool', async () => {
+  // So the default selection is still one of THIS board's clients rather than
+  // whichever domain in the workspace happened to sort first.
+  const restore = stubModels({
+    mappedProjects: [makeProject()],
+    poolProjects: [
+      makeProject({ _id: OTHER_PROJECT, name: 'Aardvark', group: null, board: null }),
+      makeProject(),
+    ],
+  });
+  try {
+    const res = fakeRes();
+    await getConnectorData(req(), res);
+    assert.equal(res.body.projects.length, 2);
+    assert.equal(res.body.projects[0].mappedHere, true);
+    assert.equal(String(res.body.project._id), PROJECT);
+    // And the pool's copy of a mapped site is not listed a second time.
+    assert.equal(
+      res.body.projects.filter((p) => String(p._id) === PROJECT).length,
+      1
+    );
+  } finally {
+    restore();
+  }
+});
+
 test('a board with nothing mapped and nothing collected answers cleanly', async () => {
   // Empty, not broken. The tab renders an EmptyState from this rather than
   // throwing on a null project.
-  const restore = stubModels({ mappedProjects: [], withData: [], snapshots: [] });
+  const restore = stubModels({ mappedProjects: [], poolProjects: [], snapshots: [] });
   try {
     const res = fakeRes();
     await getConnectorData(req(), res);

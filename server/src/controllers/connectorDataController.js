@@ -2,19 +2,26 @@ const mongoose = require('mongoose');
 
 const ConnectorProject = require('../models/ConnectorProject');
 const ConnectorSnapshot = require('../models/ConnectorSnapshot');
+const ConnectorAccount = require('../models/ConnectorAccount');
 const BoardConnector = require('../models/BoardConnector');
+const TaskGroup = require('../models/TaskGroup');
 
-const { getConnector } = require('../services/connectors');
+const { getConnector, publicAuthoring } = require('../services/connectors');
 const {
   collectSnapshots,
   projectsForBoard,
   writeSnapshot,
 } = require('../services/connectors/snapshotService');
+const { buildSiteIndex } = require('../services/connectors/siteIndex');
 const { openSession } = require('../services/connectors/session');
 const { describeBudget, monthKeyFor } = require('../services/connectors/budget');
 const { runWriteback } = require('../services/connectorGoalWriteback');
 const { isConnectorProvider } = require('../utils/connectorProviders');
-const { gateBoard, publicProject } = require('./connectorController');
+const {
+  gateBoard,
+  publicProject,
+  publicAccount,
+} = require('./connectorController');
 
 /**
  * The connector DATA plane — snapshots in, snapshots out.
@@ -163,36 +170,59 @@ const getConnectorData = async (req, res) => {
     const includeRaw = canManage && req.query?.includeRaw === '1';
     const range = resolveRange(req.query);
 
-    const [mapped, withData, boardConnector] = await Promise.all([
+    const [mapped, pool, boardConnector] = await Promise.all([
       projectsForBoard(ctx.board._id, provider),
-      // Scoped to the ORG, not the board — see above. A project only appears
-      // here if a reading exists for it, so this cannot surface the whole pool.
-      ConnectorSnapshot.distinct('project', {
+      /**
+       * EVERY SITE IN THE WORKSPACE FOR THIS PROVIDER, not only the mapped ones.
+       *
+       * This used to be "mapped here, plus anything that already carries
+       * readings", and the gap between those two sets was a feature that did not
+       * work: a site could be added and left unmapped — for a prospect, for a
+       * competitor, for a domain that is simply not one of this board's clients
+       * — and it was then unreachable from the dashboard entirely, because the
+       * only way in was a picker built from this list. It had no readings yet,
+       * so it did not qualify for the second half either. `refreshConnectorData`
+       * has always accepted an unmapped project by id, precisely so a prospect
+       * could be pulled before committing it to a group; this is the read side
+       * of that same decision, finally agreeing with it.
+       *
+       * Scoped to the ORGANISATION, which is the same scope
+       * `getBoardConnectorProjects` has always listed on — so nothing becomes
+       * visible here that a person holding `connector.view` on this board could
+       * not already list. Drafts are excluded: a draft has never been collected
+       * for and cannot be, so offering one in a data picker is offering a page
+       * that can only ever be empty. The sites INDEX shows them, because there
+       * the point is to finish them.
+       */
+      ConnectorProject.find({
         organisation: ctx.board.organisation,
         provider,
-      }),
+        status: { $ne: 'draft' },
+      })
+        .sort({ name: 1 })
+        .lean(),
       BoardConnector.findOne({ board: ctx.board._id, provider })
         .select('enabled kinds enabledScreens intervalHours lastRefreshAt')
         .lean(),
     ]);
 
     const mappedIds = new Set(mapped.map((p) => String(p._id)));
-    const extraIds = withData
-      .map(String)
-      .filter((id) => !mappedIds.has(id));
 
-    const extras = extraIds.length
-      ? await ConnectorProject.find({
-          _id: { $in: extraIds },
-          organisation: ctx.board.organisation,
-        })
-          .sort({ name: 1 })
-          .lean()
-      : [];
-
+    // Mapped first, so the default selection below is still one of this board's
+    // own clients rather than whichever site sorted first in the workspace.
     const projects = [
-      ...mapped.map((p) => ({ ...publicProject(p), mappedHere: true, lastFetchedAt: p.lastFetchedAt || null })),
-      ...extras.map((p) => ({ ...publicProject(p), mappedHere: false, lastFetchedAt: p.lastFetchedAt || null })),
+      ...mapped.map((p) => ({
+        ...publicProject(p),
+        mappedHere: true,
+        lastFetchedAt: p.lastFetchedAt || null,
+      })),
+      ...pool
+        .filter((p) => !mappedIds.has(String(p._id)))
+        .map((p) => ({
+          ...publicProject(p),
+          mappedHere: false,
+          lastFetchedAt: p.lastFetchedAt || null,
+        })),
     ];
 
     // Which project the tab is looking at. An explicit id wins; otherwise the
@@ -723,9 +753,23 @@ const refreshConnectorData = async (req, res) => {
     }
 
     if (!projects.length) {
+      /**
+       * Nothing to collect WITHOUT BEING TOLD WHICH, which is not the same as
+       * nothing to collect. A named project is accepted above whether or not it
+       * is mapped — that is the path for a prospect's domain — so this only ever
+       * means "you pressed the button that collects this board's clients, and
+       * this board has no clients wired up".
+       *
+       * The sentence used to send people to Add-ons for a mapping. It now names
+       * the other way out too, because an unmapped site is a supported thing to
+       * have and telling somebody to map one is telling them to change what a
+       * board reports on in order to look at a domain.
+       */
       return res.status(409).json({
         error:
-          'No project on this board is mapped to a group yet. Map one under Add-ons first.',
+          'No site on this board is mapped to a group yet, so there is nothing ' +
+          'scheduled to collect. Map one to a group, or open a single site and ' +
+          'refresh it on its own.',
         code: 'NO_PROJECTS',
       });
     }
@@ -920,9 +964,146 @@ const runConnectorAction = async (req, res) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// The site index — every site, one row each
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/boards/:boardId/connectors/:provider/sites
+ *
+ * EVERY SITE THIS WORKSPACE TRACKS FOR THIS PROVIDER, with the numbers a table
+ * puts in a row and everything the "Add a site" dialog needs to open.
+ *
+ * ---- Why this is not `/data` with a flag ------------------------------------
+ *
+ * `/data` answers "everything about ONE site": a year of snapshots, every
+ * keyword, a trend, a queue depth. This answers "ten numbers about ALL of them".
+ * Folding the second into the first would mean the table paid for a per-keyword
+ * payload it throws away, and the dashboard paid for an index it never reads.
+ * Two questions, two costs, two paths — the same split the route file already
+ * makes between `/refresh` and `/projects/refresh`.
+ *
+ * It is also why the SHAPE here is deliberately not a list of `/data` payloads:
+ * `siteIndex.js` reduces each site to a row server-side, so twenty sites is one
+ * query and one small response rather than twenty round trips.
+ *
+ * ---- The scope is the ORGANISATION, and that is the point -------------------
+ *
+ * A site does not have to be mapped to a group on this board — or to any group —
+ * to appear. That is the whole of what "add a site that isn't one of the
+ * clients" means: a prospect's domain, a competitor, a property the agency owns
+ * itself. Mapping it to a group is what wires its numbers into the board's
+ * goals, and it stays optional. `mappedHere` and `groupName` say which is which,
+ * so the table can be honest about it rather than hiding the difference.
+ *
+ * Same scope as `getBoardConnectorProjects`, which has listed org-wide since it
+ * was written, so nothing becomes visible that `connector.view` on this board
+ * could not already list.
+ *
+ * ---- It spends nothing ------------------------------------------------------
+ *
+ * `connector.view`, like the other two reads, because it touches
+ * `ConnectorProject`, `ConnectorSnapshot`, `TaskGroup` and `ConnectorAccount`
+ * and contacts nobody. On this provider that is the load-bearing rule: it bills
+ * at the moment a collection is ordered, so a tab that fetched on mount would
+ * buy SERPs per viewer per render.
+ */
+const listConnectorSites = async (req, res) => {
+  try {
+    const gated = await gateProvider(req, res, 'connector.view');
+    if (!gated) return undefined;
+    const { ctx, connector, provider } = gated;
+
+    const canManage = !!ctx.can('connector.manage');
+
+    const [projects, boardConnector, groups, accounts] = await Promise.all([
+      ConnectorProject.find({ organisation: ctx.board.organisation, provider })
+        // Drafts first, then live, then the ones that vanished at the provider.
+        // Same ordering `SitesPanel` sorts to and for the same reason: an
+        // unfinished site is the only row that needs a person, and one sitting
+        // at the bottom of an alphabetical twenty is one nobody ever finishes.
+        .sort({ name: 1 })
+        .lean(),
+      BoardConnector.findOne({ board: ctx.board._id, provider })
+        .select('enabled kinds enabledScreens intervalHours lastRefreshAt')
+        .lean(),
+      // Name the groups this board holds, so a mapped row reads "Acme" rather
+      // than an id. Scoped to THIS board — a site mapped on another board is
+      // reported as exactly that, without naming somebody else's group.
+      TaskGroup.find({ board: ctx.board._id }).select('name').sort({ order: 1 }).lean(),
+      ConnectorAccount.find({
+        organisation: ctx.board.organisation,
+        provider,
+        status: { $ne: 'revoked' },
+      })
+        .sort({ label: 1 })
+        .lean(),
+    ]);
+
+    const index = await buildSiteIndex(projects);
+    const groupNameById = new Map(groups.map((g) => [String(g._id), g.name]));
+
+    const sites = projects.map((project) => {
+      const row = index.get(String(project._id)) || {};
+      const boundHere =
+        !!project.group && String(project.board) === String(ctx.board._id);
+      return {
+        ...publicProject(project),
+        lastFetchedAt: project.lastFetchedAt || null,
+        /**
+         * The three answers a binding can give, kept apart rather than collapsed
+         * into a boolean. "Mapped to Acme here", "mapped on another board" and
+         * "not mapped at all" lead to three different actions, and a table that
+         * merged the last two would offer to map a site that the unique index
+         * on (provider, group) is about to refuse.
+         */
+        mappedHere: boundHere,
+        mappedElsewhere: !!project.group && !boundHere,
+        groupName: boundHere ? groupNameById.get(String(project.group)) || null : null,
+        variant: row.variant || null,
+        collectedAt: row.collectedAt || null,
+        metrics: row.metrics || null,
+        deltas: row.deltas || {},
+        has: row.has || { positions: false, backlinks: false, audit: false },
+      };
+    });
+
+    return res.json({
+      canManage,
+      enabled: !!boardConnector?.enabled,
+      provider: {
+        name: connector.name,
+        label: connector.label,
+        blurb: connector.blurb,
+        /**
+         * What the "Add a site" dialog is built from — the descriptor's own caps,
+         * scopes and wording.
+         *
+         * Sent from THIS request rather than from a second one against
+         * `/boards/:id/connectors`, because the button lives on this screen now
+         * and a dialog that cannot open until a second round trip lands is a
+         * button that does nothing for a beat after it appears. Null for a
+         * provider whose projects are mirrored, which is what tells the client
+         * not to draw the button at all.
+         */
+        projectAuthoring: publicAuthoring(connector.projectAuthoring),
+      },
+      // For the dialog's account picker and for the "no account connected"
+      // notice, which is the one state where adding a site cannot work at all.
+      accounts: accounts.map(publicAccount),
+      groups: groups.map((g) => ({ _id: g._id, name: g.name })),
+      sites,
+    });
+  } catch (err) {
+    console.error('listConnectorSites error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   getConnectorData,
   getConnectorUsage,
+  listConnectorSites,
   refreshConnectorData,
   runConnectorAction,
   // Exported for the tests and for phases 4-5, which read the same shapes.

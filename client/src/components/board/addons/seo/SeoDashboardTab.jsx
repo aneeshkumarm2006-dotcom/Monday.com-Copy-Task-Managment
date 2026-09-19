@@ -11,6 +11,7 @@ import useTaskStore from '../../../../store/taskStore';
 import useToastStore from '../../../../store/toastStore';
 import {
   getConnectorData,
+  getConnectorSites,
   getConnectorUsage,
   refreshConnectorData,
 } from '../../../../services/connectorService';
@@ -22,6 +23,8 @@ import {
   ProviderProjectBar,
   ScreenHeading,
 } from '../connector/ProviderChrome';
+import SiteSetupWizard from '../sites/SiteSetupWizard';
+import SitesIndexScreen from './SitesIndexScreen';
 import OverviewScreen from './OverviewScreen';
 import RankTrackingScreen from './RankTrackingScreen';
 import KeywordResearchScreen from './KeywordResearchScreen';
@@ -38,7 +41,42 @@ import LocalScreen from './LocalScreen';
 import UsageScreen from './UsageScreen';
 
 /**
- * The SEO dashboard — one provider's screens, out of our own database.
+ * The SEO dashboard — a TABLE OF SITES, and one site's screens inside it.
+ *
+ * ---- Two levels, and why the table is the first one ------------------------
+ *
+ * This tab used to open straight into one site, chosen by a dropdown. That is
+ * the right first screen for somebody who already knows which client they came
+ * for, and the wrong one for everybody else — an agency's first question is "how
+ * are all of them doing", and the only way to answer it was to pick each site in
+ * turn and remember the numbers.
+ *
+ * It was also a dead end for a SITE THAT IS NOT A CLIENT. The dropdown was built
+ * from the board's mapped projects, so a domain added for a prospect, a
+ * competitor or the agency itself could be created and then never looked at. The
+ * server's own refresh endpoint has always accepted an unmapped project by id,
+ * precisely so a prospect could be pulled before committing it to a group; the
+ * read side simply never agreed with it.
+ *
+ * So the tab holds two views and this file switches between them:
+ *
+ *   INDEX   — `SitesIndexScreen`, every site the workspace tracks, one row of
+ *             numbers each, reduced server-side by `siteIndex.js`. Sites are
+ *             added and edited from here.
+ *   PROJECT — the screens below, which are unchanged: one site, in depth.
+ *
+ * Nothing renders both. They answer different questions and a page that tried to
+ * do both would do the second one in a third of the width.
+ *
+ * ---- Why "add a site" lives here now ---------------------------------------
+ *
+ * It is still ALSO under Add-ons, and deliberately so: that tab is where a
+ * connector is switched on, and the site list belongs beside the switch that
+ * makes it collect. But adding a site from a settings tab and then navigating to
+ * a different tab to look at it is two places for one job, and the one people
+ * are in when they think "we should track this domain" is this one. The wizard
+ * is the SAME component (`sites/SiteSetupWizard`) driven from both, so there is
+ * one setup flow rather than two that can drift.
  *
  * ---- Why this is a second tab and not more sections in the first one --------
  *
@@ -140,6 +178,37 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
   const [confirmBuy, setConfirmBuy] = useState(false);
 
   /**
+   * The index's own payload — every site, with the accounts and groups the
+   * setup wizard needs to open.
+   *
+   * A SECOND request rather than a widening of the first, for the reason the
+   * endpoint's own header gives: `/data` answers "everything about one site" and
+   * this answers "ten numbers about all of them". Folding them together would
+   * make the table pay for per-keyword payloads it throws away and the dashboard
+   * pay for an index it never reads.
+   *
+   * Its failure is deliberately NOT fatal to the tab. A person who arrived here
+   * to read one client's ranks should not lose the page because the index query
+   * failed — the same rule `GoalsTab` states for its own secondary reads.
+   */
+  const [index, setIndex] = useState(null);
+  const [indexLoading, setIndexLoading] = useState(true);
+
+  /**
+   * Which of the two views is on screen.
+   *
+   * Held here rather than in the URL, like the site and the market and the
+   * reading window, and for the same reason those are: a reading position is not
+   * the thing worth pasting to a colleague, and putting it in the URL would mean
+   * a history entry per click.
+   */
+  const [view, setView] = useState('index');
+
+  /** `{project}` with a null project meaning "create". One piece of state, so
+   *  the dialog and its target cannot disagree about what is on screen. */
+  const [wizard, setWizard] = useState(null);
+
+  /**
    * The money screen's payload, fetched only when that screen is opened.
    *
    * Two requests rather than one, deliberately. The ledger walks a task table
@@ -177,6 +246,7 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
   // Guards the race the debounce below makes real. See the header.
   const requestRef = useRef(0);
   const usageRequestRef = useRef(0);
+  const indexRequestRef = useRef(0);
 
   const load = useCallback(
     async ({ quiet = false } = {}) => {
@@ -211,6 +281,34 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
     [boardId, provider, projectId, variant, keyword, range.from, range.to]
   );
 
+  /**
+   * Every site, for the table.
+   *
+   * Fetched on mount rather than on first opening the index, because the index
+   * IS the landing view — deferring it would put a spinner on the tab's own
+   * first paint. It contacts no provider and spends nothing, which is what makes
+   * that safe; see the endpoint's header.
+   */
+  const loadIndex = useCallback(
+    async ({ quiet = false } = {}) => {
+      if (!boardId || !provider) return;
+      if (!quiet) setIndexLoading(true);
+      const ticket = ++indexRequestRef.current;
+      try {
+        const next = await getConnectorSites(boardId, provider);
+        if (ticket !== indexRequestRef.current) return;
+        setIndex(next);
+      } catch {
+        // Never fatal to the tab — see the state's own note. The table renders
+        // its own empty state from a null payload.
+        if (ticket === indexRequestRef.current) setIndex(null);
+      } finally {
+        if (ticket === indexRequestRef.current) setIndexLoading(false);
+      }
+    },
+    [boardId, provider]
+  );
+
   const loadUsage = useCallback(
     async ({ quiet = false } = {}) => {
       if (!boardId || !provider) return;
@@ -235,6 +333,10 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
     load();
   }, [load]);
 
+  useEffect(() => {
+    loadIndex();
+  }, [loadIndex]);
+
   // Fetched on first open and refreshed on later ones, so a person who has just
   // pressed Refresh sees the new job appear in the queue.
   useEffect(() => {
@@ -244,12 +346,18 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
 
   // Drop the previous board's readings the instant the board changes, so a
   // stale project id cannot survive into a board that has never heard of it.
+  // The view goes back to the table for the same reason: a board switch is a
+  // different set of sites, and staying drilled into one of the old board's
+  // would be a page about a client this board does not have.
   useEffect(() => {
     setData(null);
+    setIndex(null);
     setUsage(null);
     setProjectId('');
     setVariant('');
     setKeyword('');
+    setView('index');
+    setWizard(null);
   }, [boardId]);
 
   /**
@@ -268,6 +376,10 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
     if (boardRefreshTarget !== boardId) return undefined;
     const t = setTimeout(() => {
       load({ quiet: true });
+      // The table fills itself in too. It is the view most likely to be the one
+      // left open, and a collection landing out of band is exactly what it is
+      // for: twenty rows going from "Never" to a number without a reload.
+      loadIndex({ quiet: true });
       if (screen === 'usage') loadUsage({ quiet: true });
     }, 1500);
     return () => clearTimeout(t);
@@ -371,6 +483,7 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
       }
 
       await load({ quiet: true });
+      await loadIndex({ quiet: true });
       if (activeScreen === 'usage') await loadUsage({ quiet: true });
     } catch (err) {
       toastError(
@@ -381,17 +494,106 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
     }
   };
 
+  /**
+   * A site was saved in the wizard.
+   *
+   * ---- This is called PER STEP, not once at the end --------------------------
+   *
+   * The staged setup writes a draft after every step, so this fires four or five
+   * times for one new site and the wizard closes ITSELF from `finish`. Closing
+   * the dialog here would therefore shut it the moment somebody typed a domain —
+   * and the toast has to be conditional for the same reason, or one site earns
+   * five of them. `AddonsTab.siteSaved` learned both of these; they are restated
+   * because the failure is silent from this side.
+   *
+   * The payloads are RELOADED rather than patched in place. A new site changes
+   * the index's totals, and a launched draft changes what `/data` will answer for
+   * it — reconciling either by hand here would be a second copy of the server's
+   * own reducer.
+   */
+  const siteSaved = (project) => {
+    loadIndex({ quiet: true });
+    if (project?.status !== 'draft') {
+      load({ quiet: true });
+      toastSuccess(
+        `${project?.name || project?.domain || 'That site'} saved.` +
+          (project?.group ? '' : ' Map it to a group to feed this board’s goals.')
+      );
+    }
+  };
+
+  /** Everything the wizard and the table need out of the index payload. */
+  const authoring = index?.provider?.projectAuthoring || null;
+  const noun = authoring?.label || 'Site';
+  const canManage = !!(index?.canManage ?? data?.canManage);
+  /**
+   * Adding needs BOTH the capability and somewhere to put it. A connected
+   * account is required — `ConnectorProject.account` is part of the row's unique
+   * key and cannot be deferred — so with none the button is not drawn at all
+   * rather than offered and then refused by the server.
+   */
+  const canAdd = canManage && !!authoring && (index?.accounts?.length || 0) > 0;
+
+  if (error) {
+    // Doctrine: the server's own sentence, in place, never a toast.
+    return <EmptyState icon={Plug} title={providerLabel || 'SEO'} description={error} />;
+  }
+
+  const wizardDialog = wizard && authoring && (
+    <SiteSetupWizard
+      isOpen
+      onClose={() => setWizard(null)}
+      boardId={boardId}
+      provider={provider}
+      authoring={authoring}
+      accounts={index?.accounts || []}
+      groups={index?.groups || []}
+      // The other sites, so the group picker can grey out one that is taken —
+      // `(provider, group)` is unique, and offering a bound group would be
+      // offering a control that only ever errors.
+      projects={index?.sites || []}
+      project={wizard.project}
+      onSaved={siteSaved}
+    />
+  );
+
+  // ---- The index: the view this tab opens on -------------------------------
+  if (view === 'index') {
+    return (
+      <div className="mt-5">
+        <SitesIndexScreen
+          sites={index?.sites || []}
+          loading={indexLoading}
+          label={label}
+          noun={noun}
+          canManage={canManage}
+          canAdd={canAdd}
+          onOpen={(site) => {
+            setProjectId(String(site._id));
+            // A keyword and a market belong to the site whose table they came
+            // from. Carrying either across would ask for a variant this site has
+            // never produced.
+            setVariant('');
+            setKeyword('');
+            setScreen('overview');
+            setView('project');
+          }}
+          onAdd={() => setWizard({ project: null })}
+          onEdit={(site) => setWizard({ project: site })}
+          onRefresh={() => runRefresh()}
+          refreshing={refreshing}
+        />
+        {wizardDialog}
+      </div>
+    );
+  }
+
   if (loading && !data) {
     return (
       <div className="flex justify-center py-16">
         <Spinner />
       </div>
     );
-  }
-
-  if (error) {
-    // Doctrine: the server's own sentence, in place, never a toast.
-    return <EmptyState icon={Plug} title={providerLabel || 'SEO'} description={error} />;
   }
 
   if (!data?.project) {
@@ -401,11 +603,14 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
           icon={Plug}
           title={`No ${label} sites yet`}
           description={
-            data?.canManage
-              ? 'Add a site under Add-ons — a domain, the markets you track it in, and the keywords you track there — then map it to a group. Nothing is bought when you open this tab.'
+            canAdd
+              ? `A ${noun.toLowerCase()} is a domain, the markets you track it in, and the keywords you track there. It does not have to belong to a client on this board. Nothing is bought when you open this tab.`
               : 'Nobody has set up a site for this board yet.'
           }
+          actionLabel={canAdd ? `Add a ${noun.toLowerCase()}` : undefined}
+          onAction={canAdd ? () => setWizard({ project: null }) : undefined}
         />
+        {wizardDialog}
       </div>
     );
   }
@@ -455,6 +660,12 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
           canManage={data.canManage}
           refreshing={refreshing}
           onRefresh={() => runRefresh()}
+          // The way back to the table this site was opened from. It replaces the
+          // globe that used to sit in this corner — a person who arrived by
+          // clicking a row looks for the way out in the top-left, and a
+          // decoration in that spot is a control that is not there.
+          onBack={() => setView('index')}
+          backLabel={`All ${noun.toLowerCase()}s`}
         />
 
         {!data.enabled && (
@@ -583,6 +794,11 @@ const SeoDashboardTab = ({ boardId, provider, providerLabel }) => {
           </Button>
         </div>
       </Modal>
+
+      {/* Editing the site you are reading, without going back to the table for
+          it. The same dialog the index opens — one setup flow, driven from two
+          places. */}
+      {wizardDialog}
     </div>
   );
 };

@@ -39,6 +39,80 @@ const getConnector = (name) => {
 };
 
 /**
+ * A descriptor's `projectAuthoring` block, in a shape safe to serialise.
+ *
+ * ---- Why this is a function rather than an inline object -------------------
+ *
+ * It was inline in `listConnectors` until the site index needed the same block
+ * from a second handler. The temptation there was a spread with the readers set
+ * to `undefined`, and that is precisely the mistake this file's own comment
+ * warns against: a spread carries whatever a future descriptor happens to hang
+ * off `projectAuthoring` into a response, and `undefined` is a blocklist, which
+ * is only ever correct until somebody adds a field to the wrong side of it.
+ *
+ * So the whitelist lives once, here, and both callers use it. Adding a field to
+ * a descriptor still requires a deliberate line in this function before it can
+ * cross the wire — which is the property, not an inconvenience.
+ *
+ * `readForm`, `readDraft`, `readDraftPatch` and `readStep` are functions and are
+ * dropped BY CONSTRUCTION rather than by exclusion. The client must not hold
+ * half of a validation the server owns: two implementations of a rule agree
+ * until they quietly do not, and the one that costs money is the server's.
+ *
+ * @param {Object|null} authoring - `descriptor.projectAuthoring`
+ * @returns {Object|null}
+ */
+const publicAuthoring = (authoring) =>
+  authoring
+    ? {
+        label: authoring.label || 'Site',
+        help: authoring.help || '',
+        maxKeywords: authoring.maxKeywords ?? null,
+        maxTargets: authoring.maxTargets ?? null,
+        maxCompetitors: authoring.maxCompetitors ?? null,
+        devices: Array.isArray(authoring.devices) ? [...authoring.devices] : [],
+        /**
+         * Whether setup is a staged wizard or a single dialog.
+         *
+         * DERIVED FROM THE CAPABILITY, never declared. The staged flow saves
+         * after every step, so it is exactly and only available to a descriptor
+         * that can read a partial site — and a hand-written flag beside those
+         * functions is a second copy of the same fact, free to drift from it.
+         * The failure that drift produces is not subtle: the wizard's first step
+         * would POST a domain with no keywords to a reader that requires them,
+         * and the whole flow would be dead on arrival for that provider.
+         */
+        staged:
+          typeof authoring.readDraft === 'function' &&
+          typeof authoring.readDraftPatch === 'function',
+        /** How much of a domain counts as ours, with the server's copy. */
+        scopes: Array.isArray(authoring.scopes)
+          ? authoring.scopes.map((s) => ({ ...s }))
+          : [],
+        /**
+         * The country catalog, verbatim.
+         *
+         * ~115 rows of five short fields, and it rides on the board load that
+         * already carries every screen and every field this provider declares.
+         * The alternative - a second request the moment somebody opens the
+         * market step - buys a round trip to save a few KB on a page that is not
+         * on any hot path.
+         *
+         * Cities are NOT here, and that is the point: they are tens of thousands
+         * of rows per country and they come from the provider on demand.
+         * `locationSearch` says that endpoint exists.
+         */
+        locations: Array.isArray(authoring.locations)
+          ? authoring.locations.map((l) => ({ ...l }))
+          : [],
+        languages: Array.isArray(authoring.languages)
+          ? authoring.languages.map((l) => ({ ...l }))
+          : [],
+        locationSearch: !!authoring.locationSearch,
+      }
+    : null;
+
+/**
  * Every provider, in a shape safe to serialise to a client.
  *
  * Note what is absent: the `oauth` functions and anything else executable. This
@@ -136,61 +210,11 @@ const listConnectors = () =>
        * Carried on the catalog so the Add-ons tab can offer "Add a site" without
        * naming a provider, and so the form renders the server's own limits
        * rather than hardcoding numbers that live in the provider's constants.
-       * `readForm` is a function and is dropped here by construction — the
-       * client must not hold half of a validation the server owns, because two
-       * implementations of a rule agree until they quietly do not.
+       * Shaped by `publicAuthoring`, which is also what the site-index handler
+       * uses - one whitelist, so a field cannot reach a client through one
+       * response and not the other.
        */
-      projectAuthoring: c.projectAuthoring
-        ? {
-            label: c.projectAuthoring.label || 'Site',
-            help: c.projectAuthoring.help || '',
-            maxKeywords: c.projectAuthoring.maxKeywords ?? null,
-            maxTargets: c.projectAuthoring.maxTargets ?? null,
-            maxCompetitors: c.projectAuthoring.maxCompetitors ?? null,
-            devices: Array.isArray(c.projectAuthoring.devices)
-              ? [...c.projectAuthoring.devices]
-              : [],
-            /**
-             * Whether setup is a staged wizard or a single dialog.
-             *
-             * DERIVED FROM THE CAPABILITY, never declared. The staged flow saves
-             * after every step, so it is exactly and only available to a
-             * descriptor that can read a partial site — and a hand-written flag
-             * beside those functions is a second copy of the same fact, free to
-             * drift from it. The failure that drift produces is not subtle: the
-             * wizard's first step would POST a domain with no keywords to a
-             * reader that requires them, and the whole flow would be dead on
-             * arrival for that provider.
-             */
-            staged:
-              typeof c.projectAuthoring.readDraft === 'function' &&
-              typeof c.projectAuthoring.readDraftPatch === 'function',
-            /** How much of a domain counts as ours, with the server's copy. */
-            scopes: Array.isArray(c.projectAuthoring.scopes)
-              ? c.projectAuthoring.scopes.map((s) => ({ ...s }))
-              : [],
-            /**
-             * The country catalog, verbatim.
-             *
-             * ~115 rows of five short fields, and it rides on the board load
-             * that already carries every screen and every field this provider
-             * declares. The alternative - a second request the moment somebody
-             * opens the market step - buys a round trip to save a few KB on a
-             * page that is not on any hot path.
-             *
-             * Cities are NOT here, and that is the point: they are tens of
-             * thousands of rows per country and they come from the provider on
-             * demand. `locationSearch` says that endpoint exists.
-             */
-            locations: Array.isArray(c.projectAuthoring.locations)
-              ? c.projectAuthoring.locations.map((l) => ({ ...l }))
-              : [],
-            languages: Array.isArray(c.projectAuthoring.languages)
-              ? c.projectAuthoring.languages.map((l) => ({ ...l }))
-              : [],
-            locationSearch: !!c.projectAuthoring.locationSearch,
-          }
-        : null,
+      projectAuthoring: publicAuthoring(c.projectAuthoring),
 
       /** The user-triggered actions, e.g. starting a site-audit crawl. */
       availableActions: Object.values(c.actions || {}).map((a) => ({
@@ -452,4 +476,10 @@ const checkRegistry = () => {
   return { ok: errors.length === 0, errors };
 };
 
-module.exports = { getConnector, listConnectors, validateDescriptor, checkRegistry };
+module.exports = {
+  getConnector,
+  listConnectors,
+  publicAuthoring,
+  validateDescriptor,
+  checkRegistry,
+};

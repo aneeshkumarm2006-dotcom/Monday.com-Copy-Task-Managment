@@ -23,6 +23,7 @@ const {
 const {
   getConnectorData,
   getConnectorUsage,
+  listConnectorSites,
   refreshConnectorData,
   runConnectorAction,
 } = require('../controllers/connectorDataController');
@@ -185,6 +186,21 @@ router.put(
 // bought from, and its keyword list times its target list is the size of the
 // bill. Search operators are refused server-side in the same read, because a
 // cost multiplier only a browser checks is a cost multiplier.
+/**
+ * THE SITE INDEX — every site this workspace tracks, one row each.
+ *
+ * `connector.view`, unlike the three writes below it, and the difference is what
+ * it touches: this reads `ConnectorProject`, `ConnectorSnapshot`, `TaskGroup`
+ * and `ConnectorAccount` and contacts nobody, so it is safe on every render in
+ * exactly the way `/data` is. Handled in the DATA controller rather than beside
+ * the writes here, because what makes it expensive to get wrong is the snapshot
+ * arithmetic, not the authoring.
+ *
+ * It sits on the same path as the POST deliberately. GET the collection, POST to
+ * create in it — and the alternative, a second noun for "the sites with their
+ * numbers", would be two names for one set of rows.
+ */
+router.get('/boards/:boardId/connectors/:provider/sites', listConnectorSites);
 router.post('/boards/:boardId/connectors/:provider/sites', createConnectorSite);
 router.put(
   '/boards/:boardId/connectors/:provider/sites/:projectId',

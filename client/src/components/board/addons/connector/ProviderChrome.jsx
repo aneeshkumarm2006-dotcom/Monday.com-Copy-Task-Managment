@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import {
+  ArrowLeft,
   Bell,
   CircleDot,
   FileBarChart,
@@ -306,6 +307,19 @@ export const ProviderProjectBar = ({
    */
   refreshDisabled = false,
   onRefresh,
+  /**
+   * The way back to the list this project was opened FROM, or null when there
+   * is no list.
+   *
+   * Optional, and absent on the tab that has always opened straight into a
+   * project — a back arrow that leads nowhere is worse than none. The tab with a
+   * sites table passes it, and it sits where the icon used to: a person who
+   * arrived by clicking a row looks for the way out in the top-left corner, and
+   * an icon occupying that corner is a decoration in the one place a control is
+   * expected.
+   */
+  onBack = null,
+  backLabel = 'All sites',
 }) => {
   const title = project?.domain || project?.name || project?.externalId || 'This site';
   const manyProjects = projectOptions.length > 1;
@@ -316,18 +330,40 @@ export const ProviderProjectBar = ({
       className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-3"
       style={{ borderBottom: '1px solid var(--color-border)' }}
     >
-      <div
-        className="grid place-items-center shrink-0"
-        style={{
-          width: 36,
-          height: 36,
-          borderRadius: 'var(--radius-md)',
-          background: 'var(--color-accent-light)',
-          color: 'var(--color-accent-text)',
-        }}
-      >
-        <Globe size={18} aria-hidden="true" />
-      </div>
+      {onBack ? (
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-1.5 font-body shrink-0 transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{
+            height: 34,
+            padding: '0 10px',
+            fontSize: 13,
+            fontWeight: 500,
+            borderRadius: 'var(--radius-md)',
+            border: '1px solid var(--color-border)',
+            background: 'var(--color-bg-surface)',
+            color: 'var(--color-text-secondary)',
+            cursor: 'pointer',
+          }}
+        >
+          <ArrowLeft size={14} aria-hidden="true" />
+          {backLabel}
+        </button>
+      ) : (
+        <div
+          className="grid place-items-center shrink-0"
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 'var(--radius-md)',
+            background: 'var(--color-accent-light)',
+            color: 'var(--color-accent-text)',
+          }}
+        >
+          <Globe size={18} aria-hidden="true" />
+        </div>
+      )}
 
       <div className="min-w-0" style={{ flex: '1 1 220px' }}>
         {manyProjects ? (

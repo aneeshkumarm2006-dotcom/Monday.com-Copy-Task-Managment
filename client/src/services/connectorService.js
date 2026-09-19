@@ -288,6 +288,43 @@ export const getConnectorUsage = async (boardId, provider, params = {}) => {
 };
 
 /**
+ * EVERY SITE THIS WORKSPACE TRACKS for a provider, one row of numbers each.
+ *
+ * What the SEO tab opens on. `getConnectorData` answers "everything about ONE
+ * site" — a year of snapshots, every keyword, a trend — and answering the
+ * question an agency actually has, "how are my twenty sites doing", used to mean
+ * twenty of those requests and reading each payload for five numbers off the
+ * top. This is one request and one small answer, reduced server-side by
+ * `services/connectors/siteIndex.js`.
+ *
+ * READS OUR OWN DATABASE and spends nothing, exactly like the two reads above
+ * it. On this provider that is the load-bearing rule, not a nicety: it bills at
+ * the moment a collection is ordered, so a table that fetched on mount would buy
+ * SERPs per viewer per render.
+ *
+ * The scope is the ORGANISATION, so a site that is not mapped to a group — a
+ * prospect, a competitor, the agency's own domain — is listed like any other.
+ * `mappedHere`, `mappedElsewhere` and `groupName` say which is which.
+ *
+ * Also carries what the "Add a site" dialog needs to open without a second round
+ * trip: the descriptor's `projectAuthoring` block, the connected accounts, and
+ * this board's groups.
+ *
+ * @param {string} boardId
+ * @param {string} provider
+ * @returns {Promise<{sites: Array<Object>, accounts: Array<Object>,
+ *   groups: Array<Object>, provider: Object, canManage: boolean,
+ *   enabled: boolean}>}
+ */
+export const getConnectorSites = async (boardId, provider) => {
+  const { data } = await api.get(
+    `/api/boards/${boardId}/connectors/${provider}/sites`,
+    { suppressErrorToast: true }
+  );
+  return data;
+};
+
+/**
  * Create a locally-authored project — a "site" — for a provider that has nothing
  * to mirror.
  *
