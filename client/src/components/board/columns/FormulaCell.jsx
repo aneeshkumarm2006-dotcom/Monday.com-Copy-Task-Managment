@@ -1,5 +1,5 @@
 import { cellWrapperStyle } from './cellShared';
-import { formatNumber } from '../../../utils/numberFormat';
+import useMoney from '../../../hooks/useMoney';
 
 /**
  * FormulaCell — read-only. The server computes the value when the task is
@@ -10,14 +10,17 @@ import { formatNumber } from '../../../utils/numberFormat';
  * is currency too, and `remaining` reading as a bare number beside two ₹
  * columns is the cell that makes people distrust the board.
  */
-const FormulaCell = ({ value, column }) => (
+const FormulaCell = ({ value, column }) => {
+  const money = useMoney();
+  return (
   <div style={{ ...cellWrapperStyle, justifyContent: 'flex-end', color: 'var(--color-text-secondary)' }}>
     {value == null || value === '' ? (
       <span style={{ color: 'var(--color-text-muted)' }}>—</span>
     ) : (
-      <span>{formatNumber(value, column?.settings)}</span>
+      <span>{money.column(value, column?.settings)}</span>
     )}
   </div>
-);
+  );
+};
 
 export default FormulaCell;

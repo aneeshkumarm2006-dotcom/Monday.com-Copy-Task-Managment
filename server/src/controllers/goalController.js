@@ -384,8 +384,23 @@ const buildGoalPatch = (body, board, { partial = false } = {}) => {
   if (body.unitLabel !== undefined) {
     patch.unitLabel = String(body.unitLabel || '').trim().slice(0, 12);
   }
-  // Money is USD — the symbol is not the caller's to choose.
-  if (patch.unit === 'currency') patch.unitLabel = '$';
+  /**
+   * Money goals carry NO stored symbol any more.
+   *
+   * This used to write `unitLabel = '$'`, which put a literal dollar sign into
+   * the document and thence into the activity log. That was fine while the
+   * symbol was the only thing a unit decided — and wrong the moment a reader
+   * could choose to see the product in rupees, because the stored symbol would
+   * contradict the rendered figure.
+   *
+   * The unit is still USD; it is now IMPLIED by `unit: 'currency'` rather than
+   * spelled out (see `GOAL_CURRENCY` in client/src/utils/goalDisplay.js).
+   *
+   * Rows already carrying a '$' keep it. An activity line is a record of what
+   * somebody wrote at the time, and rewriting one to guess would be worse than
+   * a stale symbol.
+   */
+  if (patch.unit === 'currency') patch.unitLabel = '';
 
   if (body.weight !== undefined) {
     const w = Number(body.weight);

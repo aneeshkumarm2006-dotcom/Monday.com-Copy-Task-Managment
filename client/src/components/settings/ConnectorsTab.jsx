@@ -8,6 +8,7 @@ import Modal from '../ui/Modal';
 import Spinner from '../ui/Spinner';
 import EmptyState from '../ui/EmptyState';
 import useOrgStore from '../../store/orgStore';
+import { formatMoney } from '../../utils/connectorFormat';
 import useToastStore from '../../store/toastStore';
 import {
   getOrgConnectors,
@@ -456,7 +457,7 @@ const ConnectorsTab = () => {
                           */}
                           {connector.metered
                             ? account.monthlyCapUsd
-                              ? ` · $${account.monthlyCapUsd}/mo cap`
+                              ? ` · ${formatMoney(account.monthlyCapUsd, 'USD')}/mo cap`
                               : ' · no monthly cap'
                             : ''}
                         </p>

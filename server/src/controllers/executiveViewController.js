@@ -435,6 +435,45 @@ const parseRevoke = (raw) => {
 // ---------------------------------------------------------------------------
 
 /**
+ * One row of the Executives strip: the stored profile, plus whatever the user
+ * lookup found for the person it names (or null when it found nobody).
+ *
+ * Pure, and exported, because the ORPHAN case is a decision rather than a
+ * rendering, and it is the decision this row shape got wrong. A profile whose
+ * user has been deleted keeps its row — that part was always right — and it now
+ * also keeps the two ids that make the row actionable: its own `_id`, and the
+ * raw `userId` it is keyed on. `user: null` says "there is nobody to draw
+ * here"; those two say "and here is where to point". Emitting only the first is
+ * what turned a tidy-up into a permanent counter on the Members page.
+ *
+ * `userId` is emitted for a LIVE row too rather than only for an orphan. A key
+ * that appears only in the broken case is a key every caller forgets to read,
+ * and when the person does resolve it is the same id as `user._id` anyway.
+ *
+ * Note what is deliberately NOT here: no board list, no home layout, no nav.
+ * The strip is a summary (see `list`), and the configurator fetches the full
+ * profile the moment somebody clicks through.
+ */
+const executiveListRow = (profile, user) => ({
+  id: profile._id,
+  // The id every mutating route in this feature is keyed on, kept whether or
+  // not anybody still answers to it. This is the field whose absence made a
+  // dead row unreachable.
+  userId: profile.user ? String(profile.user) : null,
+  user: user
+    ? {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        profilePic: user.profilePic,
+      }
+    : null,
+  boardCount: (profile.boards || []).length,
+  createdAt: profile.createdAt,
+  updatedAt: profile.updatedAt,
+});
+
+/**
  * GET /api/orgs/:orgId/executive-views
  *
  * Every profile in the workspace, with its person and how many boards are on
@@ -453,6 +492,21 @@ const parseRevoke = (raw) => {
  * A profile whose user has been deleted keeps its row with `user: null`. It is
  * an orphan, and this list is the only surface in the app that could ever
  * surface one; hiding it would make it unfixable rather than untidy.
+ *
+ * That last sentence was a claim this handler did not keep. It surfaced the
+ * orphan and, in the same breath, threw away the only key any route in this
+ * feature accepts: `.populate('user', ...)` REPLACES the path, so for a profile
+ * whose user has been deleted the raw `user` ObjectId was overwritten with null
+ * before the payload was built. Every mutating route is keyed on that id, so
+ * the row was visible and unaddressable at once — nothing could edit it and
+ * nothing could delete it, and the Members page counted it forever. Surfacing
+ * something nobody can point at is not the difference between unfixable and
+ * untidy; it is unfixable with a permanent counter attached.
+ *
+ * So the populate is gone and the people are joined in a second query, which
+ * keeps `profile.user` intact and lets the row carry `userId` alongside the
+ * person. `DELETE .../executive-views/by-id/:viewId` (`delById`) is the other
+ * half: the row also carries its own `id`, and that route takes it.
  */
 const list = async (req, res) => {
   try {
@@ -460,25 +514,24 @@ const list = async (req, res) => {
     if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
 
     const profiles = await ExecutiveView.find({ organisation: ctx.org._id })
-      .populate('user', 'name email profilePic')
       .sort({ createdAt: 1 })
       .lean();
 
+    // The people, in one query over the ids the profiles name. This is the same
+    // two round trips `.populate` was already making — it is not a second read,
+    // it is the same read with the join done here, where the id survives it.
+    const userIds = profiles.map((p) => p.user).filter(Boolean);
+    const users = userIds.length
+      ? await User.find({ _id: { $in: userIds } })
+          .select('name email profilePic')
+          .lean()
+      : [];
+    const byId = new Map(users.map((u) => [String(u._id), u]));
+
     return res.json({
-      executives: profiles.map((p) => ({
-        id: p._id,
-        user: p.user
-          ? {
-              _id: p.user._id,
-              name: p.user.name,
-              email: p.user.email,
-              profilePic: p.user.profilePic,
-            }
-          : null,
-        boardCount: (p.boards || []).length,
-        createdAt: p.createdAt,
-        updatedAt: p.updatedAt,
-      })),
+      executives: profiles.map((p) =>
+        executiveListRow(p, byId.get(String(p.user)) || null)
+      ),
     });
   } catch (err) {
     console.error('executiveViews.list error:', err);
@@ -650,6 +703,134 @@ const del = async (req, res) => {
     });
   } catch (err) {
     console.error('executiveViews.del error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * DELETE /api/orgs/:orgId/executive-views/by-id/:viewId
+ *
+ * The same delete as `del`, addressed by the PROFILE's own id instead of the
+ * person's.
+ *
+ * ---- WHY A SECOND ROUTE RATHER THAN A CHANGE TO THE FIRST ------------------
+ *
+ * `DELETE /:userId` is what the configurator calls today and it is the right
+ * shape for the ordinary request: an admin is looking at a person and decides
+ * that person should stop having a curated screen. It keeps working unchanged,
+ * and nothing here replaces it.
+ *
+ * This route exists for the one row that one cannot express. A profile OUTLIVES
+ * the User it names: deleting an account does not delete the view, and neither
+ * does removing somebody from the workspace. The strip then shows a row with
+ * nobody in it — and because every other route in this feature is keyed on a
+ * user id, that row had no address at all. It could not be read, it could not
+ * be edited, and it could not be removed. `list` says surfacing an orphan is
+ * what makes it fixable rather than untidy; that was only true once there was
+ * something to point at it with. This is that something.
+ *
+ * ---- WHY IT DELEGATES TO THE SAME SERVICE CALL -----------------------------
+ *
+ * It resolves the view to the user id the profile is keyed on and then runs the
+ * ordinary `remove(org, userId)`. It does NOT delete by `_id` itself, although
+ * that would be one query instead of two. The service is the only thing in this
+ * feature that deletes a profile, and a second deleter — scoping its own
+ * filter, deciding its own return shape — would be a second set of rules to
+ * keep in agreement with the first forever, for a route whose entire job is
+ * reaching a row the caller already knows exists. So the only thing this
+ * handler really does is RECOVER THE ID `list` used to throw away, which is
+ * precisely what was missing; everything after that is the existing path.
+ *
+ * ---- WHAT IT DOES NOT WIDEN ------------------------------------------------
+ *
+ * Nothing. It goes through `loadAdminContext` exactly like every other route on
+ * this plane, so it needs membership of this workspace AND
+ * `org.manage_executive_views`, and the lookup is scoped to `ctx.org._id` — a
+ * view id belonging to another workspace resolves to nothing here and 404s,
+ * which is the same answer a foreign user id gets from the route above. An
+ * orphan is still org-scoped data, and it is still deleted by exactly the
+ * people who could already delete every other view in the workspace.
+ *
+ * Like `del`, it deliberately carries NO owner refusal. `del` is one of the
+ * paths that clears up a stale document belonging to somebody who has since
+ * become the owner (see `ownerIsNeverAnExecutive` and `putMine`), and a
+ * by-id delete that refused the owner's row would be a second way to make a
+ * document unreachable — the bug this route was written to end.
+ */
+const delById = async (req, res) => {
+  try {
+    const ctx = await loadAdminContext(req);
+    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
+
+    const { viewId } = req.params;
+    if (!isId(viewId)) {
+      return res.status(400).json({ error: 'Unknown executive view' });
+    }
+
+    // Scoped to this workspace, and projected to the one field this handler
+    // needs. `user` is `required` on the model, so a stored profile always
+    // carries an id here — what it may no longer have is a User document at the
+    // other end of it, which is the whole case this route is for and which
+    // changes nothing about the delete that follows.
+    const view = await ExecutiveView.findOne({
+      _id: viewId,
+      organisation: ctx.org._id,
+    })
+      .select('user')
+      .lean();
+    if (!view) {
+      return res
+        .status(404)
+        .json({ error: 'That executive view no longer exists' });
+    }
+
+    const result =
+      (await removeProfile(ctx.org, view.user, { actor: req.user.userId })) ||
+      {};
+    const sent = passThroughDenial(res, result);
+    if (sent) return sent;
+
+    if (!result.removed) {
+      // The read above found it and the delete did not, so something removed it
+      // in between. The same 404, because the caller's request has been
+      // satisfied by somebody else and there is nothing left to report.
+      return res
+        .status(404)
+        .json({ error: 'That executive view no longer exists' });
+    }
+
+    // Counted off the DELETED document, for the reason `del` gives: afterwards
+    // there is nothing left to count.
+    const boardCount = (result.profile?.boards || []).length;
+
+    // `loadTargetUser` answers `{ _id, name: '' }` when there is no User at that
+    // id, and its header says it never returns null on purpose. That case is
+    // the ORDINARY one on this route: removing an orphan is still something
+    // that happened and still belongs in the history, it just has no name to
+    // put in the row — which is a better record than no row at all.
+    const targetUser = await loadTargetUser(view.user);
+    logExecutiveRemoved({
+      organisation: ctx.org._id,
+      targetUser,
+      actor: req.user.userId,
+      boardCount,
+    });
+
+    return res.json({
+      removed: true,
+      // The same two facts `del` reports, for the same reason: deleting a view
+      // leaves the role and every board grant exactly as they were. The client
+      // reads its sentence off these rather than hardcoding one.
+      roleUnchanged: true,
+      grantsUnchanged: true,
+      boardCount,
+      // Echoed because the caller could not have known it — that is the entire
+      // premise of this route — and anything else on the page keyed on the
+      // person rather than on the profile needs it to reconcile.
+      userId: String(view.user),
+    });
+  } catch (err) {
+    console.error('executiveViews.delById error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -1816,6 +1997,7 @@ module.exports = {
   get,
   put,
   del,
+  delById,
   declare,
   addBoard,
   removeBoard,
@@ -1828,4 +2010,10 @@ module.exports = {
   // same words this handler writes. Nothing else in the file exports a constant
   // because nothing else invents one — these reasons are this route's own.
   COPY_SKIP_REASONS,
+  // The strip's row shape. Exported for `executiveListRow.test.js`, which pins
+  // the one thing about it that is a rule and not a rendering: an orphan keeps
+  // its row AND both of the ids that make it reachable. A handler cannot be
+  // unit-tested without a database; this decision can, so it was lifted out to
+  // where it could be.
+  executiveListRow,
 };

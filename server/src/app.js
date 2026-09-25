@@ -139,6 +139,9 @@ app.use('/api', require('./routes/activity'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/productivity', require('./routes/productivity'));
+// Exchange rates. Not under /api/orgs because the snapshots are global — a
+// rate is a public fact and one row serves every workspace. See routes/fx.js.
+app.use('/api/fx', require('./routes/fx'));
 app.use('/api/profile', require('./routes/profile'));
 app.use('/api/search', require('./routes/search'));
 app.use('/api/proxy', require('./routes/proxy'));

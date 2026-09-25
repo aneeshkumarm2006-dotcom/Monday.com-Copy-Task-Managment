@@ -9,7 +9,9 @@ import {
   setPortalToken,
   rememberPortalLink,
 } from '../services/portalService';
-import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
+import { PORTAL_BRAND, PORTAL_BRAND_INITIAL, portalBrandName } from '../utils/portalBrand';
+import PortalBrandMark from '../components/portal/PortalBrandMark';
+import EntityLogo from '../components/ui/EntityLogo';
 import '../styles/portal.css';
 
 /**
@@ -275,6 +277,7 @@ const PortalLandingPage = () => {
   }
 
   const company = meta.clientName || '';
+  const orgLogo = meta.orgLogo || '';
 
   return (
     <div className="mcp mcp-split">
@@ -282,17 +285,21 @@ const PortalLandingPage = () => {
       <aside className="mcp-split-brand">
         <div style={{ position: 'relative', zIndex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div
-              style={{
-                width: 44, height: 44, borderRadius: 12,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'rgba(255,255,255,0.16)', border: '1px solid rgba(255,255,255,0.28)',
-                fontSize: 19, fontWeight: 800,
-              }}
-            >
-              {PORTAL_BRAND_INITIAL}
-            </div>
-            <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>{PORTAL_BRAND}</span>
+            {orgLogo ? (
+              <EntityLogo src={orgLogo} name="Brand" size={44} radius={12} />
+            ) : (
+              <div
+                style={{
+                  width: 44, height: 44, borderRadius: 12,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(255,255,255,0.16)', border: '1px solid rgba(255,255,255,0.28)',
+                  fontSize: 19, fontWeight: 800,
+                }}
+              >
+                {PORTAL_BRAND_INITIAL}
+              </div>
+            )}
+            <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em' }}>{portalBrandName(orgLogo)}</span>
           </div>
         </div>
 
@@ -328,10 +335,10 @@ const PortalLandingPage = () => {
         <div className="mcp-card-lg mcp-pop" style={{ width: '100%', maxWidth: 400, padding: '38px 34px' }}>
           {/* compact brand for mobile (brand panel is hidden < 860px) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 26 }}>
-            <span className="mcp-brand-mark" style={{ width: 42, height: 42 }}>{PORTAL_BRAND_INITIAL}</span>
+            <PortalBrandMark logo={orgLogo} size={42} />
             <div>
-              <div style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.2 }}>{PORTAL_BRAND}</div>
-              {company && <div style={{ fontSize: 12.5, color: '#64748B' }}>{company} · Support portal</div>}
+              <div style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.2 }}>{portalBrandName(orgLogo)}</div>
+              {company && <div style={{ fontSize: 12.5, color: '#64748B' }}>{orgLogo ? company : `${company} · Support portal`}</div>}
             </div>
           </div>
 

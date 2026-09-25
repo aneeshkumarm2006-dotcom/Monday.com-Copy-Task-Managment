@@ -10,6 +10,9 @@ const TaskGroup = require('../models/TaskGroup');
 const ConnectorAccount = require('../models/ConnectorAccount');
 const ConnectorProject = require('../models/ConnectorProject');
 const ConnectorSnapshot = require('../models/ConnectorSnapshot');
+const DfsTask = require('../models/DfsTask');
+const DfsSerpResult = require('../models/DfsSerpResult');
+const DfsCacheProbe = require('../models/DfsCacheProbe');
 const { SYSTEM_ROLES, sanitizePermissions } = require('../utils/capabilities');
 
 const {
@@ -157,6 +160,7 @@ const stubModels = ({
   otherProject = null,
   group = { _id: GROUP, board: BOARD, name: 'Acme Ltd' },
   snapshotCount = 0,
+  openJobs = [],
 } = {}) => {
   const originals = {
     boardFindById: Board.findById,
@@ -168,8 +172,16 @@ const stubModels = ({
     projectCreate: ConnectorProject.create,
     projectDelete: ConnectorProject.deleteOne,
     snapshotCount: ConnectorSnapshot.countDocuments,
+    // The delete path's outstanding-job sweep. Stubbed for the same reason
+    // everything above is: this file runs the real handler against no database,
+    // so a model the handler reaches and the stub does not is a ten-second
+    // buffering timeout, not a failed assertion about behaviour.
+    dfsTaskFind: DfsTask.find,
+    dfsTaskUpdateOne: DfsTask.updateOne,
+    serpDelete: DfsSerpResult.deleteMany,
+    probeDelete: DfsCacheProbe.deleteMany,
   };
-  const calls = { created: [], deleted: [] };
+  const calls = { created: [], deleted: [], closedJobs: [], swept: [] };
 
   Board.findById = () => Promise.resolve(board);
   Organisation.findById = () => Promise.resolve(org);
@@ -194,6 +206,24 @@ const stubModels = ({
   };
   ConnectorSnapshot.countDocuments = async () => snapshotCount;
 
+  // A site with no readings has, by construction, no bodies and no probes — the
+  // `HAS_HISTORY` refusal above is what guarantees it — so the sweeps are
+  // recorded rather than populated. `openJobs` lets a test hand the handler an
+  // outstanding purchase to close.
+  DfsTask.find = () => chain(openJobs);
+  DfsTask.updateOne = async (filter, update) => {
+    calls.closedJobs.push({ filter, update });
+    return { modifiedCount: 1 };
+  };
+  DfsSerpResult.deleteMany = async (filter) => {
+    calls.swept.push({ model: 'DfsSerpResult', filter });
+    return { deletedCount: 0 };
+  };
+  DfsCacheProbe.deleteMany = async (filter) => {
+    calls.swept.push({ model: 'DfsCacheProbe', filter });
+    return { deletedCount: 0 };
+  };
+
   return {
     calls,
     restore: () => {
@@ -206,6 +236,10 @@ const stubModels = ({
       ConnectorProject.create = originals.projectCreate;
       ConnectorProject.deleteOne = originals.projectDelete;
       ConnectorSnapshot.countDocuments = originals.snapshotCount;
+      DfsTask.find = originals.dfsTaskFind;
+      DfsTask.updateOne = originals.dfsTaskUpdateOne;
+      DfsSerpResult.deleteMany = originals.serpDelete;
+      DfsCacheProbe.deleteMany = originals.probeDelete;
     },
   };
 };

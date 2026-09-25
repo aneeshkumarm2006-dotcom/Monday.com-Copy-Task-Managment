@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { DISPLAY_CURRENCIES } = require('../utils/money');
 
 const userSchema = new mongoose.Schema({
   googleId: {
@@ -30,6 +31,41 @@ const userSchema = new mongoose.Schema({
     default: null,
     trim: true,
     maxlength: 64,
+  },
+
+  /**
+   * Which currency this person wants money rendered in, everywhere.
+   *
+   * A DISPLAY fact and nothing else — the same distinction `numberFormat.js`
+   * draws about a column's format. Every amount in the product stays stored in
+   * the currency it was entered in; this only decides what the reader sees,
+   * which is why two teammates can open the same invoice in ₹ and in $ and both
+   * be right.
+   *
+   * ---- Why the default is null and not the workspace's currency ------------
+   *
+   * `null` means AS ENTERED: nothing converts, and the product renders exactly
+   * as it did before this field existed. A default that converted would have
+   * silently restated every figure in the product on the day it shipped — and a
+   * rate that was never applied is the only rate that cannot be wrong.
+   *
+   * ---- Why this is not in `features` ---------------------------------------
+   *
+   * That contract is boolean-only by construction: `profileController`'s
+   * `FEATURE_KEYS` loop requires `typeof body[key] === 'boolean'`. A currency
+   * code is not a switch. It sits here beside `timezone` instead, which is the
+   * existing precedent for a per-user scalar preference.
+   *
+   * The enum includes `null` explicitly — Mongoose validates the default
+   * against the enum on any write with `runValidators`, and omitting it makes
+   * every existing document fail a later validated save.
+   */
+  displayCurrency: {
+    type: String,
+    default: null,
+    trim: true,
+    uppercase: true,
+    enum: [...DISPLAY_CURRENCIES, null],
   },
   organisations: [{
     type: mongoose.Schema.Types.ObjectId,

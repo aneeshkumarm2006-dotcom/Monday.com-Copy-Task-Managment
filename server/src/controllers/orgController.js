@@ -4,7 +4,10 @@ const Organisation = require('../models/Organisation');
 const User = require('../models/User');
 const { sendInviteEmail } = require('../services/emailService');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
+const { revokeUserFromOrg } = require('../services/userCascade');
 const { listCatalog } = require('../services/serviceCatalogService');
+const connectorCrypto = require('../utils/connectorCrypto');
+const { sanitizeFxSettings, keyPreviewOf } = require('../utils/money');
 const { createNotificationsForUsers } = require('../services/notificationService');
 // Ownership transfer is the one event that can leave an executive view on the
 // workspace owner, which invariant 8 forbids. See `transferOrgOwnership`.
@@ -290,18 +293,21 @@ const removeMember = async (req, res) => {
       }
     }
 
-    org.admins = (org.admins || []).filter((a) => a.toString() !== targetUserId);
-    org.members = org.members.filter((m) => m.toString() !== targetUserId);
-    // Drop their role assignment too, or a re-join would silently restore the
-    // role they held before they were removed.
-    org.memberRoles = (org.memberRoles || []).filter(
-      (m) => m.user.toString() !== targetUserId
-    );
-    await org.save();
-
-    await User.findByIdAndUpdate(targetUserId, {
-      $pull: { organisations: org._id },
-    });
+    // Membership on both documents, their role assignment, AND every row that
+    // exists only because they could see this workspace — per-board grants,
+    // follows, notifications, saved messages, read markers, muted boards and
+    // their executive profile.
+    //
+    // This used to be three `filter`s and a `$pull`, which left all of the
+    // above behind. That is not untidy, it is a live leak: the task-audience
+    // fan-out keeps finding their ItemFollow rows and keeps delivering this
+    // workspace's task names to somebody who was removed from it — over Web
+    // Push, which they cannot unsubscribe from because the screen that would
+    // let them is behind the access just taken away. `services/boardGrants.js`
+    // `revoke` made exactly this argument for one board; this is the same fix
+    // one scope up, and it is shared with account deletion so the two paths
+    // cannot drift again.
+    await revokeUserFromOrg({ userId: targetUserId, orgId: org._id, org });
 
     return res.json({ message: 'Member removed', org });
   } catch (err) {
@@ -832,6 +838,144 @@ const listServiceCatalog = async (req, res) => {
   }
 };
 
+
+// ---------------------------------------------------------------------------
+// Currency + exchange rates
+//
+// Read is open to any member and write is gated on `org.manage_settings` — the
+// same split, and the same reasoning, as the holiday calendar above: every
+// screen in the product needs to know what currency this workspace works in,
+// and almost nobody may change it.
+//
+// The capability is REUSED rather than invented. `org.manage_settings` already
+// means "rename the workspace, rotate the invite code", and utils/capabilities.js
+// is a curated catalog — a new key here would also mean a migration script to
+// grant it to everyone who already has it.
+// ---------------------------------------------------------------------------
+
+/**
+ * What a client is allowed to know about this workspace's currency setup.
+ *
+ * Built by hand rather than by spreading `org.fx`, and that is the point: the
+ * sealed key must never leave the server. `select: false` on the field is the
+ * first guard and this function is the second, because a projection is easy to
+ * widen by accident and a hand-written object is not.
+ */
+const currencySettingsOf = (org) => ({
+  baseCurrency: org?.baseCurrency || 'INR',
+  provider: org?.fx?.provider || 'frankfurter',
+  cadence: org?.fx?.cadence || 'monthly',
+  // Whether a key is installed, never the key. `keyPreview` is the last four
+  // characters so somebody can tell two keys apart on screen.
+  hasApiKey: !!org?.fx?.keyPreview,
+  keyPreview: org?.fx?.keyPreview || '',
+  lastFetchAt: org?.fx?.lastFetchAt || null,
+  lastError: org?.fx?.lastError || '',
+});
+
+/**
+ * GET /api/orgs/:id/currency — any member.
+ *
+ * No capability middleware runs on this route, so membership is checked inline
+ * exactly as `listHolidays` does.
+ */
+const getCurrencySettings = async (req, res) => {
+  try {
+    const org = await Organisation.findById(req.params.id).select(
+      'members baseCurrency fx'
+    );
+    if (!org) return res.status(404).json({ error: 'Organisation not found' });
+
+    const isMember = org.members.some((m) => m.toString() === req.user.userId);
+    if (!isMember) {
+      return res.status(403).json({ error: 'Not a member of this workspace' });
+    }
+
+    return res.json({ currency: currencySettingsOf(org) });
+  } catch (err) {
+    console.error('getCurrencySettings error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PUT /api/orgs/:id/currency — requires `org.manage_settings`.
+ *
+ * Body is PARTIAL: { baseCurrency?, provider?, cadence?, apiKey? }. A screen
+ * that saves one control at a time must not have to re-send the others, and a
+ * whole-object write would mean changing the cadence silently cleared the key.
+ *
+ * `apiKey: null` explicitly REMOVES the stored credential — distinct from
+ * omitting the field, which leaves it alone. Without that distinction there is
+ * no way to disconnect a key once set.
+ *
+ * Written with `updateOne` rather than `doc.save()` for the reason documented
+ * on the holiday writes: `save()` carries a `__v` check and two overlapping
+ * Settings writes lost the race with a VersionError.
+ */
+const saveCurrencySettings = async (req, res) => {
+  try {
+    const body = req.body || {};
+    const clean = sanitizeFxSettings(body);
+    if (!clean.ok) return res.status(400).json({ error: clean.error });
+
+    const update = { ...clean.patch };
+
+    if (body.apiKey !== undefined) {
+      if (body.apiKey === null || body.apiKey === '') {
+        update['fx.sealedApiKey'] = null;
+        update['fx.keyPreview'] = '';
+      } else if (typeof body.apiKey !== 'string' || body.apiKey.trim().length < 8) {
+        return res.status(400).json({ error: 'That does not look like an API key.' });
+      } else {
+        /**
+         * A deployment can legitimately have no encryption key configured —
+         * the default rate provider is keyless, so nothing else here needs
+         * one. Checking first turns what would be a 500 on an admin pasting a
+         * key into a sentence that says what to do about it.
+         */
+        const configured = connectorCrypto.checkConfigured();
+        if (configured && configured.error) {
+          return res.status(400).json({
+            error:
+              'This deployment cannot store credentials yet — set the connector encryption key first.',
+          });
+        }
+        const key = body.apiKey.trim();
+        update['fx.sealedApiKey'] = connectorCrypto.seal(key, {
+          orgId: req.params.id,
+          provider: 'fx',
+        });
+        update['fx.keyPreview'] = keyPreviewOf(key);
+      }
+    }
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'Nothing to change.' });
+    }
+
+    // A provider swap invalidates the last run's outcome: "succeeded at 09:00"
+    // is about the provider we were using then, and leaving it on screen beside
+    // a newly chosen one reads as a green light nobody earned.
+    if (update['fx.provider']) {
+      update['fx.lastError'] = '';
+    }
+
+    const result = await Organisation.updateOne({ _id: req.params.id }, { $set: update });
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: 'Organisation not found' });
+    }
+
+    const fresh = await Organisation.findById(req.params.id)
+      .select('baseCurrency fx')
+      .lean();
+    return res.json({ currency: currencySettingsOf(fresh) });
+  } catch (err) {
+    console.error('saveCurrencySettings error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
   listServiceCatalog,
   createOrg,
@@ -847,4 +991,6 @@ module.exports = {
   saveHolidays,
   setHoliday,
   deleteHoliday,
+  getCurrencySettings,
+  saveCurrencySettings,
 };

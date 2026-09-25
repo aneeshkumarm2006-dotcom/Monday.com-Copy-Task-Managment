@@ -4,7 +4,9 @@ import { Wallet } from 'lucide-react';
 import Switch from '../../ui/Switch';
 import { SelectField } from '../../ui/FormControls';
 import useToastStore from '../../../store/toastStore';
+import useOrgStore from '../../../store/orgStore';
 import { setAdsBudgetSettings } from '../../../services/adsBudgetService';
+import { currencyOptions } from '../../../utils/money';
 
 /**
  * The Ads Budget add-on's switch.
@@ -36,24 +38,25 @@ import { setAdsBudgetSettings } from '../../../services/adsBudgetService';
  * The codes offered, which is not the same as the codes ACCEPTED — the server
  * takes any valid ISO 4217 three-letter code. This list is the common ones, so
  * the usual case is a click; it is not a limit.
+ *
+ * Read from `utils/money.js` rather than written out here. This card used to
+ * carry its own list of eight, which disagreed with the number-column picker's
+ * five in both directions — AUD/CAD/SGD existed only here, and CAD only here in
+ * the entire product. One catalog means a board and a column can no longer be
+ * denominated in currencies the other has never heard of.
  */
-const CURRENCIES = [
-  { value: 'USD', label: 'USD — US dollar' },
-  { value: 'EUR', label: 'EUR — Euro' },
-  { value: 'GBP', label: 'GBP — Pound sterling' },
-  { value: 'AUD', label: 'AUD — Australian dollar' },
-  { value: 'CAD', label: 'CAD — Canadian dollar' },
-  { value: 'INR', label: 'INR — Indian rupee' },
-  { value: 'AED', label: 'AED — UAE dirham' },
-  { value: 'SGD', label: 'SGD — Singapore dollar' },
-];
+const CURRENCIES = currencyOptions();
 
 const AdsBudgetAddonCard = ({ boardId, adsBudget, canManage, onChanged }) => {
+  const baseCurrency = useOrgStore((s) => s.currency?.baseCurrency) || 'USD';
   const toastError = useToastStore((s) => s.error);
   const toastSuccess = useToastStore((s) => s.success);
 
   const enabled = !!adsBudget?.enabled;
-  const currency = adsBudget?.currency || 'USD';
+  // Falls back to the WORKSPACE's currency rather than to dollars. A board that
+  // has never had the add-on configured has no currency of its own, and an
+  // agency billing in rupees should not have to correct a dollar sign first.
+  const currency = adsBudget?.currency || baseCurrency;
   const [busy, setBusy] = useState(false);
 
   const save = async (settings, message) => {

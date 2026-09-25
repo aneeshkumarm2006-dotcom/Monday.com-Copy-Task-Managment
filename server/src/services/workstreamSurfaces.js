@@ -3,6 +3,8 @@ const Message = require('../models/Message');
 const ChannelRead = require('../models/ChannelRead');
 const ChannelContactRead = require('../models/ChannelContactRead');
 const MailThreadRead = require('../models/MailThreadRead');
+const SavedMessage = require('../models/SavedMessage');
+const Notification = require('../models/Notification');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const { isLiveClientBoard } = require('../utils/clientBoard');
 const {
@@ -139,11 +141,36 @@ const surfacesForGroup = async (groupId) =>
   Channel.find({ group: groupId }).sort({ createdAt: 1 });
 
 /**
- * Tear down a set of channels: their messages, their Cloudinary assets, and
- * both kinds of read marker. The one implementation behind every cascade
- * below, so "what hangs off a channel" is written down once — four collections
- * plus an external store is exactly the sort of list that gets one entry
- * shorter each time someone copies it.
+ * Tear down a set of channels: their messages, their Cloudinary assets, both
+ * kinds of read marker, the private bookmarks pointing into them, and the bell
+ * rows that name them. The one implementation behind every cascade below, so
+ * "what hangs off a channel" is written down once — six collections plus an
+ * external store is exactly the sort of list that gets one entry shorter each
+ * time someone copies it.
+ *
+ * It got two entries shorter, which is why this paragraph now names them.
+ *
+ *   SavedMessage. A bookmark is a private row keyed on (user, message,
+ *   channel) and NOTHING in the product ever deleted one for a message that
+ *   died. The damage is not merely a leaked row: `chatController.listSaved`
+ *   read the caller's 100 newest bookmarks and only then dropped the ones
+ *   whose channel or message no longer resolved, so a person whose recent
+ *   bookmarks all lived in a deleted board opened Saved and saw a short — sometimes
+ *   empty — list, with older, perfectly valid bookmarks pushed out of the
+ *   window by rows they could not see. And they could not clear them either:
+ *   un-bookmarking goes through `toggleSave`, which 404s on the missing
+ *   Message before it ever reaches the delete, so no screen in the app could
+ *   remove the row. (`listSaved` was hardened to filter before it caps, for
+ *   the orphans already in production; this delete is what stops new ones.)
+ *
+ *   Notification. `Notification.channel` exists precisely so a bell row can
+ *   point at a conversation, and a `chatMention` is board-less by
+ *   construction, so `deleteBoard`'s `Notification.deleteMany({ board: id })`
+ *   never matched one and `deleteGroup` swept only task-scoped rows. The
+ *   survivor renders as an unread mention of a room that is gone and clicks
+ *   through to an empty channel. Deleting by channel here fixes board delete,
+ *   group delete and workspace-channel teardown in one place, which is the
+ *   whole reason this function exists.
  *
  * ORDER IS FOR CRASH-SAFETY, not correctness. The channels go LAST, so an
  * interruption leaves rows whose channel still exists — findable, and
@@ -152,7 +179,7 @@ const surfacesForGroup = async (groupId) =>
  */
 const purgeChannels = async (channelIds) => {
   if (!channelIds.length) {
-    return { channels: 0, messages: 0, reads: 0, mailReads: 0 };
+    return { channels: 0, messages: 0, reads: 0, mailReads: 0, saved: 0, notifications: 0 };
   }
 
 
@@ -178,6 +205,16 @@ const purgeChannels = async (channelIds) => {
     channel: { $in: channelIds },
   });
   const mailReads = await MailThreadRead.deleteMany({ channel: { $in: channelIds } });
+  // Scoped by `channel`, not by user or by message: the bookmark's `channel`
+  // is denormalised onto the row exactly so a question like this one can be
+  // asked without loading every message first, and after the Message rows
+  // above are gone it is the ONLY way left to find these.
+  const saved = await SavedMessage.deleteMany({ channel: { $in: channelIds } });
+  // Only rows that NAME one of these channels. A `chatMention` is the case
+  // this was missing, but the filter is on the ref rather than on the type so
+  // any future channel-scoped notification is collected without this list
+  // having to be revisited a third time.
+  const notifications = await Notification.deleteMany({ channel: { $in: channelIds } });
   await Channel.deleteMany({ _id: { $in: channelIds } });
 
   return {
@@ -185,6 +222,8 @@ const purgeChannels = async (channelIds) => {
     messages: messages.deletedCount || 0,
     reads: (reads.deletedCount || 0) + (contactReads.deletedCount || 0),
     mailReads: mailReads.deletedCount || 0,
+    saved: saved.deletedCount || 0,
+    notifications: notifications.deletedCount || 0,
   };
 };
 
@@ -250,6 +289,11 @@ const existingSurfaceKeys = async (groupId) => {
 module.exports = {
   createSurfaces,
   surfacesForGroup,
+  // Exported for `services/userCascade.js`, which tears down the DMs of a
+  // deleted account. A DM has no board and no group, so neither cascade above
+  // can reach it — but what hangs off a channel is the same six collections
+  // plus Cloudinary either way, and that list must stay written down once.
+  purgeChannels,
   deleteSurfacesForGroup,
   deleteSurfacesForBoard,
   deleteWorkspaceChannels,

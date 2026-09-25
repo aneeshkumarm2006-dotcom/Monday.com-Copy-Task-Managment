@@ -384,6 +384,115 @@ const invalidateMirrorsForTask = async ({ taskId, boardId, deleted = false }) =>
 };
 
 /**
+ * The same invalidation for MANY tasks on one board at once.
+ *
+ * ---- WHY A SECOND FUNCTION AND NOT A LOOP --------------------------------
+ *
+ * `invalidateMirrorsForTask` is written for the everyday case: one task
+ * changed, so one `BoardConnection.find` and a handful of follow-up writes. A
+ * GROUP DELETE is not that case. It removes every task in the group in one
+ * request, and driving that through the per-task path means one
+ * `BoardConnection.find` plus, per connection, one `Task.find` and up to two
+ * `updateMany` — PER DELETED ROW. A group holding a few thousand tasks becomes
+ * tens of thousands of round-trips, and because the caller emits rather than
+ * awaits, every one of them is launched in the same tick, after the HTTP
+ * response has already gone out, with nothing bounding the concurrency.
+ *
+ * This version pays the connection lookup ONCE and then works in `$in` batches,
+ * so the cost is proportional to the number of CONNECTIONS (a handful, always)
+ * rather than to the number of deleted rows. The writes it performs are
+ * literally the same two.
+ *
+ * It is also AWAITABLE, which is the other half of the point: a group delete can
+ * finish its cascade knowing the dead links are gone, instead of racing a
+ * fire-and-forget listener against its own `TaskGroup.deleteOne`.
+ *
+ * `deleted` is not a parameter here. The only caller is a delete — an update
+ * path that touched thousands of rows at once does not exist — and a flag with
+ * one possible value is a flag that will eventually be passed wrong.
+ */
+const invalidateMirrorsForDeletedTasks = async ({ taskIds, boardId }) => {
+  const ids = (Array.isArray(taskIds) ? taskIds : [taskIds])
+    .filter(Boolean)
+    .map((t) => t.toString());
+  if (ids.length === 0 || !boardId) return;
+
+  // TWO SOURCES, unioned — because the registry alone is not complete.
+  //
+  // `BoardConnection` records only the PRIMARY target of a connect column
+  // (models/BoardConnection.js says so outright), so a column whose SECOND or
+  // third `targetBoardIds` entry is this board produces no edge and its links
+  // would never be pulled. `boardController.purgeLinksToDeletedBoard` refuses
+  // the registry for exactly this reason and walks the column settings instead;
+  // driving a group delete off the edges alone would inherit the hole that
+  // comment rejects — and a stale entry in `links` has no TTL to heal it, unlike
+  // a cached mirror value.
+  //
+  // So the edges are kept (they are indexed and they cover the common case) and
+  // the settings scan is added beside them. The scan is ONE query for the whole
+  // call, not one per deleted task.
+  const pairs = new Map();
+  const addPair = (fromBoardId, fromColumnId) => {
+    if (!fromBoardId || !fromColumnId) return;
+    pairs.set(`${fromBoardId}:${fromColumnId}`, {
+      fromBoardId,
+      fromColumnId: fromColumnId.toString(),
+    });
+  };
+
+  const connections = await BoardConnection.find({ toBoardId: boardId }).lean();
+  connections.forEach((c) => addPair(c.fromBoardId, c.fromColumnId));
+
+  const self = await Board.findById(boardId).select('organisation').lean();
+  if (self && self.organisation) {
+    const targeting = await Board.find({
+      organisation: self.organisation,
+      'columns.settings.targetBoardIds': boardId,
+    })
+      .select('columns')
+      .lean();
+    for (const b of targeting) {
+      for (const col of b.columns || []) {
+        if (col.type !== 'connect_boards') continue;
+        const targets = (col.settings && col.settings.targetBoardIds) || [];
+        if (!targets.some((t) => toIdString(t) === toIdString(boardId))) continue;
+        addPair(b._id, col._id);
+      }
+    }
+  }
+  if (pairs.size === 0) return;
+
+  for (const conn of pairs.values()) {
+    const fromColId = conn.fromColumnId;
+    const linkPath = `columnValues.${fromColId}.links.taskId`;
+
+    const referencing = await Task.find({
+      board: conn.fromBoardId,
+      [linkPath]: { $in: ids },
+    }).select('_id');
+    if (referencing.length === 0) continue;
+    const referencingIds = referencing.map((t) => t._id);
+
+    await Task.updateMany(
+      { _id: { $in: referencingIds } },
+      { $pull: { [`columnValues.${fromColId}.links`]: { taskId: { $in: ids } } } }
+    );
+
+    const fromBoard = await Board.findById(conn.fromBoardId).select('columns').lean();
+    const mirrorCols = (fromBoard && fromBoard.columns ? fromBoard.columns : []).filter(
+      (c) => c.type === 'mirror' && toIdString(c.settings && c.settings.sourceConnectColumnId) === fromColId
+    );
+    if (mirrorCols.length === 0) continue;
+
+    // $unset the cache so the next read recomputes — the same stale marker the
+    // single-task path writes, on the same rows it would have written it to.
+    const unset = {};
+    for (const mc of mirrorCols) unset[`columnValues.${mc._id.toString()}`] = '';
+    await Task.updateMany({ _id: { $in: referencingIds } }, { $unset: unset });
+  }
+};
+
+/**
  * Invalidate a single task's OWN mirror caches — used after its connect column
  * changes (link added/removed) so its mirrors recompute on next read.
  */
@@ -432,6 +541,7 @@ module.exports = {
   embedMirrorValues,
   wouldCreateMirrorCycle,
   invalidateMirrorsForTask,
+  invalidateMirrorsForDeletedTasks,
   invalidateOwnMirrors,
   mountMirrorRefresh,
   // exported for tests

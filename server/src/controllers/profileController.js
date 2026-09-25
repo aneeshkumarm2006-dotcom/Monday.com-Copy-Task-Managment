@@ -1,12 +1,8 @@
 const User = require('../models/User');
-const Organisation = require('../models/Organisation');
-const Task = require('../models/Task');
-const Update = require('../models/Update');
-const Notification = require('../models/Notification');
-const NotificationPreference = require('../models/NotificationPreference');
-const ItemFollow = require('../models/ItemFollow');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
+const { ownedOrgBlockers, cascadeDeleteUser } = require('../services/userCascade');
 const { isValidTimezone } = require('../utils/tzDay');
+const { isDisplayCurrency, DISPLAY_CURRENCIES } = require('../utils/money');
 
 /**
  * PUT /api/profile/timezone — record the browser's resolved IANA zone.
@@ -37,6 +33,51 @@ const updateTimezone = async (req, res) => {
     return res.json({ timezone: user.timezone });
   } catch (err) {
     console.error('updateTimezone error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * PUT /api/profile/currency — set the currency this person reads money in.
+ *
+ * Its own endpoint rather than a field on `updateProfile`, for the same reason
+ * `updateTimezone` is: that handler REQUIRES `name`, and this write must never
+ * be able to touch the display name (or anything else) as a side effect.
+ *
+ * Unlike the timezone, this is a CHOICE — nobody's browser knows what currency
+ * they would rather read. So it is set from a toggle rather than synced
+ * silently, and `null` is a first-class value meaning "show me amounts as they
+ * were entered", which is what everybody gets until they pick something.
+ *
+ * Validated against the same `DISPLAY_CURRENCIES` the schema enumerates. A code
+ * we cannot convert into would leave every figure silently unconverted with no
+ * way to tell that from a missing rate.
+ */
+const updateDisplayCurrency = async (req, res) => {
+  try {
+    const { displayCurrency } = req.body || {};
+
+    // Explicit null (or an empty string from a form) clears the choice back to
+    // as-entered. Distinct from omitting the field, which is a malformed body.
+    const clearing = displayCurrency === null || displayCurrency === '';
+    const code = clearing ? null : String(displayCurrency || '').trim().toUpperCase();
+
+    if (!clearing && !isDisplayCurrency(code)) {
+      return res.status(400).json({
+        error: `Currency must be one of ${DISPLAY_CURRENCIES.join(', ')}.`,
+      });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.user.userId,
+      { displayCurrency: clearing ? null : code },
+      { new: true }
+    ).select('_id displayCurrency');
+
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    return res.json({ displayCurrency: user.displayCurrency });
+  } catch (err) {
+    console.error('updateDisplayCurrency error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
@@ -168,47 +209,81 @@ const uploadAvatar = async (req, res) => {
  *  - All notifications addressed to the user → deleted.
  *  - User document → deleted.
  */
+/**
+ * GET /api/profile/deletion-preview — what deleting this account would do.
+ *
+ * Exists so the confirmation modal never has to GUESS at the blast radius. It
+ * returns the same two lists `deleteAccount` computes, so the screen and the
+ * server can never disagree about which workspaces block the delete.
+ */
+const deletionPreview = async (req, res) => {
+  try {
+    const { blocking, solo } = await ownedOrgBlockers(req.user.userId);
+    return res.json({
+      blocking,
+      solo: solo.map((o) => ({ _id: o._id, name: o.name })),
+      canDelete: blocking.length === 0,
+    });
+  } catch (err) {
+    console.error('deletionPreview error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
+/**
+ * DELETE /api/profile — permanently delete this account.
+ *
+ * ---- THE REFUSAL IS THE FEATURE -------------------------------------------
+ *
+ * This handler used to loop every workspace where `admin === you` straight into
+ * `cascadeDeleteOrg`. Clicking "Delete my account" therefore destroyed every
+ * board, task, comment, attachment, vault, client roster and chat message
+ * belonging to EVERYONE ELSE in every workspace you happened to own — with no
+ * transaction, no export and no undo, behind a weaker confirmation than the app
+ * already demands for deleting a single workspace (which makes you type its
+ * name).
+ *
+ * It now refuses. A workspace with other people in it is theirs as much as
+ * yours, and the repo already has the right action for this moment:
+ * `POST /api/orgs/:id/transfer-ownership`, the only writer of
+ * `Organisation.admin` after creation. So the 409 names each blocking workspace
+ * and who is in it, and the client turns that into a link per workspace.
+ *
+ * The check runs over ALL owned orgs BEFORE anything is destroyed. Doing it per
+ * org inside the loop would still half-destroy a workspace before hitting the
+ * one that blocks — and since there is no transaction here, "we stopped partway"
+ * is not a recoverable state.
+ *
+ * A workspace you are ALONE in is still cascaded: there is nobody to hand it to,
+ * and leaving it would orphan every row in it.
+ *
+ * Everything else about the person is in `services/userCascade.js`, shared with
+ * `orgController.removeMember` so the two can no longer drift.
+ */
 const deleteAccount = async (req, res) => {
   try {
     const userId = req.user.userId;
 
-    // ── 1. Orgs where this user is the primary admin ──────────────────────
-    const adminOrgs = await Organisation.find({ admin: userId }).select('_id');
-    for (const org of adminOrgs) {
+    // ── 1. Refuse if any workspace you own still has other people in it ──
+    const { blocking, solo } = await ownedOrgBlockers(userId);
+    if (blocking.length > 0) {
+      return res.status(409).json({
+        error:
+          blocking.length === 1
+            ? `"${blocking[0].name}" still has ${blocking[0].memberCount} other member${blocking[0].memberCount === 1 ? '' : 's'}. Transfer it to someone else, or remove them, before deleting your account.`
+            : `${blocking.length} workspaces you own still have other members. Transfer or empty them before deleting your account.`,
+        code: 'OWNED_WORKSPACES_NOT_EMPTY',
+        orgs: blocking,
+      });
+    }
+
+    // ── 2. Workspaces you are alone in go with you ──────────────────────
+    for (const org of solo) {
       await cascadeDeleteOrg(org._id);
     }
 
-    // ── 2. Remove user from orgs they are only a member / extra-admin of ──
-    await Organisation.updateMany(
-      { members: userId },
-      { $pull: { members: userId, admins: userId } }
-    );
-
-    // ── 3. Personal tasks this user created ───────────────────────────────
-    const personalTaskIds = await Task.distinct('_id', {
-      isPersonal: true,
-      createdBy: userId,
-    });
-    if (personalTaskIds.length) {
-      await Update.deleteMany({ task: { $in: personalTaskIds } });
-      await Notification.deleteMany({ task: { $in: personalTaskIds } });
-      await ItemFollow.deleteMany({ task: { $in: personalTaskIds } });
-      await Task.deleteMany({ _id: { $in: personalTaskIds } });
-    }
-
-    // ── 4. Remove user from assignedTo on any remaining tasks ────────────
-    await Task.updateMany({ assignedTo: userId }, { $pull: { assignedTo: userId } });
-
-    // ── 5. Delete updates authored by the user ────────────────────────────
-    await Update.deleteMany({ author: userId });
-
-    // ── 6. Delete all notifications sent to the user + their prefs/follows ─
-    await Notification.deleteMany({ user: userId });
-    await NotificationPreference.deleteMany({ user: userId });
-    await ItemFollow.deleteMany({ user: userId });
-
-    // ── 7. Delete the user document ───────────────────────────────────────
-    await User.findByIdAndDelete(userId);
+    // ── 3. The person, and every delivery path to them ──────────────────
+    await cascadeDeleteUser(userId);
 
     return res.json({ message: 'Account deleted' });
   } catch (err) {
@@ -222,5 +297,7 @@ module.exports = {
   updateProfile,
   updateFeatures,
   uploadAvatar,
+  deletionPreview,
   deleteAccount,
+  updateDisplayCurrency,
 };

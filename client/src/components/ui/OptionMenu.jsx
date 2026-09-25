@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, Search } from 'lucide-react';
 import useDropdownPosition from '../../utils/useDropdownPosition';
 import { filterOptions, nextIndex, SEARCH_THRESHOLD } from '../../utils/menuNav';
+import EntityLogo from './EntityLogo';
 import { chipStyle } from '../../utils/chipStyle';
 
 /**
@@ -52,7 +53,7 @@ import { chipStyle } from '../../utils/chipStyle';
  *
  * `palette` is a `{ bg, text, solid, deep }` from `priorityColors.js` and makes
  * the option render as a chip. `icon` is a lucide component and makes it render
- * as a command. `tile` is a `{ text, color }` and renders a small filled square
+ * as a command. `tile` is a `{ text, color, image? }` and renders a small filled square (or the `image` logo)
  * before the label — what an avatar looks like when the thing being picked is a
  * workspace or a person rather than a value. None is required; a bare label
  * renders as plain text.
@@ -214,7 +215,10 @@ const OptionMenu = ({
         }}
       >
         {Icon && <Icon size={14} aria-hidden="true" className="shrink-0" />}
-        {opt.tile && (
+        {opt.tile?.image && (
+          <EntityLogo src={opt.tile.image} name={opt.label} size={21} radius={6} color={opt.tile.color} />
+        )}
+        {opt.tile && !opt.tile.image && (
           <span
             aria-hidden="true"
             className="shrink-0 flex items-center justify-center font-display"

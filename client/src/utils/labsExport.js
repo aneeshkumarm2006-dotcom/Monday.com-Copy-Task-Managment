@@ -63,8 +63,20 @@ const number = (value) =>
     ? new Intl.NumberFormat('en-US').format(Math.round(value * 100) / 100)
     : '';
 
+/**
+ * A money cell in an exported file.
+ *
+ * NAMES THE CURRENCY, because a CSV has no context. On screen a CPC sits under
+ * a column header and beside other provider figures, so a bare `$` reads
+ * unambiguously; in a spreadsheet somebody opens next March it does not, and
+ * this workspace may well be reading the rest of the product in rupees.
+ *
+ * It is USD and stays USD: this is what the SEO provider quotes, not a figure
+ * the workspace denominated, so there is nothing here to convert. Same rule as
+ * the connector spend caps — see `utils/connectorFormat.js`.
+ */
 const money = (value) =>
-  typeof value === 'number' && Number.isFinite(value) ? `$${value.toFixed(2)}` : '';
+  typeof value === 'number' && Number.isFinite(value) ? `USD ${value.toFixed(2)}` : '';
 
 const rank = (value) => (typeof value === 'number' ? `#${value}` : '');
 

@@ -65,6 +65,25 @@ const amountOf = (task, cols) => {
 };
 
 /**
+ * The day an invoice's exchange rate is read from — when it was ISSUED.
+ *
+ * `issued`, deliberately, not `due`. They are different facts: an invoice
+ * raised on 2 March and payable on 1 April is a March invoice, and valuing it
+ * at April's rate would make it worth something it never was. Same reasoning
+ * that makes `ledgerColumns` find `due` by key rather than by role.
+ *
+ * Null when the board has no issued column or the cell is empty, which means
+ * the figure converts at the latest rate we hold. Honest, and the same answer a
+ * board with no dates at all gets.
+ */
+export const issuedDayOf = (task, cols) => {
+  const raw = cols?.issued ? columnValue(task, cols.issued) : null;
+  if (!raw) return null;
+  const str = String(raw);
+  return /^\d{4}-\d{2}-\d{2}/.test(str) ? str.slice(0, 10) : null;
+};
+
+/**
  * The four figures above the ledger.
  *
  * `billed` counts EVERY row including drafts, because it answers "what is on
@@ -73,10 +92,27 @@ const amountOf = (task, cols) => {
  * same strip come to disagree. `overdue` is a subset of outstanding, not a
  * fourth slice of it.
  */
-export const ledgerTotals = (tasks, board, cols, now = Date.now()) => {
+export const ledgerTotals = (tasks, board, cols, opts = {}) => {
+  // Back-compatible: this used to take `now` as a fourth positional argument.
+  const { now = Date.now(), convert = null } =
+    typeof opts === 'number' ? { now: opts } : opts || {};
+
   const out = { billed: 0, paid: 0, outstanding: 0, overdue: 0, overdueCount: 0, count: 0 };
   for (const task of tasks || []) {
-    const amount = amountOf(task, cols);
+    const raw = amountOf(task, cols);
+    /**
+     * CONVERT EACH ROW, THEN ADD — never add then convert.
+     *
+     * Every invoice values at the rate in force on ITS OWN issue date, so two
+     * rows in one group can carry different rates. Summing first and converting
+     * the total at one rate would make this strip disagree with the tiles above
+     * it, which is precisely the failure the comment on this function is about.
+     *
+     * `convert` returning null (no rate for that day) falls back to the raw
+     * figure, so a ledger with rates for some months and not others still adds
+     * up — in the source currency, which is what the surface then says.
+     */
+    const amount = convert ? (convert(raw, task) ?? raw) : raw;
     const state = invoiceState(task, board, cols, now);
     out.count += 1;
     out.billed += amount;
@@ -86,6 +122,9 @@ export const ledgerTotals = (tasks, board, cols, now = Date.now()) => {
       out.overdueCount += 1;
     }
   }
+  // Derived from the CONVERTED sums, at full precision, so the three still
+  // reconcile. Converting a separately-computed `outstanding` would round it
+  // independently of the two it is made from: 1,044 - 627 != 418.
   out.outstanding = out.billed - out.paid;
   return out;
 };
@@ -124,6 +163,10 @@ export const ledgerColumns = (board) => {
     // `due`, and picking the first date column would make every invoice overdue
     // the day after it was raised.
     due: all.find((c) => c.key === 'due' && c.type === 'date') || null,
+    // By KEY for the same reason as `due`, and it matters more here: `issued`
+    // is what dates the exchange rate, and picking the wrong date column would
+    // value every invoice at the wrong month's rate.
+    issued: all.find((c) => c.key === 'issued' && c.type === 'date') || null,
   };
 };
 

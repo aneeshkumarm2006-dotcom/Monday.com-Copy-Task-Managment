@@ -8,7 +8,8 @@ import {
   setPortalToken,
   rememberPortalLink,
 } from '../services/portalService';
-import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
+import { portalBrandName } from '../utils/portalBrand';
+import PortalBrandMark from '../components/portal/PortalBrandMark';
 import '../styles/portal.css';
 
 /**
@@ -230,12 +231,12 @@ const PortalSetPasswordPage = () => {
     <div className="mcp mcp-page mcp-shell">
       <div className="mcp-card-lg mcp-pop" style={{ width: '100%', maxWidth: 420, padding: '36px 34px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 26 }}>
-          <span className="mcp-brand-mark" style={{ width: 42, height: 42 }}>{PORTAL_BRAND_INITIAL}</span>
+          <PortalBrandMark logo={info.orgLogo} size={42} />
           <div>
             <div style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.2 }}>
-              {PORTAL_BRAND}
+              {portalBrandName(info.orgLogo)}
             </div>
-            {company && <div style={{ fontSize: 12.5, color: '#64748B' }}>{company} · Support portal</div>}
+            {company && <div style={{ fontSize: 12.5, color: '#64748B' }}>{info.orgLogo ? company : `${company} · Support portal`}</div>}
           </div>
         </div>
 

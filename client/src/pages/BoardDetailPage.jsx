@@ -31,6 +31,7 @@ import {
   Wallet,
   Zap,
   Link2,
+  ImagePlus,
 } from 'lucide-react';
 import {
   DndContext,
@@ -56,10 +57,14 @@ import { SkeletonTaskGroup } from '../components/ui/Skeleton';
 import TaskGroupHeader from '../components/board/TaskGroupHeader';
 import { statusSpread } from '../utils/statusSpread';
 import { groupColorAt } from '../utils/groupColors';
+import { deepFor } from '../utils/priorityColors';
+import EntityLogo from '../components/ui/EntityLogo';
+import LogoModal from '../components/ui/LogoModal';
 import TaskTable from '../components/board/TaskTable';
 import { InlineAssigneeMenu } from '../components/board/AssigneePicker';
 import DataGrid from '../components/board/DataGrid';
 import { groupSummaries } from '../utils/columnSummary';
+import useMoney from '../hooks/useMoney';
 import { newRowLabel, rowCountLabel } from '../utils/boardTemplateDisplay';
 import SortableItem from '../components/dnd/SortableItem';
 import StatusMenu from '../components/board/StatusMenu';
@@ -297,6 +302,9 @@ const VIEW_TABS = [
 const BoardDetailPage = () => {
   const { id: boardId } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
+  // The reader's money formatter, handed down to the group headers so a group
+  // total agrees with the cells above it. See `useMoney`.
+  const money = useMoney();
   const navigate = useNavigate();
   // Org-wide capabilities. Board-scoped ones come off `board.permissions` below —
   // they are two different questions, and conflating them was the old model's bug.
@@ -554,6 +562,17 @@ const BoardDetailPage = () => {
   // "May I restructure this board" — the old `canEdit` bit, now derived from the
   // capabilities rather than re-guessed.
   const canEdit = canOnBoard('task.edit_any') && canOnBoard('group.manage');
+
+  // Logos. The board's follows `board.rename` (a logo is part of the same
+  // identity as the name); a group's follows `canEdit`, the same gate as
+  // renaming the group. `logoTarget` is which dialog is open:
+  // null | { kind: 'board' } | { kind: 'group', groupId }.
+  const canRenameBoard = canOnBoard('board.rename');
+  const [logoTarget, setLogoTarget] = useState(null);
+  const setBoardLogo = useBoardStore((s) => s.setBoardLogo);
+  const setGroupLogo = useTaskStore((s) => s.setGroupLogo);
+  // Once any group has a logo, the rest get a lettered tile so names align.
+  const anyGroupLogo = groups.some((g) => !!g.logo);
 
   // What a finished group says instead of its status bar, set in Edit Board.
   // Empty on every board that has not set one, and empty is the off switch, so
@@ -1244,12 +1263,24 @@ const BoardDetailPage = () => {
     }
 
     // Groups can arrive a render before their tasks. If we haven't found the
-    // target AND no group has any tasks yet, the board rows simply aren't loaded
-    // — bail WITHOUT clearing the link so this effect re-runs (and finds the
-    // group) once tasksByGroup populates. Otherwise we'd expand nothing, land on
-    // a fully-collapsed board, and lose the params on refresh.
-    const anyTasksLoaded = groups.some((g) => (tasksByGroup[g._id] || []).length > 0);
-    if (!found && !anyTasksLoaded) return;
+    // target AND the rows simply aren't loaded yet, bail WITHOUT clearing the
+    // link so this effect re-runs (and finds the group) once tasksByGroup
+    // populates. Otherwise we'd expand nothing, land on a fully-collapsed
+    // board, and lose the params on refresh.
+    //
+    // "Loaded" is KEY PRESENCE, not row count. `taskStore.fetchBoard` seeds
+    // `tasksByGroup[g._id] = []` for every group before it distributes the
+    // tasks, so a group with a key and an empty array has been fetched and is
+    // genuinely empty. Testing `.length > 0` instead conflated those two, and
+    // the board where they differ is the one this whole block exists for: a
+    // board whose LAST task was the deleted one. There, no group ever has a
+    // row, the guard returned forever, and the deep link was swallowed in
+    // silence — no toast, and the params never cleared, so the effect re-ran on
+    // every render of a permanently stale URL.
+    const tasksLoaded =
+      groups.length === 0 ||
+      groups.every((g) => Object.prototype.hasOwnProperty.call(tasksByGroup, g._id));
+    if (!found && !tasksLoaded) return;
 
     // On a MONTHLY board that "tasks loaded but not found" test stops meaning
     // "not on this board": only one month is loaded, so a July task opened while
@@ -1257,9 +1288,21 @@ const BoardDetailPage = () => {
     // row that was never rendered is a silent failure, so say what happened
     // instead. Deep links from notifications carry `?month=` and land correctly;
     // this is the fallback for an older link or a hand-typed one.
-    if (!found && isTrackerBoard && monthKey) {
+    //
+    // Every OTHER board type reaches this point for exactly one reason — the
+    // task is gone — and it used to say nothing at all. A copied link
+    // (`utils/taskLink.js`) or an older notification email
+    // (`server/src/utils/taskDeepLink.js`) outlives the task it points at,
+    // because those URLs live in chat histories and inboxes we do not own; the
+    // in-app notification rows themselves ARE cascaded on delete, so they are
+    // not a source of these. Landing on the right board with the link silently
+    // stripped reads as "the app ignored me", so the non-month case gets its own
+    // sentence rather than staying gated behind `isTrackerBoard`.
+    if (!found) {
       toastInfo(
-        `That task isn’t in ${selectedMonth?.label || 'this month'} — try another month.`
+        isTrackerBoard && monthKey
+          ? `That task isn’t in ${selectedMonth?.label || 'this month'} — try another month.`
+          : 'That task is no longer on this board — it may have been deleted.'
       );
     }
 
@@ -1275,8 +1318,17 @@ const BoardDetailPage = () => {
     // Set highlight — scroll + auto-remove are handled by separate effects below.
     // The parent id (if any) drives the TaskTable auto-expand so the subtask row
     // mounts and can receive the glow + scroll.
-    setHighlightedTaskId(taskId);
-    setHighlightedParentId(parentId || null);
+    //
+    // Only when the row is actually here. Arming the highlight for a task that
+    // will never mount is not a harmless no-op: `highlightedTaskId` is what
+    // mounts `.macan-highlight-overlay`, a fixed full-viewport scrim, so the
+    // whole board dims and swallows clicks for the three seconds the auto-clear
+    // timer runs, spotlighting nothing. The toast above is the feedback; the
+    // spotlight has nothing to point at.
+    if (found) {
+      setHighlightedTaskId(taskId);
+      setHighlightedParentId(parentId || null);
+    }
 
     // Open the detail panel on the requested tab (if the task is on this board)
     if (found && openTab) {
@@ -3032,7 +3084,7 @@ const BoardDetailPage = () => {
                           isComplete={
                             !!groupMetrics.get(String(group._id))?.allComplete
                           }
-                          summaries={groupSummaries(board, groupTasks)}
+                          summaries={groupSummaries(board, groupTasks, money)}
                           countLabel={rowCountLabel(board, groupTasks.length)}
                           totalCount={groupTasks.length}
                           doneCount={doneCount}
@@ -3043,6 +3095,13 @@ const BoardDetailPage = () => {
                           }
                           onDeleteGroup={canEdit ? () => handleDeleteGroup(group) : undefined}
                           onOpenNotes={() => handleOpenNotes(group)}
+                          logo={group.logo || ''}
+                          logoFallbackColor={anyGroupLogo ? groupColor : null}
+                          onOpenLogo={
+                            canEdit
+                              ? () => setLogoTarget({ kind: 'group', groupId: group._id, color: groupColor })
+                              : undefined
+                          }
                           tags={resolveGroupTags(group)}
                           onOpenTags={
                             canTagGroups
@@ -3189,6 +3248,38 @@ const BoardDetailPage = () => {
       <header className="mt-4 flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3 flex-wrap">
+            {/* The board's logo. Editors without one get a quiet dashed "add"
+                tile in the same spot, so the feature is found where the logo
+                will live rather than buried in a dialog; everyone else sees
+                nothing until a logo is set. */}
+            {board && (board.logo || canRenameBoard) && (
+              canRenameBoard ? (
+                <button
+                  type="button"
+                  onClick={() => setLogoTarget({ kind: 'board' })}
+                  title={board.logo ? 'Change board logo' : 'Add a board logo'}
+                  aria-label={board.logo ? 'Change board logo' : 'Add a board logo'}
+                  className="shrink-0 inline-flex items-center justify-center transition-[opacity,box-shadow] duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] hover:shadow-[0_0_0_3px_var(--color-accent-light)]"
+                  style={{
+                    width: 40,
+                    height: 40,
+                    borderRadius: 10,
+                    padding: 0,
+                    background: board.logo ? 'transparent' : 'var(--color-bg-subtle)',
+                    border: board.logo ? 'none' : '1.5px dashed var(--color-border-strong, var(--color-border))',
+                    color: 'var(--color-text-muted)',
+                  }}
+                >
+                  {board.logo ? (
+                    <EntityLogo src={board.logo} name={board.name} size={40} radius={10} />
+                  ) : (
+                    <ImagePlus size={17} aria-hidden="true" />
+                  )}
+                </button>
+              ) : (
+                <EntityLogo src={board.logo} name={board.name} size={40} radius={10} fallback={null} />
+              )
+            )}
             {/* THE HEADING KEEPS THE BOARD'S REAL NAME, AND A LABEL MUST NEVER
                 REACH IT.
 
@@ -4481,6 +4572,81 @@ const BoardDetailPage = () => {
         canGoBack={selectedTaskStack.length > 1}
         onUpdatesCountChange={setUpdatesCount}
       />
+
+      {/* Board / group logo dialog — one dialog, two targets. The preview
+          draws the real surface the logo is going onto, so "does it read at
+          that size, on that colour" is answered before it is closed. */}
+      {(() => {
+        if (!logoTarget || !board) return null;
+        if (logoTarget.kind === 'board') {
+          return (
+            <LogoModal
+              isOpen
+              onClose={() => setLogoTarget(null)}
+              title="Board logo"
+              description="Shown beside the board name and on its card in My Boards, for everyone who can open this board."
+              value={board.logo || ''}
+              name={board.name}
+              onUpload={(file) => setBoardLogo(board._id, file)}
+              onRemove={() => setBoardLogo(board._id, null)}
+              preview={(logo) => (
+                <div className="flex items-center gap-3 min-w-0">
+                  <EntityLogo src={logo} name={board.name} size={40} radius={10} fallback={null} />
+                  <span
+                    className="font-display truncate"
+                    style={{ fontSize: 20, fontWeight: 800, textTransform: 'uppercase', color: 'var(--color-text-primary)' }}
+                  >
+                    {board.name}
+                  </span>
+                </div>
+              )}
+            />
+          );
+        }
+        const target = groups.find((g) => g._id === logoTarget.groupId);
+        if (!target) return null;
+        const tint = logoTarget.color || 'var(--color-accent)';
+        return (
+          <LogoModal
+            isOpen
+            onClose={() => setLogoTarget(null)}
+            title="Group logo"
+            description={`Shown beside “${target.name}” in the group's header.`}
+            value={target.logo || ''}
+            name={target.name}
+            color={tint}
+            onUpload={(file) => setGroupLogo(target._id, file)}
+            onRemove={() => setGroupLogo(target._id, null)}
+            preview={(logo) => (
+              <div
+                className="flex items-center gap-2.5 min-w-0"
+                style={{
+                  background: 'var(--color-bg-surface, #FFFFFF)',
+                  borderLeft: `4px solid ${tint}`,
+                  borderRadius: 'var(--radius-md)',
+                  boxShadow: 'var(--shadow-card)',
+                  height: 48,
+                  padding: '0 14px',
+                }}
+              >
+                <EntityLogo src={logo} name={target.name} size={24} radius={6} fallback={null} />
+                <span
+                  className="font-display truncate"
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 700,
+                    letterSpacing: '0.05em',
+                    textTransform: 'uppercase',
+                    color: tint.startsWith('#') ? deepFor(tint) : 'var(--color-text-primary)',
+                  }}
+                >
+                  {target.name}
+                </span>
+              </div>
+            )}
+          />
+        );
+      })()}
 
       {/* Group notes panel */}
       <GroupNotesPanel

@@ -7,6 +7,8 @@ import MonthSplitPreview from './MonthSplitPreview';
 import { previewBoardConversion } from '../../services/monthService';
 import TemplatePicker from './TemplatePicker';
 import GroupCompletedLabel from './GroupCompletedLabel';
+import LogoUploader from '../ui/LogoUploader';
+import useBoardStore from '../../store/boardStore';
 
 /**
  * BoardFormModal — used for both creating and editing a board.
@@ -56,6 +58,30 @@ const BoardFormModal = ({
   existingBoards = [],
 }) => {
   const [values, setValues] = useState(DEFAULTS);
+  // EDIT ONLY. The logo saves the moment it is picked — it is a file upload, not
+  // a form field, and holding it until "Save" would mean a Cancel had to undo
+  // an upload. Read from the store (not `initialValues`, a snapshot taken when
+  // the dialog opened) so the preview follows the upload.
+  const editingId = mode === 'edit' ? initialValues?._id : null;
+  const liveLogo = useBoardStore(
+    (st) => (editingId ? st.boards.find((b) => b._id === editingId)?.logo : '') || ''
+  );
+  const setBoardLogo = useBoardStore((st) => st.setBoardLogo);
+
+  // CREATE ONLY. There is no board to upload against yet, so the picked file is
+  // held here and shown from a local object URL; the caller uploads it once the
+  // board exists (`logoFile` in the submit payload).
+  //
+  // The object URL is revoked when it is REPLACED, not from an effect cleanup:
+  // StrictMode's mount/unmount/mount would revoke it and leave a broken preview.
+  const [pending, setPending] = useState({ file: null, url: '' });
+  const pendingLogo = pending.file;
+  const pendingLogoUrl = pending.url;
+  const setPendingLogo = (file) =>
+    setPending((prev) => {
+      if (prev.url) URL.revokeObjectURL(prev.url);
+      return { file, url: file ? URL.createObjectURL(file) : '' };
+    });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [convertPreview, setConvertPreview] = useState(null);
@@ -78,6 +104,7 @@ const BoardFormModal = ({
     });
     setError(null);
     setSubmitting(false);
+    setPendingLogo(null);
   }, [isOpen, initialValues]);
 
   const isClient = values.boardType === 'client';
@@ -164,6 +191,8 @@ const BoardFormModal = ({
         // Create only. The server refuses an unknown key, and 'blank' is the
         // no-op that reproduces the old behaviour exactly.
         template: mode === 'create' ? values.template : undefined,
+        // Create only: uploaded by the caller after the board is created.
+        logoFile: mode === 'create' ? pendingLogo : undefined,
         // Only meaningful when the type is actually changing; the caller uses it
         // to decide whether to run a conversion alongside the plain update.
         typeChanged: typeChanging,
@@ -241,6 +270,30 @@ const BoardFormModal = ({
           onChange={(e) => setValues((v) => ({ ...v, name: e.target.value }))}
           autoFocus
         />
+
+        {mode === 'create' && (
+          <LogoUploader
+            label="Board logo (optional)"
+            hint="Shown on the board card and beside the board name. PNG, JPG, SVG or WEBP · up to 2MB."
+            size={60}
+            value={pendingLogoUrl}
+            name={values.name}
+            onUpload={(file) => setPendingLogo(file)}
+            onRemove={() => setPendingLogo(null)}
+          />
+        )}
+
+        {editingId && (
+          <LogoUploader
+            label="Board logo"
+            hint="Shown on the board card and beside the board name. PNG, JPG, SVG or WEBP · up to 2MB."
+            size={60}
+            value={liveLogo}
+            name={values.name || initialValues?.name}
+            onUpload={(file) => setBoardLogo(editingId, file)}
+            onRemove={() => setBoardLogo(editingId, null)}
+          />
+        )}
 
         {/* Type / visibility selector, in three shapes:
               1. edit, no `board.change_visibility` — the current visibility, flat

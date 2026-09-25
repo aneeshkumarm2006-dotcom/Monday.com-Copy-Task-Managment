@@ -5,6 +5,7 @@ const {
   get,
   put,
   del,
+  delById,
   declare,
   addBoard,
   removeBoard,
@@ -108,6 +109,25 @@ router.get('/orgs/:orgId/executive-views', list);
 router.get('/orgs/:orgId/executive-views/:userId', get);
 router.put('/orgs/:orgId/executive-views/:userId', put);
 router.delete('/orgs/:orgId/executive-views/:userId', del);
+
+// DELETE /by-id/:viewId — the same delete, addressed by the PROFILE's id.
+//
+// It exists for the one row the route above cannot reach. A profile outlives
+// the User it names — deleting an account does not delete the view, and neither
+// does removing somebody from the workspace — and every other route in this
+// feature is keyed on a user id, so a view whose person is gone appeared in the
+// Executives strip with nothing able to address it: not readable, not editable,
+// not deletable. Same capability, same workspace scope, same service call as
+// `del`; the only difference is which id the caller has in their hand, and the
+// list endpoint now emits both.
+//
+// The literal `by-id` segment cannot shadow `:userId` above: that route matches
+// ONE segment after `executive-views` and this one matches two, so no ordering
+// between them matters. It is spelled as a prefixed segment for exactly that
+// reason — a bare `/executive-views/:viewId` would be the same path as the
+// route above carrying a different meaning, and no amount of ordering makes
+// that readable to whoever arrives next.
+router.delete('/orgs/:orgId/executive-views/by-id/:viewId', delById);
 
 // POST /:userId/declare — "Make executive": assign the role AND create the
 // empty profile in one sequence. Needs `org.assign_roles` too, but only when a

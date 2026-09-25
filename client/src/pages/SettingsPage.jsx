@@ -9,10 +9,15 @@ import Modal from '../components/ui/Modal';
 import NotificationPreferences from '../components/notifications/NotificationPreferences';
 import ExtraFeaturesTab from '../components/settings/ExtraFeaturesTab';
 import ConnectorsTab from '../components/settings/ConnectorsTab';
+import CurrencyTab from '../components/settings/CurrencyTab';
 import HolidaysTab from '../components/settings/HolidaysTab';
 import MyViewTab from '../components/settings/MyViewTab';
+import LogoUploader from '../components/ui/LogoUploader';
 import { hasAnyExtraFeature } from '../utils/extraFeatures';
 import useAuthStore from '../store/authStore';
+import useToastStore from '../store/toastStore';
+import { SegmentedControl } from '../components/ui/FormControls';
+import { DISPLAY_CURRENCIES } from '../utils/money';
 import useOrgStore from '../store/orgStore';
 import usePermissionStore from '../store/permissionStore';
 import useExecutiveViewStore, {
@@ -21,6 +26,10 @@ import useExecutiveViewStore, {
 import usePermissions from '../hooks/usePermissions';
 import * as orgService from '../services/orgService';
 import * as profileService from '../services/profileService';
+// The deletion preview is read-only and has exactly one consumer — the delete
+// account modal below — so it is called straight through the shared axios
+// instance rather than growing a service wrapper that nothing else would use.
+import api from '../services/api';
 /**
  * Settings Page — org and profile.
  * See Macan_Design.md Section 7.8.
@@ -100,6 +109,14 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
   const confirmMatches =
     org?.name && deleteConfirmText.trim() === org.name.trim();
 
+  // The logo is read from the STORE, not from `org`: `org` is this page's own
+  // fetched copy, and the store is what the rail and the switcher draw from —
+  // reading the same copy the upload patches keeps all three in step.
+  const storeOrg = useOrgStore((st) => st.currentOrg);
+  const setOrgLogo = useOrgStore((st) => st.setOrgLogo);
+  const orgId = storeOrg?._id || org?._id;
+  const orgLogo = storeOrg?.logo || '';
+
   // Build the invite URL — we surface the raw code so users can paste it
   // into the Join flow. Include origin for convenience.
   const inviteUrl = org?.inviteCode
@@ -156,19 +173,35 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
   return (
     <div>
       <header className="mb-6">
-        <h2
-          className="font-display font-bold text-[color:var(--color-text-primary)]"
-          style={{ fontSize: 20 }}
-        >
-          Workspace
-        </h2>
-        <p className="mt-1 font-body text-sm text-[color:var(--color-text-secondary)]">
-          {org?.name || 'Workspace settings'}
-        </p>
+        <div className="min-w-0">
+          <h2
+            className="font-display font-bold text-[color:var(--color-text-primary)]"
+            style={{ fontSize: 20 }}
+          >
+            Workspace
+          </h2>
+          <p className="mt-1 font-body text-sm text-[color:var(--color-text-secondary)] truncate">
+            {org?.name || 'Workspace settings'}
+          </p>
+        </div>
       </header>
 
-      {/* Invite Link section */}
+      {/* Workspace logo — shown in the side rail, the workspace switcher and
+          the mobile workspace sheet, for everyone in the workspace. */}
       <section>
+        <LogoUploader
+          label="Workspace logo"
+          hint="Shown in the sidebar and workspace switcher for everyone. PNG, JPG, SVG or WEBP · up to 2MB."
+          value={orgLogo}
+          name={storeOrg?.name || org?.name}
+          disabled={!orgId}
+          onUpload={(file) => setOrgLogo(orgId, file)}
+          onRemove={() => setOrgLogo(orgId, null)}
+        />
+      </section>
+
+      {/* Invite Link section */}
+      <section className="mt-8 pt-8" style={{ borderTop: '1px solid var(--color-border)' }}>
         <h3
           className="font-display font-semibold text-[color:var(--color-text-primary)]"
           style={{ fontSize: 15 }}
@@ -402,6 +435,23 @@ const OrganisationTab = ({ org, isOwner, onRegenerate, onDeleteOrg }) => {
 /* ---------------------------- Profile tab ---------------------------- */
 
 const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
+  const displayCurrency = user?.displayCurrency || null;
+  const setDisplayCurrency = useAuthStore((s) => s.setDisplayCurrency);
+  const toastError = useToastStore((s) => s.error);
+
+  /**
+   * Optimistic, like the avatar-menu toggle it mirrors. Nothing is at risk if
+   * the write fails — this only decides how stored numbers are DISPLAYED — so
+   * the figures on screen should follow the click rather than the round trip.
+   */
+  const handleDisplayCurrency = async (code) => {
+    try {
+      await setDisplayCurrency(code);
+    } catch {
+      toastError('Could not save that preference.');
+    }
+  };
+
   const [name, setName] = useState(user?.name || '');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -413,10 +463,63 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+  /**
+   * The blast radius of an account deletion, and the friction in front of it.
+   *
+   * Deleting your account is a strict SUPERSET of deleting a workspace — it
+   * takes every workspace you are alone in with you — yet the workspace modal a
+   * few hundred lines up makes you type the workspace's name while this one
+   * used to be a plain "Yes, Delete My Account" button in front of four
+   * sentences of generic prose that never named a single workspace. The screen
+   * could not name them because it never asked; it now does, via
+   * `GET /api/profile/deletion-preview`, which returns the same two lists the
+   * DELETE handler itself computes, so the warning and the server can never
+   * disagree about what is about to happen.
+   *
+   * `blocking` are workspaces you own that still have other people in them. The
+   * server refuses outright in that case (409 OWNED_WORKSPACES_NOT_EMPTY), so
+   * the button is disabled rather than letting the user type the confirmation,
+   * press it, and be told no.
+   */
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
 
   useEffect(() => {
     setName(user?.name || '');
   }, [user?.name]);
+
+  // Asked for when the modal opens rather than on mount: this is a page every
+  // member visits to change their display name, and nobody should pay for a
+  // workspace-ownership scan to do that.
+  useEffect(() => {
+    if (!showDeleteModal) return undefined;
+    let cancelled = false;
+    setPreviewLoading(true);
+    setPreviewError('');
+    api
+      // The modal renders the failure itself; the global interceptor's toast
+      // would put the same sentence in two places at once.
+      .get('/api/profile/deletion-preview', { suppressErrorToast: true })
+      .then(({ data }) => {
+        if (!cancelled) setPreview(data);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPreviewError(
+            "Couldn't check which workspaces this would delete. Deleting will "
+              + 'still refuse if you own a workspace with other members in it.'
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showDeleteModal]);
 
   const effectiveAvatar = previewUrl || user?.profilePic;
 
@@ -474,13 +577,52 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
 
   const dirty = name.trim() && name.trim() !== (user?.name || '');
 
+  const blockingOrgs = preview?.blocking || [];
+  const soloOrgs = preview?.solo || [];
+  // An unreachable preview must not trap someone in an account they want gone:
+  // the server is the authority on the refusal and will 409 on its own, so an
+  // unknown answer stays clickable while a known "no" does not.
+  const canDelete = !preview || preview.canDelete !== false;
+  // The same shape as the workspace modal's gate above — an exact, trimmed
+  // string match against a word the user has to type out. The word is DELETE
+  // rather than an account name because the thing being destroyed has no name
+  // to echo back.
+  const deleteConfirmMatches = deleteConfirmText.trim() === 'DELETE';
+
+  const closeDeleteModal = () => {
+    if (deleting) return;
+    setShowDeleteModal(false);
+    setDeleteConfirmText('');
+    setDeleteError('');
+    // The preview goes too. It is a statement about the blast radius RIGHT NOW,
+    // and the effect above refetches on every open — so keeping the last run's
+    // lists would render a stale set of workspace names, and after a 409 would
+    // also carry that refusal's synthesised `canDelete: false` forward and
+    // disable the button on a reopen that has not asked the server yet.
+    setPreview(null);
+    setPreviewError('');
+  };
+
   const handleDeleteConfirm = async () => {
+    if (!deleteConfirmMatches || !canDelete) return;
     setDeleting(true);
     setDeleteError('');
     try {
       await onDeleteAccount();
     } catch (err) {
-      setDeleteError(err.response?.data?.error || 'Failed to delete account. Please try again.');
+      const body = err.response?.data;
+      // The refusal carries the offending workspaces with it. It is also newer
+      // than the preview this modal opened with — somebody may have joined a
+      // workspace in between — so it replaces that list rather than being shown
+      // beside it.
+      if (body?.code === 'OWNED_WORKSPACES_NOT_EMPTY') {
+        setPreview((prev) => ({
+          blocking: body.orgs || [],
+          solo: prev?.solo || [],
+          canDelete: false,
+        }));
+      }
+      setDeleteError(body?.error || 'Failed to delete account. Please try again.');
       setDeleting(false);
     }
   };
@@ -617,6 +759,42 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
         </div>
       </form>
 
+      {/*
+        How this person reads money, everywhere in the product.
+
+        Here as well as in the avatar menu, and not instead of it: the menu is
+        where you reach for it mid-task, this is where you look when you are
+        asking "what are my settings". Every other per-user preference in this
+        app lives on this tab, and a site-wide display preference reachable only
+        from an avatar dropdown is one most people would never find.
+      */}
+      <div className="mt-10">
+        <h3
+          className="font-display font-bold text-[color:var(--color-text-primary)]"
+          style={{ fontSize: 15 }}
+        >
+          Currency
+        </h3>
+        <p
+          className="font-body mt-1"
+          style={{ fontSize: 12.5, color: 'var(--color-text-muted)', lineHeight: 1.6 }}
+        >
+          Show every amount in this currency, converted at the rate that applied when each
+          record was dated. This changes nothing about what anything is billed in — only what
+          you see.
+        </p>
+        <div className="mt-3" style={{ maxWidth: 360 }}>
+          <SegmentedControl
+            value={displayCurrency || 'as-entered'}
+            onChange={(v) => handleDisplayCurrency(v === 'as-entered' ? null : v)}
+            options={[
+              { value: 'as-entered', label: 'As entered' },
+              ...DISPLAY_CURRENCIES.map((code) => ({ value: code, label: code })),
+            ]}
+          />
+        </div>
+      </div>
+
       {/* Danger Zone */}
       <div
         className="mt-10"
@@ -645,6 +823,7 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
           variant="danger"
           onClick={() => {
             setDeleteError('');
+            setDeleteConfirmText('');
             setShowDeleteModal(true);
           }}
         >
@@ -656,7 +835,7 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
       {/* Delete confirmation modal */}
       <Modal
         isOpen={showDeleteModal}
-        onClose={() => !deleting && setShowDeleteModal(false)}
+        onClose={closeDeleteModal}
         title="Delete Account"
         closeOnOverlayClick={!deleting}
         footer={
@@ -664,7 +843,7 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => setShowDeleteModal(false)}
+              onClick={closeDeleteModal}
               disabled={deleting}
             >
               Cancel
@@ -673,7 +852,9 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
               type="button"
               variant="danger"
               onClick={handleDeleteConfirm}
-              disabled={deleting}
+              disabled={
+                deleting || previewLoading || !canDelete || !deleteConfirmMatches
+              }
             >
               {deleting ? 'Deleting…' : 'Yes, Delete My Account'}
             </Button>
@@ -690,15 +871,129 @@ const ProfileTab = ({ user, onSaveName, onUploadAvatar, onDeleteAccount }) => {
               <strong>This action is permanent and cannot be undone.</strong>
             </p>
           </div>
+          {previewLoading && (
+            <p className="font-body text-[13px] text-[color:var(--color-text-secondary)]">
+              Checking which workspaces this would delete…
+            </p>
+          )}
+          {previewError && (
+            <p className="font-body text-[12px] text-[color:var(--color-status-stuck)]">
+              {previewError}
+            </p>
+          )}
+
+          {/* Workspaces that stop the delete. Shown FIRST, because everything
+              below it is moot until they are handed over or emptied. */}
+          {blockingOrgs.length > 0 && (
+            <div
+              className="rounded-lg p-3 flex flex-col gap-2"
+              style={{ background: '#fff5f5', border: '1px solid #fca5a5' }}
+            >
+              <p className="font-body text-[13px]" style={{ color: '#374151' }}>
+                <strong>
+                  You can&apos;t delete your account yet.
+                </strong>{' '}
+                {blockingOrgs.length === 1 ? 'This workspace' : 'These workspaces'}{' '}
+                {blockingOrgs.length === 1 ? 'is' : 'are'} yours and still
+                {blockingOrgs.length === 1 ? ' has' : ' have'} other people in
+                {blockingOrgs.length === 1 ? ' it' : ' them'}:
+              </p>
+              <ul
+                className="font-body text-[13px] flex flex-col gap-1"
+                style={{ color: '#374151', paddingLeft: 16, listStyleType: 'disc' }}
+              >
+                {blockingOrgs.map((o) => (
+                  <li key={o._id}>
+                    <span className="font-semibold">{o.name}</span> —{' '}
+                    {o.memberCount} other member{o.memberCount === 1 ? '' : 's'}
+                    {o.memberNames?.length
+                      ? ` (${o.memberNames.slice(0, 3).join(', ')}${
+                          o.memberNames.length > 3
+                            ? ` +${o.memberNames.length - 3} more`
+                            : ''
+                        })`
+                      : ''}
+                  </li>
+                ))}
+              </ul>
+              <p className="font-body text-[12px]" style={{ color: '#6b7280' }}>
+                Hand each one over from its Members page (Transfer ownership),
+                or remove everyone from it, then come back here.
+              </p>
+            </div>
+          )}
+
           <p className="font-body text-[14px] text-[color:var(--color-text-primary)]">
             Deleting your account will:
           </p>
+          {/* The workspaces that go WITH you, by name. These are the ones you
+              are alone in — there is nobody to hand them to, so they cannot be
+              rescued the way a blocking workspace can. */}
+          {soloOrgs.length > 0 && (
+            <div
+              className="rounded-lg p-3"
+              style={{
+                background: 'var(--color-bg-subtle)',
+                border: '1px solid var(--color-border)',
+              }}
+            >
+              <p className="font-body text-[13px] font-semibold text-[color:var(--color-text-primary)]">
+                Permanently delete{' '}
+                {soloOrgs.length === 1
+                  ? 'this workspace'
+                  : `these ${soloOrgs.length} workspaces`}
+                , and every board, task, comment, file and vault in{' '}
+                {soloOrgs.length === 1 ? 'it' : 'them'}:
+              </p>
+              <ul
+                className="mt-1 font-body text-[13px] text-[color:var(--color-text-secondary)] flex flex-col gap-1"
+                style={{ paddingLeft: 16, listStyleType: 'disc' }}
+              >
+                {soloOrgs.map((o) => (
+                  <li key={o._id}>{o.name}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <ul className="font-body text-[13px] text-[color:var(--color-text-secondary)] flex flex-col gap-1" style={{ paddingLeft: 16, listStyleType: 'disc' }}>
-            <li>Delete all workspaces you own (including all their boards, tasks, and members)</li>
-            <li>Remove you from all other workspaces</li>
-            <li>Delete all your personal tasks and comments</li>
+            {/* The fallback for an unreachable preview. The named list above is
+                strictly better, but without this the failure path would say
+                LESS than the generic copy it replaced — a modal that cannot
+                reach the server must still state that owned workspaces go. */}
+            {!preview && (
+              <li>
+                Permanently delete every workspace you own and are the only
+                member of, including all their boards, tasks, files and vaults
+              </li>
+            )}
+            <li>Remove you from every other workspace you are a member of</li>
+            <li>Delete all your personal tasks, comments and updates</li>
+            <li>Delete your direct messages, saved messages and notifications</li>
             <li>Delete your profile and all account data</li>
           </ul>
+
+          <div className="mt-1">
+            <label
+              className="font-body text-[12px] font-semibold text-[color:var(--color-text-secondary)]"
+              htmlFor="delete-account-confirm"
+            >
+              Type <span className="font-mono text-[color:var(--color-text-primary)]">DELETE</span> to confirm:
+            </label>
+            <input
+              id="delete-account-confirm"
+              type="text"
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              disabled={deleting || !canDelete}
+              autoComplete="off"
+              className="mt-2 w-full font-body text-[13px] text-[color:var(--color-text-primary)] bg-white px-3 focus:outline-none focus:border-[color:var(--color-accent)]"
+              style={{
+                height: 38,
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-md)',
+              }}
+            />
+          </div>
           {deleteError && (
             <p className="font-body text-[12px] text-[color:var(--color-status-stuck)]">
               {deleteError}
@@ -781,6 +1076,7 @@ const SettingsPage = () => {
     if (!permissionsResolved) return;
     if (!canManageOrg && activeTab === 'organisation') setActiveTab('profile');
     if (!canManageOrg && activeTab === 'connectors') setActiveTab('profile');
+    if (!canManageOrg && activeTab === 'currency') setActiveTab('profile');
     if (!canManageHolidays && activeTab === 'holidays') setActiveTab('profile');
     if (!canExtraFeatures && activeTab === 'features') setActiveTab('profile');
     // Gated on its OWN resolution, not on the permissions one: the two loads are
@@ -827,7 +1123,10 @@ const SettingsPage = () => {
 
   const handleDeleteAccount = async () => {
     await profileService.deleteAccount();
-    await logout();
+    // `purgeLocal` — the account is gone, so the per-user residue in
+    // localStorage (unsent Update drafts) has to go with it. An ordinary sign-out
+    // deliberately keeps them; see the comment on `logout`.
+    await logout({ purgeLocal: true });
     navigate('/login');
   };
 
@@ -869,6 +1168,9 @@ const SettingsPage = () => {
     }
     if (activeTab === 'connectors' && canManageOrg) {
       return <ConnectorsTab />;
+    }
+    if (activeTab === 'currency' && canManageOrg) {
+      return <CurrencyTab />;
     }
     if (activeTab === 'holidays' && canManageHolidays) {
       return <HolidaysTab />;

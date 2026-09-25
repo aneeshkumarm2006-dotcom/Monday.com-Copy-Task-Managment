@@ -5,6 +5,8 @@ const Update = require('../models/Update');
 const Note = require('../models/Note');
 const Notification = require('../models/Notification');
 const ItemFollow = require('../models/ItemFollow');
+const ActivityLog = require('../models/ActivityLog');
+const Automation = require('../models/Automation');
 const Tracker = require('../models/Tracker');
 const TrackerEntry = require('../models/TrackerEntry');
 const Goal = require('../models/Goal');
@@ -12,9 +14,11 @@ const AdsBudget = require('../models/AdsBudget');
 const GoalConnectorLink = require('../models/GoalConnectorLink');
 const ConnectorProject = require('../models/ConnectorProject');
 const eventBus = require('../services/eventBus');
+const { invalidateMirrorsForDeletedTasks } = require('../services/mirrorRefresh');
 const ClientContact = require('../models/ClientContact');
 const { deleteSurfacesForGroup, createSurfaces } = require('../services/workstreamSurfaces');
 const { isClientBoard } = require('../utils/clientBoard');
+const { destroyCloudinaryAssets, destroyLogos } = require('../config/cloudinary');
 const { recordServiceUse } = require('../services/serviceCatalogService');
 const { ensurePortalLive } = require('../utils/portalActivation');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
@@ -594,6 +598,155 @@ const updateGroup = async (req, res) => {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Automations that named the group being deleted
+// ---------------------------------------------------------------------------
+
+/**
+ * Work out what a group delete has to do to the board's automation rules.
+ *
+ * ---- WHY THIS EXISTS AT ALL -----------------------------------------------
+ *
+ * `boardController.deleteBoard` already writes this bug down one scope up:
+ * "the scheduler keeps picking up orphaned SCHEDULE automations forever,
+ * spawning tasks against a board that no longer exists and emailing their
+ * assignees." Every word of that is true one level down as well. An Automation
+ * names a TaskGroup in three places — `taskTemplate.group`, the `group` inside
+ * a CREATE_TASK action's config, and the `value` of an ITEM_IN_GROUP condition
+ * — and until now deleting a group repaired none of them. A rule pointed at a
+ * dead group goes on creating Tasks with a `group` that resolves to nothing:
+ * rows that render on no board (the board view buckets by live group) but do
+ * reach My Work and do email their assignees, every run, forever, with nothing
+ * in the Automations list to say which rule is doing it.
+ *
+ * ---- THE SPLIT, WHICH IS THE WHOLE POINT OF THIS FUNCTION -----------------
+ *
+ * The three pointers fail in two OPPOSITE directions, so they cannot get the
+ * same treatment:
+ *
+ *   SPAWNERS over-fire. The dead group is where the rule PUTS things, so it
+ *   keeps running and keeps manufacturing ghost rows and mail. This is active
+ *   damage and has to stop on the way out of the delete.
+ *
+ *   SCOPED rules under-fire. The dead group is the "Runs for" gate the rule is
+ *   matched AGAINST (automationEventDispatcher `evaluateConditions`), so the
+ *   moment the group is gone the rule can never match again. It does no damage
+ *   at all — it simply stops working while still reading Enabled in the list,
+ *   which is the kind of silence people debug for a week.
+ *
+ * Both are disabled, for different reasons: a spawner because it is harmful,
+ * a scoped rule because it is lying. Only the spawner gets `nextRunAt` cleared,
+ * because `nextRunAt` is the cron runner's queue key and an ITEM_CREATED rule
+ * is not on that queue — `updateAutomation` makes exactly the same distinction
+ * when it disables a rule.
+ *
+ * ---- THREE THINGS THIS DELIBERATELY DOES NOT DO ---------------------------
+ *
+ * It does not DELETE the rules. The Tracker block a few lines below is the
+ * precedent: a tracker the group-pull emptied is disabled, not destroyed, so
+ * its owner can retarget it. A rule is somebody's configuration, and losing it
+ * silently because a group went away is worse than finding it switched off.
+ *
+ * It does not `$pull` the dead action or the dead condition. Pulling an action
+ * is unrecoverable, and — worse — emptying `actions` hands the run path back to
+ * a stale `taskTemplate` (`runAutomationOnce` falls through to the legacy
+ * template when `actions` is empty), so a rule converted SCHEDULE -> ITEM_CREATED
+ * would START spawning an old template on every item created. Pulling a
+ * CONDITION is worse still and in the other direction: an empty `conditions`
+ * array means "match everything", so removing the dead ITEM_IN_GROUP gate would
+ * widen a rule scoped to one client group into one that fires on every task
+ * created on the board. That is the identical trap the `Tracker.groups: []`
+ * comment below spells out, and the reason the dead pointer is left in place:
+ * a condition that can never match is the SAFE failure mode.
+ *
+ * It does not touch anything that merely mentions the id. A POST_TO_CHANNEL
+ * action naming the dead group is already safe — `services/chatSystemPost.js`
+ * returns null and posts nowhere when the group is gone — and a CREATE_SUBITEM
+ * ignores `config.group` entirely (it inherits the triggering task's), so
+ * neither makes a rule a spawner.
+ *
+ * ---- THE TWO PREDICATES, PRECISELY ----------------------------------------
+ *
+ * A rule spawns into the dead group when either is true:
+ *   - it has a CREATE_TASK action whose `config.group` is the dead id; or
+ *   - it has NO actions and its `taskTemplate.group` is the dead id. The
+ *     "no actions" half is load-bearing in both directions. `runAutomationOnce`
+ *     runs `actions` when there are any and only otherwise falls back to the
+ *     template, so a rule flipped SCHEDULE -> ITEM_CREATED keeps a vestigial
+ *     `taskTemplate` that never runs — disabling it over a pointer nothing
+ *     reads would switch off a working rule. Conversely a rule with no actions
+ *     DOES run its template whatever its trigger, so this is not narrowed to
+ *     SCHEDULE either.
+ *
+ * GROUP_CREATED rules are skipped outright, before any of that. They are
+ * answered entirely by `groupCreatedTaskTemplates`, they are BORN with
+ * `actions: []` and no `taskTemplate`, and their target group is the one that
+ * just got created at run time. A predicate keyed on an empty `actions` array
+ * would match every one of them on the board, so deleting any group would
+ * silently disable every GROUP_CREATED rule the workspace has.
+ *
+ * The scoped arm is restricted to ITEM_CREATED for the mirror-image reason.
+ * `updateAutomation` never clears `conditions` when the trigger type changes,
+ * and the cron runner queries by `triggerType`/`nextRunAt` and never calls
+ * `evaluateConditions` at all — so a SCHEDULE rule can legitimately carry a
+ * leftover ITEM_IN_GROUP condition that nothing ever reads. That rule is
+ * healthy and must be left alone.
+ *
+ * Pure, and exported, because the split above is the decision worth pinning —
+ * see groupAutomationRepair.test.js. The caller reads the board's automations
+ * into memory rather than filtering in Mongo for two reasons: a condition's
+ * `value` is stored as a STRING (`sanitizeConditions` writes `valueId`) while
+ * the two group refs are ObjectIds, so one query cannot match all three paths;
+ * and a board's rule list is small enough that one indexed read is cheaper than
+ * getting that type mismatch subtly wrong.
+ *
+ * Returns two disjoint id lists: `{ spawnerIds, scopedIds }`.
+ */
+const planAutomationRepair = (automations, groupId) => {
+  const dead = String(groupId);
+  const spawnerIds = [];
+  const scopedIds = [];
+
+  for (const automation of automations || []) {
+    if (!automation?._id) continue;
+    const trigger = automation.triggerType || 'SCHEDULE';
+    if (trigger === 'GROUP_CREATED') continue;
+
+    const actions = Array.isArray(automation.actions) ? automation.actions : [];
+
+    const spawnsViaAction = actions.some(
+      (action) =>
+        action?.type === 'CREATE_TASK' &&
+        action?.config?.group != null &&
+        String(action.config.group) === dead
+    );
+    const spawnsViaTemplate =
+      actions.length === 0 &&
+      automation.taskTemplate?.group != null &&
+      String(automation.taskTemplate.group) === dead;
+
+    if (spawnsViaAction || spawnsViaTemplate) {
+      spawnerIds.push(automation._id);
+      continue;
+    }
+
+    const conditions = Array.isArray(automation.conditions)
+      ? automation.conditions
+      : [];
+    const scopedToDead =
+      trigger === 'ITEM_CREATED' &&
+      conditions.some(
+        (c) =>
+          c?.type === 'ITEM_IN_GROUP' &&
+          c?.value != null &&
+          String(c.value) === dead
+      );
+    if (scopedToDead) scopedIds.push(automation._id);
+  }
+
+  return { spawnerIds, scopedIds };
+};
+
 /**
  * DELETE /api/groups/:id
  *
@@ -620,12 +773,88 @@ const deleteGroup = async (req, res) => {
     // then the group itself.
     const taskIds = await Task.distinct('_id', { group: id });
     if (taskIds.length > 0) {
+      // Cloudinary FIRST, and the order is the whole point. A file's `publicId`
+      // lives only on the Task or Update row that carries the attachment, so
+      // once those rows are deleted nothing anywhere knows the asset exists:
+      // it sits in the account forever, still billed, still resolvable at a URL
+      // somebody may already have, and no future cleanup job can ever find it.
+      // Read the ids out, destroy the blobs, then wipe the rows — the same
+      // sequence, for the same stated reason, as services/orgCascade.js and
+      // taskController.deleteTask.
+      //
+      // `taskIds` is the right set and must not be "improved" into a
+      // parent-scoped query: subitems carry `group` themselves, so they are
+      // already in this list, and it is exactly the list `Task.deleteMany({
+      // group: id })` below removes. Collecting a WIDER set than the delete
+      // would destroy the files of subitems that survive under a parent in
+      // another group — live rows pointing at dead blobs, strictly worse than
+      // the leak this fixes.
+      const taskDocs = await Task.find({ _id: { $in: taskIds } })
+        .select('attachments')
+        .lean();
+      const updateDocs = await Update.find({ task: { $in: taskIds } })
+        .select('attachments')
+        .lean();
+      await destroyCloudinaryAssets([
+        ...taskDocs.flatMap((t) => t.attachments || []),
+        ...updateDocs.flatMap((u) => u.attachments || []),
+      ]);
+
       await Update.deleteMany({ task: { $in: taskIds } });
       await Notification.deleteMany({ task: { $in: taskIds } });
       await ItemFollow.deleteMany({ task: { $in: taskIds } });
+      // Task history, by TASK ID — the same delete taskController.deleteTask,
+      // boardController.deleteBoard and orgCascade all do, and the one this
+      // path was missing. Without it every field-change row for these tasks
+      // survives with `task` pointing at nothing: unreachable through the
+      // per-task history panel (it 404s without the task document) yet still
+      // picked up by the board activity export, which then pads a client's
+      // audit report with hundreds of rows for work the team believes it
+      // deleted.
+      //
+      // Deleting by task id rather than by board is deliberate, for the reason
+      // boardController.deleteBoard writes down: `logActivity` only fills
+      // `board` when the caller hands it a task DOCUMENT, so rows written from
+      // a bare id carry `board: null` and no board-scoped sweep can ever reach
+      // them.
+      //
+      // This does NOT reach the `group.deleted` row logged at the end of this
+      // function: that row carries no `task`, and it is written after the
+      // cascade precisely so it outlives its subject.
+      await ActivityLog.deleteMany({ task: { $in: taskIds } });
     }
     await Note.deleteMany({ group: id });
     await Task.deleteMany({ group: id });
+    // A task deleted with its group may be the TARGET of a connect column on
+    // another board, and `task.deleted` is the only thing that ever pulls a
+    // dead entry out of `columnValues.<col>.links` (services/mirrorRefresh.js).
+    // Deleting these rows silently left every chip pointing at them behind:
+    // a permanent grey "Linked row" that opens nothing, and — worse, because it
+    // is a wrong number rather than a broken link — a mirror column aggregating
+    // `count` keeps counting them, since `count` answers from `links.length`
+    // without ever loading the targets.
+    //
+    // The ids come from the list collected BEFORE the delete; after this line
+    // there is nothing left to enumerate.
+    //
+    // AWAITED AND BULK, rather than one `eventBus.emit('task.deleted')` per id
+    // the way taskController.deleteTask does it. That shape is right for one
+    // task and wrong for a whole group: the listener does a
+    // `BoardConnection.find` plus up to three more queries PER EVENT, and
+    // `emit` is fire-and-forget, so a group holding a few thousand rows would
+    // launch tens of thousands of unawaited queries in a single tick — after
+    // the response had gone out, racing this cascade's own
+    // `TaskGroup.deleteOne`, with nothing bounding the concurrency and any
+    // listener that threw taking the cascade down with it (eventBus is a bare
+    // EventEmitter with no try/catch).
+    //
+    // `invalidateMirrorsForDeletedTasks` performs exactly the same two writes
+    // the listener would, batched with `$in`, at a cost proportional to the
+    // number of board CONNECTIONS rather than the number of deleted rows.
+    await invalidateMirrorsForDeletedTasks({
+      taskIds,
+      boardId: group.board,
+    });
     // NOTE: deliberately NO ClientContact DELETION here. A contact belongs to
     // the BOARD (one client company), not to a service — deleting the Ads group
     // must not sign that client out of their portal. Contacts are cascaded in
@@ -694,6 +923,33 @@ const deleteGroup = async (req, res) => {
         { $set: { enabled: false } }
       );
     }
+    // Automations that named this group. `planAutomationRepair` above carries
+    // the whole argument — which rules are switched off, which are left alone,
+    // and why nothing here deletes a rule or pulls a dead action or condition.
+    //
+    // Two writes rather than one because the two halves are different repairs.
+    // A SPAWNER is disabled AND taken off the cron queue: `nextRunAt` is what
+    // automationRunner selects on, and leaving it set on a disabled rule is the
+    // same inconsistency `updateAutomation` avoids. A SCOPED rule keeps its
+    // `nextRunAt` untouched, because an ITEM_CREATED rule is event-driven and
+    // that field is not the thing that runs it — writing to it here would only
+    // obscure what actually changed.
+    const boardAutomations = await Automation.find({ board: group.board })
+      .select('triggerType actions taskTemplate conditions')
+      .lean();
+    const { spawnerIds, scopedIds } = planAutomationRepair(boardAutomations, id);
+    if (spawnerIds.length > 0) {
+      await Automation.updateMany(
+        { _id: { $in: spawnerIds } },
+        { $set: { enabled: false, nextRunAt: null } }
+      );
+    }
+    if (scopedIds.length > 0) {
+      await Automation.updateMany(
+        { _id: { $in: scopedIds } },
+        { $set: { enabled: false } }
+      );
+    }
     // Conversations. Every surface on this workstream, plus its messages and
     // both kinds of read marker.
     //
@@ -705,6 +961,7 @@ const deleteGroup = async (req, res) => {
     // possible way round for a conversation to survive.
     await deleteSurfacesForGroup(id);
 
+    await destroyLogos([group]);
     await TaskGroup.deleteOne({ _id: id });
 
     // Logged AFTER the group is actually gone, so a cascade that threw halfway
@@ -811,6 +1068,10 @@ module.exports = {
   // and then reuses a duplicate instead of refusing it.
   resolveGroupName,
   duplicateGroupNameError,
+  // Exported for groupAutomationRepair.test.js. It is pure, and it holds the
+  // one decision in this cascade that is easy to get backwards: which
+  // automations a dead group switches off, and which it must leave running.
+  planAutomationRepair,
   createGroup,
   updateGroup,
   deleteGroup,

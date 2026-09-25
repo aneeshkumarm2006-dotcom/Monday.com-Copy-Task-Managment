@@ -20,6 +20,7 @@ import useOrgStore from '../../store/orgStore';
 import useInstallApp from '../../hooks/useInstallApp';
 import useNotificationStore from '../../store/notificationStore';
 import useChatStore from '../../store/chatStore';
+import EntityLogo from '../ui/EntityLogo';
 import usePermissions from '../../hooks/usePermissions';
 
 /**
@@ -261,19 +262,23 @@ const MoreSheet = ({ onClose, closing }) => {
                 }}
                 className="w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors duration-100 hover:bg-[color:var(--color-bg-subtle)]"
               >
-                <span
-                  className="flex items-center justify-center font-display font-bold text-white shrink-0"
-                  style={{
-                    width: 30,
-                    height: 30,
-                    borderRadius: 'var(--radius-sm)',
-                    background: isActive ? 'var(--color-accent)' : getAvatarColor(org.name || ''),
-                    fontSize: 13,
-                  }}
-                  aria-hidden="true"
-                >
-                  {initial}
-                </span>
+                {org.logo ? (
+                  <EntityLogo src={org.logo} name={org.name} size={30} radius={6} />
+                ) : (
+                  <span
+                    className="flex items-center justify-center font-display font-bold text-white shrink-0"
+                    style={{
+                      width: 30,
+                      height: 30,
+                      borderRadius: 'var(--radius-sm)',
+                      background: isActive ? 'var(--color-accent)' : getAvatarColor(org.name || ''),
+                      fontSize: 13,
+                    }}
+                    aria-hidden="true"
+                  >
+                    {initial}
+                  </span>
+                )}
                 <span className="flex-1 font-body text-[13px] font-medium text-[color:var(--color-text-primary)] truncate">
                   {org.name}
                 </span>

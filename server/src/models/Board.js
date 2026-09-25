@@ -195,6 +195,13 @@ const boardSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    /**
+     * Optional logo — a Cloudinary URL, '' when none. `logoPublicId` is kept
+     * beside it so replacing or removing the logo can delete the old asset.
+     * Written ONLY by controllers/logoController.js (the /logo routes).
+     */
+    logo: { type: String, default: '' },
+    logoPublicId: { type: String, default: '' },
     description: {
       type: String,
       default: '',

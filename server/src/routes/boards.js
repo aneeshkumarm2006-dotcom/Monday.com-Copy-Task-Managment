@@ -45,6 +45,8 @@ const {
   convertBoardType, getBoardMonths, setMonthTimezone,
 } = require('../controllers/trackerBoardController');
 
+const { logoLimit, boardLogo } = require('../controllers/logoController');
+
 const router = express.Router();
 
 // All board routes require authentication
@@ -75,6 +77,10 @@ router.post(
   handleUploadError,
   uploadBoardFile
 );
+
+// Board logo — see logoController for why the permission check lives there.
+router.post('/:id/logo', logoLimit, boardLogo.upload);
+router.delete('/:id/logo', boardLogo.remove);
 
 // GET /api/boards?org=:orgId — list boards for an organisation
 router.get('/', getBoards);

@@ -10,6 +10,7 @@ import {
 import { AlertCircle } from 'lucide-react';
 import useAuthStore from './store/authStore';
 import useOrgStore from './store/orgStore';
+import useFxStore from './store/fxStore';
 import useNotificationStore from './store/notificationStore';
 import useChatStore from './store/chatStore';
 import usePermissionStore from './store/permissionStore';
@@ -236,6 +237,8 @@ function App() {
   const setOrgsFromUser = useOrgStore((s) => s.setOrgsFromUser);
   const currentOrgId = useOrgStore((s) => s.currentOrg?._id);
   const ensureHolidays = useOrgStore((s) => s.ensureHolidays);
+  const ensureCurrency = useOrgStore((s) => s.ensureCurrency);
+  const ensureRates = useFxStore((s) => s.ensureRates);
   const fetchExecutiveView = useExecutiveViewStore((s) => s.fetchMine);
   const clearExecutiveView = useExecutiveViewStore((s) => s.clear);
   const fetchNotifications = useNotificationStore((s) => s.fetchNotifications);
@@ -310,6 +313,25 @@ function App() {
     if (user && currentOrgId) ensureHolidays(currentOrgId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?._id, currentOrgId]);
+
+  // The workspace's currency, up here for the same reason and on the same
+  // terms as the calendar above: money is rendered on board pages, the
+  // dashboard, the executive home and every add-on, so a page-level load would
+  // mean most of them never asking. `ensureCurrency` is a no-op once loaded, so
+  // this costs one request per workspace per session.
+  useEffect(() => {
+    if (user && currentOrgId) ensureCurrency(currentOrgId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?._id, currentOrgId]);
+
+  // Exchange rates. Keyed on the USER only, not the workspace: the snapshots
+  // are global — a rate is a public fact — so switching workspace must not
+  // re-fetch an identical table. `ensureRates` is a no-op once loaded, so this
+  // is one request per session.
+  useEffect(() => {
+    if (user) ensureRates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?._id]);
 
   // Resolve the caller's executive view once per (person, workspace), up here
   // beside the holiday calendar and for the same kind of reason: it is not a

@@ -1,6 +1,7 @@
 import { ChevronLeft, Download, Plus } from 'lucide-react';
 
-import { formatMoney } from '../../../utils/connectorFormat';
+import useMoney from '../../../hooks/useMoney';
+import { dayKeyOfMonthKey } from '../../../utils/money';
 import { formatPct } from '../../../utils/adsBudgetDisplay';
 import BudgetOverviewCard from './BudgetOverviewCard';
 import BudgetTable from './BudgetTable';
@@ -31,7 +32,17 @@ const ClientBudgetScreen = ({
   canManage,
 }) => {
   const currency = data.currency || 'USD';
-  const money = (v) => formatMoney(v, currency);
+  /**
+   * The reader's currency, at the rate in force for the month being shown.
+   *
+   * Dated by `monthKey` rather than converted at today's rate: a budget board
+   * is a month-partitioned record, and looking back at March should show what
+   * March's spend was worth in March. `dayKeyOfMonthKey` reads the rate from
+   * the first of the month, which is exactly what every record dated anywhere
+   * in that month resolves to.
+   */
+  const fx = useMoney();
+  const money = (v) => fx.in(v, currency, dayKeyOfMonthKey(data.monthKey));
   const { totals, window: win } = data;
 
   // Every campaign across every platform, flattened for the second table. The
@@ -86,6 +97,7 @@ const ClientBudgetScreen = ({
         window={win}
         monthLabel={data.monthLabel}
         currency={currency}
+        monthKey={data.monthKey}
         platforms={data.platforms}
       />
 
@@ -104,6 +116,8 @@ const ClientBudgetScreen = ({
           rows={data.platforms}
           level="platform"
           currency={currency}
+          monthKey={data.monthKey}
+        monthKey={data.monthKey}
           canTrack={canTrack}
           canManage={canManage}
           onCommitSpend={onCommitSpend}
@@ -139,6 +153,8 @@ const ClientBudgetScreen = ({
           rows={campaigns}
           level="campaign"
           currency={currency}
+          monthKey={data.monthKey}
+        monthKey={data.monthKey}
           canTrack={canTrack}
           canManage={canManage}
           onCommitSpend={onCommitSpend}
@@ -172,7 +188,7 @@ const ClientBudgetScreen = ({
           </span>
         }
       >
-        <BudgetActivityTable items={activity} currency={currency} error={activityError} />
+        <BudgetActivityTable items={activity} currency={currency} monthKey={data.monthKey} error={activityError} />
       </Section>
     </div>
   );

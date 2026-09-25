@@ -1,7 +1,8 @@
 import { ChevronRight, Wallet } from 'lucide-react';
 
 import { ScrollTable, Th, Td } from '../addons/connector/SectionShell';
-import { formatMoney } from '../../../utils/connectorFormat';
+import useMoney from '../../../hooks/useMoney';
+import { dayKeyOfMonthKey } from '../../../utils/money';
 import { formatPct } from '../../../utils/adsBudgetDisplay';
 import { BudgetBar, BudgetStat, Section, SectionEmpty, StatusText } from './BudgetBits';
 
@@ -93,7 +94,17 @@ const ClientCard = ({ client, money, elapsedPct, onOpen }) => {
  */
 const ClientRosterScreen = ({ data, onOpenClient }) => {
   const currency = data.currency || 'USD';
-  const money = (v) => formatMoney(v, currency);
+  /**
+   * The reader's currency, at the rate in force for the month being shown.
+   *
+   * Dated by `monthKey` rather than converted at today's rate: a budget board
+   * is a month-partitioned record, and looking back at March should show what
+   * March's spend was worth in March. `dayKeyOfMonthKey` reads the rate from
+   * the first of the month, which is exactly what every record dated anywhere
+   * in that month resolves to.
+   */
+  const fx = useMoney();
+  const money = (v) => fx.in(v, currency, dayKeyOfMonthKey(data.monthKey));
   const { totals, window: win } = data;
 
   return (

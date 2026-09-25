@@ -174,5 +174,22 @@ const notificationSchema = new mongoose.Schema(
 // which was previously unindexed.
 notificationSchema.index({ user: 1, createdAt: -1 });
 notificationSchema.index({ user: 1, isRead: 1 });
+/**
+ * The CASCADE read, not a user-facing one — which is why it is keyed on
+ * `channel` alone rather than led by `user` like the two above.
+ *
+ * `workstreamSurfaces.purgeChannels` deletes the notifications belonging to the
+ * rooms it is tearing down (a chatMention row deep-links into a channel, so one
+ * left behind is a bell entry that opens an empty room titled "Channel"). That
+ * sweep runs on every board delete, every workstream delete, every
+ * workspace-channel teardown and every DM purge in `userCascade` — and without
+ * this index each of those is a full collection scan of the single
+ * highest-volume collection in the app.
+ *
+ * Sparse, because `channel` is null on the overwhelming majority of rows: only
+ * chatMention and clientChatMessage ever set it, so the index stays a small
+ * fraction of the collection while still serving the only query that reads it.
+ */
+notificationSchema.index({ channel: 1 }, { sparse: true });
 
 module.exports = mongoose.model('Notification', notificationSchema);

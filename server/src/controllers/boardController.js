@@ -24,6 +24,8 @@ const BoardConnection = require('../models/BoardConnection');
 const NotificationPreference = require('../models/NotificationPreference');
 const ConnectorBudget = require('../models/ConnectorBudget');
 const User = require('../models/User');
+const ExecutiveView = require('../models/ExecutiveView');
+const { destroyCloudinaryAssets, destroyLogos } = require('../config/cloudinary');
 const { isBoardCreator } = require('../utils/boardAccess');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
@@ -35,6 +37,7 @@ const {
   templateByKey,
   templateSummaries,
 } = require('../utils/boardTemplates');
+const { doneStatusIdsForBoard } = require('../utils/doneStatus');
 const { isValidTimezone } = require('../utils/tzDay');
 const { monthKeyOf } = require('../utils/monthKey');
 const { createNotification } = require('../services/notificationService');
@@ -809,6 +812,11 @@ const createBoard = async (req, res) => {
     //
     // Chat and mail need no opt-in: there is no tier, and every service group
     // gets its surfaces on creation (services/workstreamSurfaces.js).
+    // The unit every money column on this board is born in. Falls back to
+    // rupees for an org created before the field existed, which is what those
+    // boards would have got anyway.
+    const baseCurrency = org.baseCurrency || 'INR';
+
     const isClient = boardType === 'client';
     const portalFields = isClient
       ? { portalClientName: (clientName || '').trim() || name.trim() }
@@ -827,10 +835,32 @@ const createBoard = async (req, res) => {
       order: nextBoardOrder,
       statuses: tpl.statuses.map((s) => ({ ...s })),
       labels: [],
+      /**
+       * Template columns, with every money column denominated in the
+       * WORKSPACE's currency rather than the template's.
+       *
+       * `boardTemplates.js` spreads a `RUPEES` constant into six money columns
+       * across four templates, with the comment "the workspace this is being
+       * built for bills in rupees". That was true, and it was also the reason
+       * an agency billing in dollars had to fix every money column by hand on
+       * every board it ever created.
+       *
+       * Substituting here rather than in the template keeps the template a
+       * static description of SHAPE, with no dependency on the database — and
+       * it costs nothing, because `loadOrgForMember` above already has the org
+       * in hand.
+       *
+       * Only `format: 'currency'` columns are touched. A percent or plain
+       * column has no currency to change, and a formula column inherits one
+       * only because it is also money.
+       */
       columns: tpl.columns.map((c, i) => ({
         ...c,
         order: i,
-        settings: { ...(c.settings || {}) },
+        settings: {
+          ...(c.settings || {}),
+          ...(c.settings?.format === 'currency' ? { currency: baseCurrency } : {}),
+        },
       })),
       // The flexible-columns engine is what renders `columns` at all, so a
       // template that seeds any must switch it on. A blank board seeds none
@@ -1050,6 +1080,92 @@ const updateBoard = async (req, res) => {
 };
 
 /**
+ * Pull every connect-column link that points INTO a board that is about to be
+ * deleted, and stale the mirror caches that were computed from those links.
+ *
+ * Deleting a board used to drop its `BoardConnection` edges and its tasks and
+ * stop there, which left the OTHER boards in the workspace holding links to
+ * rows that no longer exist. `ConnectBoardsCell` renders each dead link as the
+ * literal text "Linked row", and a sibling `mirror` column with
+ * `aggregation: 'count'` counts the stored link entries without resolving any
+ * of them (services/mirrorRefresh.js - `if (aggregation === 'count') return
+ * links.length;`), so it keeps reporting the old number forever. The other
+ * aggregations do resolve their targets and quietly collapse to the aggregation
+ * default, so `count` is the one that reports a WRONG number rather than none -
+ * a figure somebody reads out in a status review.
+ *
+ * WHY THIS DOES NOT EMIT `task.deleted` PER TASK, the way taskController's
+ * deleteTask does. That is the established mechanism and it is the right one
+ * for a single row, but it does not survive being pointed at a whole board.
+ * Its handler (`invalidateMirrorsForTask`) opens with
+ * `BoardConnection.find({ toBoardId })`, and: (a) the edge registry records
+ * only the PRIMARY target of a multi-target connect column - models/
+ * BoardConnection.js states that in its own header - so links made through a
+ * column's second or third target board are invisible to it, and unlike a
+ * cached mirror value the links array has no TTL to heal it later; (b) the
+ * listener is fire-and-forget, so it would be racing the
+ * `BoardConnection.deleteMany` a few lines below for the very rows it needs to
+ * find anything at all; and (c) it is one find plus two updates per deleted
+ * task, which on a board with thousands of rows is thousands of round-trips to
+ * do one board's work. So this walks the DATA rather than the index: a stored
+ * link carries its own `boardId` (columnTypes' `connect_boards` validate
+ * refuses one without a valid board id), which makes "every link into this
+ * board" a single `$pull` per column instead of a lookup per task.
+ *
+ * Scoped to the deleted board's own workspace because a link cannot leave one:
+ * both linkController and taskController refuse a target board in another
+ * organisation until F3 lands.
+ *
+ * The dead board id is deliberately LEFT in the surviving columns'
+ * `settings.targetBoardIds`. Pulling it reads well right up until the column
+ * had only that one target: `targetBoardIds: []` is refused outright by
+ * columnController's connect-settings validation, and linkController reads an
+ * empty list as "any board in the workspace is allowed" - so tidying the id
+ * away would either brick the column or silently widen what it may point at,
+ * which is the trade groupController.deleteGroup already refuses to make for
+ * `Tracker.groups`. A stale target costs the picker one doomed fetch, which
+ * `ConnectBoardsCell` already swallows.
+ */
+const purgeLinksToDeletedBoard = async (boardId, organisationId) => {
+  const target = String(boardId);
+  const fromBoards = await Board.find({
+    organisation: organisationId,
+    _id: { $ne: boardId },
+    'columns.type': 'connect_boards',
+  })
+    .select('_id columns')
+    .lean();
+
+  for (const from of fromBoards) {
+    const columns = Array.isArray(from.columns) ? from.columns : [];
+    for (const col of columns.filter((c) => c.type === 'connect_boards')) {
+      const colId = String(col._id);
+      const referencingIds = await Task.distinct('_id', {
+        board: from._id,
+        [`columnValues.${colId}.links.boardId`]: target,
+      });
+      if (referencingIds.length === 0) continue;
+      await Task.updateMany(
+        { _id: { $in: referencingIds } },
+        { $pull: { [`columnValues.${colId}.links`]: { boardId: target } } }
+      );
+      // The mirror columns reading through this connect column hold a cached
+      // value computed from the links just pulled. `$unset` is the same stale
+      // marker mirrorRefresh uses itself, so the next read recomputes instead
+      // of trusting a number that was only true before the delete.
+      const mirrorCols = columns.filter(
+        (c) => c.type === 'mirror'
+          && String(c.settings && c.settings.sourceConnectColumnId) === colId
+      );
+      if (mirrorCols.length === 0) continue;
+      const unset = {};
+      for (const mc of mirrorCols) unset[`columnValues.${String(mc._id)}`] = '';
+      await Task.updateMany({ _id: { $in: referencingIds } }, { $unset: unset });
+    }
+  }
+};
+
+/**
  * DELETE /api/boards/:id
  *
  * Requires `board.delete`, which is resolved against the board itself — so an
@@ -1074,6 +1190,30 @@ const deleteBoard = async (req, res) => {
 
     const taskIds = await Task.distinct('_id', { board: id });
     if (taskIds.length > 0) {
+      // The files first. This is the same read-then-destroy services/orgCascade.js
+      // performs on a whole workspace and taskController.deleteTask on a single
+      // row, and it was simply never carried over here. It has to run BEFORE the
+      // rows below are dropped: the publicIds live only on `Task.attachments` and
+      // `Update.attachments`, so once those rows are gone nothing in the database
+      // knows what to destroy and no operator can ever find the blobs again. They
+      // stay fetchable at their public URL - a timestamp plus the original
+      // filename, in a fixed folder - and stay billed, for a board somebody
+      // deleted precisely to make its contents go away. Deleting the whole
+      // ORGANISATION cleaned these up correctly; deleting one board did not,
+      // which is exactly backwards from what the gesture promises.
+      //
+      // A portal-thread file is mirrored onto both the task and its update, so
+      // its publicId appears twice in this list. That is left as it is: a repeat
+      // destroy is swallowed per asset, and de-duplicating is the kind of tidying
+      // that ends up dropping the task-side entry.
+      const taskDocs = await Task.find({ _id: { $in: taskIds } }).select('attachments').lean();
+      const updateDocs = await Update.find({ task: { $in: taskIds } }).select('attachments').lean();
+      const allAttachments = [
+        ...taskDocs.flatMap((t) => t.attachments || []),
+        ...updateDocs.flatMap((u) => u.attachments || []),
+      ];
+      await destroyCloudinaryAssets(allAttachments);
+
       await Update.deleteMany({ task: { $in: taskIds } });
       await Notification.deleteMany({ task: { $in: taskIds } });
       await ItemFollow.deleteMany({ task: { $in: taskIds } });
@@ -1137,6 +1277,13 @@ const deleteBoard = async (req, res) => {
     // to exactly one board) and it also collects rows whose subject was already
     // deleted, which an id list no longer contains.
     await ActivityLog.deleteMany({ board: id });
+    // The connect links OTHER boards' tasks hold into this one. Pulled here,
+    // before both the edges below and the tasks further down go, because those
+    // are the only two things a later repair could ever find them by: with the
+    // BoardConnection rows deleted the invalidation lookup has no index left,
+    // and with the tasks deleted there is nothing left to name. See the helper
+    // above for why this does not go through the `task.deleted` event.
+    await purgeLinksToDeletedBoard(id, ctx.board.organisation);
     // Connect-column edges in either direction. A row pointing at a board that
     // no longer exists is a dangling reference the mirror-invalidation lookup
     // keeps paying for on every task change; one pointing FROM this board names
@@ -1150,11 +1297,31 @@ const deleteBoard = async (req, res) => {
       { mutedBoards: id },
       { $pull: { mutedBoards: id } }
     );
+    // Curated executive lists. An entry naming a board that no longer exists is
+    // already elided at read time - services/executiveView.js skips it with the
+    // reason `deleted` - so this is not a render fix. It is the same argument as
+    // the mutes above: the entry can never mean anything again, it counts
+    // against the per-profile board cap, and the configurator cannot offer to
+    // remove a board whose name it can no longer resolve.
+    //
+    // The home sections' own `config` is deliberately left alone. It is Mixed,
+    // every section composer already degrades a board it cannot read, and
+    // reaching into an untyped blob to rewrite somebody's layout is a worse
+    // trade than leaving behind an id the reader already ignores.
+    await ExecutiveView.updateMany(
+      { 'boards.board': id },
+      { $pull: { boards: { board: id } } }
+    );
     // The board vault: key material, item ciphertexts, the audit trail, and the
     // encrypted blobs behind any file items. See services/vaultCascade.js for
     // why a surviving vault is worse than the usual orphan.
     await cascadeDeleteVaults(id);
     await Task.deleteMany({ board: id });
+    // Logos — the groups' and the board's own. Collected before the rows go.
+    await destroyLogos([
+      ...(await TaskGroup.find({ board: id }).select('logoPublicId').lean()),
+      ...(await Board.find({ _id: id }).select('logoPublicId').lean()),
+    ]);
     await TaskGroup.deleteMany({ board: id });
     // Client Portal cleanup. A contact belongs to the BOARD, so this is the only
     // place a deleted client board's roster can be cleaned up — group deletion
@@ -1297,13 +1464,53 @@ const deleteLabel = async (req, res) => {
     const { lid } = req.params;
     const label = board.labels.id(lid);
     if (!label) return res.status(404).json({ error: 'Label not found' });
-    board.labels.pull({ _id: lid });
-    await board.save();
     // Detach this label id from every task on the board.
     await Task.updateMany(
       { board: board._id },
       { $pull: { labels: lid } }
     );
+    // Tasks are not the only holder. A Tracker filters on label IDS too
+    // (`Tracker.match.labels` - ids rather than names so a rename or a recolour
+    // propagates without touching a tracker), and that is the only other place
+    // in the schema a board label id can live. Left behind, the dead id matches
+    // nothing: `trackerEvaluate` requires a task to carry one of the wanted
+    // labels, and the update above just guaranteed no task carries this one. So
+    // the tracker scores 0% in every period of the Delivery grid - the grid an
+    // agency reports to its clients - while still showing as Enabled, and a
+    // read-modify-write of its config is refused with "One or more labels are
+    // not on this board", naming a label that no longer exists anywhere in the
+    // UI to be cleared from the form.
+    //
+    // Collected BEFORE the pull and disabled after it, for exactly the reason
+    // groupController.deleteGroup spells out for the sibling field
+    // `Tracker.groups`: an EMPTY `match.labels` means "no label filter", i.e.
+    // every task on the board. A tracker that watched only this label would
+    // therefore not merely lose its scope, it would silently WIDEN to the whole
+    // board and start scoring work it was never pointed at. A tracker already
+    // on "all labels" never matches this query, so it is never touched; only
+    // the ones this pull actually emptied are turned off, and a disabled
+    // tracker is a state somebody can see and put right.
+    const scopedTrackerIds = await Tracker.distinct('_id', {
+      board: board._id,
+      'match.labels': lid,
+    });
+    if (scopedTrackerIds.length > 0) {
+      await Tracker.updateMany(
+        { _id: { $in: scopedTrackerIds } },
+        { $pull: { 'match.labels': lid } }
+      );
+      await Tracker.updateMany(
+        { _id: { $in: scopedTrackerIds }, 'match.labels': { $size: 0 } },
+        { $set: { enabled: false } }
+      );
+    }
+    // The label leaves the board document LAST, once nothing else names it —
+    // children before parents, as in `deleteStatus` and for the same reason.
+    // Pulling first meant a reconcile that threw 500'd with the label already
+    // gone from the board and its id still sitting in tasks and trackers, where
+    // no screen could name it to clear it.
+    board.labels.pull({ _id: lid });
+    await board.save();
     return res.json({ labels: serializeBoardChips(board).labels });
   } catch (err) {
     console.error('deleteLabel error:', err);
@@ -1395,6 +1602,68 @@ const updateStatus = async (req, res) => {
   }
 };
 
+/**
+ * May this status be deleted? Returns null when it may, or the
+ * `{ status, error }` to refuse with.
+ *
+ * Pure, and exported, because it is the one decision in the handler worth
+ * pinning in a test - everything around it is I/O.
+ *
+ * TWO refusals. The first was always here: the board's default status is where
+ * a deleted status's tasks are sent, so it cannot itself be the one going.
+ *
+ * The second is the board's LAST done rung, and it is a 409 rather than a 400
+ * because nothing about the request is malformed - the board is in a state that
+ * makes the delete unsafe, which is the same shape of refusal
+ * `deleteGoalColumnOption` already makes when it will not remove the last
+ * pickable choice from a required column. `key: 'done'` is not decoration like
+ * a chip's name or colour. It is the handle every "is this finished?" read on
+ * the board resolves through (utils/doneStatus.js), and those readers all
+ * degrade to FALSE rather than erroring: board progress sticks at 0%, every
+ * tracker requirement of type TASK_DONE fails so the Delivery grid turns fully
+ * red, resolved client-portal issues re-open, goal evidence stops counting
+ * towards `actual`, and the due digest starts reporting finished work as
+ * overdue and never stops. None of that surfaces an error anywhere.
+ *
+ * And it cannot be undone from inside the product: `addStatus` writes
+ * `key: null` and `updateStatus` never writes `key` at all, so once the last
+ * done-keyed subdoc is pulled there is no route left in the repo that can put
+ * one back on that board. Costing somebody one extra step - rename the rung, or
+ * add the replacement and move the tasks - is the cheap side of that trade.
+ *
+ * Deliberately narrow. `working_on_it` and `stuck` are read only for a
+ * breakdown, so they stay deletable, and a board that somehow carries two done
+ * rungs may still lose one. The set is read through `doneStatusIdsForBoard`
+ * rather than a local `key === 'done'` test so this guard and the readers it
+ * exists to protect cannot drift apart.
+ *
+ * @param {Array} statuses  the board's status subdocs
+ * @param {string} sid      the id being deleted
+ * @returns {{ status: number, error: string }|null}
+ */
+const statusDeletionBlocker = (statuses, sid) => {
+  const list = Array.isArray(statuses) ? statuses : [];
+  const target = list.find((s) => s && String(s._id) === String(sid));
+  // No such status on this board: the caller answers that with its own 404.
+  if (!target) return null;
+  if (target.isDefault) {
+    return {
+      status: 400,
+      error: 'Cannot delete the default status. Reassign another status as default first.',
+    };
+  }
+  const doneIds = doneStatusIdsForBoard({ statuses: list }).map(String);
+  if (doneIds.length === 1 && doneIds[0] === String(sid)) {
+    return {
+      status: 409,
+      error: "This is the board's Done status. Progress, delivery scores, due "
+        + 'reminders and the client portal all read it, and it cannot be added '
+        + 'back once it is removed. Rename it instead.',
+    };
+  }
+  return null;
+};
+
 const deleteStatus = async (req, res) => {
   try {
     const ctx = await requireChipManage(req, res);
@@ -1403,19 +1672,108 @@ const deleteStatus = async (req, res) => {
     const { sid } = req.params;
     const status = board.statuses.id(sid);
     if (!status) return res.status(404).json({ error: 'Status not found' });
-    if (status.isDefault) {
-      return res
-        .status(400)
-        .json({ error: 'Cannot delete the default status. Reassign another status as default first.' });
-    }
+    const blocked = statusDeletionBlocker(board.statuses, sid);
+    if (blocked) return res.status(blocked.status).json({ error: blocked.error });
+    // `Task.status` is Mixed, and Mongoose does not cast a query value on a
+    // Mixed path - so the board tasks, which store an ObjectId, never matched
+    // the raw string from `req.params` and the reassignment below was a no-op
+    // that left every affected task pointing at a subdoc that no longer exists.
+    // Matching both spellings fixes that and also collects any legacy row that
+    // stored the id as a string. The same id is what the automation reconcile
+    // below needs, so it is minted once here.
+    const statusOid = new mongoose.Types.ObjectId(sid);
+    const statusEither = { $in: [sid, statusOid] };
     // Reassign any tasks currently using this status to the board's default.
-    const fallback = board.statuses.find((s) => s.isDefault && s._id.toString() !== sid);
+    //
+    // The fallback is the default status, and FAILING THAT the first surviving
+    // one. It used to be the default alone, guarded by `if (fallback)` — which
+    // reads as caution and is the opposite: on a board carrying no `isDefault`
+    // status the reassignment was skipped while the `pull` two lines down ran
+    // anyway, leaving every affected task pointing at a subdoc that no longer
+    // exists. `statusDeletionBlocker` already refuses to delete the default and
+    // the last done rung, so by this line at least one other status survives —
+    // but "at least one survives" is a fact worth relying on explicitly rather
+    // than assuming the default is among them.
+    const survivors = board.statuses.filter((s) => s._id.toString() !== sid);
+    const fallback = survivors.find((s) => s.isDefault) || survivors[0];
     if (fallback) {
       await Task.updateMany(
-        { board: board._id, status: sid },
+        { board: board._id, status: statusEither },
         { $set: { status: fallback._id } }
       );
     }
+    // Automations hold this status id in two places, and nothing in the repo
+    // has ever reconciled either of them: the only Automation deletes are the
+    // per-rule one, this board's whole-board sweep, and the org teardown.
+    //
+    // `conditions` is the half that actually breaks. The dispatcher compares
+    // the live status id on each event against the stored one, so a dead id can
+    // never match and the rule stops firing - silently, while still showing as
+    // Enabled with its condition rendered as an em dash - and any later save of
+    // that rule is refused with "Condition status does not belong to board",
+    // naming a status the editor's own dropdown cannot show.
+    //
+    // CHOSEN: pull the dead condition AND disable the rule, rather than pulling
+    // alone. Dropping a condition is not neutral here, because
+    // `evaluateConditions` reads a shorter list as a WIDER rule and an empty one
+    // as "match everything" - so a bare pull would turn "when a task is created
+    // in Stuck, create a Triage subitem" into "whenever any task is created",
+    // and a rule that had gone quiet would start manufacturing rows nobody asked
+    // for. Disabling is the same anti-widening trade groupController.deleteGroup
+    // makes for `Tracker.groups`, applied to every rule the pull touched rather
+    // than only to the ones it emptied: a rule that keeps its group scope still
+    // fires far more widely than it was written to, and a disabled rule is a
+    // state its owner can see and decide about.
+    //
+    // A condition's `value` is Mixed and `sanitizeConditions` stores it as a
+    // STRING, so it is matched as one, with the ObjectId spelling alongside in
+    // case an older row carries that instead. The action side is typed, and is
+    // only unset: `runAutomationOnce` already validates `config.status` against
+    // the board and falls back to the board default, so a dead id there changes
+    // nothing at run time - clearing it just stops the dead id being reflected
+    // back into the editor and refused on save.
+    //
+    // THE DISABLE IS NARROWER THAN THE PULL, and the split matters. Only an
+    // EVENT-DRIVEN rule runs its conditions: `automationEventDispatcher` calls
+    // `evaluateConditions` before acting, which is where a shorter list reads as
+    // a wider rule. `automationRunner`, which is the entire SCHEDULE path, never
+    // reads `conditions` at all — so a scheduled rule carrying a leftover
+    // ITEM_IN_STATUS is not narrowed by it today and cannot be widened by losing
+    // it. Disabling those as well would silently switch off a working recurring
+    // automation because somebody tidied up an unrelated status chip, which is a
+    // worse outcome than the one this block exists to prevent.
+    //
+    // So: every rule loses the dead condition, and only the ones whose behaviour
+    // that actually changes are turned off.
+    const staleCondition = {
+      board: board._id,
+      conditions: { $elemMatch: { type: 'ITEM_IN_STATUS', value: statusEither } },
+    };
+    const widenedRuleIds = await Automation.distinct('_id', {
+      ...staleCondition,
+      triggerType: { $ne: 'SCHEDULE' },
+    });
+    await Automation.updateMany(staleCondition, {
+      $pull: { conditions: { type: 'ITEM_IN_STATUS', value: statusEither } },
+    });
+    if (widenedRuleIds.length > 0) {
+      await Automation.updateMany(
+        { _id: { $in: widenedRuleIds } },
+        { $set: { enabled: false } }
+      );
+    }
+    await Automation.updateMany(
+      { board: board._id, 'actions.config.status': statusOid },
+      { $unset: { 'actions.$[a].config.status': '' } },
+      { arrayFilters: [{ 'a.config.status': statusOid }] }
+    );
+    // The status leaves the board document LAST, after every row naming it has
+    // been repointed or reconciled — children before parents, the same rule the
+    // cascades in this file follow and for the same reason. Saving first meant a
+    // reconcile that threw 500'd with the status already gone from the board and
+    // the dead ids still sitting in `Automation.conditions`, which is precisely
+    // the unreachable state these lines exist to prevent: the status is no longer
+    // in any dropdown, so nothing can name it to clean it up.
     board.statuses.pull({ _id: sid });
     await board.save();
     return res.json({ statuses: serializeBoardChips(board).statuses });
@@ -2092,4 +2450,6 @@ module.exports = {
   reorderGroupTags,
   // exported for analytics/dashboard
   findDoneStatusIdsForOrg,
+  // the "may this status be deleted" decision, exported for its unit test
+  statusDeletionBlocker,
 };

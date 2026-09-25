@@ -20,6 +20,7 @@ import useExecutiveViewStore from '../../store/executiveViewStore';
 import usePermissions from '../../hooks/usePermissions';
 import { applyNavSwitches } from '../../utils/executiveNav';
 import OptionMenu from '../ui/OptionMenu';
+import EntityLogo from '../ui/EntityLogo';
 
 /**
  * SIDE RAIL — the app's navigation, standing up.
@@ -256,7 +257,7 @@ const WorkspaceSwitcher = ({ collapsed, onExpand }) => {
       orgs.map((org) => ({
         value: org._id,
         label: org.name || 'Untitled workspace',
-        tile: { text: initialOf(org.name), color: getAvatarColor(org.name || '') },
+        tile: { text: initialOf(org.name), color: getAvatarColor(org.name || ''), image: org.logo || '' },
       })),
     [orgs]
   );
@@ -411,20 +412,16 @@ const WorkspaceSwitcher = ({ collapsed, onExpand }) => {
         {/* The one saturated object in the rail. With nothing else competing,
             the eye lands on which workspace you are in before anything else —
             which is the entire reason it sits at the top. */}
-        <span
-          aria-hidden="true"
-          className="flex items-center justify-center shrink-0 font-display font-bold text-white"
-          style={{
-            width: collapsed ? 30 : 26,
-            height: collapsed ? 30 : 26,
-            borderRadius: 7,
-            background: tileColor,
-            fontSize: collapsed ? 13.5 : 12.5,
-            lineHeight: 1,
-          }}
-        >
-          {initialOf(currentOrg?.name)}
-        </span>
+        {/* The workspace's own logo when it has one — the fastest possible
+            answer to "which client's workspace am I in" — else the lettered
+            tile in the name's colour, exactly as before. */}
+        <EntityLogo
+          src={currentOrg?.logo}
+          name={currentOrg?.name}
+          size={collapsed ? 30 : 26}
+          radius={7}
+          color={tileColor}
+        />
         {!collapsed && (
           <>
             <span

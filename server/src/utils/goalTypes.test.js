@@ -414,9 +414,23 @@ test('only a PAST month with gaps is unclosed', () => {
 
 test('formatValue respects the unit', () => {
   assert.strictEqual(formatValue(2.1, { unit: 'percent' }), '2.1%');
-  // Money is USD regardless of what `unitLabel` happens to hold.
-  assert.strictEqual(formatValue(40000, { unit: 'currency', unitLabel: '$' }), '$40,000');
-  assert.strictEqual(formatValue(40000, { unit: 'currency', unitLabel: '' }), '$40,000');
+  /**
+   * Money names its currency with the CODE, not a symbol, and still ignores
+   * `unitLabel` entirely.
+   *
+   * This asserted '$40,000' until a reader could choose to see the product in
+   * rupees. The server has no user — `formatValue` is handed a goal and nothing
+   * else — so it cannot know whose currency to render in, and a bare '$' reads
+   * as a claim about the reader's own money to anybody viewing in ₹. "USD
+   * 40,000" is true for everybody, and the client converts it: see
+   * `formatGoalValue` in client/src/utils/goalDisplay.js.
+   *
+   * The `unitLabel` half of this is unchanged and still load-bearing: a money
+   * goal's unit is a fact about the goal, not something a caller may relabel.
+   */
+  assert.strictEqual(formatValue(40000, { unit: 'currency', unitLabel: '$' }), 'USD 40,000');
+  assert.strictEqual(formatValue(40000, { unit: 'currency', unitLabel: '' }), 'USD 40,000');
+  assert.strictEqual(formatValue(40000, { unit: 'currency', unitLabel: '₹' }), 'USD 40,000');
   assert.strictEqual(formatValue(12, { unit: 'custom', unitLabel: 'posts' }), '12 posts');
   assert.strictEqual(formatValue(1234.5, { unit: 'none' }), '1,234.5');
   assert.strictEqual(formatValue(null, {}), '—');

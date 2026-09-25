@@ -17,7 +17,8 @@ import {
 import usePortalStream from '../hooks/usePortalStream';
 import PortalChat from '../components/portal/PortalChat';
 import PortalMail from '../components/portal/PortalMail';
-import { PORTAL_BRAND, PORTAL_BRAND_INITIAL } from '../utils/portalBrand';
+import { portalBrandName } from '../utils/portalBrand';
+import PortalBrandMark from '../components/portal/PortalBrandMark';
 import { dateInputToISO } from '../utils/dateUtils';
 import '../styles/portal.css';
 import { streamsOfMode } from '../utils/portalChatRows';
@@ -820,15 +821,18 @@ const PortalDashboardPage = () => {
   }
 
   const firstName = (context.contactName || '').trim().split(' ')[0];
+  // The agency's logo — from the requests context, or the home payload before
+  // that has loaded.
+  const orgLogo = context.orgLogo || home?.company?.orgLogo || '';
 
   return (
     <div className="mcp mcp-page">
       <header className="mcp-topbar">
         <div className="mcp-container--wide" style={{ paddingTop: 14, paddingBottom: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
-            <span className="mcp-brand-mark">{PORTAL_BRAND_INITIAL}</span>
+            <PortalBrandMark logo={orgLogo} size={40} />
             <span style={{ fontSize: 15.5, fontWeight: 800, letterSpacing: '-0.02em' }}>
-              {PORTAL_BRAND}
+              {portalBrandName(orgLogo)}
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>

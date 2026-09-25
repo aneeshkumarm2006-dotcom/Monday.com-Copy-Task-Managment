@@ -37,6 +37,7 @@ import {
 } from '../components/ui/Skeleton';
 import BoardCard from '../components/board/BoardCard';
 import BoardFormModal from '../components/board/BoardFormModal';
+import EntityLogo from '../components/ui/EntityLogo';
 import DeleteBoardModal from '../components/board/DeleteBoardModal';
 import BoardFilterPanel from '../components/board/BoardFilterPanel';
 import SortableItem from '../components/dnd/SortableItem';
@@ -104,6 +105,7 @@ const MyBoardsPage = () => {
   const toastSuccess = useToastStore((s) => s.success);
   const toastError = useToastStore((s) => s.error);
   const createBoardAction = useBoardStore((s) => s.createBoard);
+  const setBoardLogo = useBoardStore((s) => s.setBoardLogo);
   const updateBoardAction = useBoardStore((s) => s.updateBoard);
   const deleteBoardAction = useBoardStore((s) => s.deleteBoard);
   const reorderBoardsAction = useBoardStore((s) => s.reorderBoards);
@@ -251,7 +253,7 @@ const MyBoardsPage = () => {
   }, [boards, search, filters, execLabels]);
 
   const handleCreateSubmit = async (values) => {
-    await createBoardAction({
+    const created = await createBoardAction({
       name: values.name,
       visibility: values.visibility,
       description: values.description,
@@ -274,6 +276,17 @@ const MyBoardsPage = () => {
       organisation: orgId,
     });
     setCreateOpen(false);
+    // The logo goes up AFTER the board exists — there is nothing to attach it
+    // to before. A failed upload must not read as a failed create: the board is
+    // made, so say only that the logo didn't take, and where to retry.
+    if (values.logoFile && created?._id) {
+      setBoardLogo(created._id, values.logoFile).catch((err) => {
+        toastError(
+          err?.response?.data?.error
+            || 'Board created, but the logo could not be uploaded. Add it from Edit Board.'
+        );
+      });
+    }
   };
 
   const handleEditSubmit = async (values) => {
@@ -1203,18 +1216,22 @@ const BoardListRow = ({
           borderRadius: 'var(--radius-sm)',
         }}
       />
-      <div
-        className="flex items-center justify-center shrink-0"
-        style={{
-          width: 32,
-          height: 32,
-          borderRadius: 'var(--radius-md)',
-          background: 'var(--color-accent-light)',
-        }}
-        aria-hidden="true"
-      >
-        <Folder size={16} color="var(--color-accent)" />
-      </div>
+      {board.logo ? (
+        <EntityLogo src={board.logo} name={board.name} size={32} radius={8} />
+      ) : (
+        <div
+          className="flex items-center justify-center shrink-0"
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: 'var(--radius-md)',
+            background: 'var(--color-accent-light)',
+          }}
+          aria-hidden="true"
+        >
+          <Folder size={16} color="var(--color-accent)" />
+        </div>
+      )}
       <div className="min-w-0 flex-1">
         <p
           className="font-body font-semibold truncate"

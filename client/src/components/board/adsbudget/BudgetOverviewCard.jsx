@@ -36,7 +36,7 @@ const HEALTH_ROWS = [
   { key: 'over', label: 'Over Budget' },
 ];
 
-const BudgetOverviewCard = ({ totals, window: win, monthLabel, currency, platforms = [] }) => {
+const BudgetOverviewCard = ({ totals, window: win, monthLabel, currency, monthKey = null, platforms = [] }) => {
   /**
    * How many platforms are in each state.
    *
@@ -77,6 +77,7 @@ const BudgetOverviewCard = ({ totals, window: win, monthLabel, currency, platfor
           totals={totals}
           window={win}
           currency={currency}
+          monthKey={monthKey}
           className="lg:col-span-2"
         />
 

@@ -78,6 +78,59 @@ const useOrgStore = create((set, get) => ({
     return next;
   },
 
+  // --- currency ---------------------------------------------------------------
+  //
+  // The workspace's currency setup, cached beside `holidays` because it has
+  // exactly the same shape of life: one small object per org, read by screens
+  // all over the product, changed a handful of times ever.
+  //
+  // `baseCurrency` is the load-bearing field for everyone. The rest — provider,
+  // cadence, whether a key is installed — is only ever read by the Currency
+  // settings tab, but it arrives in the same request because splitting one
+  // small object across two endpoints buys nothing.
+
+  /** `{ baseCurrency, provider, cadence, hasApiKey, keyPreview, ... }` or null. */
+  currency: null,
+  /** The org id `currency` was loaded for; null means "not loaded yet". */
+  currencyLoadedFor: null,
+
+  fetchCurrency: async (orgId) => {
+    const id = orgId || get().currentOrg?._id;
+    if (!id) return null;
+    try {
+      const currency = await orgService.getCurrencySettings(id);
+      set({ currency, currencyLoadedFor: id });
+      return currency;
+    } catch (err) {
+      // Money still renders without this — every amount falls back to the
+      // currency it is stored in, which is what it was before any of this
+      // existed. Failing to load a preference must never break the screen that
+      // asked for it.
+      console.error('fetchCurrency failed:', err);
+      return get().currency;
+    }
+  },
+
+  /** Load once per org. Safe to call from anywhere that renders money. */
+  ensureCurrency: async (orgId) => {
+    const id = orgId || get().currentOrg?._id;
+    if (!id || get().currencyLoadedFor === id) return get().currency;
+    return get().fetchCurrency(id);
+  },
+
+  /**
+   * Change part of the setup. Partial — pass only what changed.
+   *
+   * Replaces from the server's response rather than patching locally, the same
+   * no-optimistic-update rule the holidays follow: the server is the one that
+   * validates the code, seals the key and derives the preview.
+   */
+  saveCurrency: async (orgId, patch) => {
+    const next = await orgService.saveCurrencySettings(orgId, patch);
+    set({ currency: next, currencyLoadedFor: orgId });
+    return next;
+  },
+
 
   /**
    * Hydrate orgs list from a user object (usually from authStore).
@@ -136,6 +189,11 @@ const useOrgStore = create((set, get) => ({
         roles: [],
         holidays: [],
         holidaysLoadedFor: null,
+        // Same reasoning as the calendar above, and money makes it sharper: a
+        // stale base currency would label the new workspace's figures with the
+        // previous one's unit.
+        currency: null,
+        currencyLoadedFor: null,
       });
       usePermissionStore.getState().fetchPermissions(org._id);
     }
@@ -217,6 +275,19 @@ const useOrgStore = create((set, get) => ({
     return data;
   },
 
+  /**
+   * Set (a File) or clear (null) a workspace's logo, then patch every copy the
+   * store holds — `orgs` feeds the switcher menu, `currentOrg` the rail tile.
+   */
+  setOrgLogo: async (orgId, file) => {
+    const logo = file
+      ? await orgService.uploadOrgLogo(orgId, file)
+      : await orgService.removeOrgLogo(orgId);
+    const patch = (o) => (o && o._id === orgId ? { ...o, logo } : o);
+    set((s) => ({ orgs: s.orgs.map(patch), currentOrg: patch(s.currentOrg) }));
+    return logo;
+  },
+
   clearOrgs: () => {
     localStorage.removeItem(CURRENT_ORG_KEY);
     usePermissionStore.getState().clear();
@@ -264,6 +335,8 @@ const useOrgStore = create((set, get) => ({
       roles: [],
       holidays: [],
       holidaysLoadedFor: null,
+      currency: null,
+      currencyLoadedFor: null,
     });
     usePermissionStore.getState().fetchPermissions(nextCurrent?._id || null);
     return nextCurrent;

@@ -20,7 +20,7 @@ import { CSS } from '@dnd-kit/utilities';
 import Avatar from '../../ui/Avatar';
 import { columnValue } from '../../../utils/columnValues';
 import { computeSummary } from '../../../utils/columnSummary';
-import { formatNumber } from '../../../utils/numberFormat';
+import useMoney from '../../../hooks/useMoney';
 import { rowCountLabel } from '../../../utils/boardTemplateDisplay';
 import { groupColorAt } from '../../../utils/groupColors';
 import { deepFor } from '../../../utils/priorityColors';
@@ -98,6 +98,8 @@ const ageTone = (days) => {
 const ageLabel = (days) => (days === 0 ? 'today' : `${days}d`);
 
 const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
+  // Named `fmt`, not `money` — the local `money` below is the deal's VALUE.
+  const fmt = useMoney();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task._id,
     disabled: !canDrag,
@@ -147,7 +149,7 @@ const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
       }}
       role="button"
       tabIndex={0}
-      aria-label={`${title}${money != null ? `, ${formatNumber(money, cols.money?.settings)}` : ''}`}
+      aria-label={`${title}${money != null ? `, ${fmt.column(money, cols.money?.settings)}` : ''}`}
     >
       <p
         className="font-body"
@@ -167,7 +169,7 @@ const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
             marginTop: 4,
           }}
         >
-          {formatNumber(money, cols.money?.settings)}
+          {fmt.column(money, cols.money?.settings)}
         </p>
       )}
 
@@ -239,6 +241,7 @@ const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
 };
 
 const StageColumn = ({ group, tasks, cols, shape, board, color, openTotal, canEdit, dragEnabled, onOpenTask, onAddTask }) => {
+  const fmt = useMoney();
   const stageColor = color || cols.accent;
   // Darkened before it is used as TEXT: the palette is chosen for filled dots
   // and stripes, and two of its four fall under 4.5:1 on a light header. See
@@ -310,7 +313,7 @@ const StageColumn = ({ group, tasks, cols, shape, board, color, openTotal, canEd
               marginTop: 3,
             }}
           >
-            {formatNumber(total.value, cols.money.settings)}
+            {fmt.column(total.value, cols.money.settings)}
           </p>
         )}
         <p

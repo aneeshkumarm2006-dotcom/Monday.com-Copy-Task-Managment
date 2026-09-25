@@ -2,12 +2,14 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { FileText, Upload, AlertTriangle, Loader2, MoreHorizontal } from 'lucide-react';
 import Avatar from '../../ui/Avatar';
 import FilePreviewModal from '../FilePreviewModal';
-import { formatNumber } from '../../../utils/numberFormat';
+import { formatIn } from '../../../utils/money';
+import useMoney from '../../../hooks/useMoney';
 import { columnValue } from '../../../utils/columnValues';
 import {
   ledgerColumns,
   ledgerTotals,
   invoiceState,
+  issuedDayOf,
   notified,
 } from '../../../utils/ledger';
 import { timeAgo } from '../../../utils/dateUtils';
@@ -51,7 +53,7 @@ const STAMP = {
 
 const isImage = (f) => typeof f?.mime === 'string' && f.mime.startsWith('image/');
 
-const Figure = ({ label, value, settings, tone }) => (
+const Figure = ({ label, display, tone }) => (
   <div
     style={{
       flex: '1 1 130px',
@@ -82,12 +84,17 @@ const Figure = ({ label, value, settings, tone }) => (
               : 'var(--color-text-primary)',
       }}
     >
-      {formatNumber(value, settings)}
+      {display}
     </span>
   </div>
 );
 
 const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu, onPreview, onStatus }) => {
+  // Its own hook rather than a prop from the grid. The value is memoized per
+  // render in `useMoney`, so this costs nothing, and threading a formatter
+  // through the tile list would be plumbing for a fact that is the same on
+  // every tile.
+  const money = useMoney();
   const state = invoiceState(task, board, cols);
   const stamp = STAMP[state.key] || STAMP.draft;
   const files = cols.file ? columnValue(task, cols.file) : null;
@@ -259,7 +266,7 @@ const InvoiceTile = ({ task, board, cols, onOpen, onNotify, onMenu, onPreview, o
               color: state.key === 'overdue' ? 'var(--color-status-stuck)' : 'var(--color-text-primary)',
             }}
           >
-            {amount == null || amount === '' ? '—' : formatNumber(amount, cols.amount?.settings)}
+            {amount == null || amount === '' ? '—' : money.column(amount, cols.amount?.settings, issuedDayOf(task, cols))}
           </span>
           <span
             className="font-body block"
@@ -329,7 +336,66 @@ const LedgerView = ({
   onDropFiles,
 }) => {
   const cols = useMemo(() => ledgerColumns(board), [board]);
-  const totals = useMemo(() => ledgerTotals(tasks, board, cols), [tasks, board, cols]);
+  const money = useMoney();
+
+  /**
+   * The source currency for every figure on this board.
+   *
+   * ONE code for the whole ledger: `ledgerColumns` finds the amount column by
+   * format and there is only ever one, so every row is denominated the same
+   * way. Only the DATES differ, which is why conversion is still per row.
+   */
+  const sourceCurrency = cols.amount?.settings?.currency || null;
+
+  /**
+   * Can EVERY row convert? All or nothing, deliberately.
+   *
+   * If some invoices had a rate for their month and others did not, the strip
+   * would add converted dollars to unconverted rupees — the exact thing
+   * `Board.js` calls out: "adding numbers that do not share a unit is a bug".
+   * A partly-converted total is worse than an unconverted one, because it looks
+   * just as authoritative.
+   *
+   * So the moment one row cannot be valued, the whole strip stays in the
+   * source currency and the note disappears with it. Running the backfill
+   * script is what fixes that for a board with history.
+   */
+  const convertible = useMemo(() => {
+    if (!money.active || !sourceCurrency) return false;
+    // `.converted`, not a null check on the value: `resolve` deliberately hands
+    // back the ORIGINAL number when it cannot convert, so a value test would
+    // say yes to every row.
+    return (tasks || []).every(
+      (t) => money.resolve(1, sourceCurrency, issuedDayOf(t, cols)).converted
+    );
+  }, [tasks, cols, money, sourceCurrency]);
+
+  const totals = useMemo(
+    () =>
+      ledgerTotals(tasks, board, cols, {
+        convert: convertible
+          ? (amount, task) => money.value(amount, sourceCurrency, issuedDayOf(task, cols))
+          : null,
+      }),
+    [tasks, board, cols, money, sourceCurrency, convertible]
+  );
+
+  /**
+   * One of the four figures, already converted (or deliberately not).
+   *
+   * `formatIn` rather than the hook, because `totals` has been through the
+   * conversion already — asking the hook again would convert a second time.
+   * Decimals follow the destination: a converted figure takes them from its own
+   * magnitude, an unconverted one keeps whatever the column's author chose.
+   */
+  const stripFigure = (n) =>
+    convertible
+      ? formatIn(n, money.display)
+      : formatIn(n, sourceCurrency, { decimals: cols.amount?.settings?.decimals ?? 0 });
+
+  // Said ONCE, under the strip, rather than with a marker on every figure —
+  // this codebase's own rule, and it keeps the tabular-nums columns scanning.
+  const conversionNote = convertible ? money.note(sourceCurrency) : null;
   const [dragging, setDragging] = useState(false);
   /**
    * The document being read, as `{ attachments, index }`.
@@ -346,7 +412,6 @@ const LedgerView = ({
   // enters and leaves is what makes the highlight hold steady.
   const dragDepth = useRef(0);
 
-  const money = cols.amount?.settings;
 
   /**
    * Every invoice that actually has a file, in the order they are on screen.
@@ -412,17 +477,25 @@ const LedgerView = ({
         transition: 'background 120ms ease',
       }}
     >
-      <div className="flex gap-2.5 flex-wrap" style={{ marginBottom: 14 }}>
-        <Figure label="Billed" value={totals.billed} settings={money} />
-        <Figure label="Paid" value={totals.paid} settings={money} tone="good" />
-        <Figure label="Outstanding" value={totals.outstanding} settings={money} />
+      <div className="flex gap-2.5 flex-wrap" style={{ marginBottom: conversionNote ? 4 : 14 }}>
+        <Figure label="Billed" display={stripFigure(totals.billed)} />
+        <Figure label="Paid" display={stripFigure(totals.paid)} tone="good" />
+        <Figure label="Outstanding" display={stripFigure(totals.outstanding)} />
         <Figure
           label={totals.overdueCount > 0 ? `Overdue · ${totals.overdueCount}` : 'Overdue'}
-          value={totals.overdue}
-          settings={money}
+          display={stripFigure(totals.overdue)}
           tone={totals.overdue > 0 ? 'bad' : undefined}
         />
       </div>
+
+      {conversionNote ? (
+        <p
+          className="font-body"
+          style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 12 }}
+        >
+          {conversionNote}
+        </p>
+      ) : null}
 
       <div
         style={{

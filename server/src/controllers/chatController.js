@@ -3,6 +3,8 @@ const Channel = require('../models/Channel');
 const Message = require('../models/Message');
 const ChannelRead = require('../models/ChannelRead');
 const SavedMessage = require('../models/SavedMessage');
+const MailThreadRead = require('../models/MailThreadRead');
+const Notification = require('../models/Notification');
 const Board = require('../models/Board');
 const TaskGroup = require('../models/TaskGroup');
 const Task = require('../models/Task');
@@ -487,6 +489,32 @@ const openDm = async (req, res) => {
           );
         }
         await ChannelRead.deleteMany({ channel: { $in: dupIds } });
+        // The two OTHER collections that denormalise a channel id, and the
+        // reason this merge is a data-loss bug rather than housekeeping: the
+        // duplicate rows are deleted two lines below, so anything still naming
+        // them is orphaned the moment this runs — and now that `purgeChannels`
+        // sweeps bookmarks and channel notifications by channel, orphaned is
+        // one board teardown away from deleted.
+        //
+        // `SavedMessage.channel` is a denormalisation of the MESSAGE's channel,
+        // kept so the saved list can resolve access without loading every
+        // message (its own comment says so, and says "the channel of a message
+        // never changes" — which was true until this merge started moving
+        // them). The messages themselves were just repointed at `keep`, so
+        // their bookmarks have to follow or the list silently drops rows a user
+        // deliberately saved. The unique index is on (user, message), which
+        // this write does not touch, so nothing can collide.
+        await SavedMessage.updateMany(
+          { channel: { $in: dupIds } },
+          { $set: { channel: keep._id } }
+        );
+        // Delivered notifications deep-link into the channel. Repointed rather
+        // than deleted: the conversation did not end, it was merged, and the
+        // message the row is about is still there under `keep`.
+        await Notification.updateMany(
+          { channel: { $in: dupIds } },
+          { $set: { channel: keep._id } }
+        );
         await Channel.deleteMany({ _id: { $in: dupIds } });
       }
       if (keep.dmKey !== dmKey) {
@@ -808,6 +836,24 @@ const sendMessage = async (req, res) => {
         // A DM mention is org-less (like personal-task notifications): it
         // shows in the bell whichever workspace the recipient is viewing.
         orgId: channel.kind === 'dm' ? null : String(channel.organisation),
+        // The board, when the room has one. It was omitted originally because
+        // a chat mention is ABOUT a channel, not about a board, and the
+        // `channel` ref already says where to go — but `board` is the field
+        // every cascade sweeps on, so `deleteBoard`'s
+        // `Notification.deleteMany({ board: id })` matched none of these and
+        // a deleted board left its mentions unread in every recipient's bell,
+        // pointing at a room that no longer exists. Setting it here is the
+        // half of the fix that covers rows written from now on;
+        // `purgeChannels` deletes by `channel` for the ones already stored
+        // and for the board-less workspace and DM rooms this cannot reach.
+        //
+        // This also puts the mention through `filterUsersWithBoardRead`,
+        // which is not a behaviour change: `channelAudience` already derived
+        // `validMentions` from `resolveAccess(board, org, id).canRead` for
+        // exactly this board, so the two agree by construction. It costs one
+        // query per mention batch, which is the price of the notification
+        // carrying the scope it is cleaned up by.
+        boardId: channel.board ? String(channel.board?._id || channel.board) : null,
         actorId: userId,
         channelId: String(channel._id),
       });
@@ -911,11 +957,47 @@ const deleteMessage = async (req, res) => {
       ? []
       : await Message.find({ replyTo: message._id }).select('attachments');
 
+    // Read BEFORE the delete, not after. Both facts below are needed once the
+    // rows are gone, and a deleted mongoose document keeping its fields in
+    // memory is an implementation detail of the driver, not a contract.
+    const wasThreadRoot = !message.replyTo;
+    const threadId = message._id;
+    const doomedIds = [message._id, ...replies.map((r) => r._id)];
+
     // Cloudinary assets go down with the rows that referenced them.
     const assets = [message, ...replies].flatMap((m) =>
       (m.attachments || []).map((a) => ({ publicId: a.publicId, mime: a.mime }))
     );
     if (assets.length) await destroyCloudinaryAssets(assets);
+
+    // Children before parents, so a run that dies between these lines leaves
+    // rows whose message still exists rather than ones nothing can find.
+    //
+    // Other people's private bookmarks on the messages being destroyed. This
+    // is the everyday source of orphaned SavedMessage rows — not a board
+    // teardown but an author deleting one post that somebody else had set
+    // aside — and the row left behind is permanently unremovable, because
+    // `toggleSave` 404s on the missing Message before it reaches its delete.
+    // Scoped by message id rather than by user: a bookmark belongs to whoever
+    // made it, and every one of them is now pointing at nothing.
+    await SavedMessage.deleteMany({ message: { $in: doomedIds } });
+
+    // A mail THREAD is its root message (see models/Message.js) and
+    // `MailThreadRead.thread` points at exactly that id, so deleting a root
+    // strands one marker per principal who had ever opened the thread. The
+    // channel-scoped sweep in `workstreamSurfaces.purgeChannels` was written
+    // as the backstop for a whole mailbox dying and cannot help here — the
+    // channel is still very much alive.
+    //
+    // Guarded on `replyTo` rather than on `channel.mode === 'mail'` because
+    // roots are the only ids the collection ever stores; a chat message and a
+    // mail reply both simply match nothing.
+    //
+    // Placed with the bookmarks, ABOVE the message delete, for the children-
+    // before-parents reason stated there: a crash between the two orders leaves
+    // markers whose root still exists — findable, and cleared by simply running
+    // the delete again — instead of exactly the orphan this line exists to stop.
+    if (wasThreadRoot) await MailThreadRead.deleteMany({ thread: threadId });
 
     if (replies.length) await Message.deleteMany({ replyTo: message._id });
     await message.deleteOne();
@@ -2145,6 +2227,52 @@ const toggleSave = async (req, res) => {
   }
 };
 
+/** How many renderable bookmarks the saved list returns. */
+const SAVED_LIST_LIMIT = 100;
+/** How many raw rows one scan pass reads. */
+const SAVED_SCAN_PAGE = 300;
+/**
+ * The ceiling on raw rows one request will read. A bookmark list that is
+ * mostly unreadable is pathological, and the request must terminate rather
+ * than walk a collection to fill a page it can never fill.
+ */
+const SAVED_SCAN_MAX = 1500;
+
+/**
+ * Should the saved-list scan read another page?
+ *
+ * This is the decision the cap-before-filter bug got wrong, so it is pulled
+ * out where it can be pinned by a test. The old code applied `.limit(100)` to
+ * the RAW query and filtered afterwards, which meant an unreadable row cost a
+ * slot: a person whose hundred newest bookmarks all sat in a board they had
+ * lost access to — or, once bookmarks stopped being cascaded, in a board that
+ * had been deleted — opened Saved to an empty list while older, perfectly
+ * valid bookmarks sat just past the cap, invisible and unreachable. The model
+ * and this handler both document access loss as an expected, permanent state
+ * (`SavedMessage` header), which is precisely why it must not consume the page.
+ *
+ * Three ways to stop, and all three are needed:
+ *   - the page is full of renderable rows, which is the ordinary exit;
+ *   - the last page came back short, meaning the collection is exhausted and
+ *     another pass would read nothing;
+ *   - the scan ceiling, which bounds the pathological case above.
+ *
+ * Pure: takes counts, returns a boolean, touches nothing.
+ */
+const shouldContinueSavedScan = ({
+  kept,
+  scanned,
+  lastPageSize,
+  pageSize = SAVED_SCAN_PAGE,
+  limit = SAVED_LIST_LIMIT,
+  maxScan = SAVED_SCAN_MAX,
+}) => {
+  if (kept >= limit) return false;
+  if (lastPageSize < pageSize) return false;
+  if (scanned >= maxScan) return false;
+  return true;
+};
+
 /**
  * GET /api/chat/saved — everything the caller set aside, newest first.
  *
@@ -2154,46 +2282,83 @@ const toggleSave = async (req, res) => {
  * sitting there. So every channel the list touches is re-checked, and what the
  * caller may no longer read is silently dropped rather than 403'd, because a
  * personal list is not the place to be told what you have lost.
+ *
+ * Which is why the cap is applied to what SURVIVES that check rather than to
+ * the query that feeds it — see `shouldContinueSavedScan`. The handler pages
+ * through the caller's bookmarks newest-first and stops as soon as it holds a
+ * full page of rows it can actually render.
  */
 const listSaved = async (req, res) => {
   try {
     const userId = req.user.userId;
-    const rows = await SavedMessage.find({ user: userId })
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .lean();
-    if (rows.length === 0) return res.json({ messages: [] });
-
-    const channelIds = distinctIds(rows, 'channel');
-    const channels = await Channel.find({ _id: { $in: channelIds } });
-    const allowed = new Set();
-    for (const channel of channels) {
-      // eslint-disable-next-line no-await-in-loop
-      const access = await resolveChannelAccess(channel, userId);
-      if (access.ok) allowed.add(String(channel._id));
-    }
-    const channelById = new Map(channels.map((c) => [String(c._id), c]));
-
-    const keep = rows.filter((r) => allowed.has(String(r.channel)));
-    const messages = await Message.find({
-      _id: { $in: keep.map((r) => r.message) },
-    }).populate(MESSAGE_POPULATE);
-    const messageById = new Map(messages.map((m) => [String(m._id), m]));
 
     // Ordered by when it was SAVED, not when it was written — the list is a
     // pile you made, and the order you made it in is the one you remember.
+    // Paging preserves that: every pass reads the next-oldest slice.
     const out = [];
-    for (const row of keep) {
-      const message = messageById.get(String(row.message));
-      if (!message) continue; // deleted since
-      const channel = channelById.get(String(row.channel));
-      out.push({
-        savedAt: row.createdAt,
-        channel: channel
-          ? { _id: channel._id, name: channel.name, kind: channel.kind, board: channel.board }
-          : null,
-        message,
-      });
+    let scanned = 0;
+    let lastPageSize = 0;
+
+    // Channel decisions survive across pages: the same room supplies many
+    // bookmarks, and `resolveChannelAccess` is the expensive part of this
+    // handler. A resolved-and-allowed channel maps to its document; one that
+    // is unreadable OR deleted maps to null, so a single lookup answers both
+    // "may I see it" and "is it still there".
+    const channelById = new Map();
+
+    for (;;) {
+      // eslint-disable-next-line no-await-in-loop
+      const rows = await SavedMessage.find({ user: userId })
+        .sort({ createdAt: -1 })
+        .skip(scanned)
+        .limit(SAVED_SCAN_PAGE)
+        .lean();
+      lastPageSize = rows.length;
+      scanned += rows.length;
+      if (rows.length === 0) break;
+
+      const unseen = distinctIds(rows, 'channel').filter(
+        (id) => !channelById.has(String(id))
+      );
+      if (unseen.length) {
+        // eslint-disable-next-line no-await-in-loop
+        const channels = await Channel.find({ _id: { $in: unseen } });
+        const found = new Map(channels.map((c) => [String(c._id), c]));
+        for (const id of unseen) {
+          const channel = found.get(String(id));
+          // eslint-disable-next-line no-await-in-loop
+          const access = channel ? await resolveChannelAccess(channel, userId) : null;
+          channelById.set(String(id), access && access.ok ? channel : null);
+        }
+      }
+
+      const keep = rows.filter((r) => channelById.get(String(r.channel)));
+      if (keep.length) {
+        // eslint-disable-next-line no-await-in-loop
+        const messages = await Message.find({
+          _id: { $in: keep.map((r) => r.message) },
+        }).populate(MESSAGE_POPULATE);
+        const messageById = new Map(messages.map((m) => [String(m._id), m]));
+
+        for (const row of keep) {
+          const message = messageById.get(String(row.message));
+          if (!message) continue; // deleted since
+          const channel = channelById.get(String(row.channel));
+          out.push({
+            savedAt: row.createdAt,
+            channel: {
+              _id: channel._id,
+              name: channel.name,
+              kind: channel.kind,
+              board: channel.board,
+            },
+            message,
+          });
+          if (out.length >= SAVED_LIST_LIMIT) break;
+        }
+      }
+
+      if (!shouldContinueSavedScan({ kept: out.length, scanned, lastPageSize })) break;
     }
 
     return res.json({ messages: out });
@@ -2213,6 +2378,10 @@ module.exports = {
   listPins,
   toggleSave,
   listSaved,
+  // Exported for its test: the saved list's paging decision, which is what
+  // stops an unreadable or orphaned bookmark from consuming a slot in the
+  // caller's page.
+  shouldContinueSavedScan,
   ALLOWED_REACTIONS,
   openDm,
   updateChannel,

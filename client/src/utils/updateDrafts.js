@@ -146,6 +146,46 @@ export const pruneStaleDrafts = (maxAgeMs = MAX_AGE_MS) => {
 };
 
 /**
+ * Drop every draft belonging to one person, whatever task or thread it is on.
+ *
+ * This exists because a draft outlives the session that wrote it. Signing out,
+ * or deleting the account outright, tore down the server side and the in-memory
+ * stores but left the unsent prose sitting in localStorage — and the only
+ * sweeper, `pruneStaleDrafts`, runs from inside an Updates composer, which on a
+ * single-user machine nobody ever opens again after the account is gone. So the
+ * 30-day age limit never fires and the residue is permanent, not stale.
+ *
+ * It is scoped to ONE user id rather than sweeping the whole `DRAFT_KEY_PREFIX`
+ * namespace, and that is the entire point of the signature. The key carries a
+ * user segment precisely so two people sharing a browser cannot touch each
+ * other's drafts (see the header of this file); a prefix-wide wipe on sign-out
+ * would throw away the other person's half-written notes the moment the first
+ * one leaves. The `anon:` bucket goes too, because a draft written with no user
+ * id is attributable to nobody and there is no session that could ever claim it.
+ *
+ * Returns the number of entries removed, which is only useful for tests — the
+ * callers do not branch on it.
+ */
+export const clearAllDrafts = (userId) => {
+  const owners = [String(userId || 'anon'), 'anon'];
+  try {
+    const doomed = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (!key) continue;
+      if (owners.some((owner) => key.startsWith(`${DRAFT_KEY_PREFIX}${owner}:`))) {
+        doomed.push(key);
+      }
+    }
+    doomed.forEach((key) => localStorage.removeItem(key));
+    return doomed.length;
+  } catch {
+    // Private mode / blocked storage — there was nothing kept to clear either.
+    return 0;
+  }
+};
+
+/**
  * The trimmed copy of the update being replied to that a draft carries. Only
  * what the reply banner renders plus the id the post needs — never the whole
  * populated update, which would go stale in storage.

@@ -7,6 +7,7 @@ import GoalConnectorChip from './GoalConnectorChip';
 import GoalEvidenceChip from './GoalEvidenceChip';
 import { cellComponentFor } from '../columns';
 import { formatGoalValue, targetFieldOf, hasBaselineField } from '../../../utils/goalDisplay';
+import useMoney from '../../../hooks/useMoney';
 
 /**
  * One goal, stacked, below 768px.
@@ -47,6 +48,7 @@ const GoalMobileCard = ({
   link = null, canLink = false, canAccept = false, accepting = false,
   onPatch, onEdit, onDelete, onMove, onLink, onHistory, onAcceptSuggestions,
 }) => {
+  const money = useMoney();
   const c = goal.computed || {};
   const usesDate = (typeSpec?.actualField?.key || (goal.type === 'deadline' ? 'actualDayKey' : 'actual')) === 'actualDayKey';
   const actualFieldKey = usesDate ? 'actualDayKey' : 'actual';
@@ -189,7 +191,7 @@ const GoalMobileCard = ({
         {baselineSet && (
           <Field label="Started at">
             <span className="font-body" style={{ fontSize: 13 }}>
-              {formatGoalValue(goal.config.baseline, goal)}
+              {formatGoalValue(goal.config.baseline, goal, money)}
             </span>
           </Field>
         )}
@@ -200,7 +202,7 @@ const GoalMobileCard = ({
             <span className="font-body" style={{ fontSize: 13 }}>
               {targetField.kind === 'date'
                 ? (targetValue || '—')
-                : formatGoalValue(targetValue ?? null, goal)}
+                : formatGoalValue(targetValue ?? null, goal, money)}
             </span>
           </Field>
         )}

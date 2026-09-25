@@ -647,8 +647,18 @@ const formatValue = (value, goal) => {
   const unit = goal?.unit || 'none';
   const n = value.toLocaleString('en-US', { maximumFractionDigits: 2 });
   if (unit === 'percent') return `${n}%`;
-  // Money is USD — the symbol is fixed, not read from `unitLabel`.
-  if (unit === 'currency') return `$${n}`;
+  /**
+   * Money goals are denominated in USD, and this says so with the CODE.
+   *
+   * The server cannot know who is reading — a display currency is per person
+   * and this function has no user — so it must not pretend to. "USD 40,000" is
+   * true for everybody; "$40,000" reads as a claim about the reader's own
+   * currency to anybody who has switched the product to rupees.
+   *
+   * The client converts instead: `formatGoalValue` in
+   * client/src/utils/goalDisplay.js dates the rate by the goal's own month.
+   */
+  if (unit === 'currency') return `USD ${n}`;
   if (unit === 'custom' && goal.unitLabel) return `${n} ${goal.unitLabel}`;
   return n;
 };

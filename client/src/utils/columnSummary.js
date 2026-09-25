@@ -136,7 +136,7 @@ export const summaryLabel = (rows, column) => {
  * existed before templates: the header slot renders nothing at all rather than
  * an empty row of labels.
  */
-export const groupSummaries = (board, rows) => {
+export const groupSummaries = (board, rows, money = null) => {
   if (!board?.useFlexibleColumns || !Array.isArray(board.columns)) return [];
   const out = [];
   for (const col of board.columns) {
@@ -152,7 +152,22 @@ export const groupSummaries = (board, rows) => {
       // "3 receipts missing" through the currency formatter would print "₹3".
       display: result.raw
         ? result.value.toLocaleString()
-        : formatNumber(result.value, col.settings),
+        : /**
+           * Through the reader's formatter when one is supplied, so a group
+           * total agrees with the cells above it. `money` omitted — which is
+           * every caller that has not been updated — renders exactly as before.
+           *
+           * NO DATE is passed: a group's rows can span months, and dating the
+           * SUM at any one of them would be a claim about the wrong day. So a
+           * total converts at the latest rate while its cells each convert at
+           * their own, which is a real and deliberate limitation: on a board
+           * whose rows span months the header can differ slightly from the sum
+           * of what is under it. The Ledger, where that difference is the
+           * whole point, does its own arithmetic in `ledgerTotals`.
+           */
+          money
+          ? money.column(result.value, col.settings)
+          : formatNumber(result.value, col.settings),
     });
   }
   return out;

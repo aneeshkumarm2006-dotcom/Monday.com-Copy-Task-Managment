@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatGoalValue, RATING_CHOICES } from '../../../utils/goalDisplay';
+import useMoney from '../../../hooks/useMoney';
 import Dropdown from '../../ui/Dropdown';
 import DatePickerPopover from '../../ui/DatePickerPopover';
 
@@ -28,6 +29,9 @@ const GoalValueCell = ({
   align = 'right',
   onChange,
 }) => {
+  // A money goal is denominated in USD (see `GOAL_CURRENCY`) and renders in
+  // whatever the reader chose. Editing still writes the raw number.
+  const money = useMoney();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState(null);
@@ -211,7 +215,7 @@ const GoalValueCell = ({
         minHeight: 26,
       }}
     >
-      {isEmpty ? placeholder : formatGoalValue(value, goal)}
+      {isEmpty ? placeholder : formatGoalValue(value, goal, money)}
     </div>
   );
 };

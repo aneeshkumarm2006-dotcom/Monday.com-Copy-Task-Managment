@@ -8,6 +8,10 @@ require('./Organisation');
 // settings blob. It DESCRIBES a view and never grants one; reach is still the
 // org role AND the board's own grants, resolved by `resolveAccess`.
 require('./ExecutiveView');
+// Exchange rates, one row per day. Deliberately NOT org-scoped: a rate is a
+// public fact, so one row serves every workspace and only the FETCH is per-org.
+// See the model header for why every day is kept rather than overwritten.
+require('./FxSnapshot');
 require('./Board');
 require('./BoardConnection');
 require('./TaskGroup');

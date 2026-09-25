@@ -1,4 +1,5 @@
 import { ChevronRight, Mail, MessageSquare } from 'lucide-react';
+import EntityLogo from '../ui/EntityLogo';
 
 /**
  * The client portal's home: a TABLE OF SERVICES.
@@ -71,6 +72,8 @@ const PortalServiceTable = ({ services = [], serverTime = null, onOpen }) => {
     );
   }
 
+  const anyLogo = services.some((s) => !!s.logo);
+
   return (
     <table className="mcp-svc-table">
       <caption className="mcp-sr-only">
@@ -88,6 +91,9 @@ const PortalServiceTable = ({ services = [], serverTime = null, onOpen }) => {
       </thead>
       <tbody>
         {services.map((s) => {
+          // Once any service has a logo, the others get a lettered tile in
+          // their service colour so the names line up down the table.
+          const showTile = !!s.logo || anyLogo;
           const open = s.requests?.open || 0;
           const ongoing = s.requests?.ongoing || 0;
           return (
@@ -97,8 +103,12 @@ const PortalServiceTable = ({ services = [], serverTime = null, onOpen }) => {
                   type="button"
                   className="mcp-svc-name"
                   onClick={() => onOpen(s.id, 'tasks')}
+                  style={showTile ? { display: 'inline-flex', alignItems: 'center', gap: 9 } : undefined}
                 >
-                  {s.name}
+                  {showTile && (
+                    <EntityLogo src={s.logo} name={s.name} size={24} radius={6} color={s.color || 'var(--p-primary)'} />
+                  )}
+                  {showTile ? <span>{s.name}</span> : s.name}
                 </button>
               </td>
 

@@ -258,3 +258,20 @@ export const setTaskGoalLinks = async (taskId, { goalIds, dismissed } = {}) => {
   const { data } = await api.put(`/api/tasks/${taskId}/goal-links`, payload);
   return data.task;
 };
+
+// --- logo -------------------------------------------------------------------
+// POST multipart (`logo`) replaces, DELETE removes. Both return `{ logo }` —
+// the new URL, or '' — which is all the caller needs to patch its copy.
+export const uploadGroupLogo = async (id, file) => {
+  const form = new FormData();
+  form.append('logo', file);
+  const { data } = await api.post(`/api/groups/${id}/logo`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data.logo || '';
+};
+
+export const removeGroupLogo = async (id) => {
+  await api.delete(`/api/groups/${id}/logo`);
+  return '';
+};

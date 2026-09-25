@@ -150,3 +150,52 @@ export const getServiceCatalog = async (orgId) => {
   const { data } = await api.get(`/api/orgs/${orgId}/service-catalog`, { timeout: 20000 });
   return data;
 };
+
+// --- currency + exchange rates ----------------------------------------------
+//
+// Same split as the holidays above, and for the same reason: every screen in
+// the product renders money, so reading is open to any member, while changing
+// it needs `org.manage_settings`. Every write returns the WHOLE settings object
+// so the store replaces rather than merges.
+
+/** `{ baseCurrency, provider, cadence, hasApiKey, keyPreview, lastFetchAt, lastError }`. */
+export const getCurrencySettings = async (orgId) => {
+  const { data } = await api.get(`/api/orgs/${orgId}/currency`);
+  return data.currency;
+};
+
+/**
+ * Change part of the workspace's currency setup.
+ *
+ * PARTIAL: pass only what you are changing. The settings screen saves one
+ * control at a time, and a whole-object write would mean changing the cadence
+ * silently re-sent — or cleared — the API key.
+ *
+ * `apiKey: null` REMOVES the stored credential, which is deliberately different
+ * from omitting the field. Without the distinction there is no way to
+ * disconnect a key once one has been set.
+ *
+ * The key is never returned by anything, here or anywhere: the server replies
+ * with a four-character preview so the screen can tell two keys apart.
+ */
+export const saveCurrencySettings = async (orgId, patch) => {
+  const { data } = await api.put(`/api/orgs/${orgId}/currency`, patch);
+  return data.currency;
+};
+
+// --- logo -------------------------------------------------------------------
+// POST multipart (`logo`) replaces, DELETE removes. Both return `{ logo }` —
+// the new URL, or '' — which is all the caller needs to patch its copy.
+export const uploadOrgLogo = async (id, file) => {
+  const form = new FormData();
+  form.append('logo', file);
+  const { data } = await api.post(`/api/orgs/${id}/logo`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data.logo || '';
+};
+
+export const removeOrgLogo = async (id) => {
+  await api.delete(`/api/orgs/${id}/logo`);
+  return '';
+};

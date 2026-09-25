@@ -7,32 +7,37 @@
  * of them has to agree on the same grammar. So the value stays 180000 and this
  * decides what it looks like.
  *
- * Duplicated on the server as `server/src/utils/numberFormat.js` — the cell
- * renders here and the group totals and exports render there, and they have to
- * agree. The server's `numberFormat.test.js` is the tripwire that says so.
+ * ---- What changed, and what this file still owns ---------------------------
+ *
+ * The currency CATALOG and everything to do with converting between currencies
+ * now live in `utils/money.js`, which is the single contract for "what unit is
+ * this number in". This file kept the part that is genuinely about a COLUMN:
+ * turning a column's `settings` — `format`, `decimals`, `currency` — into a
+ * string. `formatNumber`'s signature is unchanged, so every existing call site
+ * still compiles and still renders an unconverted figure.
+ *
+ * A reader's chosen display currency is NOT threaded through here. It arrives
+ * via the `useMoney()` hook instead, which hands a component a formatter that
+ * already closes over the choice and the rates. That keeps this function pure
+ * and keeps conversion out of ~10 call sites that do not care about it.
+ *
+ * The server copy of this file is gone. Its header claimed "the group totals and
+ * exports render there" and nothing outside a test ever imported it — the totals
+ * are computed in `columnSummary.js` and every export is built with jsPDF in the
+ * browser. See `server/src/utils/money.js`.
  */
+
+import { CURRENCIES, currencyByCode, formatIn } from './money.js';
 
 /** The formats a number column may take. `plain` is the default and the old behaviour. */
 export const NUMBER_FORMATS = ['plain', 'currency', 'percent'];
 
 /**
- * Currencies offered in the column settings.
- *
- * A closed list rather than free text: the symbol and the GROUPING differ, and
- * Indian grouping is not "every three digits" — 1,80,000 is lakhs, not
- * 180,000. `Intl` knows that from the locale, which is why each entry carries
- * one rather than just a symbol.
+ * Re-exported so the pickers and cells that already import the catalog from
+ * here keep working. `utils/money.js` is where it is defined and where the
+ * reasoning lives; there is exactly one list.
  */
-export const CURRENCIES = [
-  { code: 'INR', symbol: '₹', locale: 'en-IN' },
-  { code: 'USD', symbol: '$', locale: 'en-US' },
-  { code: 'EUR', symbol: '€', locale: 'de-DE' },
-  { code: 'GBP', symbol: '£', locale: 'en-GB' },
-  { code: 'AED', symbol: 'AED', locale: 'en-AE' },
-];
-
-export const currencyByCode = (code) =>
-  CURRENCIES.find((c) => c.code === code) || CURRENCIES[0];
+export { CURRENCIES, currencyByCode };
 
 /**
  * Format `value` per a column's settings.
@@ -62,22 +67,11 @@ export const formatNumber = (value, settings = {}) => {
         : undefined;
 
   if (format === 'currency') {
-    const cur = currencyByCode(settings.currency);
-    try {
-      return new Intl.NumberFormat(cur.locale, {
-        style: 'currency',
-        currency: cur.code,
-        minimumFractionDigits: decimals,
-        maximumFractionDigits: decimals,
-      }).format(n);
-    } catch {
-      // An environment without full ICU still has to render something a person
-      // can read — the symbol and a grouped number, rather than a throw.
-      return `${cur.symbol}${n.toLocaleString(cur.locale, {
-        minimumFractionDigits: decimals,
-        maximumFractionDigits: decimals,
-      })}`;
-    }
+    // Delegated so there is one Intl call for money in the whole client, and so
+    // an unrecognised code renders as "JPY 1,234" rather than borrowing the
+    // first symbol in the catalog. The version this replaced fell back to
+    // `CURRENCIES[0]`, which is how a column holding dollars could print a ₹.
+    return formatIn(n, settings.currency, { decimals: decimals === undefined ? 0 : decimals });
   }
 
   if (format === 'percent') {

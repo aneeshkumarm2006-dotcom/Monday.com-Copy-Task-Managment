@@ -36,6 +36,47 @@ const avatarUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
 });
 
+/**
+ * Cloudinary storage for LOGOS — workspaces, boards and groups.
+ *
+ * Deliberately NOT the avatar storage: that one crops to a face at 200x200,
+ * which on a wordmark means a random 200px bite out of the middle of it. A logo
+ * keeps its whole shape — `limit` only ever scales DOWN, never crops and never
+ * pads — and every surface draws it `object-fit: contain` inside its own tile,
+ * so a wide wordmark and a square mark both sit correctly. 512px covers the
+ * largest place one is drawn (the 72px settings preview) at any pixel density.
+ *
+ * webp keeps transparency, which is the whole point of most logo files: a
+ * transparent PNG flattened to a white JPEG would put a white box on every
+ * tinted tile it lands on.
+ */
+const LOGO_FORMATS = ['jpg', 'jpeg', 'png', 'webp', 'svg', 'gif'];
+const logoStorage = new CloudinaryStorage({
+  cloudinary,
+  params: (req) => ({
+    folder: `macan/logos/${req.logoFolder || 'misc'}`,
+    allowed_formats: LOGO_FORMATS,
+    transformation: [{ width: 512, height: 512, crop: 'limit', format: 'webp' }],
+  }),
+});
+
+const LOGO_MAX_BYTES = 2 * 1024 * 1024; // 2MB — a logo, not a photograph
+
+const logoUpload = multer({
+  storage: logoStorage,
+  limits: { fileSize: LOGO_MAX_BYTES },
+  // Reject by MIME before a single byte reaches Cloudinary. `allowed_formats`
+  // above would also refuse, but only after the upload had been attempted.
+  fileFilter: (req, file, cb) => {
+    if (/^image\/(png|jpe?g|webp|svg\+xml|gif)$/i.test(file.mimetype || '')) {
+      return cb(null, true);
+    }
+    const err = new Error('Logos must be a PNG, JPG, WEBP, SVG or GIF image.');
+    err.code = 'LOGO_BAD_TYPE';
+    return cb(err);
+  },
+});
+
 const mimeToResourceType = (mime) => {
   const m = (mime || '').toLowerCase();
   if (m.startsWith('image/')) return 'image';
@@ -161,9 +202,26 @@ const handleUploadError = (err, req, res, next) => {
     .json({ error: "Sorry, that file couldn't be attached. Please try again." });
 };
 
+/**
+ * Destroy logo assets by publicId. Takes the documents themselves (anything
+ * with a `logoPublicId`) so a cascade can hand over whatever it already loaded.
+ * Swallows per-asset errors, like `destroyCloudinaryAssets`: a missing logo
+ * must never abort the delete that is cleaning it up.
+ */
+const destroyLogos = async (docs) => {
+  const ids = (docs || []).map((d) => d && d.logoPublicId).filter(Boolean);
+  if (!ids.length) return;
+  await Promise.all(
+    ids.map((id) => cloudinary.uploader.destroy(id, { resource_type: 'image' }).catch(() => {}))
+  );
+};
+
 module.exports = {
   cloudinary,
+  destroyLogos,
   avatarUpload,
+  logoUpload,
+  LOGO_MAX_BYTES,
   updateUpload,
   taskAttachmentUpload,
   vaultBlobUpload,

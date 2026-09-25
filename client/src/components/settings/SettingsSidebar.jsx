@@ -1,4 +1,5 @@
 import {
+  Coins,
   Building2,
   UserCircle2,
   Bell,
@@ -51,6 +52,12 @@ const TABS = [
   // as owed, but that is a job an ops lead can hold without also being able to
   // rename the org. Everyone still SEES holidays everywhere; only editing is gated.
   { key: 'holidays', label: 'Holidays', icon: CalendarDays, holidayTab: true },
+  // What the workspace bills in, and where exchange rates come from. Rides on
+  // `adminOnly` rather than carrying a flag of its own because it is gated on
+  // `org.manage_settings` — the same capability `showAdminTabs` already is, and
+  // the one orgController tells you to reuse rather than inventing a key that
+  // would need a migration to grant to everyone who already has it.
+  { key: 'currency', label: 'Currency', icon: Coins, adminOnly: true },
   { key: 'features', label: 'Extra features', icon: FlaskConical, featureTab: true },
 ];
 

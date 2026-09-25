@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { timeAgo } from '../../utils/dateUtils';
 import BoardTypePill from './BoardTypePill';
+import EntityLogo from '../ui/EntityLogo';
 
 /**
  * BoardCard — single card in the My Boards grid.
@@ -152,18 +153,24 @@ const BoardCard = ({
       >
         {/* Folder icon + privacy badge */}
         <div className="flex items-start justify-between">
-          <div
-            className="flex items-center justify-center"
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 'var(--radius-md)',
-              background: 'var(--color-accent-light)',
-            }}
-            aria-hidden="true"
-          >
-            <Folder size={18} color="var(--color-accent)" />
-          </div>
+          {/* The board's logo when it has one — a grid of client boards reads
+              at a glance by their marks — else the folder glyph as before. */}
+          {board.logo ? (
+            <EntityLogo src={board.logo} name={board.name} size={36} radius={9} />
+          ) : (
+            <div
+              className="flex items-center justify-center"
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--color-accent-light)',
+              }}
+              aria-hidden="true"
+            >
+              <Folder size={18} color="var(--color-accent)" />
+            </div>
+          )}
 
           <BoardTypePill board={board} size={10} />
         </div>

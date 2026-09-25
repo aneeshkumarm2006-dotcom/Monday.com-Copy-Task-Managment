@@ -10,7 +10,7 @@ const {
   templateSummaries,
 } = require('./boardTemplates');
 const { getColumnType } = require('./columnTypes');
-const { NUMBER_FORMATS, CURRENCIES, formatNumber } = require('./numberFormat');
+const { NUMBER_FORMATS, CURRENCY_CODES } = require('./money');
 
 /**
  * A template is data, and every way it can be wrong is silent.
@@ -94,7 +94,7 @@ test('every template ships the four status rungs the app relies on', () => {
 });
 
 test('currency columns name a currency we actually offer', () => {
-  const codes = new Set(CURRENCIES.map((c) => c.code));
+  const codes = new Set(CURRENCY_CODES);
   for (const t of BOARD_TEMPLATES) {
     for (const c of t.columns) {
       const f = c.settings?.format;
@@ -217,26 +217,4 @@ test('the picker payload carries no formula expressions or settings', () => {
       assert.deepEqual(Object.keys(c).sort(), ['name', 'type']);
     }
   }
-});
-
-test('the number formatter renders rupees the Indian way', () => {
-  // 1,80,000 — lakhs, not 180,000. This is why each currency carries a locale
-  // rather than just a symbol.
-  const out = formatNumber(180000, { format: 'currency', currency: 'INR', decimals: 0 });
-  assert.match(out, /1,80,000/);
-  assert.match(out, /₹/);
-});
-
-test('an empty cell formats as empty, not zero', () => {
-  // On a budget board the difference between "not set yet" and "nothing left"
-  // is the whole point of the column.
-  for (const v of [null, undefined, '']) {
-    assert.equal(formatNumber(v, { format: 'currency', currency: 'INR' }), '');
-  }
-  assert.notEqual(formatNumber(0, { format: 'currency', currency: 'INR' }), '');
-});
-
-test('percent stores the percentage, not the fraction', () => {
-  // 85 means 85%. Storing 0.85 would make every formula referencing it wrong.
-  assert.equal(formatNumber(85, { format: 'percent' }), '85%');
 });

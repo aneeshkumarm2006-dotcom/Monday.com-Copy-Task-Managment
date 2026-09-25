@@ -171,6 +171,17 @@ const useBoardStore = create((set, get) => ({
   },
 
   // Local-only helpers
+  /** Set (a File) or clear (null) a board's logo; patches the cached board. */
+  setBoardLogo: async (boardId, file) => {
+    const logo = file
+      ? await boardService.uploadBoardLogo(boardId, file)
+      : await boardService.removeBoardLogo(boardId);
+    set((s) => ({
+      boards: s.boards.map((b) => (b._id === boardId ? { ...b, logo } : b)),
+    }));
+    return logo;
+  },
+
   addBoardLocal: (board) =>
     set((s) => ({ boards: [board, ...s.boards] })),
 

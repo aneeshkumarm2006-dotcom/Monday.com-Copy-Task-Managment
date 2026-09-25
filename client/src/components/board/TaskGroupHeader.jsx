@@ -8,11 +8,13 @@ import {
   Tags,
   UserPlus,
   MoreHorizontal,
+  ImagePlus,
 } from 'lucide-react';
 import { getColorPair, deepFor } from '../../utils/priorityColors';
 import StatusSpreadBar from './StatusSpreadBar';
 import GroupCompletedLabel from './GroupCompletedLabel';
 import Avatar from '../ui/Avatar';
+import EntityLogo from '../ui/EntityLogo';
 
 /** Mirrors MAX_GROUP_NAME in the server's groupController. */
 const MAX_NAME_LENGTH = 60;
@@ -64,6 +66,12 @@ const BAR_SLOT_WITH_LABEL = 184;
  *                   unless the viewer has the `groupTags` extra feature on, so
  *                   the header is byte-identical to before for everyone else.
  *   onOpenTags    — (event) => {}; its presence shows the tag button
+ *   logo          — the group's logo URL, or ''. Drawn INSIDE the name column,
+ *                   ahead of the name, so the badge columns to the right stay
+ *                   aligned whether a group has a logo or not. No logo → no
+ *                   tile at all: a board with no logos renders as before.
+ *   onOpenLogo    — () => {}; its presence shows the logo button in the action
+ *                   strip and makes an existing logo clickable.
  *   owner         — resolved { _id, name, profilePic, email } or null. Tracker
  *                   boards only. The SERVER resolves who owns this group in the
  *                   month on screen; this component never sees the ownership
@@ -93,6 +101,12 @@ const TaskGroupHeader = ({
   noteCount = 0,
   tags = [],
   onOpenTags,
+  logo = '',
+  /** When set, a group WITHOUT a logo draws a lettered tile in this colour, so
+   *  names line up on a board where other groups do have logos. The caller
+   *  passes it only when at least one group on the board has a logo. */
+  logoFallbackColor = null,
+  onOpenLogo,
   owner = null,
   ownerInherited = false,
   ownerActive = true,
@@ -199,10 +213,35 @@ const TaskGroupHeader = ({
       icon: StickyNote,
       run: () => onOpenNotes(),
     },
+    onOpenLogo && { label: logo ? 'Change logo' : 'Add logo', icon: ImagePlus, run: () => onOpenLogo() },
     onOpenTags && { label: 'Tags', icon: Tags, run: (e) => onOpenTags(e) },
     onOpenOwner && { label: 'Group owner', icon: UserPlus, run: (e) => onOpenOwner(e) },
     onDeleteGroup && { label: 'Delete group', icon: Trash2, run: () => onDeleteGroup(), danger: true },
   ].filter(Boolean);
+
+  // The group's logo, when it has one. Clickable for editors (opens the logo
+  // dialog); stopPropagation so on phones, where the whole row toggles the
+  // group, tapping the logo doesn't also collapse it.
+  const logoTile = (px) =>
+    logo || logoFallbackColor ? (
+      onOpenLogo ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenLogo();
+          }}
+          title={logo ? 'Change group logo' : 'Add group logo'}
+          aria-label={logo ? `Change logo for group ${name}` : `Add a logo to group ${name}`}
+          className="shrink-0 inline-flex rounded-md transition-shadow duration-150 hover:shadow-[0_0_0_3px_var(--color-accent-light)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{ padding: 0, border: 'none', background: 'transparent' }}
+        >
+          <EntityLogo src={logo} name={name} size={px} radius={6} color={logoFallbackColor || undefined} />
+        </button>
+      ) : (
+        <EntityLogo src={logo} name={name} size={px} radius={6} color={logoFallbackColor || undefined} />
+      )
+    ) : null;
 
   const commitRename = async () => {
     if (committingRef.current) return;
@@ -250,6 +289,7 @@ const TaskGroupHeader = ({
         className="flex items-center gap-2.5"
         style={{ padding: '13px 14px 11px', cursor: 'pointer' }}
       >
+        {logoTile(22)}
         {editing ? (
           <input
             ref={inputRef}
@@ -449,7 +489,8 @@ const TaskGroupHeader = ({
           read down the board as columns instead of a ragged edge. Long names
           truncate (full text stays in the tooltip) rather than shoving the
           column boundary right. */}
-      <div className="min-w-0 shrink w-[150px] md:w-[190px] lg:w-[220px]">
+      <div className="min-w-0 shrink w-[150px] md:w-[190px] lg:w-[220px] flex items-center gap-2">
+        {logoTile(24)}
         {editing ? (
           <input
             ref={inputRef}
@@ -493,7 +534,7 @@ const TaskGroupHeader = ({
           />
         ) : (
           <h3
-            className="font-display truncate"
+            className="font-display truncate min-w-0"
             title={name}
             style={{
               fontSize: 14,
@@ -715,6 +756,20 @@ const TaskGroupHeader = ({
           'items-center gap-0.5 shrink-0',
         ].join(' ')}
       >
+
+      {/* Group logo — opens the logo dialog. Editors only. */}
+      {onOpenLogo && (
+        <button
+          type="button"
+          onClick={() => onOpenLogo()}
+          aria-label={logo ? `Change logo for group ${name}` : `Add a logo to group ${name}`}
+          title={logo ? 'Change group logo' : 'Add group logo'}
+          className="inline-flex items-center justify-center transition-colors duration-150 hover:bg-[color:var(--color-border)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+          style={{ width: 28, height: 28, borderRadius: 'var(--radius-sm)' }}
+        >
+          <ImagePlus size={14} color="var(--color-text-secondary)" aria-hidden="true" />
+        </button>
+      )}
 
       {/* Group tags — opens the tag picker. Present only for editors who have
           the extra feature switched on; the server re-checks both. */}

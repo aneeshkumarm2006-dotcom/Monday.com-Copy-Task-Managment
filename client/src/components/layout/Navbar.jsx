@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Bell,
+  Coins,
   Search,
   ChevronDown,
   User as UserIcon,
@@ -19,9 +20,12 @@ import useNotificationStore from '../../store/notificationStore';
 import api from '../../services/api';
 import Chip from '../ui/Chip';
 import Avatar from '../ui/Avatar';
+import useToastStore from '../../store/toastStore';
+import { DISPLAY_CURRENCIES, currencyByCode } from '../../utils/money';
 import NotificationFeed from '../notifications/NotificationFeed';
 import useInstallApp from '../../hooks/useInstallApp';
 import { resolveNotifLink } from '../notifications/notificationMeta';
+import EntityLogo from '../ui/EntityLogo';
 import macanMark from '../../assets/macan-mark.svg';
 
 /**
@@ -636,25 +640,34 @@ const NotificationBell = () => {
 const AvatarDropdown = ({ user, onLogout }) => {
   const [open, setOpen] = useState(false);
   const { canOffer: canOfferInstall, install } = useInstallApp();
-  const [showOrgPicker, setShowOrgPicker] = useState(false);
+  /**
+   * Which pane the dropdown is showing.
+   *
+   * Was a `showOrgPicker` boolean. There are two sub-panes now — Switch Org and
+   * Currency — and two booleans would allow a state where both are true.
+   */
+  const [pane, setPane] = useState('root');
   const wrapperRef = useRef(null);
   const navigate = useNavigate();
   const orgs = useOrgStore((s) => s.orgs);
   const currentOrg = useOrgStore((s) => s.currentOrg);
   const setCurrentOrg = useOrgStore((s) => s.setCurrentOrg);
+  const displayCurrency = useAuthStore((s) => s.user?.displayCurrency) || null;
+  const setDisplayCurrency = useAuthStore((s) => s.setDisplayCurrency);
+  const toastError = useToastStore((s) => s.error);
 
   useEffect(() => {
     if (!open) return undefined;
     const handle = (e) => {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target)) {
         setOpen(false);
-        setShowOrgPicker(false);
+        setPane('root');
       }
     };
     const handleKey = (e) => {
       if (e.key === 'Escape') {
         setOpen(false);
-        setShowOrgPicker(false);
+        setPane('root');
       }
     };
     document.addEventListener('mousedown', handle);
@@ -678,8 +691,27 @@ const AvatarDropdown = ({ user, onLogout }) => {
 
   const handleSwitchOrg = (orgId) => {
     setCurrentOrg(orgId);
-    setShowOrgPicker(false);
+    setPane('root');
     setOpen(false);
+  };
+
+  /**
+   * Change the currency this person reads money in, everywhere.
+   *
+   * Optimistic by design — `setDisplayCurrency` writes the local mirror and
+   * patches `user` before the request lands, so every figure on screen
+   * re-renders immediately. Nothing is at risk if the write fails: this only
+   * decides how stored numbers are DISPLAYED, so the worst case is that the
+   * choice does not survive a reload.
+   */
+  const handleCurrency = async (code) => {
+    setPane('root');
+    setOpen(false);
+    try {
+      await setDisplayCurrency(code);
+    } catch {
+      toastError('Could not save that preference.');
+    }
   };
 
   return (
@@ -723,7 +755,7 @@ const AvatarDropdown = ({ user, onLogout }) => {
             </div>
           </div>
 
-          {!showOrgPicker ? (
+          {pane === 'root' ? (
             <div className="py-1">
               <MenuItem icon={UserIcon} label="Profile" onClick={handleProfile} />
               {orgs.length > 1 && (
@@ -731,9 +763,22 @@ const AvatarDropdown = ({ user, onLogout }) => {
                   icon={RefreshCw}
                   label="Switch Org"
                   rightIcon={ChevronDown}
-                  onClick={() => setShowOrgPicker(true)}
+                  onClick={() => setPane('org')}
                 />
               )}
+              {/*
+                Reading the product in another currency. A personal choice —
+                two people can read the same invoice in ₹ and in $ and both be
+                right — so it lives with the person, not with the workspace.
+                The label carries the current state because the whole point is
+                to be able to tell at a glance which one you are looking at.
+              */}
+              <MenuItem
+                icon={Coins}
+                label={displayCurrency ? `Currency · ${displayCurrency}` : 'Currency'}
+                rightIcon={ChevronDown}
+                onClick={() => setPane('currency')}
+              />
               {canOfferInstall && (
                 <MenuItem
                   icon={MonitorDown}
@@ -746,11 +791,54 @@ const AvatarDropdown = ({ user, onLogout }) => {
               )}
               <MenuItem icon={LogOut} label="Logout" onClick={handleLogout} danger />
             </div>
+          ) : pane === 'currency' ? (
+            <div className="py-1 max-h-64 overflow-y-auto">
+              <button
+                type="button"
+                onClick={() => setPane('root')}
+                className="w-full px-4 py-2 text-left font-body text-[12px] text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-primary)] transition-colors"
+              >
+                ← Back
+              </button>
+              {/*
+                "As entered" first, and it is not a null option dressed up — it
+                is what everybody sees until they choose, and the only setting
+                in which no rate has been applied to anything.
+              */}
+              {[{ code: null, label: 'As entered' }, ...DISPLAY_CURRENCIES.map((code) => ({
+                code,
+                label: `${currencyByCode(code)?.symbol || ''} ${code}`.trim(),
+              }))].map(({ code, label }) => {
+                const isCurrent = (displayCurrency || null) === code;
+                return (
+                  <button
+                    key={code || 'as-entered'}
+                    type="button"
+                    onClick={() => handleCurrency(code)}
+                    className="w-full px-4 py-2.5 flex items-center gap-2 text-left font-body text-[13px] transition-colors hover:bg-[color:var(--color-bg-subtle)]"
+                    style={{
+                      color: isCurrent ? 'var(--color-accent-text)' : 'var(--color-text-primary)',
+                      fontWeight: isCurrent ? 600 : 400,
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 9999,
+                        background: isCurrent ? 'var(--color-accent)' : 'var(--color-border-strong)',
+                      }}
+                    />
+                    <span className="truncate flex-1">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
           ) : (
             <div className="py-1 max-h-64 overflow-y-auto">
               <button
                 type="button"
-                onClick={() => setShowOrgPicker(false)}
+                onClick={() => setPane('root')}
                 className="w-full px-4 py-2 text-left font-body text-[12px] text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-primary)] transition-colors"
               >
                 ← Back
@@ -770,17 +858,21 @@ const AvatarDropdown = ({ user, onLogout }) => {
                       fontWeight: isCurrent ? 600 : 400,
                     }}
                   >
-                    <span
-                      aria-hidden="true"
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 9999,
-                        background: isCurrent
-                          ? 'var(--color-accent)'
-                          : 'var(--color-border-strong)',
-                      }}
-                    />
+                    {org.logo ? (
+                      <EntityLogo src={org.logo} name={org.name} size={20} radius={5} />
+                    ) : (
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: 9999,
+                          background: isCurrent
+                            ? 'var(--color-accent)'
+                            : 'var(--color-border-strong)',
+                        }}
+                      />
+                    )}
                     <span className="truncate flex-1">{org.name}</span>
                   </button>
                 );

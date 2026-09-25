@@ -8,6 +8,8 @@ const {
   reorderGroups,
 } = require('../controllers/groupController');
 
+const { logoLimit, groupLogo } = require('../controllers/logoController');
+
 const router = express.Router();
 
 // All group routes require authentication
@@ -26,5 +28,9 @@ router.put('/boards/:boardId/groups/reorder', reorderGroups);
 // DELETE /api/groups/:id  — delete group + cascade (admin-only)
 router.put('/groups/:id', updateGroup);
 router.delete('/groups/:id', deleteGroup);
+
+// Group logo — POST (multipart `logo`) / DELETE. `group.manage`.
+router.post('/groups/:id/logo', logoLimit, groupLogo.upload);
+router.delete('/groups/:id/logo', groupLogo.remove);
 
 module.exports = router;

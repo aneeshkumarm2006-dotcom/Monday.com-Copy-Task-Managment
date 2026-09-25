@@ -485,6 +485,21 @@ const useTaskStore = create((set, get) => ({
   },
 
   /**
+   * Set (a File) or clear (null) a group's logo. NOT optimistic: the URL only
+   * exists once Cloudinary has it, and the uploader already previews the picked
+   * file locally while this is in flight.
+   */
+  setGroupLogo: async (groupId, file) => {
+    const logo = file
+      ? await taskService.uploadGroupLogo(groupId, file)
+      : await taskService.removeGroupLogo(groupId);
+    set((s) => ({
+      groups: s.groups.map((g) => (g._id === groupId ? { ...g, logo } : g)),
+    }));
+    return logo;
+  },
+
+  /**
    * Optimistically set a group's tags (extra feature). Same shape as
    * `renameGroup`: patch-merge, then reconcile with the server's doc.
    *

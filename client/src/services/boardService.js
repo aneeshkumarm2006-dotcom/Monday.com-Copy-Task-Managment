@@ -453,3 +453,20 @@ export const uploadBoardFile = async (boardId, file) => {
   });
   return data.file;
 };
+
+// --- logo -------------------------------------------------------------------
+// POST multipart (`logo`) replaces, DELETE removes. Both return `{ logo }` —
+// the new URL, or '' — which is all the caller needs to patch its copy.
+export const uploadBoardLogo = async (id, file) => {
+  const form = new FormData();
+  form.append('logo', file);
+  const { data } = await api.post(`/api/boards/${id}/logo`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data.logo || '';
+};
+
+export const removeBoardLogo = async (id) => {
+  await api.delete(`/api/boards/${id}/logo`);
+  return '';
+};

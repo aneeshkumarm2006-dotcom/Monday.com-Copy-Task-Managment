@@ -21,6 +21,7 @@ const Board = require('../models/Board');
 const Task = require('../models/Task');
 const BoardConnection = require('../models/BoardConnection');
 const { getColumnType, MIRROR_AGGREGATIONS } = require('../utils/columnTypes');
+const { sanitizeColumnCurrency } = require('../utils/money');
 const { wouldCreateMirrorCycle } = require('../services/mirrorRefresh');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
 
@@ -138,6 +139,34 @@ const validateMirrorSettings = (board, settings) => {
 };
 
 /**
+ * Validate the currency on a money column.
+ *
+ * ---- Why this is a 400 and not a silent default ----------------------------
+ *
+ * `column.settings` is `Mixed`, and until now the only shapes validated here
+ * were `connect_boards` and `mirror` — so any string at all could be stored as
+ * a currency. The client then resolved an unrecognised code to the FIRST entry
+ * of its catalog, which was rupees.
+ *
+ * That was cosmetic for exactly as long as the code only picked a symbol. It
+ * stops being cosmetic the moment a rate is looked up by the same code: a
+ * column actually holding dollars, saved under a code we do not carry, would be
+ * treated as rupees and multiplied by ~96 for a reader in USD. Money is the one
+ * place where a confident wrong number is worse than a refusal.
+ *
+ * An ABSENT currency is still allowed — legacy columns predate the field, and
+ * the renderer shows such a figure as a plain grouped number rather than
+ * claiming a currency it was never told.
+ */
+const validateMoneySettings = (settings) => {
+  if (!settings || settings.format !== 'currency') return { ok: true };
+  const raw = settings.currency;
+  if (raw === undefined || raw === null || raw === '') return { ok: true };
+  const r = sanitizeColumnCurrency(raw);
+  return r.ok ? { ok: true } : { error: r.error };
+};
+
+/**
  * Upsert the BoardConnection edge for a connect_boards column. The primary
  * (first) target board is recorded as `toBoardId` — see BoardConnection.js.
  * Idempotent against the `{ fromBoardId, fromColumnId }` unique index.
@@ -231,6 +260,9 @@ const addColumn = async (req, res) => {
     // F2: cross-board column types carry DB-aware invariants the synchronous
     // registry validator can't check (target-board membership, cycle-free
     // mirror graph). Reject bad settings before the column lands.
+    const money = validateMoneySettings(settings);
+    if (money.error) return res.status(400).json({ error: money.error });
+
     if (type === 'connect_boards') {
       const r = await validateConnectSettings(board, settings);
       if (r.error) return res.status(400).json({ error: r.error });
@@ -353,6 +385,9 @@ const updateColumn = async (req, res) => {
       }
       // F2: re-validate cross-board invariants before persisting the new
       // settings (re-targeting a connect column, or re-pointing a mirror).
+      const money = validateMoneySettings(settings);
+      if (money.error) return res.status(400).json({ error: money.error });
+
       if (column.type === 'connect_boards') {
         const r = await validateConnectSettings(board, settings);
         if (r.error) return res.status(400).json({ error: r.error });

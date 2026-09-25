@@ -31,6 +31,7 @@ const {
   startConnectorCollectRunner,
 } = require('./src/services/connectorCollectRunner');
 const { startSeoAlertRunner } = require('./src/services/seoAlertRunner');
+const { startFxRateRunner } = require('./src/services/fxRateRunner');
 const connectorCrypto = require('./src/utils/connectorCrypto');
 const { checkRegistry } = require('./src/services/connectors');
 
@@ -87,6 +88,11 @@ const start = async () => {
   // interrupting somebody about into notifications. Thirteen minutes after the
   // buying pass, so an alert lands within an hour of the reading that caused it.
   startSeoAlertRunner();
+
+  // Exchange rates. Ticks hourly and FETCHES almost never — each workspace's
+  // cadence decides whether one is due, so a monthly workspace costs twelve
+  // requests a year. See the runner's header for why one fetch serves all.
+  startFxRateRunner();
   // Non-critical: never let the optional email poller block the server booting.
   try {
     startInboundMailPoller();

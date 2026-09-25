@@ -1148,7 +1148,7 @@ const createTask = async (req, res) => {
     const {
       name,
       board: boardId,
-      group: groupId,
+      group: requestedGroupId,
       priority,
       status,
       assignedTo,
@@ -1160,6 +1160,12 @@ const createTask = async (req, res) => {
       portalShared,
       monthKey,
     } = req.body;
+
+    // Mutable because a SUBITEM's group is not the caller's to choose — it is
+    // overwritten with the parent's a little further down. See the comment at
+    // that line for why a divergent group is a data-loss bug rather than a
+    // cosmetic one.
+    let groupId = requestedGroupId;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Task name is required' });
@@ -1233,6 +1239,24 @@ const createTask = async (req, res) => {
         return res.status(400).json({ error: 'Subitems cannot be nested further' });
       }
       resolvedParent = parentTask._id;
+      // A SUBITEM TAKES ITS PARENT'S GROUP, whatever the body asked for.
+      //
+      // The board is validated above and nesting is refused, but nothing forced
+      // the group — so `POST /api/tasks` with a parent on group A and
+      // `group: B` created a subitem living in a different group from its
+      // parent. That is the same divergence the move handler now prevents
+      // (`subitemGroupFollow`), reached from the other end: deleting group B
+      // would silently wipe a live subitem of a task that still exists in A,
+      // and deleting group A would leave the subitem orphaned under a parent
+      // whose own group is gone.
+      //
+      // Overwritten rather than refused with a 400. A subitem's group is not a
+      // property anybody chooses — it is derived from the parent, every client
+      // in this repo sends the parent's group already, and the group is
+      // deliberately kept on the row (rather than looked up through the parent)
+      // only so the group-scoped queries can find it. Rejecting the request
+      // would turn a field nobody means to set into a failure mode.
+      groupId = parentTask.group ? parentTask.group.toString() : groupId;
     }
 
     // Validate status against the board's configured statuses.
@@ -1734,6 +1758,24 @@ const updateTask = async (req, res) => {
           .json({ error: 'Group does not belong to board' });
       }
       if (prevGroup !== body.group.toString()) {
+        // A subitem has no group of its own to change: it lives wherever its
+        // parent lives, and the two disagreeing is exactly the split family the
+        // cascade after `save()` exists to prevent. `moveTasksToMonth` and
+        // `reorderTasks` already refuse a child on these grounds for the other
+        // partition key ("Subitems move with their parent and cannot be refiled
+        // on their own"); this branch was the one way left to write the
+        // divergence by hand, and leaving it open would let a single PUT
+        // recreate the state we are here to remove.
+        //
+        // Gated on a REAL change for the same reason the capability check below
+        // is: a client echoing a subitem's current group back is not moving
+        // anything, and 400ing it would break callers that round-trip the whole
+        // task object.
+        if (task.parent) {
+          return res.status(400).json({
+            error: 'Subitems move with their parent and cannot be refiled on their own',
+          });
+        }
         // Same reasoning as assignees: only a real re-home is a move, so a client
         // echoing the task's current group back does not need `task.move`.
         const moveDenied = requireCapability(
@@ -1750,6 +1792,30 @@ const updateTask = async (req, res) => {
     }
 
     await task.save();
+
+    // The parent has landed in its new group; its subitems are still in the old
+    // one, because they carry a `group` of their own and nothing above touched
+    // them. That split is not cosmetic — deleting either group then destroys or
+    // orphans half the family (see `subitemGroupFollow`), which is why this
+    // mirrors what `moveTasksToMonth` already does for `monthKey`: "Subitems
+    // follow, so a parent and its children are never in different months". The
+    // group half was simply never carried over.
+    //
+    // Deliberately AFTER `task.save()`. `save()` is where the whole edit is
+    // validated, and moving the children first would strand them under a parent
+    // that never moved, on a request the caller was told had failed. This way
+    // round the worst partial state is the one we already had, the children are
+    // still findable in the old group, and re-issuing the same move repairs it.
+    //
+    // Guarded by the body rather than by `activityChanges`, so that a retry of a
+    // move whose child write died still reconciles: by then `prevGroup` already
+    // equals the new group and nothing was logged, but the children are still
+    // behind.
+    if (body.group !== undefined && body.group !== null) {
+      const follow = subitemGroupFollow([task._id], task.group);
+      if (follow) await Task.updateMany(follow.filter, follow.update);
+    }
+
     for (const c of activityChanges) {
       logActivity({
         task,
@@ -2096,6 +2162,75 @@ const reorderChecklist = async (req, res) => {
 };
 
 /**
+ * Which of the dropped ids are actually CHANGING group.
+ *
+ * Pulled out of `reorderWriteOps` so that the two things which depend on that
+ * judgement — stamping `groupChangedAt`, and dragging a card's subitems along
+ * behind it — cannot drift apart. They answered the same question in two
+ * places before, and a card that counts as "moved" for the clock but not for
+ * its children is precisely the split family this whole area is about.
+ *
+ * An id with no prior row counts as arriving, which is the existing behaviour
+ * and the safe answer either way: see stageMove.test.js for why.
+ *
+ * @param {Array<string>} orderedIds  the target group's full order after the drop
+ * @param {Array<{_id:*, group:*}>} priorTasks  the same tasks as they are NOW
+ * @param {*} targetGroupId
+ * @returns {Array<string>} the subset of `orderedIds` whose group changes
+ */
+const movedGroupIds = (orderedIds, priorTasks, targetGroupId) => {
+  const targetIdStr = targetGroupId ? targetGroupId.toString() : null;
+  const priorGroup = new Map(
+    (priorTasks || []).map((t) => [t._id.toString(), t.group ? t.group.toString() : null])
+  );
+  return (orderedIds || []).filter((id) => priorGroup.get(String(id)) !== targetIdStr);
+};
+
+/**
+ * The child rows a group move has to carry with it.
+ *
+ * A subitem stores its own `group`, but it has no independent existence — it is
+ * reachable only through its parent. Every task delete in the server keys on
+ * `group` alone, so the moment a parent's group and its children's disagree,
+ * deleting the OLD group destroys live subitems of a task that still exists
+ * elsewhere (the parent is no longer in that group to shelter them, and no
+ * activity row is written for the children), while deleting the NEW group
+ * leaves the children behind a dead parent, invisible to the board and
+ * unreachable by any link. Both halves of the move path — `updateTask`'s
+ * `body.group` branch and the drag through `reorderTasks` — go through here, so
+ * there is one answer to "which children follow" rather than two.
+ *
+ * Two deliberate choices, both load-bearing.
+ *
+ * The filter matches on DIVERGENCE (`group: { $ne: targetGroupId }`) rather
+ * than on `parent` alone. The write is then about the state of the data, not
+ * about what this particular request changed: children already in the right
+ * group cost nothing, and a family left split by an earlier half-completed move
+ * is repaired by the next move of that parent instead of needing a sweeper.
+ * That is what makes re-issuing a failed move a repair rather than a no-op.
+ *
+ * The `$set` carries `group` and nothing else. In particular it must not stamp
+ * `groupChangedAt`: that field means "time in stage" for a top-level card on
+ * the stages view (models/Task.js), and a subitem never appears there, so
+ * writing it would put a meaningless clock on rows no view can show.
+ *
+ * Returns null rather than a no-op write when there is nothing to carry, so a
+ * caller can skip the round trip entirely.
+ *
+ * @param {Array<*>} parentIds  ids of the tasks that are moving
+ * @param {*} targetGroupId  the group they are moving into
+ * @returns {{filter: Object, update: Object}|null}
+ */
+const subitemGroupFollow = (parentIds, targetGroupId) => {
+  const ids = (parentIds || []).filter(Boolean);
+  if (ids.length === 0 || !targetGroupId) return null;
+  return {
+    filter: { parent: { $in: ids }, group: { $ne: targetGroupId } },
+    update: { $set: { group: targetGroupId } },
+  };
+};
+
+/**
  * The bulk writes one reorder produces.
  *
  * Pure, and exported, so the one rule with teeth here can be asserted rather
@@ -2110,6 +2245,12 @@ const reorderChecklist = async (req, res) => {
  * One timestamp for the whole batch, so every card moved by a single drag
  * shares an instant rather than drifting by however long the loop took.
  *
+ * These ops cover the dropped rows and nothing else. Carrying their subitems
+ * across is a separate write in `reorderTasks`, built from
+ * `subitemGroupFollow`, deliberately kept out of this list: every op here is an
+ * `updateOne` keyed by `_id`, and the child write is an `updateMany` over a
+ * `parent` filter, so folding it in would make the return value two shapes.
+ *
  * @param {Array<string>} orderedIds  the target group's full order after the drop
  * @param {Array<{_id:*, group:*}>} priorTasks  the same tasks as they are NOW
  * @param {*} targetGroupId
@@ -2117,12 +2258,11 @@ const reorderChecklist = async (req, res) => {
  * @returns {Array<Object>} bulkWrite ops
  */
 const reorderWriteOps = (orderedIds, priorTasks, targetGroupId, at) => {
-  const targetIdStr = targetGroupId.toString();
-  const priorGroup = new Map(
-    (priorTasks || []).map((t) => [t._id.toString(), t.group ? t.group.toString() : null])
+  const movedIds = new Set(
+    movedGroupIds(orderedIds, priorTasks, targetGroupId).map((id) => String(id))
   );
   return (orderedIds || []).map((id, idx) => {
-    const moved = priorGroup.get(String(id)) !== targetIdStr;
+    const moved = movedIds.has(String(id));
     return {
       updateOne: {
         filter: { _id: id },
@@ -2313,6 +2453,26 @@ const reorderTasks = async (req, res) => {
 
     const ops = reorderWriteOps(orderedIds, tasks, targetGroupId, new Date());
     if (ops.length > 0) await Task.bulkWrite(ops);
+
+    // A drag re-homes the cards the client named, and subitems are never among
+    // them (this endpoint refuses a child outright, a few lines up), so the
+    // children of anything that crossed a group boundary have to be carried
+    // over by us or they stay behind in a group their parent has left — see
+    // `subitemGroupFollow` for what that costs the next time either group is
+    // deleted. Only the ids that actually changed group are passed: a tidy-up
+    // drag inside one column must not touch a single subitem row.
+    //
+    // After the parents, not before. The parent's group is what the board
+    // renders and what everything else reads, so if only one of the two writes
+    // lands it should be that one; a crash in between leaves the children
+    // findable in the old group, and the next move of the same parent repairs
+    // them because the follow filter matches divergence rather than this
+    // request.
+    const follow = subitemGroupFollow(
+      movedGroupIds(orderedIds, tasks, targetGroupId),
+      targetGroupId
+    );
+    if (follow) await Task.updateMany(follow.filter, follow.update);
 
     await Board.updateOne({ _id: targetGroup.board }, { $set: { updatedAt: new Date() } });
 
@@ -3021,6 +3181,11 @@ module.exports = {
   deleteTask,
   reorderTasks,
   reorderWriteOps,
+  // The "a family moves together" rule, exported for subitemGroupFollow.test.js.
+  // Both are pure: ids need only `.toString()`, so plain strings stand in for
+  // ObjectIds.
+  movedGroupIds,
+  subitemGroupFollow,
   moveTasksToMonth,
   setTaskPinned,
   setTaskGoalLinks,

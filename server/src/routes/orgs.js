@@ -1,4 +1,5 @@
 const express = require('express');
+const { refreshRates } = require('../controllers/fxController');
 const authMiddleware = require('../middleware/auth');
 const { requireOrgOwner } = require('../middleware/roleCheck');
 const { requireCapability } = require('../middleware/requireCapability');
@@ -16,6 +17,8 @@ const {
   saveHolidays,
   setHoliday,
   deleteHoliday,
+  getCurrencySettings,
+  saveCurrencySettings,
   listServiceCatalog,
 } = require('../controllers/orgController');
 const {
@@ -25,6 +28,8 @@ const {
   deleteRole,
   assignRole,
 } = require('../controllers/roleController');
+
+const { logoLimit, orgLogo } = require('../controllers/logoController');
 
 const router = express.Router();
 
@@ -116,6 +121,38 @@ router.delete(
 );
 
 // ---------------------------------------------------------------------------
+// Currency + exchange rates
+//
+// Same read-open / write-gated split as the holiday calendar: every screen in
+// the product renders money, so any member must be able to learn what currency
+// this workspace works in, while changing it is `org.manage_settings` — reused
+// deliberately rather than invented, since capabilities.js is curated and a new
+// key would need a migration to grant it to everyone who already has it.
+// ---------------------------------------------------------------------------
+router.get('/:id/currency', getCurrencySettings);
+
+router.put(
+  '/:id/currency',
+  requireCapability('org.manage_settings'),
+  saveCurrencySettings
+);
+
+/**
+ * Fetch rates right now, bypassing the cadence.
+ *
+ * Lives here rather than on /api/fx because it is the only rate operation that
+ * IS per-workspace: it uses this org's chosen provider and this org's
+ * credential. Gated, because the whole point is to spend a request against a
+ * free endpoint to prove a key works — a thing only the people who can change
+ * the key have any reason to do.
+ */
+router.post(
+  '/:id/currency/refresh',
+  requireCapability('org.manage_settings'),
+  refreshRates
+);
+
+// ---------------------------------------------------------------------------
 // Invites + workspace settings
 // ---------------------------------------------------------------------------
 router.post(
@@ -129,6 +166,11 @@ router.post(
   requireCapability('org.invite_members'),
   sendInvite
 );
+
+// Workspace logo. `org.manage_settings`, checked INSIDE the handler because
+// the upload has to be authorized before multer streams it to Cloudinary.
+router.post('/:id/logo', logoLimit, orgLogo.upload);
+router.delete('/:id/logo', orgLogo.remove);
 
 // Transfer ownership of the workspace to another member. Owner-only, and — like
 // deleting the org — deliberately NOT a capability: a delegate who can appoint an

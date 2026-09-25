@@ -6,6 +6,9 @@ const BoardConnector = require('../models/BoardConnector');
 const ConnectorProject = require('../models/ConnectorProject');
 const ConnectorBudget = require('../models/ConnectorBudget');
 const ConnectorSnapshot = require('../models/ConnectorSnapshot');
+const DfsTask = require('../models/DfsTask');
+const DfsSerpResult = require('../models/DfsSerpResult');
+const DfsCacheProbe = require('../models/DfsCacheProbe');
 const TaskGroup = require('../models/TaskGroup');
 
 const {
@@ -1732,6 +1735,73 @@ const launchConnectorSite = async (req, res) => {
 };
 
 /**
+ * How ONE open DataForSEO job is closed when the Site it collects for is thrown
+ * away. Pure, and exported, because it is the whole decision this teardown makes
+ * and it is worth pinning in a test rather than re-deriving from a `$set`.
+ *
+ * ---- Why an open job is CLOSED and not DELETED -----------------------------
+ *
+ * The repo's position, stated in `services/orgCascade.js`, is that snapshots and
+ * SERP bodies are irreplaceable history worth keeping right up until the
+ * relationship itself ends. An OPEN task is not history - it is an outstanding
+ * request, and the site it was bought for is being deleted, so nothing will ever
+ * collect it. By that reading alone the row could simply go.
+ *
+ * It stays anyway, for a reason that has nothing to do with history and
+ * everything to do with money:
+ *
+ *   `ConnectorBudget.reservedUsd` IS A CACHE WHOSE VALUE IS DEFINED AS THE SUM
+ *   OVER THE TASKS NAMING THE DOCUMENT (`DfsTask.budgetDocs`, and the model says
+ *   so in as many words). Deleting a settled row for a workspace that still
+ *   exists would hand the month back cap it had already consumed the next time
+ *   anything recomputed, and the row's `items[].externalId` is the only handle
+ *   there is on a charge that already appears on DataForSEO's invoice.
+ *
+ * An org teardown can delete the ledger because the workspace it accounted for
+ * is going too. This is one Site inside a workspace that carries on, so the
+ * money has to carry on with it. The anti-repost gate does not need the row gone
+ * either: the partial unique index covers `state: 'open'` and nothing else, so
+ * closing the row releases the claim by itself.
+ *
+ * ---- Why two terminal states and not one -----------------------------------
+ *
+ * `failed` and `dead` are not interchangeable here. The model defines `failed`
+ * as "the post itself was refused. Nothing is in flight" and `dead` as the
+ * terminal "NO further post" verdict on work that really was bought, and
+ * `services/connectors/dataforseo/usage.js` reads `postedAt` as the fact of the
+ * charge - a row without one was never posted, so no money left the meter.
+ *
+ * So the split is `postedAt`, exactly as the reservation reconciler already
+ * splits it: a posted row is `dead`, a charge with no result and no further
+ * attempt coming; an unposted claim is `failed`, which is the same word that
+ * reconciler writes for a claim that expired before its post completed. Writing
+ * one value for both would either tell an operator money was spent when it was
+ * not, or bury a real charge under "nothing was in flight".
+ *
+ * `budgetState` is deliberately untouched. An unposted row may still be holding
+ * a reservation, and the ten-minute reconciler sweeps on `budgetState` alone -
+ * so the money is released by the mechanism that already owns that job, not by a
+ * second copy of it written here.
+ *
+ * @param {{postedAt?: Date|null}} job an open `DfsTask` row
+ * @returns {{state: string, note: string}} what to write on it
+ */
+const closureForDeletedSite = (job) => {
+  if (job && job.postedAt) {
+    return {
+      state: 'dead',
+      note:
+        'The site was deleted before this result was collected. The task was ' +
+        'posted and charged for, and nothing will collect it now.',
+    };
+  }
+  return {
+    state: 'failed',
+    note: 'The site was deleted before this claim was posted. Nothing was bought.',
+  };
+};
+
+/**
  * DELETE /api/boards/:boardId/connectors/:provider/sites/:projectId
  *
  * Throw a Site away.
@@ -1787,6 +1857,101 @@ const deleteConnectorSite = async (req, res) => {
           'deleting it would throw that history away.',
         code: 'HAS_HISTORY',
       });
+    }
+
+    /**
+     * ---- The DataForSEO children, and why they are dealt with HERE ----------
+     *
+     * This is the only hard delete of a `ConnectorProject` outside
+     * `services/orgCascade.js`, and until now it deleted the parent and left
+     * every DataForSEO row that named it behind. The `HAS_HISTORY` guard above
+     * does not cover them, because it counts `ConnectorSnapshot` - and an open
+     * `DfsTask` lives in precisely the window where no snapshot exists yet: the
+     * work has been POSTED AND PAID FOR and the result has not come back.
+     *
+     * Nothing else could ever have closed such a row. The expiry sweep that
+     * abandons a stale job is reached through the buying pass, which starts from
+     * the project (`snapshotService.scheduleForProvider`), so with the project
+     * gone that branch is unreachable for it; `DfsTask` has no TTL index, unlike
+     * `DfsSerpResult` and `DfsCacheProbe`; and the Usage screen reads only the
+     * board's live projects, so the row is invisible to every screen there is.
+     * What it went on doing forever was keep its account in the ten-minute
+     * collector's `DfsTask.distinct('account', {state: 'open'})`, opening a
+     * session and asking `tasks_ready` for a site that does not exist - free
+     * calls, by construction, but roughly 288 of them a day for the life of the
+     * deployment - while holding that workspace's keyword list, which
+     * `orgCascade` calls competitive intelligence rather than incidental
+     * metadata, in the database with no way to read it or reach it.
+     *
+     * ---- Which act this is --------------------------------------------------
+     *
+     * A board or group teardown UNBINDS a mirrored project rather than deleting
+     * it, because the project still exists inside the provider and parents the
+     * only rank history that will ever exist. That asymmetry stands. This is the
+     * other act: a Site this app AUTHORED (`locallyAuthored` is checked above,
+     * and a mirrored project is refused with `NOT_AUTHORED`), with no readings,
+     * being destroyed rather than unmapped. There is no provider-side record to
+     * defer to - DataForSEO is stateless and this row IS the original - so the
+     * rows that name it have nowhere to belong once it is gone.
+     *
+     * ---- The order -----------------------------------------------------------
+     *
+     * Children before parents, the same rule and the same reason as every other
+     * cascade in this codebase: a run that dies halfway then leaves rows that are
+     * still findable from a live project, rather than rows nothing can reach.
+     * Concretely, a failure after the closes and before the delete leaves the
+     * Site standing with its ledger closed, which the next buying pass can see
+     * and act on; the reverse order leaves exactly the orphan this block exists
+     * to prevent.
+     *
+     * The SERP bodies go first and are DELETED, not kept. They are the one thing
+     * here the history argument could apply to, and it does not reach them.
+     * Usually they are not there at all: a body is written on the same collect
+     * pass that produces a snapshot, so a project holding any has almost always
+     * been refused by `HAS_HISTORY` above. NOT ALWAYS, though, and the gap is
+     * the reason this line is a sweep rather than an assertion — `collect.js`
+     * stores the bodies BEFORE the caller writes the snapshot from what it
+     * returns, so a pass that died in between leaves bodies with no snapshot to
+     * refuse the delete. Those are exactly the rows nothing else would ever
+     * collect: a pinned body nulls its `expiresAt`, which means the TTL monitor
+     * skips it forever. The cache probes follow for the same reason, carrying no
+     * keywords but this workspace's keyword volume and market mix per day.
+     *
+     * `open` is what today's code writes for an outstanding purchase, and it is
+     * what the reconciler acts on. `reserving` is kept in the enum for legacy
+     * rows and is swept alongside it: such a row has money reserved and no
+     * posted job, so leaving it behind strands the reservation in the ledger
+     * with no project left to release it against. `ready` is in the enum and
+     * nothing writes it; every other state is already terminal.
+     *
+     * The three steps — read the open jobs, close them, delete the project —
+     * are not atomic, and nothing in this codebase makes them so. An hourly
+     * buying pass that inserts a new open row between the read and the delete
+     * would recreate exactly the orphan this block prevents. Narrow enough to
+     * accept rather than design around: the pass only buys for a project it can
+     * still load, the window is milliseconds, and the same reconciler that
+     * closes these rows would find the stray one on its next run.
+     */
+    await DfsSerpResult.deleteMany({ project: project._id });
+    await DfsCacheProbe.deleteMany({ project: project._id });
+
+    const openJobs = await DfsTask.find({
+      project: project._id,
+      state: { $in: ['open', 'reserving'] },
+    })
+      .select('_id postedAt')
+      .lean();
+    const closedAt = new Date();
+    for (const job of openJobs) {
+      // Row at a time rather than one `updateMany`, because the note and the
+      // terminal state differ by `postedAt` - see `closureForDeletedSite`. The
+      // partial unique index allows exactly one open row per (project, kind,
+      // variant), so this loop is a handful of writes at the very most.
+      // eslint-disable-next-line no-await-in-loop
+      await DfsTask.updateOne(
+        { _id: job._id },
+        { $set: { ...closureForDeletedSite(job), closedAt } }
+      );
     }
 
     await ConnectorProject.deleteOne({ _id: project._id });
@@ -1919,4 +2084,7 @@ module.exports = {
   checkAccountPreflight,
   readCredentialForm,
   readIntervalHours,
+  // Pure, and exported because it is the whole of what a Site delete decides
+  // about work that is already in flight and already paid for.
+  closureForDeletedSite,
 };

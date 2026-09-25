@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { SYSTEM_ROLES, sanitizePermissions } = require('../utils/capabilities');
+const { CURRENCY_CODES, FX_CADENCES, FX_PROVIDERS } = require('../utils/money');
 
 // 'YYYY-MM-DD'. Same convention, and the same reasoning, as Tracker.js: a
 // holiday is a CALENDAR DATE with no time and no zone, and a Date would
@@ -74,6 +75,13 @@ const organisationSchema = new mongoose.Schema({
     required: true,
   },
   /**
+   * Optional logo — a Cloudinary URL, '' when none. `logoPublicId` is kept
+   * beside it so replacing or removing the logo can delete the old asset.
+   * Written ONLY by controllers/logoController.js (the /logo routes).
+   */
+  logo: { type: String, default: '' },
+  logoPublicId: { type: String, default: '' },
+  /**
    * The workspace owner. Immutable, singular, and holds every capability
    * unconditionally. Retained as the root of trust: a role system whose owner can
    * be locked out by a bad matrix edit is worse than no role system at all.
@@ -140,6 +148,105 @@ const organisationSchema = new mongoose.Schema({
       at: { type: Date, default: Date.now },
     },
   ],
+  /**
+   * The workspace's default currency — what money here is assumed to be in.
+   *
+   * A SECOND named org-level field, beside `holidays` and for the same reason
+   * stated there: one thing, named, rather than a `settings` bag that invites
+   * everything else to move in beside it.
+   *
+   * What it actually decides is narrower than it sounds, and deliberately so:
+   *
+   *   1. the DISPLAY currency for somebody who has not chosen one of their own
+   *      (`User.displayCurrency` is null until they do), and
+   *   2. the currency a NEW money column is born in — which is the half that
+   *      matters, because `boardTemplates.js` used to hardcode rupees into every
+   *      billing, budget, pipeline and expenses board ever created.
+   *
+   * It is NOT retrofitted as the unit of anything already stored. A column
+   * carries its own `settings.currency` and a board its own
+   * `adsBudget.currency`; this never overrides either, because re-labelling
+   * existing numbers is how you change what a figure MEANS without touching it.
+   * Goals in particular stay USD — see goalTypes.js.
+   *
+   * Defaults to INR because that is what this workspace bills in, which is the
+   * same reason the templates did. The difference is that it is now a setting.
+   */
+  baseCurrency: {
+    type: String,
+    default: 'INR',
+    trim: true,
+    uppercase: true,
+    enum: CURRENCY_CODES,
+  },
+
+  /**
+   * How this workspace gets its exchange rates.
+   *
+   * Named `fx` rather than folded into `baseCurrency` because it is a different
+   * KIND of fact — one is "what we bill in", the other is "who we ask about
+   * rates and how often". Shaped as a sub-document for the same reason
+   * `Board.adsBudget` is: this is what a settings read has to answer in one go.
+   *
+   * ---- Why a key is optional --------------------------------------------
+   *
+   * The default provider needs no credential at all, so this is configuration
+   * rather than a prerequisite. An org that never opens this screen still gets
+   * live rates. A key only buys a different provider.
+   */
+  fx: {
+    /** Which provider to ask. See services/fx/providers/. */
+    provider: {
+      type: String,
+      default: 'frankfurter',
+      enum: FX_PROVIDERS,
+    },
+
+    /**
+     * The provider credential, sealed by `utils/connectorCrypto.js` with
+     * { orgId, provider: 'fx' } bound as AAD.
+     *
+     * `select: false`, and the reasoning is `ConnectorAccount.sealedTokens`'
+     * verbatim: it must never ride along on an incidental read that then gets
+     * JSON-serialised to a client. `getOrg` returns the whole org document, so
+     * without this the key would be on the wire the first time anybody opened
+     * Settings. NOTHING may return this field, or anything derived from it.
+     *
+     * Server-readable by design rather than vaulted — a rate refresh at 04:00
+     * has no browser and nobody to type a passphrase, so a credential the
+     * server cannot decrypt is one the scheduler cannot use.
+     */
+    sealedApiKey: { type: String, default: null, select: false },
+
+    /**
+     * The last four characters of the key, for the settings screen.
+     *
+     * Not a security measure and not a secret — it exists so somebody looking
+     * at the page can tell WHICH key is installed without being asked to "find
+     * the password again". Same affordance the Connectors tab offers.
+     */
+    keyPreview: { type: String, default: '' },
+
+    /**
+     * How often to fetch. `monthly` is not a degraded `daily`.
+     *
+     * A free provider is a shared, unmetered courtesy, and an agency that bills
+     * monthly does not need — or want — a rate that moves under a March invoice
+     * every night. Fetching once a month means every March record values at the
+     * 1 March rate, which is both cheaper and more stable. Daily is there for a
+     * workspace that would rather track the market closely.
+     */
+    cadence: {
+      type: String,
+      default: 'monthly',
+      enum: FX_CADENCES,
+    },
+
+    /** When the runner last succeeded, and what went wrong if it did not. */
+    lastFetchAt: { type: Date, default: null },
+    lastError: { type: String, default: '' },
+  },
+
   inviteCode: {
     type: String,
     unique: true,
@@ -149,6 +256,27 @@ const organisationSchema = new mongoose.Schema({
     default: Date.now,
   },
 });
+
+/**
+ * The sealed FX key never serialises, whatever a caller did to get here.
+ *
+ * `select: false` on the field covers the path that actually matters — `getOrg`
+ * reads the org from the database and never asks for it — but it is a QUERY
+ * option, so it says nothing about a document some code assigned the field to
+ * in memory. That is exactly the shape of the accident worth guarding: seal a
+ * key into a loaded document, then hand the document back to express.
+ *
+ * So the projection is the first defence, this is the second, and the
+ * controller building its settings payload by hand is the third. A credential
+ * is worth three.
+ */
+const stripSealedKey = (doc, ret) => {
+  if (ret && ret.fx) delete ret.fx.sealedApiKey;
+  return ret;
+};
+
+organisationSchema.set('toJSON', { transform: stripSealedKey });
+organisationSchema.set('toObject', { transform: stripSealedKey });
 
 /**
  * Seed the system roles onto an org that lacks them. Safe to call repeatedly: it

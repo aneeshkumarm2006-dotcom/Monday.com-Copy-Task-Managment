@@ -60,16 +60,41 @@ export const weightLabel = (weight) => {
   return `x${weight}`;
 };
 
-/** Format a value for display, mirroring the server's `formatValue`. */
-export const formatGoalValue = (value, goal) => {
+/**
+ * The currency a money goal is denominated in.
+ *
+ * USD, and deliberately NOT the workspace's base currency. Every goal figure
+ * anybody has ever typed was typed under a `$` label — the server wrote
+ * `unitLabel: '$'` and both formatters hardcoded it — so these numbers ARE
+ * dollars. Re-reading them as rupees would change what existing data MEANS by
+ * a factor of ~96 without anybody touching it.
+ *
+ * Giving goals their own denomination is a separate piece of work. What changed
+ * here is only that the `$` is no longer hardcoded into the rendering: a goal
+ * is now "USD, shown in whatever you read money in".
+ */
+export const GOAL_CURRENCY = 'USD';
+
+/**
+ * Format a value for display.
+ *
+ * `money` is the optional `useMoney()` formatter. Supplied, a currency goal is
+ * converted into the reader's currency at the rate in force for the goal's own
+ * month; omitted — which is every caller that has not been updated — it renders
+ * in dollars exactly as before.
+ */
+export const formatGoalValue = (value, goal, money = null) => {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (typeof value !== 'number' || !Number.isFinite(value)) return String(value);
   const n = value.toLocaleString(undefined, { maximumFractionDigits: 2 });
   switch (goal?.unit) {
     case 'percent': return `${n}%`;
-    // Money is USD — the symbol is fixed, not read from `unitLabel`.
-    case 'currency': return `$${n}`;
+    case 'currency':
+      // Dated by the goal's own month — a March target is a fact about March.
+      return money
+        ? money.in(value, GOAL_CURRENCY, goal?.monthKey ? `${goal.monthKey}-01` : null)
+        : `$${n}`;
     case 'custom': return goal.unitLabel ? `${n} ${goal.unitLabel}` : n;
     default: return n;
   }

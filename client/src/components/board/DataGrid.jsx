@@ -6,10 +6,12 @@ import AddColumnButton from './AddColumnButton';
 import useBoardStore from '../../store/boardStore';
 import useTaskStore from '../../store/taskStore';
 import useToastStore from '../../store/toastStore';
+import useOrgStore from '../../store/orgStore';
 import { isTaskPinned } from '../../utils/taskPins';
 import { computeSummary, summariesFor, summaryLabel } from '../../utils/columnSummary';
 import { columnValue } from '../../utils/columnValues';
-import { CURRENCIES, formatNumber } from '../../utils/numberFormat';
+import { CURRENCIES } from '../../utils/numberFormat';
+import useMoney from '../../hooks/useMoney';
 
 /**
  * Column types whose values are numbers, and can therefore carry a display
@@ -43,6 +45,11 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
   const [renameDraft, setRenameDraft] = useState('');
   const setColumnValue = useBoardStore((s) => s.setColumnValue);
   const updateColumn = useBoardStore((s) => s.updateColumn);
+  // What a money column is born in. The workspace's currency, not a constant —
+  // this used to be a hardcoded 'INR', which is why an agency billing in
+  // dollars had to fix every money column by hand.
+  const baseCurrency = useOrgStore((s) => s.currency?.baseCurrency) || 'INR';
+  const money = useMoney();
   const deleteColumn = useBoardStore((s) => s.deleteColumn);
   const updateTaskLocal = useTaskStore((s) => s.updateTask);
   const toastError = useToastStore((s) => s.error);
@@ -258,9 +265,12 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
                             format,
                             // Pin a currency the first time one is chosen, so
                             // the cell does not render in whatever the list
-                            // happens to have first.
+                            // happens to have first. The workspace's own
+                            // currency, because that is what a column on a
+                            // board in this workspace is overwhelmingly likely
+                            // to hold.
                             ...(format === 'currency' && !col.settings?.currency
-                              ? { currency: 'INR' }
+                              ? { currency: baseCurrency }
                               : {}),
                           },
                         }).catch((err) =>
@@ -283,7 +293,7 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
                       Currency
                     </span>
                     <select
-                      value={col.settings?.currency || 'INR'}
+                      value={col.settings?.currency || baseCurrency}
                       onChange={(e) => {
                         updateColumn(board._id, col._id, {
                           settings: { ...(col.settings || {}), currency: e.target.value },
@@ -440,7 +450,7 @@ const DataGrid = ({ board, tasks = [], personalPins = null, readOnly = false }) 
                             "₹3" for three receipts. */}
                         {result.raw
                           ? result.value.toLocaleString()
-                          : formatNumber(result.value, col.settings)}
+                          : money.column(result.value, col.settings)}
                       </span>
                     </>
                   )}

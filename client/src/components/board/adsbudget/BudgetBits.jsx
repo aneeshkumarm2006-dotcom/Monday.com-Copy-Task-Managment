@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { formatPct, stateMeta, barPct } from '../../../utils/adsBudgetDisplay';
-import { formatMoney } from '../../../utils/connectorFormat';
+import useMoney from '../../../hooks/useMoney';
+import { dayKeyOfMonthKey } from '../../../utils/money';
 
 /**
  * The small shared pieces of the Ads Budget tab.
@@ -248,12 +249,31 @@ export const BudgetPacingPanel = ({
   totals = {},
   window: win = null,
   currency,
+  /**
+   * The month these figures belong to, so they convert at the rate that was in
+   * force then rather than today's. A budget board is month-partitioned, and
+   * looking back at March should show what March's spend was worth in March.
+   *
+   * Optional: omitted means "the latest rate we hold", which is the right
+   * answer for a surface that is not looking at a particular month.
+   */
+  monthKey = null,
   note = null,
   framed = true,
   className = '',
 }) => {
   const meta = stateMeta(totals.state, totals.label);
-  const money = (v) => formatMoney(v, currency);
+  /**
+   * The reader's currency, at the rate in force for the month being shown.
+   *
+   * Dated by `monthKey` rather than converted at today's rate: a budget board
+   * is a month-partitioned record, and looking back at March should show what
+   * March's spend was worth in March. `dayKeyOfMonthKey` reads the rate from
+   * the first of the month, which is exactly what every record dated anywhere
+   * in that month resolves to.
+   */
+  const fx = useMoney();
+  const money = (v) => fx.in(v, currency, dayKeyOfMonthKey(monthKey));
 
   /**
    * Over or under, at the current rate. Null when too little of the month has

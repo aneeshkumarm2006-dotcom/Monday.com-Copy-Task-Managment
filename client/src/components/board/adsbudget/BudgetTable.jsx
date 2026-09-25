@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { Pencil, Plus, Trash2 } from 'lucide-react';
 
 import { ScrollTable, Th, Td } from '../addons/connector/SectionShell';
-import { formatMoney } from '../../../utils/connectorFormat';
+import useMoney from '../../../hooks/useMoney';
+import { dayKeyOfMonthKey } from '../../../utils/money';
 import { formatPct } from '../../../utils/adsBudgetDisplay';
 import { PlatformMark, SectionEmpty, StatusText } from './BudgetBits';
 
@@ -50,10 +51,13 @@ const EDIT_WIDTH = 96;
  * what lets the number be formatted AND editable in place; a formatter applied
  * to a live input would fight the person typing into it.
  */
-const SpendCell = ({ row, canTrack, currency, onCommit }) => {
+const SpendCell = ({ row, canTrack, currency, monthKey, onCommit }) => {
   const [editing, setEditing] = useState(false);
+  // Its own hook: `money` in the table below is a different component's local.
+  const fx = useMoney();
+  const money = (v) => fx.in(v, currency, dayKeyOfMonthKey(monthKey));
 
-  if (!canTrack) return <>{formatMoney(row.spent, currency)}</>;
+  if (!canTrack) return <>{money(row.spent)}</>;
 
   if (!editing) {
     return (
@@ -74,7 +78,7 @@ const SpendCell = ({ row, canTrack, currency, onCommit }) => {
           cursor: 'text',
         }}
       >
-        {formatMoney(row.spent, currency)}
+        {money(row.spent)}
       </button>
     );
   }
@@ -241,6 +245,7 @@ const BudgetCard = ({
           row={row}
           canTrack={canTrack}
           currency={currency}
+          monthKey={monthKey}
           onCommit={onCommitSpend}
         />
       </CardStat>
@@ -271,6 +276,15 @@ const BudgetTable = ({
   rows,
   level, // 'platform' | 'campaign'
   currency,
+  /**
+   * The month these figures belong to, so they convert at the rate that was in
+   * force then rather than today's. A budget board is month-partitioned, and
+   * looking back at March should show what March's spend was worth in March.
+   *
+   * Optional: omitted means "the latest rate we hold", which is the right
+   * answer for a surface that is not looking at a particular month.
+   */
+  monthKey = null,
   canTrack,
   canManage,
   onCommitSpend,
@@ -281,7 +295,17 @@ const BudgetTable = ({
   emptyAction,
 }) => {
   const isCampaign = level === 'campaign';
-  const money = (v) => formatMoney(v, currency);
+  /**
+   * The reader's currency, at the rate in force for the month being shown.
+   *
+   * Dated by `monthKey` rather than converted at today's rate: a budget board
+   * is a month-partitioned record, and looking back at March should show what
+   * March's spend was worth in March. `dayKeyOfMonthKey` reads the rate from
+   * the first of the month, which is exactly what every record dated anywhere
+   * in that month resolves to.
+   */
+  const fx = useMoney();
+  const money = (v) => fx.in(v, currency, dayKeyOfMonthKey(monthKey));
 
   if (rows.length === 0) {
     return (
@@ -304,6 +328,7 @@ const BudgetTable = ({
           row={row}
           isCampaign={isCampaign}
           currency={currency}
+          monthKey={monthKey}
           money={money}
           canTrack={canTrack}
           canManage={canManage}
@@ -364,6 +389,8 @@ const BudgetTable = ({
                   row={row}
                   canTrack={canTrack}
                   currency={currency}
+                  monthKey={monthKey}
+          monthKey={monthKey}
                   onCommit={onCommitSpend}
                 />
               </Td>

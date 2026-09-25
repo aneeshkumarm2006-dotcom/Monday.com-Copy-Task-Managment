@@ -303,10 +303,13 @@ const getPortalMeta = async (req, res) => {
     const ctx = await loadPortalBoard(req.params.portalToken);
     if (!ctx) return res.status(404).json({ error: 'Portal not found' });
 
-    const org = await Organisation.findById(ctx.board.organisation).select('name');
+    const org = await Organisation.findById(ctx.board.organisation).select('name logo');
 
     return res.json({
       orgName: org?.name || '',
+      // The agency's logo, so the sign-in page is branded as the team the
+      // client actually works with. '' when the workspace has none.
+      orgLogo: org?.logo || '',
       clientName: clientLabel(ctx.board),
     });
   } catch (err) {
@@ -576,11 +579,12 @@ const portalCheckSetupToken = async (req, res) => {
     const contact = await loadContactBySetupToken(ctx.board, req.params.token);
     if (!contact) return res.status(400).json({ error: EXPIRED_TOKEN });
 
-    const org = await Organisation.findById(ctx.board.organisation).select('name');
+    const org = await Organisation.findById(ctx.board.organisation).select('name logo');
     return res.json({
       email: contact.email,
       purpose: contact.setupTokenPurpose || 'setup',
       orgName: org?.name || '',
+      orgLogo: org?.logo || '',
       clientName: clientLabel(ctx.board),
     });
   } catch (err) {
@@ -724,9 +728,9 @@ const getPortalHome = async (req, res) => {
     if (!board) return res.status(404).json({ error: 'Board not found' });
 
     const [org, groups] = await Promise.all([
-      Organisation.findById(board.organisation).select('name'),
+      Organisation.findById(board.organisation).select('name logo'),
       TaskGroup.find({ board: boardId })
-        .select('name order serviceKey')
+        .select('name order serviceKey logo')
         .sort({ order: 1, createdAt: 1 })
         .lean(),
     ]);
@@ -862,6 +866,8 @@ const getPortalHome = async (req, res) => {
       return {
         id: key,
         name: g.name,
+        // The group's logo — the service's mark in the client's service table.
+        logo: g.logo || '',
         slug: g.serviceKey || null,
         color: g.serviceKey ? colors.get(g.serviceKey) || null : null,
         order: g.order || 0,
@@ -889,7 +895,7 @@ const getPortalHome = async (req, res) => {
         firstName: (name || contact?.email || '').split(' ')[0] || '',
         email: contact?.email || req.portal.email || '',
       },
-      company: { name: req.portal.clientName, orgName: org?.name || '' },
+      company: { name: req.portal.clientName, orgName: org?.name || '', orgLogo: org?.logo || '' },
       portal: {
         linkToken: board.portalToken || null,
         announcement: board.portalAnnouncement || '',
@@ -985,7 +991,7 @@ const getMyIssues = async (req, res) => {
     const hasMore = page.length > limit;
     const tasks = hasMore ? page.slice(0, limit) : page;
 
-    const org = await Organisation.findById(board.organisation).select('name');
+    const org = await Organisation.findById(board.organisation).select('name logo');
 
     // The client's workstreams, in the team's own group order — this drives
     // both the list's grouping and the new-request form's picker.
@@ -1038,6 +1044,7 @@ const getMyIssues = async (req, res) => {
       },
       context: {
         orgName: org?.name || '',
+        orgLogo: org?.logo || '',
         companyName: company,
         contactName, // the client's Google display name
         clientName: company, // kept for backward compat

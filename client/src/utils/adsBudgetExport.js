@@ -2,6 +2,7 @@ import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { saveBlob } from './fileUrl.js';
 import { ledgerRows } from './adsBudgetDisplay.js';
+import { currencyByCode } from './money.js';
 
 /**
  * The Ads Budget tables as files — `rankExport.js`'s architecture, three
@@ -47,6 +48,20 @@ const slug = (name) =>
  * A money cell. Never a currency symbol — the subtitle and the Currency column
  * say which one, once, instead of on every figure.
  *
+ * ---- Exported in the BOARD's currency, not the reader's ---------------------
+ *
+ * The Ads Budget screens now render in whatever currency the person reading
+ * them chose, converted at the rate for the month. This file deliberately does
+ * NOT follow. An export is an artifact that outlives the session that made it:
+ * it gets mailed to a client, reconciled against an invoice and opened next
+ * March by somebody who never saw the toggle. Figures converted at one
+ * afternoon's rate, in a file that does not say which afternoon, are a
+ * liability.
+ *
+ * So the file carries the numbers as they were entered, and the Currency column
+ * below says which currency that is. Anyone who wants the converted view has it
+ * on screen.
+ *
  * SEPARATED FOR PRINT, BARE FOR A SPREADSHEET. `8,000` has to be quoted under
  * RFC 4180, which lands it in Excel as TEXT — and a budget sheet whose money
  * columns cannot be summed or pivoted is useless for the thing people export it
@@ -56,10 +71,19 @@ const slug = (name) =>
  * Same shape of decision as the em dash below: the two formats want different
  * things from the same value, and one `columns` array serves both.
  */
-const money = (value, plain) => {
+const money = (value, plain, locale) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '';
   if (plain) return String(Math.round(value * 100) / 100);
-  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value);
+  /**
+   * Grouped the way the BOARD's currency is grouped, not the way en-US is.
+   *
+   * This was pinned to 'en-US', so a rupee board exported 180,000 where every
+   * screen in the product — and every Indian accountant reading the file —
+   * writes 1,80,000. The locale comes from the catalog entry for the board's
+   * own currency; an unknown code falls back to the reader's locale, which is
+   * still better than asserting American grouping over someone else's money.
+   */
+  return new Intl.NumberFormat(locale || undefined, { maximumFractionDigits: 2 }).format(value);
 };
 
 const percent = (fraction) =>
@@ -94,9 +118,9 @@ export const REPORTS = {
     columns: [
       { key: 'client', header: 'Client', width: 60, read: (r) => r.name || '' },
       { key: 'platforms', header: 'Platforms', width: 22, read: (r) => String(r.platformCount ?? '') },
-      { key: 'budget', header: 'Budget', width: 28, read: (r, m, plain) => money(r.allocated, plain) },
-      { key: 'spend', header: 'Spend', width: 28, read: (r, m, plain) => money(r.spent, plain) },
-      { key: 'remaining', header: 'Remaining', width: 28, read: (r, m, plain) => money(r.remaining, plain) },
+      { key: 'budget', header: 'Budget', width: 28, read: (r, m, plain) => money(r.allocated, plain, m.locale) },
+      { key: 'spend', header: 'Spend', width: 28, read: (r, m, plain) => money(r.spent, plain, m.locale) },
+      { key: 'remaining', header: 'Remaining', width: 28, read: (r, m, plain) => money(r.remaining, plain, m.locale) },
       { key: 'used', header: 'Used', width: 20, read: (r) => percent(r.usedPct) },
       { key: 'status', header: 'Status', width: 32, read: (r) => r.label || '' },
       { key: 'pacing', header: 'Pacing', csvOnly: true, read: (r) => r.verdict || '' },
@@ -104,9 +128,9 @@ export const REPORTS = {
         key: 'projected',
         header: 'Projected spend',
         csvOnly: true,
-        read: (r, m, plain) => money(r.projected, plain),
+        read: (r, m, plain) => money(r.projected, plain, m.locale),
       },
-      { key: 'dailyAverage', header: 'Average daily spend', csvOnly: true, read: (r, m, plain) => money(r.dailyAverage, plain) },
+      { key: 'dailyAverage', header: 'Average daily spend', csvOnly: true, read: (r, m, plain) => money(r.dailyAverage, plain, m.locale) },
     ],
   },
 
@@ -129,16 +153,16 @@ export const REPORTS = {
       { key: 'platform', header: 'Platform', width: 40, read: (r) => r.platform || '' },
       { key: 'name', header: 'Campaign', width: 46, read: (r) => r.name || '' },
       { key: 'objective', header: 'Objective', width: 28, read: (r) => r.objective || '' },
-      { key: 'budget', header: 'Budget', width: 26, read: (r, m, plain) => money(r.allocated, plain) },
-      { key: 'spent', header: 'Spent', width: 26, read: (r, m, plain) => money(r.spent, plain) },
-      { key: 'remaining', header: 'Remaining', width: 26, read: (r, m, plain) => money(r.remaining, plain) },
+      { key: 'budget', header: 'Budget', width: 26, read: (r, m, plain) => money(r.allocated, plain, m.locale) },
+      { key: 'spent', header: 'Spent', width: 26, read: (r, m, plain) => money(r.spent, plain, m.locale) },
+      { key: 'remaining', header: 'Remaining', width: 26, read: (r, m, plain) => money(r.remaining, plain, m.locale) },
       { key: 'used', header: 'Used', width: 18, read: (r) => percent(r.usedPct) },
       { key: 'status', header: 'Status', read: (r) => r.label || '' },
       { key: 'account', header: 'Account', csvOnly: true, read: (r) => r.account || '' },
-      { key: 'dailyBudget', header: 'Daily budget', csvOnly: true, read: (r, m, plain) => money(r.dailyBudget, plain) },
+      { key: 'dailyBudget', header: 'Daily budget', csvOnly: true, read: (r, m, plain) => money(r.dailyBudget, plain, m.locale) },
       { key: 'lifecycle', header: 'Lifecycle', csvOnly: true, read: (r) => r.lifecycle || '' },
       { key: 'owner', header: 'Owner', csvOnly: true, read: (r) => r.owner?.name || '' },
-      { key: 'projected', header: 'Projected spend', csvOnly: true, read: (r, m, plain) => money(r.projected, plain) },
+      { key: 'projected', header: 'Projected spend', csvOnly: true, read: (r, m, plain) => money(r.projected, plain, m.locale) },
       { key: 'notes', header: 'Notes', csvOnly: true, read: (r) => r.notes || '' },
       { key: 'updatedAt', header: 'Last updated', csvOnly: true, read: (r) => prettyDay(r.updatedAt) },
     ],
@@ -162,7 +186,7 @@ export const REPORTS = {
         // Signed, because a ledger where every figure is positive is not a
         // ledger. The sign is the whole content of the Direction column too,
         // which is there so a spreadsheet can filter on it.
-        read: (r, m, plain) => `${r.direction === 'out' ? '-' : '+'}${money(r.amount, plain)}`,
+        read: (r, m, plain) => `${r.direction === 'out' ? '-' : '+'}${money(r.amount, plain, m.locale)}`,
       },
       { key: 'direction', header: 'Direction', csvOnly: true, read: (r) => (r.direction === 'out' ? 'Out' : 'In') },
       { key: 'user', header: 'User', read: (r) => r.actor?.name || '' },
@@ -180,6 +204,10 @@ const CONTEXT_COLUMNS = [
 const metaFor = (payload) => ({
   monthLabel: payload.monthLabel || payload.monthKey || '',
   currency: payload.currency || 'USD',
+  // Derived once, here, so every money cell groups the way this board's own
+  // currency groups. Null for a code the catalog does not carry, which falls
+  // back to the reader's locale rather than asserting American grouping.
+  locale: currencyByCode(payload.currency || 'USD')?.locale || null,
   scope: payload.group?.name || 'All clients',
   boardName: payload.boardName || 'board',
 });

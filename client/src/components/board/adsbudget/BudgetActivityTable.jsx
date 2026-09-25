@@ -2,7 +2,8 @@ import { History } from 'lucide-react';
 
 import Avatar from '../../ui/Avatar';
 import { ScrollTable, Th, Td } from '../addons/connector/SectionShell';
-import { formatMoney } from '../../../utils/connectorFormat';
+import useMoney from '../../../hooks/useMoney';
+import { dayKeyOfMonthKey } from '../../../utils/money';
 import { amountColor, ledgerRows, signedAmount } from '../../../utils/adsBudgetDisplay';
 import { SectionEmpty } from './BudgetBits';
 
@@ -30,7 +31,8 @@ const shortDay = (value) => {
   return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' });
 };
 
-const BudgetActivityTable = ({ items, currency, error }) => {
+const BudgetActivityTable = ({ items, currency, monthKey = null, error }) => {
+  const fx = useMoney();
   // A failed ledger read is shown here and nowhere else. It must never blank
   // the budget tables above it, which is why this panel has its own request and
   // its own error — the rule GoalsTab states for its connector reads.
@@ -89,7 +91,7 @@ const BudgetActivityTable = ({ items, currency, error }) => {
                   className="font-body font-medium tabular-nums"
                   style={{ color: amountColor(row) }}
                 >
-                  {signedAmount(row, (n) => formatMoney(n, currency))}
+                  {signedAmount(row, (n) => fx.in(n, currency, dayKeyOfMonthKey(monthKey)))}
                 </span>
               </Td>
               <Td>

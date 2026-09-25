@@ -18,12 +18,31 @@ const { templateByKey } = require('./boardTemplates');
  * where a template silently is not what it says, is worth a tripwire on.
  */
 
-/** The seed, exactly as `createBoard` builds it. Mirrors the controller. */
-const seed = (key) => {
+/**
+ * The seed, exactly as `createBoard` builds it. Mirrors the controller.
+ *
+ * `baseCurrency` is a parameter because the controller now takes one: money
+ * columns are denominated in the WORKSPACE's currency rather than the
+ * template's. Defaulted to rupees so every other assertion in this file reads
+ * unchanged, since that is what an unconfigured workspace still gets.
+ *
+ * Being a hand-written mirror, this can drift from the controller without
+ * anything failing — which is the exact class of bug the header says this file
+ * exists to catch. If you change the column seeding in `boardController`,
+ * change it here in the same commit.
+ */
+const seed = (key, baseCurrency = 'INR') => {
   const tpl = templateByKey(key);
   return {
     statuses: tpl.statuses.map((s) => ({ ...s })),
-    columns: tpl.columns.map((c, i) => ({ ...c, order: i, settings: { ...(c.settings || {}) } })),
+    columns: tpl.columns.map((c, i) => ({
+      ...c,
+      order: i,
+      settings: {
+        ...(c.settings || {}),
+        ...(c.settings?.format === 'currency' ? { currency: baseCurrency } : {}),
+      },
+    })),
     useFlexibleColumns: tpl.columns.length > 0,
     groups: tpl.groups,
     defaultView: tpl.defaultView,
@@ -145,15 +164,42 @@ test('content carries the date a calendar will read', () => {
   assert.equal(seed('content').groups.length, 12);
 });
 
-test('every money column is rupees, and every currency column sums', () => {
-  // The workspace this was built for bills in rupees; a template that quietly
-  // defaulted to dollars is a board somebody has to fix on every column.
+test('every money column takes the workspace currency, and every one of them sums', () => {
+  /**
+   * This used to assert rupees, full stop — "the workspace this was built for
+   * bills in rupees". That was true and it was also the bug: an agency billing
+   * in dollars had to fix every money column by hand on every board it made.
+   *
+   * Rupees are still the DEFAULT, so the first half of this is the old
+   * assertion unchanged. What is new is the second half, which is the thing
+   * worth protecting: a workspace set to something else gets boards in that
+   * currency, and no template silently overrides it.
+   */
   for (const key of ['billing', 'budget', 'pipeline', 'expenses']) {
     const money = seed(key).columns.filter((c) => c.settings?.format === 'currency');
     assert.ok(money.length > 0, `${key} should have a money column`);
     for (const c of money) {
-      assert.equal(c.settings.currency, 'INR', `${key}.${c.key} is not in rupees`);
+      assert.equal(c.settings.currency, 'INR', `${key}.${c.key} is not in rupees by default`);
       assert.equal(c.settings.summary, 'sum', `${key}.${c.key} should total`);
+    }
+
+    const cad = seed(key, 'CAD').columns.filter((c) => c.settings?.format === 'currency');
+    for (const c of cad) {
+      assert.equal(c.settings.currency, 'CAD', `${key}.${c.key} ignored the workspace currency`);
+      // The rest of the column's settings must survive the substitution — a
+      // money column that stopped totalling would be a silent regression.
+      assert.equal(c.settings.summary, 'sum', `${key}.${c.key} lost its summary`);
+    }
+  }
+});
+
+test('a non-money column is untouched by the workspace currency', () => {
+  // Only `format: 'currency'` columns carry a unit. Stamping one onto a percent
+  // or a plain number column would make the cell claim something false.
+  for (const key of ['billing', 'budget', 'pipeline', 'expenses']) {
+    for (const c of seed(key, 'CAD').columns) {
+      if (c.settings?.format === 'currency') continue;
+      assert.equal(c.settings?.currency, undefined, `${key}.${c.key} got a currency it has no use for`);
     }
   }
 });
