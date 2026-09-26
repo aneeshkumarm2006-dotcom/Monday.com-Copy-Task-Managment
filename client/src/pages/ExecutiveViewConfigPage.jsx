@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -425,7 +425,14 @@ const ExecutiveViewConfigPage = () => {
 
   const orgId = currentOrg?._id || null;
 
-  const [step, setStep] = useState('role');
+  // `?step=preview` is a way IN (the Members page links straight to the
+  // preview), read once and never written back — the URL is not the step's
+  // state, and an unknown key simply lands on the first step.
+  const [searchParams] = useSearchParams();
+  const [step, setStep] = useState(() => {
+    const asked = searchParams.get('step');
+    return STEPS.some((s) => s.key === asked) ? asked : 'role';
+  });
 
   // Server truth, re-read after every mutation. `skipped` is the honest answer
   // resolved AS THE TARGET, never as the admin looking at this page.
@@ -2219,6 +2226,28 @@ const ExecutiveViewConfigPage = () => {
             whose role does not hold it. Home and Settings have no switch: they
             are how a person gets back to everything else.
           </p>
+
+          {/* The last setup step points at the one that checks it — the
+              preview is otherwise easy to miss at the bottom of the rail. */}
+          <div
+            className="mt-4 pt-3 flex items-center justify-between gap-3 flex-wrap"
+            style={{ borderTop: '1px solid var(--color-border)' }}
+          >
+            <span
+              className="font-body text-[12.5px]"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              Done setting up? See the screen {targetName} will get.
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={Eye}
+              onClick={() => setStep('preview')}
+            >
+              Preview their screen
+            </Button>
+          </div>
         </Panel>
       );
     }
@@ -2380,6 +2409,15 @@ const ExecutiveViewConfigPage = () => {
 
           <div className="flex items-center gap-2 flex-wrap">
             {backToMembers}
+            {step !== 'preview' && profile && !targetIsOwner && (
+              <Button
+                variant="secondary"
+                icon={Eye}
+                onClick={() => setStep('preview')}
+              >
+                Preview as {targetName.split(/[\s@]/)[0]}
+              </Button>
+            )}
             <Button
               onClick={handleSave}
               disabled={saving || loading || !profile || targetIsOwner || !dirty}
@@ -2435,6 +2473,24 @@ const ExecutiveViewConfigPage = () => {
                   {receipt.dropped.length === 1 ? 'entry was' : 'entries were'}{' '}
                   not kept — the server would not store{' '}
                   {receipt.dropped.length === 1 ? 'it' : 'them'}.
+                </p>
+              )}
+              {step !== 'preview' && (
+                <p className="mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setStep('preview')}
+                    className="font-body font-semibold underline-offset-2 hover:underline"
+                    style={{
+                      color: 'var(--color-accent)',
+                      background: 'none',
+                      border: 'none',
+                      padding: 0,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    See what {targetName} sees →
+                  </button>
                 </p>
               )}
             </Notice>

@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   LayoutDashboard,
   Pencil,
+  Eye,
 } from 'lucide-react';
 import PageWrapper from '../components/layout/PageWrapper';
 import Button from '../components/ui/Button';
@@ -132,7 +133,7 @@ const Chip = ({ children, variant = 'grey' }) => {
  * and nowhere to go. It gets a line under the strip instead: enough to know it
  * is there, honest about the fact that this screen cannot act on it.
  */
-const ExecutivesStrip = ({ rows, orphans, roleName, onEdit }) => (
+const ExecutivesStrip = ({ rows, orphans, roleName, onEdit, onPreview }) => (
   <section
     className="bg-surface"
     aria-label="Executives"
@@ -166,7 +167,7 @@ const ExecutivesStrip = ({ rows, orphans, roleName, onEdit }) => (
         const person = row.user;
         const count = row.boardCount || 0;
         return (
-          <li key={row.id}>
+          <li key={row.id} className="flex items-center gap-1">
             <button
               type="button"
               onClick={() => onEdit(person._id)}
@@ -212,6 +213,26 @@ const ExecutivesStrip = ({ rows, orphans, roleName, onEdit }) => (
                 color="var(--color-text-muted)"
                 className="shrink-0"
               />
+            </button>
+            {/* Straight to the preview — what this person actually sees,
+                composed as them — without walking the configurator first. */}
+            <button
+              type="button"
+              onClick={() => onPreview(person._id)}
+              title={`Preview ${person.name || person.email}'s view`}
+              aria-label={`Preview ${person.name || person.email}'s view`}
+              className="inline-flex items-center justify-center shrink-0 transition-colors duration-150 hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
+              style={{
+                width: 32,
+                height: 32,
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-full)',
+                background: 'transparent',
+                cursor: 'pointer',
+                color: 'var(--color-text-muted)',
+              }}
+            >
+              <Eye size={14} aria-hidden="true" />
             </button>
           </li>
         );
@@ -1208,6 +1229,7 @@ const MembersPage = () => {
               orphans={orphanedViews}
               roleName={executiveRoleName}
               onEdit={(id) => navigate(configuratorPath(id))}
+              onPreview={(id) => navigate(`${configuratorPath(id)}?step=preview`)}
             />
           </div>
         )}
@@ -1396,6 +1418,20 @@ const MembersPage = () => {
                         {hasExecutiveView
                           ? 'Edit executive view'
                           : 'Make executive'}
+                      </button>
+                    )}
+
+                    {canGiveExecutiveView && hasExecutiveView && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          navigate(`${configuratorPath(m._id)}?step=preview`)
+                        }
+                        title={`See the workspace as ${m.name || m.email} sees it`}
+                        className="inline-flex items-center gap-1 font-body font-semibold text-[12px] whitespace-nowrap text-[color:var(--color-accent)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)] rounded"
+                      >
+                        <Eye size={14} aria-hidden="true" />
+                        Preview
                       </button>
                     )}
 
