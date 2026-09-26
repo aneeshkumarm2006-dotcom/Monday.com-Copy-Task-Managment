@@ -1,20 +1,24 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check } from 'lucide-react';
+import { useMemo, useState } from 'react';
 import { cellWrapperStyle, optionSorted, pickableOptions } from './cellShared';
 import { getColorPair } from '../../../utils/priorityColors';
+import OptionMenu from '../../ui/OptionMenu';
 
 /**
  * TagsCell — multi-select over `settings.options`. Renders each selected tag
- * as a coloured chip; clicking opens a checklist popover.
+ * as a coloured chip; clicking opens a checklist menu.
  *
  * Like StatusCell it keeps TWO lists: the chips are drawn from every option the
  * column has, the checklist only from the pickable ones. A retired tag
  * therefore stays visible (and removable) on the rows already carrying it
  * without being offered to anybody new — see `pickableOptions`.
+ *
+ * The checklist is `ui/OptionMenu` with `multiple` (a portal at
+ * `position: fixed`), for the reason StatusCell's header gives: an absolutely
+ * positioned panel inside the Table's scroll wrapper was cut off on a short
+ * group.
  */
 const TagsCell = ({ value, column, readOnly, onChange }) => {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const [anchor, setAnchor] = useState(null);
   const options = optionSorted(column?.settings?.options);
   const pickable = pickableOptions(column?.settings?.options);
   const selected = Array.isArray(value) ? value.map((v) => v.toString()) : [];
@@ -24,15 +28,17 @@ const TagsCell = ({ value, column, readOnly, onChange }) => {
     (o) => o.archived && selected.includes(o.id.toString())
   );
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const onClickOutside = (e) => {
-      if (ref.current && ref.current.contains(e.target)) return;
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [open]);
+  const menuOptions = useMemo(
+    () =>
+      [...pickable, ...retiredSelected].map((o) => ({
+        value: o.id.toString(),
+        // The menu renders a plain label; a retired one says so in words.
+        label: o.archived ? `${o.label} (retired)` : o.label,
+        palette: getColorPair(o.color),
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [column?.settings?.options, selected.join(',')]
+  );
 
   const toggle = (id) => {
     const set = new Set(selected);
@@ -62,10 +68,16 @@ const TagsCell = ({ value, column, readOnly, onChange }) => {
   };
 
   return (
-    <div ref={ref} style={{ position: 'relative', width: '100%' }}>
+    <div style={{ position: 'relative', width: '100%' }}>
       <div
         style={{ ...cellWrapperStyle, flexWrap: 'wrap', gap: 4, cursor: readOnly ? 'default' : 'pointer' }}
-        onClick={() => !readOnly && setOpen((v) => !v)}
+        onClick={(e) => {
+          if (readOnly) return;
+          const el = e.currentTarget;
+          setAnchor((a) => (a ? null : el));
+        }}
+        aria-haspopup={readOnly ? undefined : 'listbox'}
+        aria-expanded={readOnly ? undefined : !!anchor}
       >
         {selected.length === 0 ? (
           <span style={{ color: 'var(--color-text-muted)' }}>—</span>
@@ -85,60 +97,20 @@ const TagsCell = ({ value, column, readOnly, onChange }) => {
           })
         )}
       </div>
-      {open && !readOnly && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            minWidth: 200,
-            maxWidth: 'calc(100vw - 24px)',
-            maxHeight: 280,
-            overflowY: 'auto',
-            zIndex: 40,
-            background: 'var(--color-bg-elevated)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-md)',
-            boxShadow: 'var(--shadow-md)',
-            padding: 6,
-          }}
-        >
-          {[...pickable, ...retiredSelected].map((opt) => {
-            const checked = selected.includes(opt.id.toString());
-            return (
-              <button
-                key={opt.id}
-                type="button"
-                onClick={() => toggle(opt.id.toString())}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  width: '100%',
-                  padding: '6px 8px',
-                  fontSize: 12,
-                  background: 'transparent',
-                  border: 'none',
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                  borderRadius: 'var(--radius-sm)',
-                }}
-              >
-                <span
-                  style={{
-                    flex: 1,
-                    textAlign: 'left',
-                    ...(opt.archived ? { opacity: 0.6, textDecoration: 'line-through' } : null),
-                  }}
-                  title={opt.archived ? 'Retired — you can take it off, but not add it back' : undefined}
-                >
-                  {chip(opt.label, opt.color)}
-                </span>
-                {checked && <Check size={14} aria-hidden="true" />}
-              </button>
-            );
-          })}
-        </div>
+      {anchor && !readOnly && (
+        // A sibling of the trigger — see StatusCell.
+        <OptionMenu
+          anchorEl={anchor}
+          options={menuOptions}
+          selectedValues={selected}
+          multiple
+          onSelect={(v) => toggle(String(v))}
+          onClose={() => setAnchor(null)}
+          layout="rows"
+          width={236}
+          emptyText="No tags to pick."
+          ariaLabel={column?.name || 'Tags'}
+        />
       )}
     </div>
   );

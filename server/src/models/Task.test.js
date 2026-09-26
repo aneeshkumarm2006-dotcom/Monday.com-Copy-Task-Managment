@@ -32,10 +32,14 @@ const findSyncHook = () => {
   return entry.fn;
 };
 
+// The hook is an ASYNC function with no `next` parameter — Mongoose awaits the
+// promise it returns. Calling it with a callback, as this used to, passed a
+// function nobody ever invoked, so the promise below never settled and every
+// test that reached it hung until the runner gave up. Wait on what it returns.
 const runHook = (ctx) =>
   new Promise((resolve, reject) => {
     const hook = findSyncHook();
-    hook.call(ctx, (err) => (err ? reject(err) : resolve()));
+    Promise.resolve(hook.call(ctx)).then(resolve, reject);
   });
 
 // Build a fake `this` that resembles a mongoose document for the bits the
@@ -168,4 +172,44 @@ test('hook leaves legacy fields alone when their column is missing', async () =>
 
   assert.equal(ctx.fields.status, undefined);
   assert.equal(ctx.fields.priority, undefined);
+});
+
+test('a passive save fills an empty side but never overwrites one that holds a value', async () => {
+  // The fake has no change tracking, so the hook reads this as a save that
+  // touched neither the cells nor the fields — a status change, say. Both
+  // sides disagree and both hold something: which one is right is not the
+  // hook's call, so neither moves.
+  const dueColId = new mongoose.Types.ObjectId();
+  const ownerColId = new mongoose.Types.ObjectId();
+  const cellOwner = new mongoose.Types.ObjectId().toString();
+  const fieldOwner = new mongoose.Types.ObjectId().toString();
+  const fieldDue = new Date('2026-07-07T00:00:00.000Z');
+
+  const ctx = makeFakeTask({
+    board: new mongoose.Types.ObjectId(),
+    columnValues: new Map([
+      [dueColId.toString(), '2026-12-31T00:00:00.000Z'],
+      [ownerColId.toString(), [cellOwner]],
+    ]),
+  });
+  ctx.dueDate = fieldDue;
+  ctx.assignedTo = [fieldOwner];
+
+  await withStubbedBoard(
+    {
+      useFlexibleColumns: true,
+      columns: [
+        { _id: dueColId, key: 'due_date', type: 'date' },
+        { _id: ownerColId, key: 'assignees', type: 'person' },
+      ],
+    },
+    async () => {
+      await runHook(ctx);
+    }
+  );
+
+  assert.equal(ctx.dueDate, fieldDue);
+  assert.deepEqual(ctx.assignedTo, [fieldOwner]);
+  assert.equal(ctx.columnValues.get(dueColId.toString()), '2026-12-31T00:00:00.000Z');
+  assert.deepEqual(ctx.columnValues.get(ownerColId.toString()), [cellOwner]);
 });

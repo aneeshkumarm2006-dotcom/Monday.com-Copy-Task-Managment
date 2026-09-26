@@ -1,3 +1,5 @@
+import { formatIn } from './money.js';
+
 /**
  * Presentation-only helpers for monthly goals.
  *
@@ -92,9 +94,12 @@ export const formatGoalValue = (value, goal, money = null) => {
     case 'percent': return `${n}%`;
     case 'currency':
       // Dated by the goal's own month — a March target is a fact about March.
+      // Without `money`, as entered — in dollars, with the symbol taken from
+      // the catalog rather than typed here, so this and every converted goal
+      // cell agree on what USD looks like.
       return money
         ? money.in(value, GOAL_CURRENCY, goal?.monthKey ? `${goal.monthKey}-01` : null)
-        : `$${n}`;
+        : formatIn(value, GOAL_CURRENCY, { decimals: 'auto' });
     case 'custom': return goal.unitLabel ? `${n} ${goal.unitLabel}` : n;
     default: return n;
   }

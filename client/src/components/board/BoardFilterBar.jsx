@@ -20,6 +20,8 @@ import {
   DUE_BUCKETS,
   EMPTY_FILTERS,
   countActiveFilters,
+  filterFieldsOf,
+  ownerOptionsFor,
   toggleValue,
 } from '../../utils/taskFilters';
 import {
@@ -28,7 +30,8 @@ import {
   OptionRow,
   MiniChip,
 } from '../ui/FilterControls';
-import { boardOffersFilter } from '../../utils/boardTemplateDisplay';
+import { boardOffersFilter, templateDisplay } from '../../utils/boardTemplateDisplay';
+import useBoardMembers from '../../hooks/useBoardMembers';
 
 const PRIORITY_ORDER = ['critical', 'high', 'medium', 'low'];
 const LEGACY_STATUS_ORDER = ['not_started', 'working_on_it', 'done', 'stuck'];
@@ -109,21 +112,19 @@ const BoardFilterBar = ({
   // Assignees are derived from the tasks themselves so the list works for
   // every member (org member lists are only fetched for admins) and only
   // surfaces people actually assigned on this board.
-  const assigneeOptions = useMemo(() => {
-    const byId = new Map();
-    for (const t of allTasks) {
-      for (const a of t.assignedTo || []) {
-        const id = (a && a._id ? a._id : a)?.toString();
-        if (!id) continue;
-        const name = (a && a.name) || '';
-        const existing = byId.get(id);
-        if (!existing || (!existing.name && name)) {
-          byId.set(id, { id, name: name || 'Member', profilePic: a?.profilePic });
-        }
-      }
-    }
-    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [allTasks]);
+  //
+  // On a flexible board the owner lives in the column playing the `assignee`
+  // role (Billing's "Owner"), and a person cell stores BARE ids — so the names
+  // come from the board roster. The roster is only fetched when that column
+  // exists and the Owner filter is on offer; a legacy board reads the populated
+  // `task.assignedTo` exactly as before and never asks for it.
+  const ownerFromColumn = useMemo(() => !!filterFieldsOf(board).owner, [board]);
+  const rosterNeeded = ownerFromColumn && offers('owner');
+  const boardMembers = useBoardMembers(board?._id, { enabled: rosterNeeded });
+  const assigneeOptions = useMemo(
+    () => ownerOptionsFor(allTasks, board, ownerFromColumn ? boardMembers : null),
+    [allTasks, board, ownerFromColumn, boardMembers]
+  );
 
   // Group owners exist only on tracker boards. Like the assignee list, the
   // options come from the data on screen rather than the org roster — which
@@ -435,7 +436,11 @@ const BoardFilterBar = ({
             className="font-body"
             style={{ fontSize: 13, color: 'var(--color-text-muted)' }}
           >
-            {matchedCount} of {totalCount} {totalCount === 1 ? 'task' : 'tasks'}
+            {matchedCount} of {totalCount}{' '}
+            {/* The board's own noun — "3 of 9 invoices", not "tasks". */}
+            {board?.templateKey
+              ? templateDisplay(board).rowNoun[totalCount === 1 ? 0 : 1]
+              : totalCount === 1 ? 'task' : 'tasks'}
           </span>
           <button
             type="button"

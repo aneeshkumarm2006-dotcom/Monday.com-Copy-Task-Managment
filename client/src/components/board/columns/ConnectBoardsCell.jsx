@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Plus, X, Search, ExternalLink, AlertTriangle } from 'lucide-react';
-import { cellWrapperStyle, optionSorted, findOption, formatDate } from './cellShared';
+import { Plus, X, Search, ExternalLink, AlertTriangle, Settings2 } from 'lucide-react';
+import { cellWrapperStyle, optionSorted, findOption, formatDate, boardIdOf } from './cellShared';
+import { ConnectTargetsModal } from '../ConnectTargetsEditor';
+import AnchoredPopover from '../../ui/AnchoredPopover';
 import useBoardStore from '../../../store/boardStore';
 import useTaskStore from '../../../store/taskStore';
 import useToastStore from '../../../store/toastStore';
@@ -18,6 +20,22 @@ import * as taskService from '../../../services/taskService';
  * generic columnValues PUT — so `onChange` from the grid is intentionally
  * unused here. The local task cache is patched directly so sibling mirror
  * cells re-read.
+ *
+ * ---- A column that links to nothing yet ------------------------------------
+ *
+ * A connect column with no `targetBoardIds` has nowhere to look for rows. It
+ * used to draw the same "+" as a working one, which opened a picker that said
+ * "No matching rows" forever — a dead end that looked like an empty board.
+ * Now it says what is actually wrong: someone who may change column settings
+ * (`canManage`, the host's `column.manage`) gets "Set up", which opens the same
+ * targets editor the column menu uses (`ConnectTargetsModal`); everyone else
+ * gets a quiet "Not connected" rather than a control that cannot work.
+ *
+ * The row picker is an `AnchoredPopover` (portal, `position: fixed`). It used
+ * to be a 280×320 panel absolutely positioned inside the cell, and in the
+ * Table — inside the grid's `overflow-x: auto` wrapper and an
+ * `overflow: hidden` group card — a group of one or two rows cut off its
+ * search box and most of the list.
  */
 
 /** Format a single column value for the read-only preview drawer. */
@@ -54,8 +72,10 @@ const formatValueForColumn = (column, value) => {
   }
 };
 
-const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
-  const [open, setOpen] = useState(false);
+const ConnectBoardsCell = ({ value, column, task, readOnly, canManage = false }) => {
+  // The "+" the row picker hangs off, or null while it is closed.
+  const [anchor, setAnchor] = useState(null);
+  const [setupOpen, setSetupOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [rows, setRows] = useState([]);
   const [rowsLoaded, setRowsLoaded] = useState(false);
@@ -63,7 +83,6 @@ const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
   const [restrictWarning, setRestrictWarning] = useState(false);
   const [connectableByBoard, setConnectableByBoard] = useState(() => new Map());
   const [drawerRow, setDrawerRow] = useState(null);
-  const wrapperRef = useRef(null);
 
   const fetchConnectable = useBoardStore((s) => s.fetchConnectable);
   const linkTaskAction = useBoardStore((s) => s.linkTask);
@@ -78,18 +97,11 @@ const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
   );
   const allowMultiple = !!settings.allowMultiple;
   const restrictTo = settings.restrictTo || null;
-  const sourceBoardId = task && task.board ? task.board.toString() : null;
+  // `task.board` arrives populated on some reads and as a bare id on others;
+  // `toString()` on the populated one was "[object Object]".
+  const sourceBoardId = boardIdOf(task);
+  const unconfigured = targetBoardIds.length === 0;
   const links = Array.isArray(value && value.links) ? value.links : [];
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const onClickOutside = (e) => {
-      if (wrapperRef.current && wrapperRef.current.contains(e.target)) return;
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [open]);
 
   // Load target-board rows (for both chip names and the typeahead). Runs when
   // the picker opens, or on mount if there are links to resolve names for.
@@ -181,7 +193,7 @@ const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
       });
       patchTaskLinks(nextValue);
       setQuery('');
-      if (!allowMultiple) setOpen(false);
+      if (!allowMultiple) setAnchor(null);
     } catch (err) {
       toastError(err?.response?.data?.error || 'Could not link row');
     }
@@ -196,12 +208,48 @@ const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
     }
   };
 
-  const canAdd = !readOnly && (allowMultiple || links.length === 0);
+  const canAdd = !readOnly && !unconfigured && (allowMultiple || links.length === 0);
 
   return (
-    <div ref={wrapperRef} style={{ position: 'relative', width: '100%' }}>
+    <div style={{ position: 'relative', width: '100%' }}>
       <div style={{ ...cellWrapperStyle, gap: 4, flexWrap: 'wrap', cursor: 'default' }}>
-        {links.length === 0 && !canAdd && (
+        {links.length === 0 && unconfigured && (canManage && sourceBoardId ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setSetupOpen(true);
+            }}
+            aria-label={`Set up ${column.name || 'this column'}: choose which boards it links rows from`}
+            title="Choose which boards this column links rows from"
+            className="hover:bg-[color:var(--color-accent-light)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent)]"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '2px 8px',
+              fontSize: 12,
+              fontWeight: 600,
+              color: 'var(--color-accent)',
+              background: 'transparent',
+              border: '1px dashed var(--color-accent)',
+              borderRadius: 'var(--radius-full)',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            <Settings2 size={12} aria-hidden="true" />
+            Set up
+          </button>
+        ) : (
+          <span
+            title="This column is not linked to any board yet. Someone who can manage columns can set it up."
+            style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}
+          >
+            Not connected
+          </span>
+        ))}
+        {links.length === 0 && !unconfigured && !canAdd && (
           <span style={{ color: 'var(--color-text-muted)' }}>—</span>
         )}
         {links.map((link) => {
@@ -259,11 +307,14 @@ const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
         {canAdd && (
           <button
             type="button"
-            onClick={() => {
-              setOpen((v) => !v);
+            onClick={(e) => {
+              const el = e.currentTarget;
+              setAnchor((a) => (a ? null : el));
               loadData();
             }}
             aria-label="Link a row"
+            aria-haspopup="dialog"
+            aria-expanded={!!anchor}
             style={{
               width: 22,
               height: 22,
@@ -282,29 +333,20 @@ const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
         )}
       </div>
 
-      {open && !readOnly && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            marginTop: 4,
-            zIndex: 50,
-            width: 'min(280px, calc(100vw - 24px))',
-            maxHeight: 320,
-            display: 'flex',
-            flexDirection: 'column',
-            background: 'var(--color-bg-elevated)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-md)',
-            boxShadow: 'var(--shadow-md)',
-            padding: 8,
-          }}
+      {anchor && !readOnly && (
+        <AnchoredPopover
+          anchorEl={anchor}
+          onClose={() => setAnchor(null)}
+          width={280}
+          maxHeight={320}
+          initialFocus
+          ariaLabel={`Link a row to ${column.name || 'this column'}`}
+          style={{ display: 'flex', flexDirection: 'column' }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
             <Search size={13} color="var(--color-text-muted)" />
             <input
-              autoFocus
+              data-autofocus
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search rows…"
@@ -367,7 +409,22 @@ const ConnectBoardsCell = ({ value, column, task, readOnly }) => {
               ))
             )}
           </div>
-        </div>
+        </AnchoredPopover>
+      )}
+
+      {setupOpen && (
+        // React bubbles a portal's events to its React parents, so a click
+        // inside the modal would otherwise reach the grid row this cell sits
+        // in and open it. Only clicks are stopped: a stopped keydown would
+        // also stop the native event at the root, starving the modal's own
+        // Escape listener on `document`.
+        <span style={{ display: 'contents' }} onClick={(e) => e.stopPropagation()}>
+          <ConnectTargetsModal
+            boardId={sourceBoardId}
+            column={column}
+            onClose={() => setSetupOpen(false)}
+          />
+        </span>
       )}
 
       {drawerRow && (

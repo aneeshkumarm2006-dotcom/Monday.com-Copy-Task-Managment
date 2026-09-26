@@ -18,7 +18,58 @@
  * F2 fills them in.
  */
 
+const crypto = require('crypto');
 const mongoose = require('mongoose');
+
+/** How many payments one row may hold. An invoice paid in 500 parts is data entry gone wrong. */
+const MAX_PAYMENTS = 500;
+
+/**
+ * The largest single payment a row may record: a trillion, in the column's own
+ * unit. Not a business rule — no agency invoice is near it — but a ceiling on
+ * what a slipped key or a script can put into a figure that the strip, the
+ * summaries and the auto-Paid rule then add up. Past ~9e15 a double stops
+ * representing whole units exactly, and every total built on it quietly lies.
+ */
+const MAX_PAYMENT_AMOUNT = 1e12;
+
+/** The longest client name a `client` cell stores — the same cap the ledger tile can show. */
+const MAX_CLIENT_NAME = 120;
+
+const DAY_KEY_PREFIX = /^(\d{4})-(\d{2})-(\d{2})/;
+
+/**
+ * A payment's date as 'YYYY-MM-DD', or null when it is not a date.
+ *
+ * A string that STARTS with a day key is taken at its word — its own Y-M-D,
+ * not re-parsed through a timezone. The client sends the day the person picked
+ * ('2026-09-05'); parsing that as UTC midnight and reading it back in IST, or
+ * the reverse, is exactly how a payment made on the 5th gets filed on the 4th.
+ * Anything else (a Date, a looser string) is parsed and read in UTC, the only
+ * zone the server can claim to know.
+ */
+const paymentDayKey = (value) => {
+  if (value == null || value === '') return null;
+  if (typeof value === 'string') {
+    const m = value.trim().match(DAY_KEY_PREFIX);
+    if (m) {
+      const [, y, mo, d] = m;
+      const probe = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+      // Round-trip, so '2026-02-31' is refused rather than rolled into March.
+      if (
+        probe.getUTCFullYear() === Number(y)
+        && probe.getUTCMonth() === Number(mo) - 1
+        && probe.getUTCDate() === Number(d)
+      ) {
+        return `${y}-${mo}-${d}`;
+      }
+      return null;
+    }
+  }
+  if (typeof value !== 'string' && !(value instanceof Date)) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+};
 
 const isObjectIdLike = (value) =>
   value && (mongoose.Types.ObjectId.isValid(value) || typeof value?.toString === 'function');
@@ -42,6 +93,22 @@ const requireString = (value, field = 'value') => {
     throw ValidationError(`${field} must be a string`);
   }
   return value;
+};
+
+/**
+ * Whether `value` is an absolute https:// URL with a host. Parsed with the
+ * WHATWG parser rather than a prefix test, so `https:javascript:…`,
+ * `https://` with no host and whitespace-padded tricks are all refused.
+ */
+const isHttpsUrl = (value) => {
+  if (typeof value !== 'string' || !value || value.length > 2048) return false;
+  if (value !== value.trim()) return false;
+  try {
+    const u = new URL(value);
+    return u.protocol === 'https:' && !!u.hostname;
+  } catch (_err) {
+    return false;
+  }
 };
 
 const optionIdsFromSettings = (settings) => {
@@ -338,16 +405,38 @@ const columnTypes = {
   }),
 
   file: baseEntry({
-    // Value: [{ url, name, mime, size }]
+    // Value: [{ url, name, mime, size, publicId }]
+    //
+    // `publicId` is the Cloudinary handle `POST /api/boards/:id/files` hands
+    // back. It used to be dropped here, which made every file in a file column
+    // undeletable: the delete cascades (utils/fileColumnAssets.js) need the id
+    // to destroy the asset, and a PDF nobody can destroy stays publicly
+    // fetchable at its URL after the invoice it belonged to is gone. Always a
+    // string on the way out ('' when the caller never had one — older rows,
+    // which the cascades then leave alone).
+    //
+    // The id is stored as sent, and that is safe ONLY because the cascades
+    // never trust it: they destroy an id solely when it sits under
+    // `macan/board-files/<the row's own board>/` (see fileColumnAssets.js).
+    //
+    // `url` must be an https:// link. Every URL this app issues is (Cloudinary
+    // hands back `secure_url`), and the cell is rendered as a link and fetched
+    // for the PDF preview — a `javascript:` or `data:` URL here is a script in
+    // somebody else's browser, and an `http:` one is an invoice fetched in the
+    // clear. Refused on the way in rather than sanitised on the way out.
     validate: (value) => {
       if (value == null) return;
       if (!Array.isArray(value)) throw ValidationError('file must be an array of attachments');
       for (const f of value) {
         if (!f || typeof f !== 'object') throw ValidationError('file entry must be an object');
         if (f.url != null && typeof f.url !== 'string') throw ValidationError('file.url must be a string');
+        if (!isHttpsUrl(f.url)) throw ValidationError('file.url must be an https:// link');
         if (f.name != null && typeof f.name !== 'string') throw ValidationError('file.name must be a string');
         if (f.mime != null && typeof f.mime !== 'string') throw ValidationError('file.mime must be a string');
         if (f.size != null && typeof f.size !== 'number') throw ValidationError('file.size must be a number');
+        if (f.publicId != null && typeof f.publicId !== 'string') {
+          throw ValidationError('file.publicId must be a string');
+        }
       }
     },
     serialize: (value) => {
@@ -357,7 +446,92 @@ const columnTypes = {
         name: typeof f.name === 'string' ? f.name : '',
         mime: typeof f.mime === 'string' ? f.mime : '',
         size: typeof f.size === 'number' ? f.size : 0,
+        publicId: typeof f.publicId === 'string' ? f.publicId : '',
       }));
+    },
+    defaultValue: () => [],
+  }),
+
+  // ----- Money received ----------------------------------------------------
+  // payments: the ledger of what has been paid against a row — an invoice
+  // paid in three instalments is three entries, not one number overwritten
+  // three times.
+  //   value:    [{ id, amount, date: 'YYYY-MM-DD', method, note, by, at }]
+  //   settings: { format: 'currency', currency, summary: 'sum' }
+  //
+  // Its NUMERIC value — what summaries, formulas, mirrors and sorting read —
+  // is the sum of the amounts (`paymentsTotal` on the client). A list rather
+  // than a running total because "how much is paid" is only half the question
+  // somebody chasing an invoice asks; the other half is when, and how.
+  payments: baseEntry({
+    validate: (value) => {
+      if (value == null) return;
+      if (!Array.isArray(value)) throw ValidationError('payments must be an array of payments');
+      if (value.length > MAX_PAYMENTS) {
+        throw ValidationError(`a row can hold at most ${MAX_PAYMENTS} payments`);
+      }
+      for (const p of value) {
+        if (!p || typeof p !== 'object' || Array.isArray(p)) {
+          throw ValidationError('each payment must be an object');
+        }
+        const amount = typeof p.amount === 'string' && p.amount.trim() !== '' ? Number(p.amount) : p.amount;
+        if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
+          throw ValidationError('a payment amount must be a number greater than zero');
+        }
+        if (amount > MAX_PAYMENT_AMOUNT) {
+          throw ValidationError('a payment amount cannot be more than 1,000,000,000,000');
+        }
+        if (!paymentDayKey(p.date)) throw ValidationError('a payment needs a valid date');
+        if (p.method != null && typeof p.method !== 'string') {
+          throw ValidationError('payment.method must be a string');
+        }
+        if (p.note != null && typeof p.note !== 'string') {
+          throw ValidationError('payment.note must be a string');
+        }
+        if (p.by != null && !mongoose.Types.ObjectId.isValid(toIdString(p.by))) {
+          throw ValidationError('payment.by must be a user id');
+        }
+      }
+    },
+    serialize: (value) => {
+      if (!Array.isArray(value)) return [];
+      const seen = new Set();
+      const out = [];
+      value.forEach((p, index) => {
+        if (!p || typeof p !== 'object' || Array.isArray(p)) return;
+        const amount = typeof p.amount === 'string' ? Number(p.amount) : p.amount;
+        const date = paymentDayKey(p.date);
+        if (
+          typeof amount !== 'number' || !Number.isFinite(amount)
+          || amount <= 0 || amount > MAX_PAYMENT_AMOUNT || !date
+        ) return;
+        // An existing id is KEPT — it is how the activity log and the client
+        // tell "this payment was edited" from "one removed, another added".
+        // A duplicate is treated as missing rather than trusted twice.
+        let id = typeof p.id === 'string' ? p.id.trim().slice(0, 40) : '';
+        if (!id || seen.has(id)) id = crypto.randomBytes(6).toString('hex');
+        seen.add(id);
+        const at = p.at ? new Date(p.at) : null;
+        out.push({
+          entry: {
+            id,
+            amount,
+            date,
+            method: typeof p.method === 'string' ? p.method.trim().slice(0, 40) : '',
+            note: typeof p.note === 'string' ? p.note.trim().slice(0, 200) : '',
+            by: p.by != null && mongoose.Types.ObjectId.isValid(toIdString(p.by)) ? toIdString(p.by) : null,
+            at: at && !Number.isNaN(at.getTime()) ? at.toISOString() : new Date().toISOString(),
+          },
+          index,
+        });
+      });
+      // Date order, STABLE: two payments on the same day keep the order they
+      // were entered in, so the list never reshuffles itself on a save.
+      out.sort((a, b) => (a.entry.date < b.entry.date ? -1 : a.entry.date > b.entry.date ? 1 : a.index - b.index));
+      // Validation already refuses more than the cap; this only protects a
+      // caller that skipped it. The NEWEST are kept — dropping the payment
+      // somebody just recorded would be the worst possible choice.
+      return out.slice(-MAX_PAYMENTS).map((o) => o.entry);
     },
     defaultValue: () => [],
   }),
@@ -385,13 +559,78 @@ const columnTypes = {
   formula: baseEntry({
     // Read-only. The value is never written directly; it's computed at read
     // time from a narrow expression over sibling number columns.
-    validate: () => {
+    //
+    // A `null`/empty probe is allowed, exactly as on `mirror` below: adding or
+    // re-configuring a column validates its default value against the new
+    // settings, and a guard that also threw on "nothing" made every formula
+    // column impossible to create or edit through the API. A real write is
+    // still refused.
+    validate: (value) => {
+      if (value == null) return;
       throw ValidationError(
         'formula is read-only — set the formula in settings.expression instead of writing a value',
         'READ_ONLY'
       );
     },
     serialize: () => null,
+    defaultValue: () => null,
+  }),
+
+  // ----- Who a row is for --------------------------------------------------
+  // client: ONE client of this workspace.
+  //   value:    { boardId: string|null, name: string } | null
+  //   settings: none of its own (summary/width like any column)
+  //
+  // A client board (`Board.boardType === 'client'`) IS one client — its portal,
+  // its contacts, its services — so "which client is this invoice for" is a
+  // pick among the workspace's client boards, not a link to a ROW on some
+  // board. That is why this is its own type rather than `connect_boards`,
+  // which billing's Client column used to be and which nobody could fill: a
+  // connect column needs target boards and a row on them, and a client board
+  // has no row that is "the client".
+  //
+  //   boardId — the client board, or null for a client that has no board yet
+  //             (a one-off, a prospect): then `name` is all there is.
+  //   name    — a SNAPSHOT of the client's display name
+  //             (`portalClientName || name`), so a reader who cannot open the
+  //             client board — most people, since client boards are private —
+  //             still sees who the invoice is for. On every write that names a
+  //             board, the server overwrites it with that board's CURRENT name
+  //             (taskController, which also checks the board is a live client
+  //             board in the same workspace; that check needs the database, so
+  //             it cannot live in this synchronous registry).
+  //
+  // Filters, sorting and footers treat it like text — by `name`.
+  client: baseEntry({
+    validate: (value) => {
+      if (value == null) return;
+      if (typeof value !== 'object' || Array.isArray(value)) {
+        throw ValidationError('client must be an object { boardId, name }');
+      }
+      const { boardId, name } = value;
+      if (boardId != null && boardId !== '') {
+        const id = toIdString(boardId);
+        if (!id || !mongoose.Types.ObjectId.isValid(id) || !/^[a-f0-9]{24}$/i.test(id)) {
+          throw ValidationError('client.boardId is not a valid board id');
+        }
+      }
+      if (name != null && typeof name !== 'string') {
+        throw ValidationError('client.name must be a string');
+      }
+      if (typeof name === 'string' && name.trim().length > MAX_CLIENT_NAME) {
+        throw ValidationError(`client.name exceeds ${MAX_CLIENT_NAME} characters`);
+      }
+    },
+    serialize: (value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+      const raw = value.boardId == null || value.boardId === '' ? null : toIdString(value.boardId);
+      const boardId = raw && /^[a-f0-9]{24}$/i.test(raw) ? raw.toLowerCase() : null;
+      const name = typeof value.name === 'string'
+        ? value.name.trim().replace(/\s+/g, ' ').slice(0, MAX_CLIENT_NAME)
+        : '';
+      if (!boardId && !name) return null;
+      return { boardId, name };
+    },
     defaultValue: () => null,
   }),
 
@@ -525,6 +764,76 @@ const evaluateFormula = (expression, columnValuesByKey) => {
 };
 
 /**
+ * The column types a formula may reference: the ones with a NUMERIC value.
+ * A payments column counts as the sum of its amounts, a mirror as the number
+ * it mirrors. Mirrored by the client's `numericValue` in utils/columnValues.js.
+ */
+const FORMULA_SOURCE_TYPES = ['number', 'formula', 'mirror', 'payments'];
+
+const FORMULA_REF = /column\.([a-zA-Z_][a-zA-Z0-9_]*)/g;
+
+/**
+ * Validate a formula column's `settings.expression` against the board it will
+ * live on. Returns `{ ok: true }` or `{ error }` with a sentence a person can act
+ * on — this is what a 400 from add/update column says.
+ *
+ * `evaluateFormula` alone could not catch any of these: it returns null for a
+ * reference to a column that does not exist, so a typo ('column.spend' for
+ * `spent`) saved happily and the cell sat empty forever with no hint why.
+ *
+ * @param {string} expression
+ * @param {Array}  columns  the board's columns (the formula itself may be among them)
+ * @param {string} [selfKey] this formula's own key, when it already has one
+ */
+const validateFormulaExpression = (expression, columns, selfKey = null) => {
+  if (typeof expression !== 'string' || !expression.trim()) {
+    return { error: 'A formula needs an expression, like column.amount - column.paid.' };
+  }
+  if (expression.length > 500) {
+    return { error: 'That formula is too long.' };
+  }
+  const byKey = new Map((columns || []).map((c) => [c.key, c]));
+  const refs = [...new Set([...expression.matchAll(FORMULA_REF)].map((m) => m[1]))];
+  for (const key of refs) {
+    if (selfKey && key === selfKey) {
+      return { error: 'A formula cannot refer to itself.' };
+    }
+    const col = byKey.get(key);
+    if (!col) return { error: `The formula refers to "column.${key}", which is not a column on this board.` };
+    if (!FORMULA_SOURCE_TYPES.includes(col.type)) {
+      return { error: `"${col.name}" is not a number column, so a formula cannot use it.` };
+    }
+  }
+
+  // A formula that reaches itself THROUGH another formula is the same loop one
+  // step removed, and the client evaluator would recurse until the tab died.
+  if (selfKey) {
+    const seen = new Set();
+    const stack = refs.slice();
+    while (stack.length) {
+      const key = stack.pop();
+      if (key === selfKey) return { error: 'This formula would refer back to itself through another formula.' };
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const col = byKey.get(key);
+      if (col && col.type === 'formula' && col.settings && typeof col.settings.expression === 'string') {
+        for (const m of col.settings.expression.matchAll(FORMULA_REF)) stack.push(m[1]);
+      }
+    }
+  }
+
+  // Parse it under the same whitelist the evaluator uses, with every reference
+  // standing in as 1. Division by zero is not a parse error (it evaluates to
+  // null); a dangling operator or a stray word is.
+  try {
+    evaluateFormula(expression, Object.fromEntries(refs.map((k) => [k, 1])));
+  } catch (err) {
+    return { error: 'That formula is not valid. Use numbers, + - * / ( ) and column.<key> references.' };
+  }
+  return { ok: true };
+};
+
+/**
  * Look up a registry entry by type name. Returns null on unknown type so
  * callers can decide whether to 400 or fall through.
  */
@@ -560,6 +869,12 @@ module.exports = {
   getColumnType,
   validateColumnValue,
   evaluateFormula,
+  validateFormulaExpression,
+  FORMULA_SOURCE_TYPES,
   ValidationError,
   MIRROR_AGGREGATIONS,
+  MAX_PAYMENTS,
+  MAX_PAYMENT_AMOUNT,
+  MAX_CLIENT_NAME,
+  isHttpsUrl,
 };

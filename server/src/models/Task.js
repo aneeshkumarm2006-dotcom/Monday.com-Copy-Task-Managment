@@ -356,6 +356,12 @@ const taskSchema = new mongoose.Schema(
  * Lookups are by `key`, not by `_id`, so the projection survives column
  * renames as long as the slug is preserved.
  *
+ * Due date and assignees are NOT in this map any more. They are found by ROLE
+ * (utils/columnRoles.js), which still honours the old `due_date` / `assignees`
+ * slugs as its last fallback — so migrated boards sync exactly as before, and
+ * template boards (billing's `due` / `owner`, pipeline's `closeDate`, …) now
+ * sync too.
+ *
  * The hook only runs when the parent board has `useFlexibleColumns: true`
  * AND the task has a board reference (personal tasks are skipped wholesale
  * per Phase 1 acceptance #6).
@@ -363,26 +369,105 @@ const taskSchema = new mongoose.Schema(
 const LEGACY_COLUMN_KEY_TO_TASK_FIELD = {
   status: 'status',
   priority: 'priority',
-  assignees: 'assignedTo',
-  due_date: 'dueDate',
   tags: 'labels',
 };
 
+/** Role → the legacy task field it keeps in step. */
+const ROLE_TO_TASK_FIELD = {
+  dueDate: 'dueDate',
+  assignee: 'assignedTo',
+};
+
 /**
- * Pre-save: when the board uses flexible columns, project values from
- * `columnValues` back into the legacy task fields so analyticsController.js
- * and the existing automation dispatcher keep working until they're
- * rewritten to read `columnValues` directly (Phase 4 / F15).
+ * Whether a save CHANGED `path`. A plain object standing in for a document
+ * (Task.test.js hands the hook one) has no change tracking, and reads as
+ * "nothing changed" — which is the passive branch below: a cell with a value
+ * fills an empty field, exactly the hook's original projection for a row whose
+ * legacy fields were never set.
+ */
+const touched = (doc, path) =>
+  typeof doc.isModified === 'function' ? doc.isModified(path) : false;
+
+const isEmptyCell = (value) =>
+  value === undefined || value === null || value === '' ||
+  (Array.isArray(value) && value.length === 0);
+
+const fieldValueOf = (doc, field) => (field === 'dueDate' ? doc.dueDate : doc.assignedTo);
+
+const isEmptyField = (doc, field) => {
+  const v = fieldValueOf(doc, field);
+  return v === undefined || v === null || (Array.isArray(v) && v.length === 0);
+};
+
+/**
+ * Did this save change the legacy field? A NEW document reports every key it
+ * was constructed with as modified — `new Task({ dueDate: undefined })`
+ * included — so for a new row the question is whether it actually holds a
+ * value.
+ */
+const fieldTouched = (doc, field) =>
+  doc.isNew === true ? !isEmptyField(doc, field) : touched(doc, field);
+
+const cellTouched = (doc, colId) =>
+  doc.isNew === true
+    ? doc.columnValues.get(colId) !== undefined
+    : touched(doc, `columnValues.${colId}`);
+
+/**
+ * Pre-save: when the board uses flexible columns, keep `columnValues` and the
+ * legacy task fields in step, so analyticsController.js, the automation
+ * dispatcher, the Due/Owner filters, My Work and the due digest — all of which
+ * read the legacy fields — agree with what the board shows.
+ *
+ * status / priority / tags: one-way, column → field, exactly as before.
+ *
+ * due date / assignees: BOTH ways, decided per save. One-way was a trap the
+ * moment these columns started syncing on template boards: the column is the
+ * source on every save, so a panel edit that set `dueDate` alone would have
+ * been quietly reverted by the old cell value on the way to the database. So:
+ *
+ *   1. the cell was written in this save        → column → field (column wins)
+ *   2. only the field was written in this save  → field → column
+ *   3. neither (a passive save of something else):
+ *        cell holds a value, field empty        → column → field
+ *        cell empty, field holds a value        → field → column
+ *        both hold a value, or both are empty   → nothing
+ *
+ * The third rule is FILL-ONLY, in both directions: it copies into an EMPTY
+ * side and never overwrites a side that already says something. Rows written
+ * before roles existed can disagree — a due date set from the panel against a
+ * different date in the Due cell, an owner assigned in the panel against a
+ * different name typed into the Owner cell — and a status change, a rename or
+ * a note is not the moment to decide which of the two was the mistake. The
+ * rule used to let the cell win whenever it held a value, so ticking an
+ * invoice Paid silently re-dated it and handed it to someone else. Settling a
+ * disagreement is always a deliberate write of one side, and rules 1 and 2
+ * carry that across; so is clearing either side.
+ *
+ * `taskController` still writes both sides itself when it sets these fields;
+ * this is the net under every other writer (automations, scripts) that sets
+ * only one.
  *
  * The lookup is intentionally lazy — `require` happens inside the hook so
  * Task.js stays cycle-free w.r.t. Board.js at module load.
  */
 taskSchema.pre('save', async function syncLegacyFieldsFromColumnValues() {
   if (this.isPersonal || !this.board) return;
-  if (!this.columnValues || this.columnValues.size === 0) return;
+  if (!this.columnValues) return;
+  // The common case on a board that never adopted columns: nothing to read and
+  // nothing to write, so do not pay for the board lookup on every save.
+  if (
+    this.columnValues.size === 0 &&
+    !fieldTouched(this, 'dueDate') &&
+    !fieldTouched(this, 'assignedTo')
+  ) {
+    return;
+  }
 
   const Board = mongoose.model('Board');
-  const board = await Board.findById(this.board).select('useFlexibleColumns columns').lean();
+  const board = await Board.findById(this.board)
+    .select('useFlexibleColumns columns templateKey')
+    .lean();
   if (!board || !board.useFlexibleColumns) return;
   if (!Array.isArray(board.columns) || board.columns.length === 0) return;
 
@@ -394,13 +479,58 @@ taskSchema.pre('save', async function syncLegacyFieldsFromColumnValues() {
     const value = this.columnValues.get(colId);
     if (value === undefined) continue;
 
-    if (field === 'dueDate') {
-      this.dueDate = value ? new Date(value) : undefined;
-    } else if (field === 'assignedTo' || field === 'labels') {
+    if (field === 'labels') {
       this.set(field, Array.isArray(value) ? value : []);
     } else {
       this.set(field, value);
     }
+  }
+
+  const { roleColumn } = require('../utils/columnRoles');
+  const { getColumnType } = require('../utils/columnTypes');
+
+  for (const [role, field] of Object.entries(ROLE_TO_TASK_FIELD)) {
+    const col = roleColumn(board, role);
+    const colId = col && col._id ? col._id.toString() : null;
+    if (!colId) continue;
+    const cell = this.columnValues.get(colId);
+
+    // Which way this save copies, per the three rules in the header. Rule 3
+    // is decided on EMPTINESS alone: a passive save fills a blank side and
+    // leaves two sides that both hold something exactly as they are.
+    let columnWins;
+    if (cellTouched(this, colId)) {
+      columnWins = true;
+    } else if (fieldTouched(this, field)) {
+      columnWins = false;
+    } else {
+      const cellEmpty = isEmptyCell(cell);
+      const fieldEmpty = isEmptyField(this, field);
+      if (cellEmpty === fieldEmpty) continue;
+      columnWins = !cellEmpty;
+    }
+
+    if (columnWins) {
+      if (cell === undefined) continue;
+      if (field === 'dueDate') {
+        this.dueDate = cell ? new Date(cell) : undefined;
+      } else {
+        this.set(field, Array.isArray(cell) ? cell : []);
+      }
+      continue;
+    }
+
+    // Field → column: either the field was written in this save (rule 2), or
+    // rule 3 is filling an empty cell from a field that holds a value.
+    // Through the column type's own serializer — the same one a PUT
+    // `columnValues` goes through — so the cell is byte-for-byte what the grid
+    // would have written: an ISO string for a date, id strings for people.
+    const entry = getColumnType(col.type);
+    const raw = fieldValueOf(this, field);
+    const next = entry && entry.serialize
+      ? entry.serialize(field === 'dueDate' ? (raw || null) : (raw || []))
+      : raw;
+    this.columnValues.set(colId, next);
   }
 });
 

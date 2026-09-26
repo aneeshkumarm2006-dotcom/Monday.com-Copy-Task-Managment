@@ -265,6 +265,30 @@ const useTaskStore = create((set, get) => ({
   clearGoalOpenRequest: () => set({ goalOpenRequest: null }),
 
   /**
+   * Put a posted update's "told" stamp — the `notifiedUsers` / `notifiedAt`
+   * the server hands back with an update that mentions people — on the row it
+   * belongs to, so the ledger tile's Told strip and the invoice sheet update
+   * without a refetch. One action for every composer that can post one: the
+   * sheet's "Tell someone" modal and the row panel's Updates tab both used to
+   * need their own copy, and the Updates tab never had one.
+   */
+  applyToldStamp: (stamp) => {
+    if (!stamp?._id) return;
+    let live = null;
+    for (const list of Object.values(get().tasksByGroup)) {
+      if (!Array.isArray(list)) continue;
+      live = list.find((t) => String(t._id) === String(stamp._id)) || null;
+      if (live) break;
+    }
+    if (!live) return;
+    get().updateTask({
+      ...live,
+      notifiedUsers: Array.isArray(stamp.notifiedUsers) ? stamp.notifiedUsers : live.notifiedUsers,
+      notifiedAt: stamp.notifiedAt ?? live.notifiedAt ?? null,
+    });
+  },
+
+  /**
    * Set the updates count for a single task (top-level or subitem). Used by
    * the task detail panel to keep the row badge live as updates are posted.
    */

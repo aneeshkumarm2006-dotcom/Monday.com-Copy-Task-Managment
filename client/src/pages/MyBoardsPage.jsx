@@ -273,6 +273,13 @@ const MyBoardsPage = () => {
       // happened to `template` the first time: the picker worked, the value was
       // stored, and every board came out blank because it stopped here.
       template: values.template,
+      // The unit the new board's money is in — a code ONLY when somebody
+      // picked one (an override the board keeps). Undefined for "Workspace
+      // currency", the default: the board is then born FOLLOWING the
+      // workspace and moves with it when that changes. It was once dropped
+      // right here, by this same field-by-field list: the dialog asked, and
+      // every board came out in the workspace currency whatever was picked.
+      currency: values.currency || undefined,
       organisation: orgId,
     });
     setCreateOpen(false);

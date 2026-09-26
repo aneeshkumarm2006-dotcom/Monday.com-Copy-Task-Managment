@@ -14,6 +14,7 @@ const BoardConnector = require('../models/BoardConnector');
 const { resolveAccess, resolveOrgAccess } = require('../utils/permissions');
 const { scoreGroup, scoreBoard } = require('../utils/goalTypes');
 const { monthWindow, rollUp } = require('../utils/adsBudgetPacing');
+const { normaliseCurrencyCode } = require('../utils/money');
 const { deliveryHolidaysOf } = require('../utils/orgHolidays');
 const { doneStatusIdsForBoard } = require('../utils/doneStatus');
 const { resolveDigestTimezone } = require('../utils/dueDigest');
@@ -246,6 +247,7 @@ const BOARD_FIELDS = [
   'monthTimezone', // `month: null` resolves in the BOARD's timezone, not ours
   'statuses', // trackerEvaluate's done-status test, via utils/doneStatus.js
   'adsBudget', // the currency the pacing tile prints
+  'currency', // …and the board's own, read when the Ads Budget names none
 ].join(' ');
 
 // ---------------------------------------------------------------------------
@@ -763,7 +765,7 @@ const runDeliveryScores = async ({ board, org, config, now }) => {
  * check lives in the handler rather than in the gate because the gate answers
  * questions about REACH, and this is a fact about how the board is configured.
  */
-const runAdsBudgetPacing = async ({ board, config, now }) => {
+const runAdsBudgetPacing = async ({ board, org, config, now }) => {
   if (!board.adsBudget?.enabled) return unavailable(MESSAGES.ADS_BUDGET_OFF);
 
   const month = monthFor(config, board, now);
@@ -782,7 +784,17 @@ const runAdsBudgetPacing = async ({ board, config, now }) => {
     monthKey: month,
     monthLabel: formatMonth(month, { long: true }),
     timezone: tz,
-    currency: board.adsBudget?.currency || 'USD',
+    // The same steps as `adsBudgetCurrencyOf` in adsBudgetController: the
+    // add-on's own choice, else the board's own currency (an override), else
+    // the WORKSPACE's unit — what a following board is in — else dollars. The
+    // field defaults to null now, so reading it with a bare `|| 'USD'` put a
+    // rupee workspace's spend on this tile in dollars while the tab it links
+    // to said rupees.
+    currency:
+      board.adsBudget?.currency
+      || normaliseCurrencyCode(board.currency)
+      || normaliseCurrencyCode(org && org.baseCurrency)
+      || 'USD',
     window,
     platformCount: rows.length,
     totals: rollUp(rows, window),

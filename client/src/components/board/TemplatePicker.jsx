@@ -46,14 +46,43 @@ const ICONS = {
 const tint = (hex) => `${hex}14`;
 
 /**
- * A column's chip label.
+ * What a column TYPE adds to its chip, beyond the column's name.
  *
  * A formula column carries its marker, because "this is worked out for you" is
  * a fact about a money board that a bare column name cannot tell you — and it
  * is exactly what somebody is looking for when choosing between Budget and
- * Blank.
+ * Blank. A payments column says what it holds, because "Payments" alone reads
+ * like one number when it is a dated log of every payment against the row.
+ *
+ * `numeric` is which types right-align in the preview head, the way the board
+ * itself aligns them.
  */
-const chipLabel = (c) => (c.type === 'formula' ? `${c.name} ƒ` : c.name);
+const COLUMN_TYPE_HINTS = {
+  formula: { mark: 'ƒ', title: 'Worked out for you from other columns', numeric: true },
+  payments: { mark: null, title: 'Every payment against the row, with its date', numeric: true },
+  number: { mark: null, title: null, numeric: true },
+};
+
+const chipLabel = (c) => {
+  const mark = COLUMN_TYPE_HINTS[c.type]?.mark;
+  return mark ? `${c.name} ${mark}` : c.name;
+};
+
+/**
+ * Does this template carry money — and so should the dialog ask what currency?
+ *
+ * The server's own flag (`templateSummaries` derives `hasMoney` from the
+ * columns), so no template key is named here: a new money template is asked
+ * about without anyone remembering to list it. A payments column is money by
+ * definition, which covers a server too old to send the flag; the summary
+ * ships column TYPES only, and a `number` column is as likely to be hours as
+ * money, so the type alone cannot say more.
+ */
+const isMoneyTemplate = (t) => {
+  if (!t || t.key === 'blank') return false;
+  if (typeof t.hasMoney === 'boolean') return t.hasMoney;
+  return Array.isArray(t.columns) && t.columns.some((c) => c.type === 'payments');
+};
 
 const TemplateCard = ({ template, selected, onSelect }) => {
   const Icon = ICONS[template.icon] || LayoutGrid;
@@ -99,6 +128,7 @@ const TemplateCard = ({ template, selected, onSelect }) => {
           <span
             key={c.name}
             className="font-body"
+            title={COLUMN_TYPE_HINTS[c.type]?.title || undefined}
             style={{
               fontSize: 9.5,
               padding: '2px 6px',
@@ -207,7 +237,7 @@ const FromBoardCard = ({ boards, value, onChange }) => {
 const Preview = ({ template }) => {
   if (!template || template.key === 'blank') return null;
   const groupWord = template.groups.length === 12 ? 'monthly groups' : 'groups';
-  const numeric = (t) => t === 'number' || t === 'formula';
+  const numeric = (t) => !!COLUMN_TYPE_HINTS[t]?.numeric;
   return (
     <div
       className="mt-3"
@@ -261,6 +291,7 @@ const Preview = ({ template }) => {
                     key={c.name}
                     scope="col"
                     className="font-body"
+                    title={COLUMN_TYPE_HINTS[c.type]?.title || undefined}
                     style={{
                       height: 30,
                       padding: '0 10px',
@@ -306,6 +337,14 @@ const Preview = ({ template }) => {
   );
 };
 
+/**
+ * `onChange(key, { money })` — the key the server seeds from, and whether that
+ * template carries money columns, so the dialog knows whether to ask what
+ * currency they are in (default: follow the workspace). A copy of an existing
+ * board reports `money: false`: it keeps its source board's currencies — and
+ * follows the workspace only when its source did and was in step with it — so
+ * asking would be a question whose answer is ignored.
+ */
 const TemplatePicker = ({ value, onChange, boards = [] }) => {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -358,7 +397,7 @@ const TemplatePicker = ({ value, onChange, boards = [] }) => {
             key={t.key}
             template={t}
             selected={t.key === value}
-            onSelect={onChange}
+            onSelect={(key) => onChange(key, { money: isMoneyTemplate(t) })}
           />
         ))}
 
@@ -366,7 +405,11 @@ const TemplatePicker = ({ value, onChange, boards = [] }) => {
             above it, and it needs the width for the board picker. */}
         {boards.length > 0 && (
           <div className="lg:col-span-2">
-            <FromBoardCard boards={boards} value={value} onChange={onChange} />
+            <FromBoardCard
+              boards={boards}
+              value={value}
+              onChange={(key) => onChange(key, { money: false })}
+            />
           </div>
         )}
       </div>

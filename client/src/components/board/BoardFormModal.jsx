@@ -8,7 +8,11 @@ import { previewBoardConversion } from '../../services/monthService';
 import TemplatePicker from './TemplatePicker';
 import GroupCompletedLabel from './GroupCompletedLabel';
 import LogoUploader from '../ui/LogoUploader';
+import { SelectField } from '../ui/FormControls';
+import BoardCurrencyControl from './BoardCurrencyControl';
 import useBoardStore from '../../store/boardStore';
+import useOrgStore from '../../store/orgStore';
+import { currencyByCode, currencyOptions } from '../../utils/money';
 
 /**
  * BoardFormModal — used for both creating and editing a board.
@@ -37,6 +41,13 @@ const DEFAULTS = {
   // Which template seeds the board. Create-only — a template has no meaning
   // once a board exists, so editing never shows this.
   template: 'blank',
+  // CREATE ONLY, and only asked when the picked template carries money
+  // columns (`templateHasMoney`, reported by the picker). '' means FOLLOW the
+  // workspace currency — the default, and the select's first row — and sends
+  // no currency at all, so the board is born following and moves with the
+  // workspace. A code is an explicit override the board keeps.
+  currency: '',
+  templateHasMoney: false,
   // EDIT ONLY. What a finished group says in place of its status bar. Empty is
   // the off switch and the default, so a board nobody has set this on keeps the
   // bar. Not offered on create: you cannot judge the wording before you can see
@@ -67,6 +78,43 @@ const BoardFormModal = ({
     (st) => (editingId ? st.boards.find((b) => b._id === editingId)?.logo : '') || ''
   );
   const setBoardLogo = useBoardStore((st) => st.setBoardLogo);
+  // EDIT ONLY. The board as the store holds it NOW, for the currency control:
+  // its Change menu relabels through the store, and a snapshot taken when the
+  // dialog opened would keep saying the old unit after the change landed.
+  const liveBoard = useBoardStore(
+    (st) => (editingId ? st.boards.find((b) => b._id === editingId) : null) || null
+  );
+  // What a new board's money starts in when nobody picks. The same two copies
+  // `useMoney` reads, so the default shown here is the one the server applies.
+  // The fetched copy counts only once it belongs to the workspace in view:
+  // creating or joining a workspace swaps `currentOrg` without clearing it, and
+  // until the new one lands it still holds the PREVIOUS workspace's unit.
+  const workspaceCurrency = useOrgStore(
+    (st) =>
+      (st.currencyLoadedFor && st.currencyLoadedFor === st.currentOrg?._id
+        ? st.currency?.baseCurrency
+        : null) ||
+      st.currentOrg?.baseCurrency ||
+      null
+  );
+  // CREATE ONLY: the code the submit will send, or '' for "none — follow the
+  // workspace". The select's value is exactly this, and '' is always one of
+  // its options (the first), so the picker never falls back to a placeholder
+  // or to the first code in the list while the payload sends something else.
+  //
+  // '' is NOT resolved to the workspace's code before sending. A board created
+  // with an explicit code is pinned to it and stops following, so copying the
+  // workspace's code in would quietly turn every new board into an override
+  // that the next workspace change leaves behind.
+  const currencyToSend = currencyByCode(values.currency)?.code || '';
+  const workspaceCode = currencyByCode(workspaceCurrency)?.code || null;
+  const currencyChoices = [
+    {
+      value: '',
+      label: workspaceCode ? `Workspace currency (${workspaceCode})` : 'Workspace currency',
+    },
+    ...currencyOptions(),
+  ];
 
   // CREATE ONLY. There is no board to upload against yet, so the picked file is
   // held here and shown from a local object URL; the caller uploads it once the
@@ -191,6 +239,17 @@ const BoardFormModal = ({
         // Create only. The server refuses an unknown key, and 'blank' is the
         // no-op that reproduces the old behaviour exactly.
         template: mode === 'create' ? values.template : undefined,
+        // Create only, and only when the question was actually on screen AND
+        // a specific currency was picked — that is an override the board
+        // keeps. "Workspace currency" (the default), a template with no money
+        // columns, or a copy of a board (which keeps its source's currencies)
+        // sends nothing, and the board follows the workspace. Undefined rather
+        // than null so a caller that spreads this payload does not post an
+        // explicit "no currency".
+        currency:
+          mode === 'create' && values.templateHasMoney
+            ? currencyToSend || undefined
+            : undefined,
         // Create only: uploaded by the caller after the board is created.
         logoFile: mode === 'create' ? pendingLogo : undefined,
         // Only meaningful when the type is actually changing; the caller uses it
@@ -650,9 +709,71 @@ const BoardFormModal = ({
             </p>
             <TemplatePicker
               value={values.template}
-              onChange={(key) => setValues((v) => ({ ...v, template: key }))}
+              onChange={(key, meta) =>
+                setValues((v) => ({ ...v, template: key, templateHasMoney: !!meta?.money }))}
               boards={existingBoards}
             />
+          </div>
+        )}
+
+        {/* The unit this board's money is in — CREATE, money templates only.
+
+            Asked here because the alternative was never asking: every money
+            column used to be born in rupees, and a workspace billing in CAD
+            found out from a "₹" on its first invoice. The default FOLLOWS the
+            workspace's currency (and keeps following it when that changes), so
+            the common case is no decision at all; the select is for the agency
+            whose one client pays in another. */}
+        {mode === 'create' && values.templateHasMoney && (
+          <div>
+            <div style={{ maxWidth: 320 }}>
+              <SelectField
+                label="Currency"
+                value={currencyToSend}
+                onChange={(e) => setValues((v) => ({ ...v, currency: e.target.value }))}
+                options={currencyChoices}
+              />
+            </div>
+            <p
+              className="font-body mt-2"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.5 }}
+            >
+              {/* The workspace's own code picked from the catalog is still
+                  following: the server pins only a code DIFFERENT from the
+                  workspace's at creation (planNewBoardCurrency). */}
+              {currencyToSend && currencyToSend !== workspaceCode
+                ? `Amounts on this board are entered in ${currencyToSend}, and it stays ${currencyToSend} if the workspace currency changes. You can change it later from the board's settings.`
+                : `Amounts on this board are entered in the workspace currency${
+                  workspaceCode ? ` (${workspaceCode})` : ''
+                }, and follow it if the workspace currency changes — relabelled, never converted.`}
+            </p>
+          </div>
+        )}
+
+        {/* The board's currency — EDIT. So a board's unit can be changed from
+            its own settings on any device, not only from a column header menu
+            in Table view on a desktop. The control relabels and says so in its
+            confirm; `column.manage` is the same gate the server enforces. */}
+        {mode === 'edit' && liveBoard && (
+          <div>
+            <p
+              className="block mb-2 font-body font-medium text-xs uppercase tracking-wide"
+              style={{ color: 'var(--color-text-secondary)' }}
+            >
+              Currency
+            </p>
+            <BoardCurrencyControl
+              board={liveBoard}
+              canManage={(liveBoard.permissions?.capabilities || []).includes('column.manage')}
+            />
+            <p
+              className="font-body mt-2"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.5 }}
+            >
+              &ldquo;Workspace currency&rdquo; keeps this board in step with Settings &rarr; Currency;
+              any other choice gives it its own. Either way, changing it relabels every money
+              column on this board. Amounts already entered are not converted.
+            </p>
           </div>
         )}
 

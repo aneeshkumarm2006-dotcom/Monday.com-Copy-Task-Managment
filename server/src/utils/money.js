@@ -111,6 +111,65 @@ const sanitizeColumnCurrency = (raw) => {
 };
 
 /**
+ * Whether a column holds MONEY — `settings.format === 'currency'`, whatever its
+ * type. Number, formula, mirror and payments columns can all be money; the
+ * format is the one fact every reader agrees on, so it is the only test.
+ */
+const isMoneyColumn = (col) =>
+  !!col && !!col.settings && typeof col.settings === 'object' && col.settings.format === 'currency';
+
+/**
+ * Whether a column holds THIS BOARD'S OWN money — a money column that is not a
+ * `mirror`.
+ *
+ * A mirror's figure is computed from another board's rows, and so is its unit:
+ * `inheritMirrorFormat` (controllers/columnController.js) copies the SOURCE
+ * column's currency, because "Deal value" mirrored from a CAD pipeline is CAD
+ * whatever the invoice board it is shown on is in. So a mirror is money for
+ * rendering and for formulas, but it has no vote in "what unit is this board":
+ * counting it made an INR invoice board with one CAD mirror read as mixed
+ * forever, let the mirror decide a legacy board's unit, and had the relabel
+ * endpoint stamp INR onto CAD figures — after which a reader in dollars saw them
+ * converted at the rupee rate. Every "which unit is this board" question
+ * (`boardCurrencyOf`, the relabel, `reconcileMoneyUnits`, the Currency tab's
+ * list) asks this instead of `isMoneyColumn`.
+ *
+ * Mirrored by `isOwnMoneyColumn` in `client/src/utils/money.js`.
+ */
+const isOwnMoneyColumn = (col) => isMoneyColumn(col) && col.type !== 'mirror';
+
+/**
+ * THE unit a board's money is in. Mirrored by `boardCurrencyOf` in
+ * `client/src/utils/money.js` — the two must resolve identically, or the ledger
+ * strip and the server that stamps new columns disagree about the same board.
+ *
+ *   1. `board.currency`, when it is a code we carry — the board's own
+ *      OVERRIDE. Null means the board FOLLOWS the workspace, and its own
+ *      money columns are kept in the workspace's unit
+ *      (services/boardCurrency.js), so step 2 answers with that unit;
+ *   2. else the first of the board's OWN money columns (ARRAY order, the same
+ *      order the client's `ledgerColumns` reads) that names a valid code —
+ *      never a mirror, whose unit is its source board's (`isOwnMoneyColumn`);
+ *   3. else the workspace's `baseCurrency`;
+ *   4. else null — say nothing rather than guess.
+ *
+ * Step 2 is what makes a board created before `Board.currency` existed resolve
+ * to what it has actually been rendering in, instead of to whatever the
+ * workspace happens to be set to today.
+ */
+const boardCurrencyOf = (board, orgBase = null) => {
+  const own = normaliseCurrencyCode(board && board.currency);
+  if (own) return own;
+  const columns = Array.isArray(board && board.columns) ? board.columns : [];
+  for (const col of columns) {
+    if (!isOwnMoneyColumn(col)) continue;
+    const code = normaliseCurrencyCode(col.settings.currency);
+    if (code) return code;
+  }
+  return normaliseCurrencyCode(orgBase);
+};
+
+/**
  * One snapshot's rate table, cleaned for storage.
  *
  * Drops anything that is not a usable positive finite number — a zero or
@@ -211,6 +270,9 @@ module.exports = {
   isDisplayCurrency,
   normaliseCurrencyCode,
   sanitizeColumnCurrency,
+  isMoneyColumn,
+  isOwnMoneyColumn,
+  boardCurrencyOf,
   sanitizeRates,
   isDayKey,
   DAY_KEY_RE,

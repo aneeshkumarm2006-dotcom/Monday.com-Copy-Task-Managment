@@ -55,7 +55,7 @@ const TEMPLATE_DISPLAY = {
     background: '#FFFBEB',
     rowNoun: ['claim', 'claims'],
     rowAction: 'claim',
-    filters: ['status', 'owner', 'due'],
+    filters: ['status', 'owner'],
   },
   content: {
     label: 'Content',

@@ -75,7 +75,13 @@ const ToolbarIconButton = ({ children, onClick, title }) => (
  * Props:
  *   taskId, visibility, isClientThread — the thread being written to
  *   draftKey — storage key from draftKeyFor(); null disables drafting
- *   onPosted(update) — the created update, for the parent to prepend to the feed
+ *   onPosted(update, { task }) — the created update, for the parent to prepend
+ *                  to the feed. The second argument carries the task's fresh
+ *                  "who has been told" stamp (`{ _id, notifiedUsers,
+ *                  notifiedAt }`) when the post @mentioned somebody, else
+ *                  `task: null`; a caller that shows that stamp (the ledger's
+ *                  Told strip) patches its row from it. Chat posts
+ *                  (`submitMessage`) always get `task: null`.
  *
  * Ref: { startReply(update), focus() }
  */
@@ -225,10 +231,18 @@ const UpdateComposer = forwardRef(
           replyTo: replyingTo?._id || null,
           visibility,
         };
-        const created = submitMessage
-          ? await submitMessage(payload)
-          : await updateService.addUpdate(taskId, payload);
-        onPosted?.(created);
+        // A task post goes through `postUpdate` so the mention stamp comes back
+        // with it (see the prop doc above); chat keeps its own submitter.
+        let created;
+        let stampedTask = null;
+        if (submitMessage) {
+          created = await submitMessage(payload);
+        } else {
+          const res = await updateService.postUpdate(taskId, payload);
+          created = res.update;
+          stampedTask = res.task;
+        }
+        onPosted?.(created, { task: stampedTask });
         resetComposer();
         if (refreshNotificationsOnPost) refreshNotifications(currentOrgId || undefined);
       } catch (err) {

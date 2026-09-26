@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const {
   BOARD_TEMPLATES,
+  TEMPLATE_REVISION,
   templateByKey,
   isTemplateKey,
   templateSummaries,
@@ -105,6 +106,81 @@ test('currency columns name a currency we actually offer', () => {
       }
     }
   }
+});
+
+test('a role names a column of the right type, once per template', () => {
+  /**
+   * `settings.role` is what the filters, My Work and the ledger's overdue rule
+   * read to find "the due date" and "the owner" (utils/columnRoles.js). They
+   * also match on TYPE, so a role on the wrong type is silently ignored
+   * everywhere while looking configured — and two columns claiming one role
+   * leaves the board to pick one arbitrarily.
+   */
+  const TYPE_OF = { dueDate: 'date', assignee: 'person' };
+  for (const t of BOARD_TEMPLATES) {
+    const seen = new Set();
+    for (const c of t.columns) {
+      const role = c.settings?.role;
+      if (role === undefined) continue;
+      assert.ok(TYPE_OF[role], `${t.key}.${c.key} has unknown role "${role}"`);
+      assert.equal(c.type, TYPE_OF[role], `${t.key}.${c.key} is a ${c.type} but claims ${role}`);
+      assert.ok(!seen.has(role), `${t.key} has two ${role} columns`);
+      seen.add(role);
+    }
+  }
+});
+
+test('the roles the templates ship are the ones the resolver was promised', () => {
+  // The fallback table in utils/columnRoles.js (and its client mirror) reads a
+  // board's roles off its template by key, for columns created before roles
+  // existed. Moving a role to another key would silently re-point old boards.
+  const roles = {};
+  for (const t of BOARD_TEMPLATES) {
+    for (const c of t.columns) {
+      if (c.settings?.role) roles[`${t.key}.${c.key}`] = c.settings.role;
+    }
+  }
+  assert.deepEqual(roles, {
+    'billing.due': 'dueDate',
+    'billing.owner': 'assignee',
+    // Added, not moved: without it a budget line's Owner never reached
+    // assignedTo, so the board's one filter (Owner) and My Work never saw it.
+    'budget.owner': 'assignee',
+    'pipeline.closeDate': 'dueDate',
+    'pipeline.owner': 'assignee',
+    'recruitment.interviewer': 'assignee',
+    'recruitment.nextRound': 'dueDate',
+    'expenses.who': 'assignee',
+    'content.publishDate': 'dueDate',
+    'content.writer': 'assignee',
+  });
+});
+
+test("the client's copy of the template roles has not drifted", () => {
+  /**
+   * `client/src/utils/columnRoles.js` keeps its own table of the roles these
+   * templates stamp, for boards whose columns predate `settings.role` — the
+   * board page resolves "the due date" on first paint and cannot ask. Two
+   * copies is the right trade there; two copies that disagree would mean the
+   * panel edits one date while the filters read another.
+   */
+  const clientSource = fs.readFileSync(
+    path.join(__dirname, '../../../client/src/utils/columnRoles.js'),
+    'utf8'
+  );
+  const block = clientSource.match(/TEMPLATE_COLUMN_ROLES = (\{[\s\S]*?\n\});/);
+  assert.ok(block, 'client columnRoles.js has no TEMPLATE_COLUMN_ROLES table');
+  // eslint-disable-next-line no-eval
+  const client = eval(`(${block[1]})`);
+  const server = {};
+  for (const t of BOARD_TEMPLATES) {
+    for (const c of t.columns) {
+      if (!c.settings?.role) continue;
+      server[t.key] = server[t.key] || {};
+      server[t.key][c.key] = c.settings.role;
+    }
+  }
+  assert.deepEqual(client, server);
 });
 
 test('a formula only references columns that exist on its own template', () => {
@@ -217,4 +293,40 @@ test('the picker payload carries no formula expressions or settings', () => {
       assert.deepEqual(Object.keys(c).sort(), ['name', 'type']);
     }
   }
+});
+
+test('the picker payload says which templates carry money', () => {
+  // The create dialog asks for a currency only on these — read from the
+  // columns, never from a list of keys on the client.
+  const money = templateSummaries().filter((t) => t.hasMoney).map((t) => t.key).sort();
+  assert.deepEqual(money, ['billing', 'budget', 'expenses', 'pipeline']);
+  for (const t of templateSummaries()) assert.equal(typeof t.hasMoney, 'boolean', t.key);
+});
+
+test('the template revision is a whole number the upgrade script can compare', () => {
+  /**
+   * `createBoard` stamps it on every board seeded from here, and
+   * scripts/upgradeTemplateBoards.js skips a board already at it — which is
+   * what stops a re-run putting back a column somebody deleted. 2 is the
+   * revision that made billing's Client a `client` column; it only ever goes up.
+   */
+  assert.ok(Number.isInteger(TEMPLATE_REVISION));
+  assert.ok(TEMPLATE_REVISION >= 2);
+});
+
+test('no template seeds a connect column nobody can fill', () => {
+  /**
+   * A `connect_boards` column with no `targetBoardIds` cannot link to anything
+   * until somebody configures it — and a template is seeded onto a board where
+   * nobody knows it needs configuring. That is exactly what billing's Client
+   * column was: present on every invoice board, and never once filled.
+   */
+  for (const t of BOARD_TEMPLATES) {
+    for (const c of t.columns) {
+      if (c.type !== 'connect_boards') continue;
+      const targets = c.settings && c.settings.targetBoardIds;
+      assert.ok(Array.isArray(targets) && targets.length > 0, `${t.key}.${c.key} is a connect column with no targets`);
+    }
+  }
+  assert.equal(templateByKey('billing').columns.find((c) => c.key === 'client').type, 'client');
 });

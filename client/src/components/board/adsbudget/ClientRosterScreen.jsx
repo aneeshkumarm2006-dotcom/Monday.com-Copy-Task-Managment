@@ -4,7 +4,7 @@ import { ScrollTable, Th, Td } from '../addons/connector/SectionShell';
 import useMoney from '../../../hooks/useMoney';
 import { dayKeyOfMonthKey } from '../../../utils/money';
 import { formatPct } from '../../../utils/adsBudgetDisplay';
-import { BudgetBar, BudgetStat, Section, SectionEmpty, StatusText } from './BudgetBits';
+import { BudgetBar, BudgetStat, MoneyNote, Section, SectionEmpty, StatusText } from './BudgetBits';
 
 /**
  * One client as a card — the phone rendering of the roster row. The table's
@@ -92,8 +92,13 @@ const ClientCard = ({ client, money, elapsedPct, onOpen }) => {
  * nobody looking after them yet" is a question a roster of only the clients
  * already set up can never answer.
  */
-const ClientRosterScreen = ({ data, onOpenClient }) => {
-  const currency = data.currency || 'USD';
+/**
+ * `fallbackCurrency` — the unit when the payload names none, resolved by the
+ * tab from the board. Never a literal 'USD', which painted a dollar sign on
+ * every board whose Ads Budget currency had not been chosen yet.
+ */
+const ClientRosterScreen = ({ data, onOpenClient, fallbackCurrency = null }) => {
+  const currency = data.currency || fallbackCurrency || null;
   /**
    * The reader's currency, at the rate in force for the month being shown.
    *
@@ -109,35 +114,40 @@ const ClientRosterScreen = ({ data, onOpenClient }) => {
 
   return (
     <div className="flex flex-col gap-7">
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
-        <BudgetStat
-          label="Monthly Budget"
-          value={money(totals.allocated)}
-          sub="Planned across every client"
-        />
-        <BudgetStat
-          label="Total Spend"
-          value={money(totals.spent)}
-          sub={
-            totals.usedPct === null
-              ? 'Nothing budgeted yet'
-              : `${formatPct(totals.usedPct)} of total budget used`
-          }
-        />
-        <BudgetStat
-          label="Remaining Budget"
-          value={money(totals.remaining)}
-          sub="Available to allocate"
-        />
-        <BudgetStat
-          label="Daily Average Spend"
-          value={totals.dailyAverage === null ? '—' : money(Math.round(totals.dailyAverage))}
-          sub={
-            win && win.elapsedDays > 0
-              ? `Across ${win.elapsedDays} day${win.elapsedDays === 1 ? '' : 's'} so far`
-              : 'This month has not started'
-          }
-        />
+      <div className="flex flex-col gap-2.5">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
+          <BudgetStat
+            label="Monthly Budget"
+            value={money(totals.allocated)}
+            sub="Planned across every client"
+          />
+          <BudgetStat
+            label="Total Spend"
+            value={money(totals.spent)}
+            sub={
+              totals.usedPct === null
+                ? 'Nothing budgeted yet'
+                : `${formatPct(totals.usedPct)} of total budget used`
+            }
+          />
+          <BudgetStat
+            label="Remaining Budget"
+            value={money(totals.remaining)}
+            sub="Available to allocate"
+          />
+          <BudgetStat
+            label="Daily Average Spend"
+            value={totals.dailyAverage === null ? '—' : money(Math.round(totals.dailyAverage))}
+            sub={
+              win && win.elapsedDays > 0
+                ? `Across ${win.elapsedDays} day${win.elapsedDays === 1 ? '' : 's'} so far`
+                : 'This month has not started'
+            }
+          />
+        </div>
+
+        {/* Once for the whole roster — see ClientBudgetScreen. */}
+        <MoneyNote text={fx.surfaceNote(currency, dayKeyOfMonthKey(data.monthKey))} />
       </div>
 
       <Section

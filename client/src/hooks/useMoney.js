@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
 
 import useAuthStore, { readStoredCurrency } from '../store/authStore';
-import useOrgStore from '../store/orgStore';
+import useOrgStore, { selectBaseCurrency } from '../store/orgStore';
 import useFxStore from '../store/fxStore';
-import { makeMoneyFormatter, isDisplayCurrency } from '../utils/money';
+import { canonicalCurrency, makeMoneyFormatter, isDisplayCurrency } from '../utils/money';
+import { formatColumnValue } from '../utils/numberFormat';
 
 /**
  * THE HOOK EVERY MONEY RENDER GOES THROUGH.
@@ -52,7 +53,17 @@ const useMoney = () => {
    * state would mean a second source of truth to keep in step.
    */
   const chosen = hydrated ? stored : readStoredCurrency();
-  const baseCurrency = useOrgStore((s) => s.currency?.baseCurrency);
+  /**
+   * The workspace currency, from whichever copy has arrived.
+   *
+   * `currency` is fetched per org after sign-in and is null until that round
+   * trip lands — and forever, if it fails. `currentOrg` came with `/auth/me`
+   * and already carries `baseCurrency`, so it answers from the first paint.
+   * Null when neither knows: that prints a plain number, which is honest. The
+   * literal 'INR' this used to end on painted ₹ across a CAD workspace for
+   * exactly that window.
+   */
+  const baseCurrency = useOrgStore(selectBaseCurrency);
   const snapshots = useFxStore((s) => s.snapshots);
   const ratesLoaded = useFxStore((s) => s.loaded);
 
@@ -64,9 +75,6 @@ const useMoney = () => {
      */
     const display = isDisplayCurrency(chosen) ? chosen : null;
     const fmt = makeMoneyFormatter({ display, snapshots });
-
-    /** The currency a figure is in when nothing more specific says otherwise. */
-    const fallbackSource = baseCurrency || 'INR';
 
     return {
       /** What the reader chose, or null when they read amounts as entered. */
@@ -84,20 +92,29 @@ const useMoney = () => {
        * source currency waits for nothing.
        */
       pending: fmt.active && !ratesLoaded,
+      /** The workspace currency, or null while nobody knows it yet. */
+      baseCurrency,
 
       /**
-       * A number column's cell, group total or footer.
+       * A column's cell, group total or footer.
+       *
+       * Format-aware: only a `format: 'currency'` column is money. Plain,
+       * percent, rating and goal numbers render through `formatNumber` with no
+       * symbol and no conversion — see `formatColumnValue` for the regression
+       * that rule closes.
+       *
+       * A currency column's unit is its own `settings.currency`, else
+       * `fallbackCurrency` (pass the board's currency), else the workspace's.
        *
        * Takes the column's `settings` so an UNCONVERTED figure keeps the
        * decimals its author chose. A converted one deliberately ignores them —
        * `decimals: 0` is a fact about the rupee scale, and carrying it across a
        * ÷96 conversion renders a ₹500 line as "$5".
        */
-      column: (value, settings = {}, on = null) =>
-        fmt.format(value, {
-          from: settings.currency || fallbackSource,
+      column: (value, settings, on = null, fallbackCurrency = null) =>
+        formatColumnValue(fmt, value, settings, {
           on,
-          decimals: settings.decimals,
+          fallbackCurrency: fallbackCurrency || baseCurrency,
         }),
 
       /**
@@ -132,7 +149,40 @@ const useMoney = () => {
         if (!fmt.active) return null;
         const r = fmt.resolve(1, { from, on });
         if (!r.converted) return null;
-        return `Converted from ${from} at ${r.asOf} rates`;
+        return `Converted from ${canonicalCurrency(from)} at ${r.asOf} rates`;
+      },
+
+      /**
+       * The once-per-surface line for a Table footer, a Stages header, an Ads
+       * Budget screen — anywhere figures render in bulk.
+       *
+       * Unlike `note`, it also speaks when a conversion was ASKED FOR and could
+       * not happen. That silence was half of "the board is CAD but the symbol is
+       * rupee": a reader who chose CAD and got ₹ figures, because no snapshot
+       * existed yet, had nothing on screen saying the toggle had not applied.
+       *
+       *   converted                      → "Shown in CAD · entered in INR · rates of 2026-09-01"
+       *   asked for, no rate, different  → "Shown as entered (INR) — no exchange rate available yet"
+       *   as entered, or already in it   → null
+       *
+       * Says and compares the CANONICAL code, never the raw `from`. Stored
+       * codes are not all canonical — a column written before codes were
+       * normalised can say 'cad' — and `resolve` canonicalises to find the rate
+       * but this compared the raw string, so a CAD reader on a 'cad' column was
+       * told "Shown as entered (cad) — no exchange rate available yet" about
+       * figures that needed no rate at all.
+       */
+      surfaceNote: (from, on = null) => {
+        const source = canonicalCurrency(from);
+        if (!fmt.active || !source) return null;
+        const r = fmt.resolve(1, { from, on });
+        if (r.converted) {
+          return `Shown in ${display} · entered in ${source} · rates of ${r.asOf}`;
+        }
+        if (source !== display) {
+          return `Shown as entered (${source}) — no exchange rate available yet`;
+        }
+        return null;
       },
     };
   }, [chosen, baseCurrency, snapshots, ratesLoaded]);

@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import useNotificationStore from '../store/notificationStore';
 import useToastStore from '../store/toastStore';
 import useTaskStore from '../store/taskStore';
+import useBoardStore from '../store/boardStore';
 import useChatStore from '../store/chatStore';
 
 /**
@@ -41,8 +42,13 @@ export default function useNotificationStream(token, orgId, enabled) {
               .info(data.notification.message, { duration: 5000 });
           }
         } else if (data?.type === 'board.changed' && data.boardId) {
-          // An automation moved/created tasks out-of-band — let the board view
-          // refetch if it's the one currently open.
+          // An automation moved/created tasks out-of-band, or the board's money
+          // was relabelled (its own currency, or a workspace currency change it
+          // follows) — let the board view refetch if it's the one currently
+          // open. Marked stale as well, so a board that is NOT open refetches
+          // its cached document when it is opened rather than showing the old
+          // unit (the open board's refetch clears the mark again).
+          useBoardStore.getState().markBoardsStale(data.boardId);
           useTaskStore.getState().signalBoardRefresh(data.boardId);
         } else if (data?.type === 'chat.message' && data.channelId && data.message) {
           // A channel message from someone else. The chat store decides

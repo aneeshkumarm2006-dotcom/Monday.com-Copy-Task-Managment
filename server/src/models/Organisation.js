@@ -155,19 +155,36 @@ const organisationSchema = new mongoose.Schema({
    * stated there: one thing, named, rather than a `settings` bag that invites
    * everything else to move in beside it.
    *
-   * What it actually decides is narrower than it sounds, and deliberately so:
+   * What it decides:
    *
-   *   1. the DISPLAY currency for somebody who has not chosen one of their own
-   *      (`User.displayCurrency` is null until they do), and
-   *   2. the currency a NEW money column is born in — which is the half that
-   *      matters, because `boardTemplates.js` used to hardcode rupees into every
-   *      billing, budget, pipeline and expenses board ever created.
+   *   1. the unit of every board that FOLLOWS the workspace — a board whose
+   *      own `currency` is null, which is every board unless somebody gave it
+   *      a currency of its own. A new board follows by default and its money
+   *      columns are born in this unit (`boardTemplates.js` used to hardcode
+   *      rupees into every billing, budget, pipeline and expenses board);
+   *   2. what those boards are RELABELLED to when this changes. Saving a new
+   *      value (orgController `saveCurrencySettings`) relabels every following
+   *      board's own money columns to it — services/boardCurrency.js
+   *      `relabelFollowingBoards`. Relabel means the stored figures are kept
+   *      exactly as typed and only the unit they are said to be in moves;
+   *      nothing is converted;
+   *   3. the FALLBACK unit when nothing closer says: a board with no money
+   *      column naming a code resolves to this (`boardCurrencyOf` in
+   *      utils/money.js), and so does a money column stored without a code.
    *
-   * It is NOT retrofitted as the unit of anything already stored. A column
-   * carries its own `settings.currency` and a board its own
-   * `adsBudget.currency`; this never overrides either, because re-labelling
-   * existing numbers is how you change what a figure MEANS without touching it.
-   * Goals in particular stay USD — see goalTypes.js.
+   * It does NOT reach a board with its own currency (`Board.currency` set — an
+   * explicit override): that board keeps its unit until somebody relabels it,
+   * or puts it back to following (`PATCH /api/boards/:id/currency`). It never
+   * WRITES `adsBudget.currency` — but an Ads Budget that never chose a unit
+   * (null) reads its board's, so on a following board it moves with this too
+   * (adsBudgetController `adsBudgetCurrencyOf`). Goals stay USD — see
+   * goalTypes.js.
+   *
+   * It is NOT the display currency. A reader who has not chosen one
+   * (`User.displayCurrency` is null) sees every figure AS ENTERED, in the unit
+   * of the column that holds it — converting a CAD invoice into rupees for
+   * somebody who never asked is how "this board is CAD but it shows ₹" happens.
+   * This comment used to claim otherwise; the client never did it.
    *
    * Defaults to INR because that is what this workspace bills in, which is the
    * same reason the templates did. The difference is that it is now a setting.

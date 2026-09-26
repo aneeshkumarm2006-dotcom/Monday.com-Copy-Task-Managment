@@ -65,7 +65,7 @@ import { InlineAssigneeMenu } from '../components/board/AssigneePicker';
 import DataGrid from '../components/board/DataGrid';
 import { groupSummaries } from '../utils/columnSummary';
 import useMoney from '../hooks/useMoney';
-import { newRowLabel, rowCountLabel } from '../utils/boardTemplateDisplay';
+import { newRowLabel, rowCountLabel, templateDisplay } from '../utils/boardTemplateDisplay';
 import SortableItem from '../components/dnd/SortableItem';
 import StatusMenu from '../components/board/StatusMenu';
 import PriorityMenu from '../components/board/PriorityMenu';
@@ -114,10 +114,25 @@ import {
 } from '../utils/boardViews';
 import StagesView from '../components/board/views/StagesView';
 import LedgerView from '../components/board/views/LedgerView';
+import InvoiceSheet from '../components/board/views/InvoiceSheet';
 import UpdateComposer from '../components/board/UpdateComposer';
 import { draftKeyFor } from '../utils/updateDrafts';
 import { ledgerColumns, titleFromFilename } from '../utils/ledger';
+import { columnValue } from '../utils/columnValues';
+import { boardCurrencyOf, isOwnMoneyColumn } from '../utils/money';
+import {
+  BOARD_UPLOAD_REFUSED,
+  addedRowsMessage,
+  isAllowedBoardUpload,
+  isLedgerBoard,
+  newRowGroupFor,
+  newRowPlan,
+  refusedUploadsMessage,
+  splitBoardUploads,
+  uploadedRowCells,
+} from '../utils/boardRowCreation';
 import { uploadBoardFile } from '../services/boardService';
+import useFxStore from '../store/fxStore';
 import useBoardConnectors from '../hooks/useBoardConnectors';
 import MonthSelector from '../components/board/MonthSelector';
 import MoveToMonthModal from '../components/board/MoveToMonthModal';
@@ -200,6 +215,18 @@ const SERVICE_PALETTE = [
   '#B45309', // amber
   '#DB2777', // pink
 ];
+
+/**
+ * The words on a failed upload card in the ledger. 413 is the 25 MB limit;
+ * 415 is the server's type allowlist, whose own sentence says which kinds it
+ * takes. (The invoice sheet words its own Replace failures.)
+ */
+const uploadFailureText = (err) =>
+  err?.response?.status === 413 || err?.code === 'LIMIT_FILE_SIZE'
+    ? 'Too large — the limit is 25 MB.'
+    : err?.response?.status === 415
+      ? err?.response?.data?.error || BOARD_UPLOAD_REFUSED
+      : err?.response?.data?.error || 'Upload failed.';
 
 const serviceColor = (group) => {
   const key = String(group?.serviceKey || group?._id || '');
@@ -428,6 +455,11 @@ const BoardDetailPage = () => {
   // pushed via "Open subitem" land on top. The visible task is always the
   // last entry. The whole stack clears when the panel closes.
   const [selectedTaskStack, setSelectedTaskStack] = useState([]);
+  // The invoice sheet (ledger boards) — which row it is open on, and whether it
+  // opened asking for the amount. See `invoiceTask` below. Declared up here with
+  // the panel's stack because the deep-link effect opens it too, and a hook's
+  // dependency array must never reach a binding declared below it.
+  const [invoiceOpen, setInvoiceOpen] = useState(null); // { taskId, focusAmount } | null
   // Group whose notes panel is open (group id), or null.
   const [notesGroupId, setNotesGroupId] = useState(null);
   const subitemsByParent = useTaskStore((s) => s.subitemsByParent);
@@ -601,6 +633,35 @@ const BoardDetailPage = () => {
   // has neither, so the Owner cell stays inert for them rather than opening a
   // menu in which every single row is greyed out.
   const canOpenAssignees = canAssignOthers || canOnBoard('task.edit_assigned');
+
+  // The three capabilities the Ledger, the Table (DataGrid) and the invoice
+  // sheet each take by name, read once here so the three surfaces cannot drift
+  // apart on who may do what. A viewer therefore sees a plain status stamp, no
+  // column menus and no "Tell someone" — hiding is still only a courtesy, and
+  // every one of these is re-checked by the endpoint it guards.
+  const canChangeStatusOnBoard = canOnBoard('task.change_status');
+  const canManageColumns = canOnBoard('column.manage');
+  const canNotify = canOnBoard('update.create');
+
+  /**
+   * May I edit THIS row's fields? The server's `canEditTask`, mirrored: the
+   * `edit` rung may edit any row; the `contribute` rung may edit the rows it is
+   * assigned to or created. Per row, because the invoice sheet is where a
+   * contributor who just dropped a PDF types its amount — gating it on the
+   * board-wide `canEdit` would open their own invoice read-only, with the
+   * Amount they were asked for greyed out.
+   */
+  const canEditRow = useCallback(
+    (task) => {
+      if (!task) return false;
+      if (canOnBoard('task.edit_any')) return true;
+      if (!canOnBoard('task.edit_assigned') || !selfId) return false;
+      const idOf = (u) => String((u && typeof u === 'object' ? u._id : u) ?? '');
+      if ((task.assignedTo || []).some((u) => idOf(u) === selfId)) return true;
+      return !!task.createdBy && idOf(task.createdBy) === selfId;
+    },
+    [canOnBoard, selfId]
+  );
 
   // Client Portal: may this person put a task in front of the client? Board type
   // and capability, matching the server's `denyPortalShare` exactly — a standard
@@ -1177,11 +1238,67 @@ const BoardDetailPage = () => {
   // Realtime: when an automation moves/creates tasks out-of-band, the server
   // pings this board over the notification SSE (bumping boardRefreshSignal).
   // Quietly refetch tasks so the change appears without a manual reload.
+  //
+  // The BOARD document too, not only its rows. The same ping now announces a
+  // currency relabel (`PATCH /api/boards/:id/currency`), which rewrites
+  // `board.currency` and every money column's `settings.currency` — none of it
+  // on a task. Refetching rows alone left every other open tab printing the
+  // old symbol over the new unit until a reload. One GET, replacing the store's
+  // entry in place (`fetchBoard`), and a failure changes nothing on screen.
+  //
+  // `boardRefreshTarget` holds only the LAST board pinged. A workspace currency
+  // change pings every following board in one burst, so this board's ping can
+  // be overwritten by another board's before this effect runs — and the open
+  // board was then the one that never refetched. The stream marks every pinged
+  // board stale before it signals (useNotificationStream), so a bump whose
+  // target is some other board still refreshes this one if its mark is set.
+  // Only on a real bump: on mount the stale-board effect below answers the
+  // mark, and taking it here too would refetch the rows `fetchBoardData` is
+  // already loading.
+  const seenRefreshSignalRef = useRef(boardRefreshSignal);
   useEffect(() => {
-    if (!boardId || boardRefreshTarget !== boardId) return;
+    const bumped = seenRefreshSignalRef.current !== boardRefreshSignal;
+    seenRefreshSignalRef.current = boardRefreshSignal;
+    if (!boardId) return;
+    // This refetch answers the stale mark too, so the open-a-stale-board
+    // effect below does not ask a second time.
+    const wasStale = bumped && useBoardStore.getState().takeBoardStale(boardId);
+    if (boardRefreshTarget !== boardId && !wasStale) return;
+    if (!wasStale) useBoardStore.getState().takeBoardStale(boardId);
     refreshBoardTasks(boardId, { month: monthKey });
+    fetchBoard(boardId).catch((err) =>
+      console.error('Failed to refresh the board after a change:', err)
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardRefreshSignal]);
+
+  // Opening a board whose cached copy is known to be behind — it was pinged
+  // `board.changed` while another page was open, or a workspace currency
+  // change relabelled it (`boardStore.markBoardsStale`). Only the board open at
+  // the time of a ping refetches itself, and this page otherwise reuses the
+  // cached document, so without this the second board you opened after the
+  // workspace moved to CAD still printed ₹ until a reload. Quiet: the cached
+  // copy stays on screen until the fresh one replaces it.
+  const hasBoard = !!board;
+  useEffect(() => {
+    if (!boardId || !hasBoard) return;
+    if (!useBoardStore.getState().takeBoardStale(boardId)) return;
+    fetchBoard(boardId).catch((err) =>
+      console.error('Failed to refresh a board that changed while it was closed:', err)
+    );
+  }, [boardId, hasBoard, fetchBoard]);
+
+  // Exchange rates. The app loads them once at sign-in; a board page left open
+  // for a day would otherwise convert today's invoices at yesterday's table.
+  // `ensureFresh` is throttled and a no-op while the table is young, so asking
+  // on every board open costs nothing — and it never rejects in a way that
+  // should reach the reader, so a failure is only logged.
+  useEffect(() => {
+    if (!boardId) return;
+    Promise.resolve(useFxStore.getState().ensureFresh?.()).catch((err) =>
+      console.error('Failed to refresh exchange rates:', err)
+    );
+  }, [boardId]);
 
   // --- Handle highlightGroup, from the People tab's drill-down -------------
   //
@@ -1325,7 +1442,16 @@ const BoardDetailPage = () => {
     // whole board dims and swallows clicks for the three seconds the auto-clear
     // timer runs, spotlighting nothing. The toast above is the feedback; the
     // spotlight has nothing to point at.
-    if (found) {
+    //
+    // The same is true of EVERY row on a flexible-columns board: the Table
+    // (DataGrid), the Ledger and the Stages view draw no highlighted row, so
+    // the scrim would dim the whole board for three seconds over nothing. There
+    // the link opens the row instead — in the invoice sheet on a ledger board,
+    // the row panel elsewhere — which is where the reader was being sent. A
+    // link to a subitem opens the top-level row it hangs under, since none of
+    // those views draws subitems as rows.
+    const flexible = !!board?.useFlexibleColumns;
+    if (found && !flexible) {
       setHighlightedTaskId(taskId);
       setHighlightedParentId(parentId || null);
     }
@@ -1334,10 +1460,13 @@ const BoardDetailPage = () => {
     if (found && openTab) {
       setInitialPanelTab(openTab);
       setSelectedTaskStack([taskId]);
+    } else if (found && flexible) {
+      if (isLedgerBoard(board)) setInvoiceOpen({ taskId: groupTargetId, focusAmount: false });
+      else setSelectedTaskStack([groupTargetId]);
     }
   }, [
     searchParams, loading, groups, tasksByGroup, setSearchParams, view, setView,
-    isTrackerBoard, monthKey, selectedMonth, toastInfo,
+    isTrackerBoard, monthKey, selectedMonth, toastInfo, board,
   ]);
 
   // --- Auto-remove highlight after animation completes -------------------
@@ -1589,75 +1718,250 @@ const BoardDetailPage = () => {
    * exactly how the collapse effect shipped broken once.
    */
   /**
+   * Does this board keep a ledger? Its rows then open in the INVOICE SHEET —
+   * from a tile, from the Table's open button, from ⋯ Edit — and a new row is
+   * numbered and dated as an invoice. Decided by what the board offers and
+   * holds (the Ledger view, an amount column), never by its name or template;
+   * see `utils/boardRowCreation.js`.
+   */
+  const ledgerCapable = useMemo(() => isLedgerBoard(board), [board]);
+
+  /**
+   * THE INVOICE SHEET — which row it is open on.
+   *
+   * The ID, never the row. The sheet renders `invoiceTask`, looked up from the
+   * live store on every render exactly as `selectedTask` is, so a payment, an
+   * auto-Paid status from the server, or a teammate's edit arriving over the
+   * refresh ping all show in the open sheet without it holding a stale copy.
+   *
+   * `focusAmount` rides along because it is a fact about HOW the sheet was
+   * opened — straight after a drop or "New invoice", the one thing the row is
+   * missing is its amount — and the sheet reads it once, on mount. (The state
+   * itself is declared with the panel's, near the top.)
+   */
+  const invoiceTaskId = invoiceOpen?.taskId || null;
+  const invoiceTask = useMemo(() => {
+    if (!invoiceTaskId) return null;
+    for (const list of Object.values(tasksByGroup)) {
+      if (!Array.isArray(list)) continue;
+      const match = list.find((t) => t._id === invoiceTaskId);
+      if (match) return match;
+    }
+    return null;
+  }, [invoiceTaskId, tasksByGroup]);
+
+  /**
+   * Open the sheet on `task`. The row panel is closed first: the two are both
+   * "this row, in full", and the panel sits ABOVE the sheet (z 100 vs 46), so
+   * leaving it open would hide the sheet behind a second copy of the same row.
+   */
+  const openInvoice = useCallback((task, { focusAmount = false } = {}) => {
+    if (!task?._id) return;
+    setSelectedTaskStack([]);
+    setInvoiceOpen({ taskId: task._id, focusAmount: !!focusAmount });
+  }, []);
+
+  const closeInvoice = useCallback(() => setInvoiceOpen(null), []);
+
+  // The row went away — deleted from the sheet itself, in another tab, or by a
+  // month switch. The sheet is only MOUNTED while `invoiceTask` resolves (see
+  // the render), which is what releases its scroll lock; clearing the id here
+  // is what stops it springing back open if a row with that id reappears.
+  //
+  // "Not in the store" only means "gone" once the store has had the chance to
+  // hold it: a board mid-reload has no buckets at all, and closing then would
+  // shut a sheet the reader never asked to close.
+  useEffect(() => {
+    if (!invoiceTaskId || invoiceTask) return;
+    if (loading || Object.keys(tasksByGroup).length === 0) return;
+    setInvoiceOpen(null);
+  }, [invoiceTaskId, invoiceTask, loading, tasksByGroup]);
+
+  /**
    * LEDGER — drop-to-create, and the notify step after it.
    *
    * The file is uploaded BEFORE the row is created. That ordering is the whole
    * safety property: a billing board must never hold an invoice row with no
    * invoice behind it, so a failed upload leaves the board exactly as it was
-   * and shows a card you can dismiss. See `boardFileController` on the server.
+   * and shows a card you can dismiss or retry. See `boardFileController` on the
+   * server.
+   *
+   * And the row is created in ONE call that already carries the document and
+   * its issued day (`createTask` takes `columnValues`). It used to be a create
+   * and then a second write for the file, so a failure between the two left a
+   * phantom invoice with no document behind it — the exact thing the ordering
+   * above exists to prevent.
    */
   const [ledgerUploads, setLedgerUploads] = useState([]);
   // The task whose "tell somebody" composer is open, or null.
   const [notifyTask, setNotifyTask] = useState(null);
+  /**
+   * What each upload card is FOR, by its ticket: the File itself, and — once
+   * the upload has landed — the stored descriptor. Kept outside React state
+   * because a File is not something to render, only to send again.
+   *
+   * The descriptor is what makes Retry cheap and clean: when the upload worked
+   * and only the row creation failed, a retry creates the row from the file
+   * already stored instead of uploading it a second time and orphaning the
+   * first copy.
+   */
+  const ledgerFilesRef = useRef(new Map()); // ticket -> { file, stored }
 
+  // A board switch drops the previous board's cards and their Files, and
+  // closes a sheet that belonged to the previous board's row.
+  useEffect(() => {
+    setLedgerUploads([]);
+    ledgerFilesRef.current = new Map();
+    setInvoiceOpen(null);
+  }, [boardId]);
+
+  /**
+   * One card's whole journey: upload (unless already stored), then ONE create
+   * with the document and issued day in it. Resolves to the new row, or null
+   * with the card left showing why. Never rejects — every caller is a loop or
+   * a button, and the card is where a failure is said.
+   */
+  const createRowFromUpload = useCallback(
+    async (ticket, groupId) => {
+      const entry = ledgerFilesRef.current.get(ticket);
+      // `busy` holds a card to one journey at a time: a Retry clicked twice
+      // before the card re-renders must not make the invoice twice.
+      if (!entry || entry.busy || !board?._id) return null;
+      entry.busy = true;
+      try {
+        if (!entry.stored) {
+          entry.stored = await uploadBoardFile(board._id, entry.file);
+        }
+        const created = await taskService.createTask({
+          name: titleFromFilename(entry.file.name),
+          board: board._id,
+          group: groupId,
+          ...(monthKey ? { monthKey } : {}),
+          columnValues: uploadedRowCells(board, entry.stored),
+        });
+        // A positioning automation hands back the settled group; otherwise the
+        // row is appended — the same two shapes `handleSaveNewTask` handles.
+        if (created.groupTasks) setGroupTasksLocal(groupId, created.groupTasks);
+        else addTaskLocal(created);
+        ledgerFilesRef.current.delete(ticket);
+        setLedgerUploads((u) => u.filter((x) => x.id !== ticket));
+        return created;
+      } catch (err) {
+        console.error('Ledger upload failed:', err);
+        const message = uploadFailureText(err);
+        setLedgerUploads((u) => u.map((x) => (x.id === ticket ? { ...x, error: message } : x)));
+        return null;
+      } finally {
+        entry.busy = false;
+      }
+    },
+    [board, monthKey, addTaskLocal, setGroupTasksLocal]
+  );
+
+  /**
+   * Files dropped on (or picked in) the ledger.
+   *
+   *   one file   → its invoice opens in the sheet with the Amount already in
+   *                edit mode: drop, type, Enter.
+   *   several    → ONE summary toast ("3 invoices added — add their amounts").
+   *                It used to hop the notify modal from file to file, which on
+   *                a batch of twelve was twelve dialogs to dismiss.
+   *
+   * Refused before anything is sent, with a sentence: a reader who may not add
+   * rows, a board with no file column to hold the document, and file types the
+   * server's allowlist would refuse anyway (mirrored in `boardRowCreation`).
+   */
   const handleLedgerDrop = useCallback(
-    async (files) => {
+    async (fileList) => {
       if (!board?._id) return;
-      const targetGroup = orderedGroups[0]?._id || groups[0]?._id || null;
-      if (!targetGroup) {
+      if (!canCreateTasks) {
+        toastError('You can view this board but not add to it.');
+        return;
+      }
+      if (!ledgerColumns(board).file) {
+        toastError(
+          'This board has no File column to hold documents. Add one from the Table view, then drop the file again.'
+        );
+        return;
+      }
+      const { allowed, refused } = splitBoardUploads(Array.from(fileList || []));
+      const refusal = refusedUploadsMessage(refused);
+      if (refusal) toastError(refusal);
+      if (allowed.length === 0) return;
+
+      const group = newRowGroupFor(orderedGroups);
+      if (!group) {
         toastError('Add a group to this board before adding invoices.');
         return;
       }
-      const fileColumn = ledgerColumns(board).file;
+
+      // Every card appears at once, so a batch reads as a batch in progress.
+      const tickets = allowed.map((file) => {
+        const id = `${Date.now()}-${file.name}-${Math.random().toString(36).slice(2, 8)}`;
+        ledgerFilesRef.current.set(id, { file, stored: null });
+        return { id, name: file.name, error: null };
+      });
+      setLedgerUploads((u) => [...u, ...tickets]);
 
       // Sequential rather than parallel: dropping a folder of twenty invoices
       // should not open twenty concurrent uploads against the account, and the
       // tiles appearing one at a time reads as progress rather than as a stall.
-      for (const file of files) {
-        const ticket = `${Date.now()}-${file.name}-${Math.random().toString(36).slice(2, 8)}`;
-        setLedgerUploads((u) => [...u, { id: ticket, name: file.name, error: null }]);
-        try {
-          const stored = await uploadBoardFile(board._id, file);
-          const created = await taskService.createTask({
-            name: titleFromFilename(file.name),
-            board: board._id,
-            group: targetGroup,
-            ...(monthKey ? { monthKey } : {}),
-          });
-          // `createTask` does not accept columnValues, so the file is written
-          // in a second call. If THIS fails the row still exists — which is why
-          // the error says the row was made, rather than pretending nothing
-          // happened.
-          let withFile = created;
-          if (fileColumn) {
-            withFile = await taskService.updateTask(created._id, {
-              columnValues: { [fileColumn._id]: [stored] },
-            });
-          }
-          addTaskLocal(withFile || created);
-          setLedgerUploads((u) => u.filter((x) => x.id !== ticket));
-          // Straight into "who should know?" — adding an invoice nobody is told
-          // about is the state this view exists to make visible.
-          setNotifyTask(withFile || created);
-        } catch (err) {
-          console.error('Ledger upload failed:', err);
-          const message =
-            err?.response?.status === 413 || err?.code === 'LIMIT_FILE_SIZE'
-              ? 'Too large — the limit is 25 MB.'
-              : err?.response?.data?.error || 'Upload failed.';
-          setLedgerUploads((u) =>
-            u.map((x) => (x.id === ticket ? { ...x, error: message } : x))
-          );
-        }
+      const made = [];
+      for (const t of tickets) {
+        const created = await createRowFromUpload(t.id, group._id);
+        if (created) made.push(created);
       }
+
+      if (tickets.length === 1) {
+        if (made[0]) openInvoice(made[0], { focusAmount: true });
+        return;
+      }
+      const summary = addedRowsMessage(board, made.length, tickets.length - made.length);
+      if (summary) toastSuccess(summary);
     },
-    [board, orderedGroups, groups, monthKey, addTaskLocal, toastError]
+    [board, canCreateTasks, orderedGroups, createRowFromUpload, openInvoice, toastError, toastSuccess]
   );
 
-  /** Every row on the board, flat — the ledger has one group, not twelve. */
+  /** Retry is the single-file flow again, on the File the card kept. */
+  const handleRetryUpload = useCallback(
+    async (ticket) => {
+      if (!ledgerFilesRef.current.has(ticket)) {
+        setLedgerUploads((u) => u.filter((x) => x.id !== ticket));
+        return;
+      }
+      const group = newRowGroupFor(orderedGroups);
+      if (!group) {
+        toastError('Add a group to this board before adding invoices.');
+        return;
+      }
+      setLedgerUploads((u) => u.map((x) => (x.id === ticket ? { ...x, error: null } : x)));
+      const created = await createRowFromUpload(ticket, group._id);
+      if (created) openInvoice(created, { focusAmount: true });
+    },
+    [orderedGroups, createRowFromUpload, openInvoice, toastError]
+  );
+
+  const handleDismissUpload = useCallback((ticket) => {
+    ledgerFilesRef.current.delete(ticket);
+    setLedgerUploads((u) => u.filter((x) => x.id !== ticket));
+  }, []);
+
+  /**
+   * Every row on the board, flat — the ledger has one group, not twelve.
+   *
+   * Pinned rows first, across the whole list rather than per group, so a row
+   * pinned in a later group still leads the ledger. This only shows when the
+   * ledger sorts by "Board order"; its other sorts reorder by their own key.
+   * Display-only, like every pin (`utils/taskPins.js`): `Task.order` is never
+   * written, so unpinning drops the row back where it was.
+   */
   const ledgerTasks = useMemo(
-    () => orderedGroups.flatMap((g) => filteredTasksByGroup[g._id] || []),
-    [orderedGroups, filteredTasksByGroup]
+    () =>
+      sortPinnedFirst(
+        orderedGroups.flatMap((g) => filteredTasksByGroup[g._id] || []),
+        personalPins
+      ),
+    [orderedGroups, filteredTasksByGroup, personalPins]
   );
 
   /* ---------------------------------------------------------------------
@@ -1927,6 +2231,14 @@ const BoardDetailPage = () => {
     setSelectedTaskStack((prev) => prev.slice(0, -1));
   }, [selectedTaskId, selectedTask, highlightedParentId, subitemsByParent]);
 
+  // The row panel and the invoice sheet are never open together. `openInvoice`
+  // closes the panel on the way in; this is the other direction, and it covers
+  // every path that opens the panel — a click, a notification's deep link, the
+  // on-done Goal prompt — without each of them having to know the sheet exists.
+  useEffect(() => {
+    if (selectedTaskId) setInvoiceOpen(null);
+  }, [selectedTaskId]);
+
   // --- Inline creation --------------------------------------------------
 
   const handleStartCreate = (groupId) => {
@@ -1980,6 +2292,76 @@ const BoardDetailPage = () => {
       toastError, currentOrg?._id,
     ]
   );
+
+  /**
+   * "New invoice" / "+ Add deal" on a FLEXIBLE-columns board.
+   *
+   * `handleStartCreate` above drives TaskTable's inline create row, and a
+   * flexible board never renders TaskTable — the Ledger and the Table (DataGrid)
+   * have no such row. So the header's primary button called it, nothing
+   * appeared, and `creatingInGroup` stayed set, which quietly disabled group
+   * drag until the page was reloaded. On a flexible board those two pieces of
+   * state are never touched; a row is made HERE instead.
+   *
+   * ONE `createTask`, born with its cells (`newRowPlan`): on a ledger board the
+   * next invoice number, issued today and due in 30 days; everywhere, the
+   * creator in the Owner cell. Then it opens where it is filled in — the sheet,
+   * with the Amount already in edit mode, or the row panel.
+   *
+   * The group is the one the caller names (the grid's "+ Add" row belongs to
+   * its own group), else the current month's, else the first on screen.
+   *
+   * Resolves to the new row or null and never rejects: the grid holds its
+   * "+ Add" button disabled until this settles, and a failure is said here.
+   */
+  const creatingRowRef = useRef(false);
+  const handleNewRow = async (preferredGroupId = null) => {
+    if (!board?._id || !canCreateTasks || creatingRowRef.current) return null;
+    const group =
+      (preferredGroupId && groups.find((g) => String(g._id) === String(preferredGroupId))) ||
+      newRowGroupFor(orderedGroups);
+    if (!group) {
+      toastError('Add a group to this board first.');
+      return null;
+    }
+    // Every row on the board, not the filtered ones — the next invoice number
+    // follows the highest that exists, not the highest a filter left visible.
+    const plan = newRowPlan(board, { tasks: allTasks, meId: selfId });
+    creatingRowRef.current = true;
+    try {
+      const created = await taskService.createTask({
+        name: plan.name,
+        board: board._id,
+        group: group._id,
+        // The SELECTED month on a tracker board, exactly as the inline create.
+        ...(monthKey ? { monthKey } : {}),
+        ...(Object.keys(plan.columnValues).length > 0 ? { columnValues: plan.columnValues } : {}),
+      });
+      if (created.groupTasks) setGroupTasksLocal(group._id, created.groupTasks);
+      else addTaskLocal(created);
+      // Open the group it landed in, so the row is there when the sheet or
+      // panel closes rather than hidden behind a collapsed header.
+      setCollapsed((prev) => {
+        if (!prev.has(group._id)) return prev;
+        const next = new Set(prev);
+        next.delete(group._id);
+        return next;
+      });
+      refreshNotifications(currentOrg?._id);
+      if (plan.ledger) openInvoice(created, { focusAmount: true });
+      else handleOpenTask(created);
+      return created;
+    } catch (err) {
+      console.error('Failed to create row:', err);
+      toastError(
+        err?.response?.data?.error ||
+          `Couldn't add the ${templateDisplay(board).rowNoun[0]}. Please try again.`
+      );
+      return null;
+    } finally {
+      creatingRowRef.current = false;
+    }
+  };
 
   // --- Inline edit ------------------------------------------------------
 
@@ -2087,6 +2469,42 @@ const BoardDetailPage = () => {
     setStatusMenu({ task, anchor });
   };
 
+  /**
+   * THE status change — the one path every surface uses, so the optimistic
+   * flip, the rollback, the toast and the notification refresh are identical
+   * whether the click came from a row chip, a ledger stamp, the Table's status
+   * track or the invoice sheet (which settles a paid invoice through here).
+   *
+   * Resolves to the server's row. On failure it rolls back, says why, and
+   * REJECTS — the sheet awaits it to decide what to do next (offer to record
+   * the rest of a payment only once the status really moved), so a swallowed
+   * failure would read to it as a success.
+   */
+  const changeTaskStatus = useCallback(
+    async (task, newStatus) => {
+      // Optimistic update
+      const prev = task;
+      updateTaskLocal({ ...task, status: newStatus });
+      try {
+        const updated = await taskService.updateTask(task._id, {
+          status: newStatus,
+        });
+        updateTaskLocal(updated);
+        refreshNotifications();
+        return updated;
+      } catch (err) {
+        console.error('Failed to update status:', err);
+        updateTaskLocal(prev);
+        toastError(
+          err?.response?.data?.error ||
+            'Failed to update status. Please try again.'
+        );
+        throw err;
+      }
+    },
+    [updateTaskLocal, refreshNotifications, toastError]
+  );
+
   const handleStatusSelect = async (newStatus) => {
     if (!statusMenu) return;
     const { task } = statusMenu;
@@ -2094,22 +2512,10 @@ const BoardDetailPage = () => {
     const currentStatusStr = task.status ? task.status.toString() : null;
     const nextStatusStr = newStatus != null ? newStatus.toString() : null;
     if (currentStatusStr === nextStatusStr) return;
-    // Optimistic update
-    const prev = task;
-    updateTaskLocal({ ...task, status: newStatus });
     try {
-      const updated = await taskService.updateTask(task._id, {
-        status: newStatus,
-      });
-      updateTaskLocal(updated);
-      refreshNotifications();
-    } catch (err) {
-      console.error('Failed to update status:', err);
-      updateTaskLocal(prev);
-      toastError(
-        err?.response?.data?.error ||
-          'Failed to update status. Please try again.'
-      );
+      await changeTaskStatus(task, newStatus);
+    } catch {
+      // Already rolled back and reported by `changeTaskStatus`.
     }
   };
 
@@ -2227,10 +2633,27 @@ const BoardDetailPage = () => {
     setActionsMenu({ task, anchor });
   };
 
+  /**
+   * ⋯ → Edit opens wherever this board's rows are actually edited.
+   *
+   * Inline edit (`handleStartEdit`) is TaskTable's, and only TaskTable renders
+   * it. On a flexible board it drew nothing — and left `editingTaskId` set,
+   * which disables drag for the whole board until a reload. So a ledger board
+   * opens the invoice sheet, any other flexible board the row panel, and only
+   * the classic task table keeps its inline row.
+   */
   const handleMenuEdit = () => {
     if (!actionsMenu) return;
     const task = actionsMenu.task;
     setActionsMenu(null);
+    if (ledgerCapable || boardView === 'ledger') {
+      openInvoice(task);
+      return;
+    }
+    if (board?.useFlexibleColumns) {
+      handleOpenTask(task);
+      return;
+    }
     handleStartEdit(task);
   };
 
@@ -2321,6 +2744,9 @@ const BoardDetailPage = () => {
     try {
       await taskService.deleteTask(task._id);
       deleteTaskLocal(task._id);
+      // The sheet unmounts on its own once the row leaves the store; clearing
+      // the id as well means it cannot reopen on a stale one.
+      setInvoiceOpen((cur) => (cur?.taskId === task._id ? null : cur));
     } catch (err) {
       console.error('Failed to delete task:', err);
       toastError(
@@ -2329,6 +2755,78 @@ const BoardDetailPage = () => {
       );
     }
   };
+
+  // --- Invoice sheet ------------------------------------------------------
+
+  /**
+   * The sheet's Attach / Replace: store the file against the board, then write
+   * it into the row's file cell — as the FIRST file, keeping any others the
+   * cell holds, which is what "Replace" means on a sheet that shows the first.
+   *
+   * Rejects on failure rather than toasting: the sheet catches and words the
+   * failure itself ("too large — the limit is 25 MB"), and a toast from both
+   * would say it twice. The allowlist is checked here first so a refused type
+   * is said before a byte is sent.
+   */
+  const attachInvoiceFile = useCallback(
+    async (task, file) => {
+      const col = ledgerColumns(board).file;
+      if (!board?._id || !col || !task?._id || !file) return;
+      if (!isAllowedBoardUpload(file)) throw new Error(BOARD_UPLOAD_REFUSED);
+      const stored = await uploadBoardFile(board._id, file);
+      const raw = columnValue(task, col);
+      const existing = Array.isArray(raw) ? raw.filter((f) => f && typeof f === 'object') : [];
+      const updated = await useBoardStore
+        .getState()
+        .setColumnValue(task._id, col._id, [stored, ...existing.slice(1)]);
+      if (updated) updateTaskLocal(updated);
+    },
+    [board, updateTaskLocal]
+  );
+
+  /** "Updates" on the sheet: the row's thread lives in the row panel. */
+  const openInvoiceUpdates = useCallback((task) => {
+    if (!task?._id) return;
+    setInvoiceOpen(null);
+    setInitialPanelTab('updates');
+    setGoalFocusTaskId(null);
+    setSelectedTaskStack([task._id]);
+  }, []);
+
+  /**
+   * After "who should know?" is posted: put the server's fresh stamp — who has
+   * been told, and when — on the row, so the ledger's Told strip turns into a
+   * row of faces now rather than at the next board fetch. The stamp is the
+   * WHOLE list (everyone told before, plus this post's mentions), so it
+   * replaces rather than merges. No stamp means nobody valid was mentioned and
+   * the row is unchanged.
+   */
+  const handleNotifyPosted = useCallback(
+    (update, meta) => {
+      useTaskStore.getState().applyToldStamp(meta?.task);
+      // The post really joined the row's thread, so the sheet's "Updates (N)"
+      // counts it now rather than after the next fetch.
+      const id = notifyTask?._id;
+      if (update && id) {
+        let live = null;
+        for (const list of Object.values(useTaskStore.getState().tasksByGroup)) {
+          if (!Array.isArray(list)) continue;
+          live = list.find((t) => String(t._id) === String(id)) || null;
+          if (live) break;
+        }
+        if (live) setUpdatesCount(live._id, (live.updatesCount || 0) + 1);
+      }
+      setNotifyTask(null);
+    },
+    [notifyTask, setUpdatesCount]
+  );
+
+  /**
+   * Where a row OPENS on a flexible board — the Table's open button, and a
+   * ledger tile. A ledger board's rows are invoices and open in the sheet;
+   * every other board's open in the row panel.
+   */
+  const openRow = (task) => (ledgerCapable ? openInvoice(task) : handleOpenTask(task));
 
   // --- Bulk copy links --------------------------------------------------
   // Read-only companion to the detail panel's single copy-link button: the
@@ -2936,6 +3434,42 @@ const BoardDetailPage = () => {
   }
 
   /**
+   * The unit this board's money is in — its own currency, else its first own
+   * money column's, else the workspace's. Group totals are stamped with it so a
+   * CAD board's headers never fall back to some other code, and the one note
+   * under the filter bar says whether figures were converted from it.
+   */
+  const boardMoneyCurrency = boardCurrencyOf(board, money.baseCurrency);
+  const boardHoldsMoney =
+    Array.isArray(board?.columns) && board.columns.some((c) => isOwnMoneyColumn(c));
+  // One line for the whole board — "Shown in USD · entered in CAD · rates of
+  // …", or that no rate exists yet — instead of the Table converting silently.
+  // The Ledger writes its own, per invoice date, so it is left out there.
+  const boardMoneyNote =
+    board?.useFlexibleColumns && boardHoldsMoney && boardView !== 'ledger'
+      ? money.surfaceNote(boardMoneyCurrency)
+      : null;
+
+  const renderedGroups = isClientBoard
+    ? orderedGroups.filter((g) => String(g._id) === String(svcParam))
+    : orderedGroups;
+  // The first group actually drawn open carries the grid's currency chip.
+  const currencyChipGroupId =
+    renderedGroups.find(
+      (g) => (!filtersActive || isGroupVisible(g)) && !collapsed.has(g._id)
+    )?._id || null;
+  /**
+   * The Table's status track. A board that keeps status as a COLUMN — a legacy
+   * board migrated to flexible columns carries a Status column of its own —
+   * already shows it in a cell, so a second status chip beside it would be the
+   * same fact twice. Decided by the columns the board has, never its name.
+   */
+  const gridStatusClick =
+    Array.isArray(board?.columns) && board.columns.some((c) => c?.type === 'status')
+      ? undefined
+      : handleStatusClick;
+
+  /**
    * The board's task grid, hoisted so it can be placed in two layouts: on its
    * own for a standard or tracker board, and inside the selected service's
    * Work tab on a client board. ONE copy, deliberately — statuses, inline
@@ -3003,10 +3537,7 @@ const BoardDetailPage = () => {
             onDragEnd={handleBoardDragEnd}
           >
             <SortableContext items={orderedGroupIds} strategy={verticalListSortingStrategy}>
-              {(isClientBoard
-                ? orderedGroups.filter((g) => String(g._id) === String(svcParam))
-                : orderedGroups
-              ).map((group, idx) => {
+              {renderedGroups.map((group, idx) => {
                 // Pinned-first render order. The progress math below reads the
                 // unsorted filtered bucket, since it's order-independent.
                 const groupTasks = displayTasksByGroup[group._id] || [];
@@ -3084,7 +3615,7 @@ const BoardDetailPage = () => {
                           isComplete={
                             !!groupMetrics.get(String(group._id))?.allComplete
                           }
-                          summaries={groupSummaries(board, groupTasks, money)}
+                          summaries={groupSummaries(board, groupTasks, money, boardMoneyCurrency)}
                           countLabel={rowCountLabel(board, groupTasks.length)}
                           totalCount={groupTasks.length}
                           doneCount={doneCount}
@@ -3160,7 +3691,31 @@ const BoardDetailPage = () => {
                               board={board}
                               tasks={groupTasks}
                               personalPins={personalPins}
-                              readOnly={!canEdit}
+                              // Explicit capabilities rather than `readOnly`:
+                              // a contributor can add rows and move statuses
+                              // without holding `edit`, and the grid now draws
+                              // each affordance off its own capability.
+                              canEdit={canEdit}
+                              // Per row, as the invoice sheet does: a contributor
+                              // may fill in a row they created or are on.
+                              canEditRow={canEditRow}
+                              canAssignOthers={canOnBoard('task.assign')}
+                              canCreate={canCreateTasks}
+                              canManageColumns={canManageColumns}
+                              canChangeStatus={canChangeStatusOnBoard}
+                              onOpenRow={openRow}
+                              onStatusClick={gridStatusClick}
+                              // The grid hands over the ⋯ ELEMENT, not an
+                              // event, so this cannot be `handleActionsClick`.
+                              onRowMenu={
+                                canEdit
+                                  ? (task, anchorEl) => setActionsMenu({ task, anchor: anchorEl })
+                                  : undefined
+                              }
+                              onAddRow={canCreateTasks ? () => handleNewRow(group._id) : undefined}
+                              // One currency chip for the whole board, above the
+                              // first open group — not repeated down twelve.
+                              showCurrency={group._id === currencyChipGroupId}
                             />
                           ) : (
                             <TaskTable
@@ -3327,7 +3882,7 @@ const BoardDetailPage = () => {
             style={{ fontSize: 13, color: 'var(--color-text-muted)' }}
           >
             {board
-              ? `Created ${formatDate(board.createdAt)} · ${totalTaskCount} ${totalTaskCount === 1 ? 'task' : 'tasks'}`
+              ? `Created ${formatDate(board.createdAt)} · ${board.templateKey ? rowCountLabel(board, totalTaskCount) : `${totalTaskCount} ${totalTaskCount === 1 ? 'task' : 'tasks'}`}`
                 + (isTrackerBoard && selectedMonth ? ` in ${selectedMonth.label}` : '')
               : 'Loading board details…'}
           </p>
@@ -3366,7 +3921,10 @@ const BoardDetailPage = () => {
             read-only access and the switcher goes with it. */}
         {(canEdit || isBoardCreator || canExportActivity || canManageTrackers
           || canConvertToTracker || hasViewChoice(board)
-          || (isClientBoard && canManageAccess)) && (
+          || (isClientBoard && canManageAccess)
+          // A contributor can add rows to a flexible board without `edit`, so
+          // on those boards the row's primary button alone is reason to draw it.
+          || (board?.useFlexibleColumns && canCreateTasks && groups.length > 0)) && (
           <div className="flex items-center gap-2 flex-wrap justify-end macan-mobile-scroll-row">
             {/* A public board needs no sharing — everyone is already in it — so
                 the button stays hidden there for everyone EXCEPT its owner, who
@@ -3476,12 +4034,25 @@ const BoardDetailPage = () => {
                 twelve months already exist. "New Group" as the one blue button
                 had the board offering its rarest action as its first one.
                 A board with no groups yet has nowhere to put a row, so there
-                it stays New Group. */}
-            {canEdit && groups.length > 0 && (
+                it stays New Group.
+
+                On a flexible board the button makes the row itself
+                (`handleNewRow`) and answers to `task.create`, the same rung the
+                server holds it to; the classic task table keeps its inline row
+                and its `canEdit` gate exactly as before. The Ledger draws its
+                own "New invoice" beside its strip, so it is not repeated here. */}
+            {groups.length > 0 &&
+              (board?.useFlexibleColumns
+                ? canCreateTasks && boardView !== 'ledger'
+                : canEdit) && (
               <Button
                 variant="primary"
                 icon={Plus}
-                onClick={() => handleStartCreate(orderedGroups[0]?._id || groups[0]._id)}
+                onClick={() =>
+                  board?.useFlexibleColumns
+                    ? handleNewRow()
+                    : handleStartCreate(orderedGroups[0]?._id || groups[0]._id)
+                }
               >
                 {newRowLabel(board)}
               </Button>
@@ -3828,6 +4399,21 @@ const BoardDetailPage = () => {
         </div>
       )}
 
+      {/* ONE line saying what the money on this board is shown in, when that
+          is not simply what was typed: converted to the reader's display
+          currency (and at which day's rates), or asked to convert with no rate
+          to do it. Once for the board rather than per cell or per group, and
+          silent in the common case where nothing was converted. */}
+      {view === 'board' && hasGroups && boardMoneyNote
+        && (!isClientBoard || (activeService && svcTab === 'work')) && (
+        <p
+          className="font-body mt-2"
+          style={{ fontSize: 12, color: 'var(--color-text-muted)' }}
+        >
+          {boardMoneyNote}
+        </p>
+      )}
+
       {/* HOW the Board tab draws itself.
           On a client board the grid is rendered INSIDE the service workspace
           below (Work tab); everywhere else it is the board.
@@ -3842,18 +4428,31 @@ const BoardDetailPage = () => {
             board={board}
             tasks={ledgerTasks}
             canEdit={canEdit}
+            /* Dropping a PDF or pressing New invoice makes a row: the
+               `contribute` rung's `task.create`, not `edit`. */
+            canCreate={canCreateTasks}
+            canManageColumns={canManageColumns}
+            canChangeStatus={canChangeStatusOnBoard}
             uploads={ledgerUploads}
-            onOpenTask={handleOpenTask}
-            onNotifyTask={setNotifyTask}
+            /* A tile opens its invoice in the sheet — where the amount, the
+               dates and the payments are filled in — not the generic panel. */
+            onOpenTask={(task) => openInvoice(task)}
+            /* "Tell someone" posts an update, so it answers to the same
+               capability; without it the Told strip is shown, not offered. */
+            onNotifyTask={canNotify ? setNotifyTask : undefined}
             /* The same menu the table's row `⋯` opens — Pin, Share, Edit,
                Delete — so the ledger is not a view you have to leave in order
-               to remove a file you dropped by mistake. */
-            onMenuTask={(task, anchor) => setActionsMenu({ task, anchor })}
-            /* The board's own status menu, gated by the same `canChangeStatus`
-               the table's chip uses — so Draft → Sent → Paid is one click from
-               the gallery rather than a trip through the row panel. */
-            onStatusTask={handleStatusClick}
+               to remove a file you dropped by mistake. Absent for anyone who
+               cannot edit rows, the same gate the table's ⋯ has. */
+            onMenuTask={canEdit ? (task, anchor) => setActionsMenu({ task, anchor }) : undefined}
+            /* The board's own status menu — Draft → Sent → Paid is one click
+               from the gallery. A viewer gets a plain stamp. */
+            onStatusTask={canChangeStatusOnBoard ? handleStatusClick : undefined}
             onDropFiles={handleLedgerDrop}
+            onNewInvoice={canCreateTasks ? () => handleNewRow() : undefined}
+            onDismissUpload={handleDismissUpload}
+            onRetryUpload={handleRetryUpload}
+            onClearPageFilters={filtersActive ? () => setFilters(EMPTY_FILTERS) : undefined}
           />
         ) : boardView === 'stages' ? (
           <StagesView
@@ -3864,11 +4463,18 @@ const BoardDetailPage = () => {
                stage boundary would look like the board moved it. */
             tasksByGroup={filteredTasksByGroup}
             canEdit={canEdit}
+            canCreate={canCreateTasks}
             /* Same rule as the table: dragging inside a filtered subset would
                write a bogus order back over the rows you cannot see. */
             dragEnabled={canEdit && !taskFiltersActive}
             onOpenTask={handleOpenTask}
-            onAddTask={handleStartCreate}
+            /* A stage's "+" makes the row in THAT stage and opens it, on a
+               flexible board — never TaskTable's inline-create state, which
+               nothing on this view renders and which would leave drag
+               disabled behind it. */
+            onAddTask={
+              board?.useFlexibleColumns ? (groupId) => handleNewRow(groupId) : handleStartCreate
+            }
             onMoveTask={(targetGroupId, orderedIds) =>
               reorderTasksAction(targetGroupId, orderedIds, { month: monthKey }).catch((err) => {
                 console.error('Failed to move task:', err);
@@ -4573,6 +5179,41 @@ const BoardDetailPage = () => {
         onUpdatesCountChange={setUpdatesCount}
       />
 
+      {/* ------------------------------------------------------------------
+          THE INVOICE SHEET — one invoice's own screen, on a ledger board.
+
+          Mounted ONLY while its row resolves in the store, and keyed on it.
+          Mounting locks the page's scroll and unmounting releases it, so a
+          sheet left mounted over a deleted row would freeze the page; the
+          `invoiceTask &&` is what makes deleting from inside the sheet safe.
+
+          It sits below the shared Modal (50) and above the navbar, so "Tell
+          someone" and the delete confirm open ON TOP of it and return to it.
+          Every write goes through the page's own paths: status through
+          `changeTaskStatus` (the same optimistic flip, rollback and toast as a
+          click on the stamp), deletion through the ordinary confirm.
+          ------------------------------------------------------------------ */}
+      {invoiceTask && board && (
+        <InvoiceSheet
+          key={invoiceTask._id}
+          board={board}
+          task={invoiceTask}
+          canEdit={canEditRow(invoiceTask)}
+          canManageColumns={canManageColumns}
+          canChangeStatus={canChangeStatusOnBoard}
+          canNotify={canNotify}
+          canAssignOthers={canOnBoard('task.assign')}
+          focusAmount={!!invoiceOpen?.focusAmount}
+          onClose={closeInvoice}
+          onPatched={(updated) => updated && updateTaskLocal(updated)}
+          onChangeStatus={changeTaskStatus}
+          onNotify={(task) => setNotifyTask(task)}
+          onOpenUpdates={openInvoiceUpdates}
+          onAttachFile={attachInvoiceFile}
+          onDelete={canOnBoard('task.delete') ? (task) => setTaskPendingDelete(task) : undefined}
+        />
+      )}
+
       {/* Board / group logo dialog — one dialog, two targets. The preview
           draws the real surface the logo is going onto, so "does it read at
           that size, on that colour" is answered before it is closed. */}
@@ -4666,7 +5307,9 @@ const BoardDetailPage = () => {
           the invoice's own thread where the reply will be looked for.
 
           Posting stamps `notifiedUsers` on the task server-side, which is what
-          flips the tile from "Nobody told" to a row of faces.
+          flips the tile from "Nobody told" to a row of faces — and the reply
+          carries that stamp back, so `handleNotifyPosted` puts it on the row
+          straight away instead of at the next board fetch.
           ------------------------------------------------------------------ */}
       <Modal
         isOpen={!!notifyTask}
@@ -4691,7 +5334,7 @@ const BoardDetailPage = () => {
               mentionUsers={members}
               placeholder="@mention someone and say what you need from them…"
               submitLabel="Send"
-              onPosted={() => setNotifyTask(null)}
+              onPosted={handleNotifyPosted}
             />
           </div>
         )}

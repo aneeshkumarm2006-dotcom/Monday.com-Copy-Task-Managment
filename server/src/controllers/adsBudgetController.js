@@ -44,6 +44,11 @@ const {
 const { resolveFieldValue, collectUserIds } = require('../services/activityFormat');
 const { monthWindow, paceOf, rollUp } = require('../utils/adsBudgetPacing');
 const { isMonthKey, monthKeyOf, formatMonth } = require('../utils/monthKey');
+const {
+  sanitizeColumnCurrency,
+  normaliseCurrencyCode,
+  boardCurrencyOf,
+} = require('../utils/money');
 
 const NOT_TRACKER = 'This board is not a tracker board.';
 const OFF =
@@ -64,6 +69,28 @@ const POPULATE_PEOPLE = [
 ];
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+/**
+ * The unit every figure on this board's Ads Budget tab is in.
+ *
+ * `adsBudget.currency` when one has been chosen, else the BOARD's own
+ * currency when it has one (`Board.currency`, an override), else the
+ * WORKSPACE's `baseCurrency`, and dollars only when nothing says anything.
+ * Null therefore means "follows the board" — and a board with no currency of
+ * its own follows the workspace (services/boardCurrency.js), so an Ads Budget
+ * nobody gave a unit moves with a workspace currency change exactly as the
+ * board's columns do. The schema used to default the field to 'USD', which
+ * Mongoose wrote onto every board at creation — so the fallbacks could never
+ * run and a rupee workspace opened the tab in dollars. The field now defaults
+ * to null, and this is the one answer to "null means what".
+ * `services/executiveHome.js` reads the same steps for its pacing tile, so the
+ * tab and the card cannot disagree.
+ */
+const adsBudgetCurrencyOf = (board, org) =>
+  (board && board.adsBudget && board.adsBudget.currency)
+  || normaliseCurrencyCode(board && board.currency)
+  || normaliseCurrencyCode(org && org.baseCurrency)
+  || 'USD';
 
 /**
  * The gates. Returns the context, or null having already answered.
@@ -208,7 +235,7 @@ const getRoster = async (req, res) => {
     return res.json({
       monthKey,
       monthLabel: formatMonth(monthKey, { long: true }),
-      currency: board.adsBudget?.currency || 'USD',
+      currency: adsBudgetCurrencyOf(board, ctx.org),
       window,
       clients,
       totals,
@@ -280,7 +307,7 @@ const getClient = async (req, res) => {
     return res.json({
       monthKey,
       monthLabel: formatMonth(monthKey, { long: true }),
-      currency: board.adsBudget?.currency || 'USD',
+      currency: adsBudgetCurrencyOf(board, ctx.org),
       window,
       group: { _id: String(group._id), name: group.name },
       totals: rollUp(platformRows, window),
@@ -722,6 +749,9 @@ const setSettings = async (req, res) => {
     const { board } = ctx;
 
     const { enabled, currency } = req.body || {};
+    // Read BEFORE the switch below flips it: "was this add-on already on" is
+    // half of how a stored 'USD' is told apart from a choice (see the pin).
+    const wasOn = board.adsBudget.enabled === true;
 
     if (enabled !== undefined) {
       if (typeof enabled !== 'boolean') {
@@ -731,14 +761,53 @@ const setSettings = async (req, res) => {
     }
 
     if (currency !== undefined) {
-      const code = String(currency || '').trim().toUpperCase();
-      // Three letters, which is what ISO 4217 is and what `Intl.NumberFormat`
-      // will accept. Validated rather than trusted: an unknown code makes the
-      // client's formatter throw on every cell of the page.
-      if (!/^[A-Z]{3}$/.test(code)) {
-        return res.status(400).json({ error: 'Currency must be a three-letter code, like USD.' });
-      }
-      board.adsBudget.currency = code;
+      // The same catalog, and the same normalising, as every other money field
+      // (utils/money.js). "Any three letters" used to pass here, so 'JPY' was
+      // storable on this tab while nothing else in the product could render or
+      // convert it — the two currency pickers on one board accepted different
+      // things.
+      const r = sanitizeColumnCurrency(currency);
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      board.adsBudget.currency = r.code;
+    }
+
+    // Switched on with no currency chosen, on a board with a currency of its
+    // OWN (an override): pin that unit NOW. Left null it would still read the
+    // board's unit (`adsBudgetCurrencyOf`), but pinning keeps what was shown
+    // and what is stored the same unit from the first figure onwards.
+    //
+    // A board that FOLLOWS the workspace (`Board.currency` null) leaves it
+    // null instead. That board's figures are, by choice, in whatever the
+    // workspace currency is — a workspace change relabels its money columns —
+    // and its Ads Budget is part of the same board. Pinning here froze the
+    // tab at the workspace's unit of the day it was switched on, so the next
+    // workspace change moved every column but left the budgets behind.
+    //
+    // ---- 'USD' that nobody chose ---------------------------------------------
+    //
+    // The schema used to default this field to 'USD', and Mongoose wrote the
+    // default onto every board it saved — so every board from before the
+    // default became null already HAS a unit, and "no currency chosen" never
+    // read true for any of them: an INR workspace, or a board relabelled CAD,
+    // switched its Ads Budget on and got dollars. A stored 'USD' is therefore
+    // treated as unset when it cannot have been a choice anybody relied on:
+    // the add-on is being switched on from OFF, the request names no currency
+    // of its own, and there is not one budget row it could be labelling. A
+    // board that has rows, or was already on, keeps its USD — there it may be
+    // real, and the card warns when it differs from the board.
+    const legacyDefault =
+      enabled === true
+      && !wasOn
+      && currency === undefined
+      && board.adsBudget.currency === 'USD'
+      && !(await AdsBudget.exists({ board: board._id }));
+    if (enabled === true && (!board.adsBudget.currency || legacyDefault)) {
+      // Not `adsBudgetCurrencyOf` as the last step: in the legacy case it would
+      // only hand the stored 'USD' straight back. A following board clears it
+      // to null (see above) — it then reads the workspace's unit.
+      board.adsBudget.currency = normaliseCurrencyCode(board.currency)
+        ? boardCurrencyOf(board, ctx.org && ctx.org.baseCurrency) || 'USD'
+        : null;
     }
 
     await board.save();

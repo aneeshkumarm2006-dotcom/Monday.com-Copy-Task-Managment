@@ -19,6 +19,7 @@ const ClientContact = require('../models/ClientContact');
 const { deleteSurfacesForGroup, createSurfaces } = require('../services/workstreamSurfaces');
 const { isClientBoard } = require('../utils/clientBoard');
 const { destroyCloudinaryAssets, destroyLogos } = require('../config/cloudinary');
+const { destroyFileColumnAssets } = require('../utils/fileColumnAssets');
 const { recordServiceUse } = require('../services/serviceCatalogService');
 const { ensurePortalLive } = require('../utils/portalActivation');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
@@ -789,8 +790,11 @@ const deleteGroup = async (req, res) => {
       // would destroy the files of subitems that survive under a parent in
       // another group — live rows pointing at dead blobs, strictly worse than
       // the leak this fixes.
+      // `board` too: a file-column asset is only ever destroyed under ITS OWN
+      // board's folder (utils/fileColumnAssets.js), so without it nothing
+      // here would be destroyed and every invoice PDF in the group would leak.
       const taskDocs = await Task.find({ _id: { $in: taskIds } })
-        .select('attachments')
+        .select('attachments columnValues board')
         .lean();
       const updateDocs = await Update.find({ task: { $in: taskIds } })
         .select('attachments')
@@ -799,6 +803,14 @@ const deleteGroup = async (req, res) => {
         ...taskDocs.flatMap((t) => t.attachments || []),
         ...updateDocs.flatMap((u) => u.attachments || []),
       ]);
+      // Files held in FILE COLUMNS (an invoice's PDF) — same reason, same
+      // order. Only the Files-tab array used to be read here.
+      // `excludeTaskIds`: an id a row OUTSIDE this group still holds is kept
+      // (utils/fileColumnAssets.js `withoutIdsHeldElsewhere`).
+      await destroyFileColumnAssets(ctx.board.columns || [], taskDocs, {
+        boardId: ctx.board._id,
+        excludeTaskIds: taskIds,
+      });
 
       await Update.deleteMany({ task: { $in: taskIds } });
       await Notification.deleteMany({ task: { $in: taskIds } });

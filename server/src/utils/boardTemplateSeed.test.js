@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { templateByKey } = require('./boardTemplates');
+const { templateByKey, seedTemplateColumns } = require('./boardTemplates');
 
 /**
  * WHAT EACH TEMPLATE ACTUALLY PRODUCES.
@@ -19,30 +19,23 @@ const { templateByKey } = require('./boardTemplates');
  */
 
 /**
- * The seed, exactly as `createBoard` builds it. Mirrors the controller.
+ * The seed, as `createBoard` builds it.
  *
- * `baseCurrency` is a parameter because the controller now takes one: money
- * columns are denominated in the WORKSPACE's currency rather than the
- * template's. Defaulted to rupees so every other assertion in this file reads
- * unchanged, since that is what an unconfigured workspace still gets.
+ * The COLUMNS come from `seedTemplateColumns` — the very function the
+ * controller calls. This file used to carry a hand-written copy of that logic,
+ * and the copy is exactly what let the board-copy currency bug through: it
+ * only ever modelled the built-in templates, so nothing exercised the
+ * `board:<id>` branch that re-stamped a CAD board's columns into rupees.
  *
- * Being a hand-written mirror, this can drift from the controller without
- * anything failing — which is the exact class of bug the header says this file
- * exists to catch. If you change the column seeding in `boardController`,
- * change it here in the same commit.
+ * `currency` is the board's unit. Defaulted to rupees so every other assertion
+ * in this file reads unchanged, since that is what an unconfigured workspace
+ * still gets.
  */
-const seed = (key, baseCurrency = 'INR') => {
+const seed = (key, currency = 'INR') => {
   const tpl = templateByKey(key);
   return {
     statuses: tpl.statuses.map((s) => ({ ...s })),
-    columns: tpl.columns.map((c, i) => ({
-      ...c,
-      order: i,
-      settings: {
-        ...(c.settings || {}),
-        ...(c.settings?.format === 'currency' ? { currency: baseCurrency } : {}),
-      },
-    })),
+    columns: seedTemplateColumns(tpl, { currency }),
     useFlexibleColumns: tpl.columns.length > 0,
     groups: tpl.groups,
     defaultView: tpl.defaultView,
@@ -78,7 +71,7 @@ test('billing is the invoice board that was designed', () => {
   // PDF is SECOND. The document exists before the number is typed, the client
   // linked or the amount agreed, so it sits beside the number that names it.
   assert.deepEqual(colNames('billing'), [
-    'Invoice', 'PDF', 'Client', 'Amount', 'Issued', 'Due', 'Owner',
+    'Invoice', 'PDF', 'Client', 'Amount', 'Payments', 'Issued', 'Due', 'Owner',
   ]);
   // The four statuses were RENAMED, not replaced — the keys still carry the
   // meaning the rest of the app reads.
@@ -101,8 +94,29 @@ test('billing is the invoice board that was designed', () => {
   // A dropped PDF has somewhere to land, which is what makes the row creatable
   // from the document rather than the other way round.
   assert.equal(seed('billing').dropColumn, 'pdf');
-  // The client is a LINK to the client's board, not its name retyped.
-  assert.equal(colByKey('billing', 'client').type, 'connect_boards');
+  /**
+   * The client is a pick among the workspace's CLIENT BOARDS (or a typed name
+   * for one with no board) — a `client` column. It used to be a
+   * `connect_boards` column with no targets, which nobody could ever fill: a
+   * client board has no row that is "the client".
+   */
+  assert.equal(colByKey('billing', 'client').type, 'client');
+  assert.deepEqual(colByKey('billing', 'client').settings, {});
+  /**
+   * What came in, as a LIST beside what was billed. Right after Amount, in the
+   * same currency, and totalling — "outstanding" is Amount minus this, so the
+   * two must share a unit or the subtraction is nonsense.
+   */
+  const payments = colByKey('billing', 'payments');
+  assert.equal(payments.type, 'payments');
+  assert.equal(payments.order, amount.order + 1);
+  assert.equal(payments.settings.format, 'currency');
+  assert.equal(payments.settings.currency, 'INR');
+  assert.equal(payments.settings.summary, 'sum');
+  // The columns that MEAN due date and owner say so, so the filters and the
+  // overdue rule never have to guess from a key.
+  assert.equal(colByKey('billing', 'due').settings.role, 'dueDate');
+  assert.equal(colByKey('billing', 'owner').settings.role, 'assignee');
 });
 
 test('budget works remaining out rather than asking for it', () => {
@@ -191,6 +205,150 @@ test('every money column takes the workspace currency, and every one of them sum
       assert.equal(c.settings.summary, 'sum', `${key}.${c.key} lost its summary`);
     }
   }
+});
+
+test('no money column pins its decimals', () => {
+  /**
+   * `decimals: 0` used to ride along on every template money column, which
+   * rendered an invoice for 1,234.50 as 1,235 — a figure nobody billed. Left
+   * unset, the client shows whole amounts whole and fractional ones to two
+   * places.
+   */
+  for (const key of ['billing', 'budget', 'pipeline', 'expenses']) {
+    for (const c of seed(key).columns.filter((col) => col.settings?.format === 'currency')) {
+      assert.equal(c.settings.decimals, undefined, `${key}.${c.key} still pins decimals`);
+    }
+  }
+});
+
+test('a seeded board never shares a settings object with the registry', () => {
+  // The template's settings are constants. A board holding the same object
+  // would let one board's in-memory edit reach every board created after it.
+  const tpl = templateByKey('recruitment');
+  const a = seedTemplateColumns(tpl, { currency: 'INR' });
+  const b = seedTemplateColumns(tpl, { currency: 'INR' });
+  const roleCol = (cols) => cols.find((c) => c.key === 'role');
+  assert.notStrictEqual(roleCol(a).settings, tpl.columns.find((c) => c.key === 'role').settings);
+  assert.notStrictEqual(roleCol(a).settings.options, roleCol(b).settings.options);
+});
+
+// ---------------------------------------------------------------------------
+// Copying a board — `template: 'board:<id>'`
+// ---------------------------------------------------------------------------
+
+/** A source board's columns, as createBoard's copy branch hands them over. */
+const copied = (columns) => ({ columns });
+
+test('a copy keeps the currency its source chose', () => {
+  /**
+   * THE BUG: a billing board switched to CAD in an INR workspace, copied, came
+   * out with every money column re-stamped INR — so every amount typed into the
+   * copy read as rupees. A copy's columns carry real, chosen currencies; the
+   * board unit is only for columns that have none.
+   */
+  const cols = seedTemplateColumns(
+    copied([
+      { key: 'invoice', name: 'Invoice', type: 'text', isPrimary: true, settings: {} },
+      { key: 'amount', name: 'Amount', type: 'number', settings: { format: 'currency', currency: 'CAD', summary: 'sum' } },
+      {
+        key: 'remaining',
+        name: 'Remaining',
+        type: 'formula',
+        settings: { expression: 'column.amount - 1', format: 'currency', currency: 'CAD' },
+      },
+    ]),
+    { currency: 'INR', fromBoard: true }
+  );
+  assert.equal(cols.find((c) => c.key === 'amount').settings.currency, 'CAD');
+  assert.equal(cols.find((c) => c.key === 'remaining').settings.currency, 'CAD');
+  assert.equal(cols.find((c) => c.key === 'amount').settings.summary, 'sum');
+});
+
+test('a copied money column with no usable code takes the board unit', () => {
+  // Missing, empty, or a code we do not carry: there is nothing to keep, and
+  // leaving it open would let it render in whatever the fallback is next week.
+  const cols = seedTemplateColumns(
+    copied([
+      { key: 'a', name: 'A', type: 'number', settings: { format: 'currency' } },
+      { key: 'b', name: 'B', type: 'number', settings: { format: 'currency', currency: '' } },
+      { key: 'c', name: 'C', type: 'number', settings: { format: 'currency', currency: 'DOLLARS' } },
+      { key: 'd', name: 'D', type: 'number', settings: { format: 'percent' } },
+    ]),
+    { currency: 'CAD', fromBoard: true }
+  );
+  assert.deepEqual(cols.map((c) => c.settings.currency), ['CAD', 'CAD', 'CAD', undefined]);
+});
+
+test('a copied column with a legacy unnormalised code keeps it, normalised', () => {
+  // Written before codes were stored normalised: 'cad' and ' CAD ' ARE Canadian
+  // dollars to every reader, so the copy must not re-stamp them into the new
+  // board's unit — and it stores them the way the client's lookup expects.
+  const cols = seedTemplateColumns(
+    copied([
+      { key: 'a', name: 'A', type: 'number', settings: { format: 'currency', currency: 'cad' } },
+      { key: 'b', name: 'B', type: 'number', settings: { format: 'currency', currency: ' CAD ' } },
+      { key: 'c', name: 'C', type: 'payments', settings: { format: 'currency', currency: 'usd ' } },
+    ]),
+    { currency: 'INR', fromBoard: true }
+  );
+  assert.deepEqual(cols.map((c) => c.settings.currency), ['CAD', 'CAD', 'USD']);
+});
+
+test('a built-in template is always re-stamped, placeholder or not', () => {
+  // The template's INR is a placeholder, not a choice anybody made.
+  const cols = seedTemplateColumns(templateByKey('billing'), { currency: 'CAD' });
+  for (const c of cols.filter((col) => col.settings?.format === 'currency')) {
+    assert.equal(c.settings.currency, 'CAD', `billing.${c.key}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Board.currency at birth — follow the workspace, or a currency of its own
+// ---------------------------------------------------------------------------
+
+const { planNewBoardCurrency, planCopiedBoardCurrency } = require('../services/boardCurrency');
+
+test('a new board follows the workspace unless it asks for a DIFFERENT currency', () => {
+  // No choice: follow, and every money column is born in the workspace's unit.
+  assert.deepEqual(planNewBoardCurrency({ orgBase: 'CAD' }), { currency: null, stamp: 'CAD' });
+  assert.deepEqual(planNewBoardCurrency({ chosen: '', orgBase: 'CAD' }), { currency: null, stamp: 'CAD' });
+  // The workspace's own code is not an override — the board still moves with it.
+  assert.deepEqual(planNewBoardCurrency({ chosen: 'cad', orgBase: 'CAD' }), { currency: null, stamp: 'CAD' });
+  // Anything else is pinned, and the columns are born in it.
+  assert.deepEqual(planNewBoardCurrency({ chosen: 'usd', orgBase: 'CAD' }), { currency: 'USD', stamp: 'USD' });
+  // A workspace from before `baseCurrency`: rupees, as the templates always were.
+  assert.deepEqual(planNewBoardCurrency({}), { currency: null, stamp: 'INR' });
+});
+
+test('the seeded columns of a following board are in the workspace unit', () => {
+  const { currency, stamp } = planNewBoardCurrency({ orgBase: 'CAD' });
+  assert.equal(currency, null);
+  const cols = seedTemplateColumns(templateByKey('billing'), { currency: stamp });
+  for (const c of cols.filter((col) => col.settings?.format === 'currency')) {
+    assert.equal(c.settings.currency, 'CAD', `billing.${c.key}`);
+  }
+});
+
+test('a copy follows only when its source did AND its columns are in the workspace unit', () => {
+  const money = (code, type = 'number') => ({
+    key: `k${code}${type}`, type, settings: { format: 'currency', ...(code ? { currency: code } : {}) },
+  });
+  const plan = (sourceCurrency, sourceEffective, columns, orgBase = 'INR') =>
+    planCopiedBoardCurrency({ sourceCurrency, sourceEffective, columns, orgBase });
+
+  assert.equal(plan(null, 'INR', [money('INR'), money('INR', 'payments')]), null);
+  // No money at all: nothing to protect, so it follows like its source.
+  assert.equal(plan(null, 'INR', []), null);
+  // A mirror's unit is its source board's and does not decide this.
+  assert.equal(plan(null, 'INR', [money('INR'), money('CAD', 'mirror')]), null);
+  // A code-less column takes the source's unit — the workspace's here.
+  assert.equal(plan(null, 'INR', [money(null)]), null);
+
+  // The source followed but its columns are in something else: pinned to it.
+  assert.equal(plan(null, 'USD', [money('USD')]), 'USD');
+  // The source had a currency of its own: so does the copy, even the workspace's.
+  assert.equal(plan('CAD', 'CAD', [money('CAD')]), 'CAD');
+  assert.equal(plan('INR', 'INR', [money('INR')]), 'INR');
 });
 
 test('a non-money column is untouched by the workspace currency', () => {

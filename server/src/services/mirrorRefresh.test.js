@@ -106,6 +106,35 @@ test('resolveDisplay: joins tag option labels', () => {
   assert.equal(resolveDisplay(['a', 'b'], board, tagsColId.toString()), 'Hot, VIP');
 });
 
+test('resolveDisplay: a payments cell mirrors as the total of its receipts', () => {
+  // The default branch turns every object into null, so a mirrored "Paid"
+  // read blank and a `sum` of it was always 0.
+  const payColId = oid();
+  const board = {
+    columns: [{ _id: payColId, type: 'payments', settings: { format: 'currency', currency: 'CAD' } }],
+  };
+  const cid = payColId.toString();
+  assert.equal(
+    resolveDisplay(
+      [
+        { id: 'a', amount: 1200, date: '2026-09-01' },
+        { id: 'b', amount: '300.5', date: '2026-09-10' },
+        // Junk entries count for nothing rather than poisoning the sum.
+        { id: 'c', amount: 'lots' },
+        null,
+      ],
+      board,
+      cid
+    ),
+    1500.5
+  );
+  // Nothing paid yet is a real zero — "Outstanding" must read the full amount.
+  assert.equal(resolveDisplay([], board, cid), 0);
+  // Not a list at all is not a figure.
+  assert.equal(resolveDisplay({ amount: 5 }, board, cid), null);
+  assert.equal(resolveDisplay('12', board, cid), null);
+});
+
 // ---------------------------------------------------------------------------
 // readLinks — tolerates Map (hydrated doc) and plain object (lean)
 // ---------------------------------------------------------------------------

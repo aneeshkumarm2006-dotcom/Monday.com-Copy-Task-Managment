@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { Coins } from 'lucide-react';
 import { formatPct, stateMeta, barPct } from '../../../utils/adsBudgetDisplay';
 import useMoney from '../../../hooks/useMoney';
 import { dayKeyOfMonthKey } from '../../../utils/money';
@@ -10,6 +11,31 @@ import { dayKeyOfMonthKey } from '../../../utils/money';
  * most are imported by both screens — the same arrangement `SectionShell` uses
  * for `Stat` / `StatRow` / `Th` / `Td`.
  */
+
+/**
+ * The once-per-screen line about what currency the figures are shown in.
+ *
+ * `text` is `useMoney().surfaceNote(...)` — "Shown in INR · entered in CAD ·
+ * rates of 2026-09-01", or "Shown as entered (CAD) — no exchange rate available
+ * yet" — and null when nothing was converted or asked to be, in which case
+ * this renders nothing: a screen read as entered already says its unit on
+ * every figure.
+ *
+ * One line under the stat cards rather than a marker on each figure, the rule
+ * `useMoney` states for every bulk money surface: tabular columns scan cleanly,
+ * and the fact is still on screen for the person wondering why a CAD board
+ * reads in rupees.
+ */
+export const MoneyNote = ({ text }) =>
+  text ? (
+    <p
+      className="font-body inline-flex items-center gap-1.5"
+      style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.5 }}
+    >
+      <Coins size={12} aria-hidden="true" className="shrink-0" />
+      {text}
+    </p>
+  ) : null;
 
 /**
  * One headline number, as a white card.

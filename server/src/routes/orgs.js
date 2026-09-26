@@ -19,6 +19,7 @@ const {
   deleteHoliday,
   getCurrencySettings,
   saveCurrencySettings,
+  listMoneyBoards,
   listServiceCatalog,
 } = require('../controllers/orgController');
 const {
@@ -150,6 +151,19 @@ router.post(
   '/:id/currency/refresh',
   requireCapability('org.manage_settings'),
   refreshRates
+);
+
+/**
+ * The boards that hold money, what each is in, and whether it FOLLOWS the
+ * workspace currency (following boards are relabelled automatically when the
+ * PUT above changes `baseCurrency`). Same gate as the settings it sits beside;
+ * relabelling a listed board — or putting it back to following — is still
+ * checked per board (`column.manage`) by PATCH /api/boards/:id/currency.
+ */
+router.get(
+  '/:id/currency/boards',
+  requireCapability('org.manage_settings'),
+  listMoneyBoards
 );
 
 // ---------------------------------------------------------------------------

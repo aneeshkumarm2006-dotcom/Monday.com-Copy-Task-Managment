@@ -129,9 +129,31 @@ const resolveDisplay = (raw, targetBoard, sourceColumnId) => {
       return typeof raw === 'object' ? raw.label || raw.url || '' : raw;
     case 'location':
       return typeof raw === 'object' ? raw.label || '' : raw;
+    case 'client':
+      // `{ boardId, name }` — who the row is for. `name` is the server-kept
+      // snapshot of the client board's display name (or a typed name), which
+      // is exactly what a mirror should show; the default branch below turned
+      // the object into null, so mirroring a Client column showed nothing.
+      return typeof raw === 'object' ? (raw && raw.name) || '' : raw;
     case 'mirror':
       // A nested mirror: unwrap the cache shape if present.
       return raw && typeof raw === 'object' && raw.__mirror === true ? raw.value : raw;
+    case 'payments': {
+      // A payments cell is a LIST of receipts, and the default branch below
+      // turns every object into null — so mirroring "Paid" from a billing board
+      // showed nothing, and a `sum` of it was always 0. The number a payments
+      // column stands for is what the receipts add up to, the same figure the
+      // client's `paymentsTotal` and a formula referencing the column use: 0
+      // for an empty list (nothing paid yet is a real zero), null for a value
+      // that is not a list at all.
+      if (!Array.isArray(raw)) return null;
+      return raw.reduce((sum, p) => {
+        const n = p && typeof p === 'object'
+          ? (typeof p.amount === 'string' ? Number(p.amount) : p.amount)
+          : NaN;
+        return typeof n === 'number' && Number.isFinite(n) ? sum + n : sum;
+      }, 0);
+    }
     default:
       return typeof raw === 'object' ? null : raw;
   }

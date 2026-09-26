@@ -28,10 +28,15 @@
  *    `obj[key]` is always `undefined`. `DataGrid` already handled both — this
  *    is that check, lifted out so there is one copy rather than one per reader.
  *
- * A formula column has NO stored value at all: it is computed at render by
- * `FormulaCell`. This returns `undefined` for one, which is correct and is why
- * summing a formula column needs its own path rather than a fix here.
+ * A formula column has NO stored value at all, and a payments column stores a
+ * list of receipts rather than a number. `columnValue` returns what is STORED —
+ * `undefined` for a formula — which is correct for a raw read. Anything that
+ * wants the column AS A NUMBER (a sum, a formula input, a sort) asks
+ * `numericValue` instead, which knows how each type becomes one.
  */
+
+import { evaluateFormula, formulaReferences } from './formula.js';
+import { paymentsTotal } from './payments.js';
 
 /**
  * One task's value for one column, or `undefined`.
@@ -64,3 +69,104 @@ export const columnValue = (task, column) => {
  */
 export const columnValuesOf = (rows, column) =>
   (Array.isArray(rows) ? rows : []).map((r) => columnValue(r, column));
+
+/** A stored number (or numeric string) as a number, or null when empty. */
+const toNumber = (raw) => {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = typeof raw === 'string' ? Number(raw) : raw;
+  return typeof n === 'number' && Number.isFinite(n) ? n : null;
+};
+
+/**
+ * A mirror's cached value arrives in one of two shapes: bare (after the task
+ * list's `embedMirrorValues`) or still in its cache wrapper. Same unwrap as
+ * `MirrorCell`'s.
+ */
+const unwrapMirror = (raw) =>
+  raw && typeof raw === 'object' && raw.__mirror === true ? raw.value : raw;
+
+/**
+ * The shared walk behind `numericValue` and `formulaValue`.
+ *
+ * `seen` holds the formula columns already on the stack. A formula may read
+ * another formula ("Margin = column.remaining / column.allocated"), and the
+ * server only refuses a column that references ITSELF — so A → B → A can still
+ * be saved, and without this guard it would recurse until the stack blew and
+ * took the whole grid down with it. A cycle computes as null, like any other
+ * formula with a missing input.
+ */
+const numericOf = (task, column, columns, seen) => {
+  if (!column) return null;
+  switch (column.type) {
+    case 'number':
+    case 'rating':
+      return toNumber(columnValue(task, column));
+    case 'formula':
+      return formulaOf(task, column, columns, seen);
+    case 'payments':
+      return paymentsTotal(columnValue(task, column));
+    case 'mirror': {
+      // Numeric only. A mirror of a text column ("first" client name) is not
+      // a number, and a numeric-LOOKING string from one is still text.
+      const v = unwrapMirror(columnValue(task, column));
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    }
+    default:
+      return null;
+  }
+};
+
+const formulaOf = (task, column, columns, seen) => {
+  const expression = column?.settings?.expression;
+  if (typeof expression !== 'string' || !expression.trim()) return null;
+
+  const id = String(column._id ?? column.key);
+  if (seen.has(id)) return null;
+  const nextSeen = new Set(seen).add(id);
+
+  // Only the columns the expression actually names are computed — a board with
+  // twenty columns and a two-term formula reads two cells, not twenty.
+  const all = Array.isArray(columns) ? columns : [];
+  const valuesByKey = {};
+  for (const key of formulaReferences(expression)) {
+    const ref = all.find((c) => c && c.key === key);
+    valuesByKey[key] = ref ? numericOf(task, ref, all, nextSeen) : null;
+  }
+  return evaluateFormula(expression, valuesByKey);
+};
+
+/**
+ * A formula column's value on one task, or null.
+ *
+ * `columns` is the board's column list: the expression refers to its inputs by
+ * `column.<key>`, so it needs the siblings to resolve them. Without it every
+ * reference is missing and the answer is null, the same as an empty input.
+ *
+ * @param {Object} task
+ * @param {Object} column   the formula column
+ * @param {Object[]} columns the board's columns
+ * @returns {number|null}
+ */
+export const formulaValue = (task, column, columns) =>
+  formulaOf(task, column, columns, new Set());
+
+/**
+ * One task's value for one column AS A NUMBER, or null when it has none.
+ *
+ *   number / rating → the stored number
+ *   formula         → `formulaValue`
+ *   payments        → the receipts' total (0 when none — see `paymentsTotal`)
+ *   mirror          → the mirrored number, when it is one
+ *   anything else   → null
+ *
+ * What every summary, formula input and numeric sort should read, so a
+ * "Remaining" formula and a "Paid" payments column total like any number
+ * column rather than as blanks.
+ *
+ * @param {Object} task
+ * @param {Object} column
+ * @param {Object[]} [columns] the board's columns — needed for formulas
+ * @returns {number|null}
+ */
+export const numericValue = (task, column, columns) =>
+  numericOf(task, column, columns, new Set());

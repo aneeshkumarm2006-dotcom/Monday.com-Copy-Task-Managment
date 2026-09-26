@@ -4,6 +4,8 @@ import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import Modal from '../../ui/Modal';
 import { SelectField } from '../../ui/FormControls';
+import useMoney from '../../../hooks/useMoney';
+import { currencyByCode, dayKeyOfMonthKey } from '../../../utils/money';
 
 /**
  * Add or edit one budget row — a platform, or a campaign inside one.
@@ -36,21 +38,44 @@ const LIFECYCLES = [
   { value: 'paused', label: 'Paused — temporarily stopped' },
 ];
 
-/** A number field that keeps '' distinct from 0 while being typed in. */
-const MoneyField = ({ label, value, onChange, error, helperText, placeholder }) => (
-  <Input
-    label={label}
-    type="number"
-    min="0"
-    step="0.01"
-    inputMode="decimal"
-    value={value}
-    onChange={(e) => onChange(e.target.value)}
-    error={error}
-    helperText={helperText}
-    placeholder={placeholder}
-  />
-);
+/**
+ * A number field that keeps '' distinct from 0 while being typed in — and says
+ * which currency it is in.
+ *
+ * The label carries the code ("Budget (CAD)") because every figure on the tab
+ * behind this dialog may be showing in the READER's currency: somebody reading
+ * in rupees sees "₹2,58,000" on the row, opens it, and a bare number field
+ * invited them to type rupees into a CAD budget. What they type is always
+ * stored in the board's Ads Budget currency, so the field says so, and — when
+ * they read in another currency — the helper line shows what the typed number
+ * comes to in theirs, the treatment NumberCell gives a money column.
+ */
+const MoneyField = ({
+  label, value, onChange, error, helperText, placeholder, currency, monthKey,
+}) => {
+  const fx = useMoney();
+  const code = currencyByCode(currency)?.code || currency || null;
+  const typed = value === '' || value === null || value === undefined ? null : Number(value);
+  const on = dayKeyOfMonthKey(monthKey);
+  const converted =
+    typed !== null && Number.isFinite(typed) && fx.resolve(typed, currency, on).converted
+      ? `≈ ${fx.in(typed, currency, on)}`
+      : null;
+  return (
+    <Input
+      label={code ? `${label} (${code})` : label}
+      type="number"
+      min="0"
+      step="0.01"
+      inputMode="decimal"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      error={error}
+      helperText={[converted, helperText].filter(Boolean).join(' · ') || undefined}
+      placeholder={placeholder}
+    />
+  );
+};
 
 const blank = {
   platform: '',
@@ -80,6 +105,12 @@ const BudgetRowModal = ({
   monthLabel = '',
   /** Platform names already used on this board, for the suggestion list. */
   platformSuggestions = [],
+  /**
+   * The board's Ads Budget currency — what every amount typed here is stored
+   * in — and the month, so the converted hint uses that month's rate.
+   */
+  currency = null,
+  monthKey = null,
   saving = false,
   serverErrors = [],
 }) => {
@@ -162,6 +193,11 @@ const BudgetRowModal = ({
 
   const listId = 'ads-budget-platforms';
 
+  // "Canadian dollar (CAD)" for the intro line; the bare code for one the
+  // catalog does not carry, never a borrowed name.
+  const cur = currencyByCode(currency);
+  const unitName = cur ? `${cur.name} (${cur.code})` : currency ? String(currency).toUpperCase() : null;
+
   return (
     <Modal isOpen={open} onClose={onClose} title={title} maxWidth={560}>
       <div className="flex flex-col gap-4">
@@ -169,6 +205,7 @@ const BudgetRowModal = ({
           {parent
             ? `A campaign on ${parent.platform}, for ${groupName}${monthLabel ? ` in ${monthLabel}` : ''}.`
             : `${groupName ? `${groupName}, ` : ''}${monthLabel || 'this month'}. Budgets are per month — next month starts fresh.`}
+          {unitName ? ` Amounts are entered in ${unitName}, this board's Ads Budget currency.` : ''}
         </p>
 
         {/* Only when opening from the roster, where no client is implied yet. */}
@@ -234,6 +271,8 @@ const BudgetRowModal = ({
             label="Budget"
             value={draft.allocated}
             onChange={set('allocated')}
+            currency={currency}
+            monthKey={monthKey}
             error={errorFor('allocated')}
             placeholder="0"
             helperText="What has been committed for the month."
@@ -242,6 +281,8 @@ const BudgetRowModal = ({
             label="Spend so far"
             value={draft.spent}
             onChange={set('spent')}
+            currency={currency}
+            monthKey={monthKey}
             error={errorFor('spent')}
             placeholder="0"
             helperText="Updated as the month runs."
@@ -253,6 +294,8 @@ const BudgetRowModal = ({
             label="Daily budget"
             value={draft.dailyBudget}
             onChange={set('dailyBudget')}
+            currency={currency}
+            monthKey={monthKey}
             error={errorFor('dailyBudget')}
             placeholder="Optional"
             helperText="The cap set at the platform, if there is one."

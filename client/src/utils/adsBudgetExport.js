@@ -203,11 +203,15 @@ const CONTEXT_COLUMNS = [
 
 const metaFor = (payload) => ({
   monthLabel: payload.monthLabel || payload.monthKey || '',
-  currency: payload.currency || 'USD',
+  // The unit the tab resolved (the Ads Budget's own, else the board's, else
+  // the workspace's — `AdsBudgetTab` fills it in). Blank rather than 'USD'
+  // when nothing names one: a Currency column asserting dollars over a rupee
+  // or CAD board's figures is worse than one that says nothing.
+  currency: currencyByCode(payload.currency)?.code || payload.currency || '',
   // Derived once, here, so every money cell groups the way this board's own
   // currency groups. Null for a code the catalog does not carry, which falls
   // back to the reader's locale rather than asserting American grouping.
-  locale: currencyByCode(payload.currency || 'USD')?.locale || null,
+  locale: currencyByCode(payload.currency)?.locale || null,
   scope: payload.group?.name || 'All clients',
   boardName: payload.boardName || 'board',
 });
@@ -289,7 +293,7 @@ export const downloadPdf = (payload, report) => {
   doc.text(
     [
       meta.monthLabel,
-      `amounts in ${meta.currency}`,
+      meta.currency ? `amounts in ${meta.currency}` : '',
       `${rows.length} ${spec.noun}${rows.length === 1 ? '' : 's'}`,
     ]
       .filter(Boolean)

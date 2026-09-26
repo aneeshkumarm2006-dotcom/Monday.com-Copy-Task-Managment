@@ -17,6 +17,7 @@ import AttachmentList from './AttachmentList';
 import * as updateService from '../../services/updateService';
 import * as taskAttachmentService from '../../services/taskAttachmentService';
 import useAuthStore from '../../store/authStore';
+import useTaskStore from '../../store/taskStore';
 import useToastStore from '../../store/toastStore';
 import { timeAgo, formatDate } from '../../utils/dateUtils';
 import { draftKeyFor } from '../../utils/updateDrafts';
@@ -165,9 +166,12 @@ const UpdatesTab = ({ task, audience = 'default', onCountChange }) => {
   }, [taskId, isClientThread]);
 
   // A posted update lands at the top of the feed. Posting itself lives in the
-  // composer, which is also what drops the draft once the update exists.
-  const handlePosted = useCallback((created) => {
+  // composer, which is also what drops the draft once the update exists. A
+  // post that mentioned people also carries the row's fresh "told" stamp —
+  // put it on the row, or the ledger tile says "Nobody told" until a refetch.
+  const handlePosted = useCallback((created, meta) => {
     if (created) setUpdates((prev) => [created, ...prev]);
+    useTaskStore.getState().applyToldStamp(meta?.task);
   }, []);
 
   const handleDelete = useCallback(

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { CURRENCY_CODES } = require('../utils/money');
 
 /**
  * Per-board label. Tasks reference labels by `_id` so renames/recolors
@@ -415,10 +416,70 @@ const boardSchema = new mongoose.Schema(
      * this was left out at first precisely to avoid a board pretending to be a
      * template it has since been edited away from, and the answer is not to
      * hide what it is for, it is to never let this field drive anything.
+     *
+     * ONE NARROW EXCEPTION: column ROLES (utils/columnRoles.js). A column that
+     * predates `settings.role` borrows the role its template gave the same key
+     * — Billing's `due` is still the due date on a board created before roles
+     * existed. The column's own `settings.role` always wins, and nothing else
+     * reads through here.
      */
     templateKey: {
       type: String,
       default: null,
+    },
+
+    /**
+     * Which revision of its template's SHAPE this board has been brought up to
+     * — `TEMPLATE_REVISION` in utils/boardTemplates.js. 0 on every board from
+     * before the field existed.
+     *
+     * Written by exactly two things: `createBoard` (a board seeded from a
+     * built-in template is born current; a copy carries its source's revision)
+     * and scripts/upgradeTemplateBoards.js, which skips a board already at the
+     * current revision and stamps one after upgrading it. That skip is the
+     * point: the script ADDS columns a template gained, and without a marker a
+     * second run would put back a column somebody had deliberately deleted.
+     *
+     * Like `templateKey`, it never decides how a board behaves at runtime.
+     */
+    templateRevision: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    /**
+     * Whose unit this board's money is in.
+     *
+     *   null   — the board FOLLOWS the workspace (`Organisation.baseCurrency`).
+     *            The default, for new boards and existing ones alike. When the
+     *            workspace currency changes, every following board is
+     *            relabelled to the new one (services/boardCurrency.js
+     *            `relabelFollowingBoards`, run by the Currency settings save).
+     *   'CAD'  — an explicit per-board OVERRIDE, set by choosing a currency
+     *            other than the workspace's (at creation, or with
+     *            `PATCH /api/boards/:id/currency`). A workspace change never
+     *            touches it; `PATCH … { currency: null }` puts it back to
+     *            following.
+     *
+     * BOARD-LEVEL because "what are the amounts on this board in" is one
+     * question with one answer — the ledger strip sums them. Each money
+     * column's `settings.currency` still names its code explicitly and is still
+     * what each figure renders in; on a following board every own money column
+     * (never a mirror) is kept equal to the workspace's unit. `boardCurrencyOf`
+     * in utils/money.js resolves the board's unit: this, else the first own
+     * money column's code, else the workspace's.
+     *
+     * Changing it RELABELS, never converts: the stored figures are whatever
+     * somebody typed, in whatever unit they meant. Conversion happens at render
+     * time for a reader who asked for another currency, and nowhere else.
+     */
+    currency: {
+      type: String,
+      default: null,
+      trim: true,
+      uppercase: true,
+      enum: CURRENCY_CODES,
     },
 
     /**
@@ -460,10 +521,25 @@ const boardSchema = new mongoose.Schema(
      * of the tab's screens is a sum across rows, and rows in mixed currencies
      * cannot be added. One board, one currency is a real limitation; adding
      * numbers that do not share a unit is a bug.
+     *
+     * `currency` defaults to NULL, meaning "not chosen yet". It used to default
+     * to 'USD', which Mongoose wrote onto every board at creation — so the
+     * card's "fall back to the workspace currency" branch could never run and a
+     * rupee workspace opened the add-on in dollars. Readers resolve null to the
+     * BOARD's own `currency` when it has one, else the workspace's
+     * `baseCurrency` (adsBudgetController `adsBudgetCurrencyOf`) — so null
+     * means "follows the board", and on a board that follows the workspace it
+     * moves with a workspace currency change like the board's columns do.
+     *
+     * New boards are created with it null too. Switching the add-on on with no
+     * currency chosen PINS the board's own currency on a board that has one
+     * (an override), and leaves null on a following board
+     * (adsBudgetController.setSettings) — which also clears a stored 'USD' that
+     * was only ever the old default (off, no rows, no currency in the request).
      */
     adsBudget: {
       enabled: { type: Boolean, default: false },
-      currency: { type: String, default: 'USD', trim: true, uppercase: true, maxlength: 3 },
+      currency: { type: String, default: null, trim: true, uppercase: true, maxlength: 3 },
     },
 
     /**

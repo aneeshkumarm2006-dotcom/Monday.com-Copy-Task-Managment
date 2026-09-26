@@ -21,6 +21,9 @@ import Avatar from '../../ui/Avatar';
 import { columnValue } from '../../../utils/columnValues';
 import { computeSummary } from '../../../utils/columnSummary';
 import useMoney from '../../../hooks/useMoney';
+import useBoardMembers from '../../../hooks/useBoardMembers';
+import { boardCurrencyOf } from '../../../utils/money';
+import { roleColumn } from '../../../utils/columnRoles';
 import { rowCountLabel } from '../../../utils/boardTemplateDisplay';
 import { groupColorAt } from '../../../utils/groupColors';
 import { deepFor } from '../../../utils/priorityColors';
@@ -65,10 +68,35 @@ import { deepFor } from '../../../utils/priorityColors';
  * terminal, which is predictable and beats a hidden flag.
  */
 const CARD_SHAPE = {
-  pipeline: { subtitle: 'nextStep', person: 'owner', terminal: ['won', 'lost'] },
-  recruitment: { subtitle: 'role', person: 'interviewer', terminal: ['hired', 'rejected'] },
+  pipeline: { subtitle: 'nextStep', terminal: ['won', 'lost'] },
+  recruitment: { subtitle: 'role', terminal: ['hired', 'rejected'] },
 };
-const DEFAULT_SHAPE = { subtitle: null, person: null, terminal: [] };
+const DEFAULT_SHAPE = { subtitle: null, terminal: [] };
+
+/**
+ * Whose card this is: the people in the column that plays the ASSIGNEE role
+ * (`roleColumn` — a pipeline's Owner, a recruitment board's Interviewer), as
+ * this board's roster knows them.
+ *
+ * The role column is the fact on a flexible board; `task.assignedTo` is the
+ * copy the server keeps in step with it, already populated, so it puts a face
+ * to an id the roster has not delivered yet — and stands on its own only where
+ * the board has no assignee column at all. This used to read
+ * `task.assignees`, a field no task has, so no card ever showed anybody.
+ */
+const peopleOf = (task, ownerCol, memberById) => {
+  const hydrated = new Map(
+    (Array.isArray(task?.assignedTo) ? task.assignedTo : [])
+      .filter((u) => u && typeof u === 'object' && u._id)
+      .map((u) => [String(u._id), u])
+  );
+  const raw = ownerCol ? columnValue(task, ownerCol) : [...hydrated.keys()];
+  const ids = (Array.isArray(raw) ? raw : [])
+    .map((v) => (v && typeof v === 'object' ? v._id : v))
+    .filter((v) => v != null)
+    .map(String);
+  return ids.map((id) => memberById.get(id) || hydrated.get(id)).filter(Boolean);
+};
 
 const DAY = 86400000;
 
@@ -97,7 +125,7 @@ const ageTone = (days) => {
 
 const ageLabel = (days) => (days === 0 ? 'today' : `${days}d`);
 
-const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
+const StageCard = ({ task, cols, color, currency, memberById, canDrag, onOpen }) => {
   // Named `fmt`, not `money` — the local `money` below is the deal's VALUE.
   const fmt = useMoney();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -106,15 +134,19 @@ const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
     data: { type: 'stage-task', groupId: task.group },
   });
 
-  const title = (cols.primary && columnValue(task, cols.primary)) || task.title || 'Untitled';
+  const title = (cols.primary && columnValue(task, cols.primary)) || task.name || 'Untitled';
   const money = cols.money ? columnValue(task, cols.money) : null;
   const subtitle = cols.subtitle ? columnValue(task, cols.subtitle) : null;
   const rating = cols.rating ? columnValue(task, cols.rating) : null;
   const files = cols.file ? columnValue(task, cols.file) : null;
-  // A person column holds ids; the row's own assignees are already hydrated, so
-  // they are what actually renders an avatar. Falling back to them also keeps a
-  // card useful on a board whose person column has never been filled in.
-  const people = Array.isArray(task.assignees) ? task.assignees.slice(0, 3) : [];
+  const everyone = peopleOf(task, cols.owner, memberById);
+  const people = everyone.slice(0, 3);
+  const morePeople = everyone.length - people.length;
+  // A money column with no code of its own is in the BOARD's unit — the fourth
+  // argument — not the workspace's.
+  const shownMoney =
+    money != null && money !== '' ? fmt.column(money, cols.money?.settings, null, currency) : null;
+  const names = everyone.map((p) => p.name).filter(Boolean).join(', ');
 
   const days = daysInStage(task);
   const tone = ageTone(days);
@@ -149,7 +181,7 @@ const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
       }}
       role="button"
       tabIndex={0}
-      aria-label={`${title}${money != null ? `, ${fmt.column(money, cols.money?.settings)}` : ''}`}
+      aria-label={`${title}${shownMoney ? `, ${shownMoney}` : ''}${names ? `, ${names}` : ''}`}
     >
       <p
         className="font-body"
@@ -158,7 +190,7 @@ const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
         {title}
       </p>
 
-      {money != null && money !== '' && (
+      {shownMoney && (
         <p
           className="font-body"
           style={{
@@ -169,7 +201,7 @@ const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
             marginTop: 4,
           }}
         >
-          {fmt.column(money, cols.money?.settings)}
+          {shownMoney}
         </p>
       )}
 
@@ -206,8 +238,15 @@ const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
       <div className="flex items-center justify-between gap-2" style={{ marginTop: 7 }}>
         <span className="flex items-center gap-1">
           {people.map((p) => (
-            <Avatar key={p._id || p} user={p} size={19} />
+            <span key={p._id} title={p.name || undefined} className="inline-flex">
+              <Avatar user={p} size={19} />
+            </span>
           ))}
+          {morePeople > 0 && (
+            <span className="font-body" style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
+              +{morePeople}
+            </span>
+          )}
           {Array.isArray(files) && files.length > 0 && (
             <span
               className="inline-flex items-center gap-1 font-body"
@@ -240,7 +279,21 @@ const StageCard = ({ task, cols, color, canDrag, onOpen }) => {
   );
 };
 
-const StageColumn = ({ group, tasks, cols, shape, board, color, openTotal, canEdit, dragEnabled, onOpenTask, onAddTask }) => {
+const StageColumn = ({
+  group,
+  tasks,
+  cols,
+  shape,
+  board,
+  color,
+  currency,
+  memberById,
+  openTotal,
+  canCreate,
+  dragEnabled,
+  onOpenTask,
+  onAddTask,
+}) => {
   const fmt = useMoney();
   const stageColor = color || cols.accent;
   // Darkened before it is used as TEXT: the palette is chosen for filled dots
@@ -256,7 +309,8 @@ const StageColumn = ({ group, tasks, cols, shape, board, color, openTotal, canEd
     data: { type: 'stage-col', groupId: group._id },
   });
 
-  const total = cols.money ? computeSummary(tasks, cols.money) : null;
+  // The board's columns go along so a FORMULA money column computes its total.
+  const total = cols.money ? computeSummary(tasks, cols.money, board?.columns) : null;
   const share =
     !isTerminal && openTotal > 0 && total && total.value > 0
       ? Math.round((total.value / openTotal) * 100)
@@ -313,7 +367,7 @@ const StageColumn = ({ group, tasks, cols, shape, board, color, openTotal, canEd
               marginTop: 3,
             }}
           >
-            {fmt.column(total.value, cols.money.settings)}
+            {fmt.column(total.value, cols.money.settings, null, currency)}
           </p>
         )}
         <p
@@ -349,6 +403,8 @@ const StageColumn = ({ group, tasks, cols, shape, board, color, openTotal, canEd
                 task={task}
                 cols={cols}
                 color={stageColor}
+                currency={currency}
+                memberById={memberById}
                 canDrag={dragEnabled}
                 onOpen={onOpenTask}
               />
@@ -364,7 +420,7 @@ const StageColumn = ({ group, tasks, cols, shape, board, color, openTotal, canEd
             </p>
           )}
 
-          {canEdit && (
+          {canCreate && (
             <button
               type="button"
               onClick={() => onAddTask?.(group._id)}
@@ -407,12 +463,27 @@ const StagesView = ({
   groups,
   tasksByGroup,
   canEdit = false,
+  // Adding a row to a stage is `task.create`, which a contributor holds
+  // without `canEdit` (edit_any + group.manage). Gating the "+" on canEdit
+  // left the header's button — which always lands in one group — as their
+  // only way in. Defaults to canEdit for a caller that does not say.
+  canCreate = canEdit,
   dragEnabled = true,
   onOpenTask,
   onAddTask,
   onMoveTask,
 }) => {
   const shape = CARD_SHAPE[board?.templateKey] || DEFAULT_SHAPE;
+  const money = useMoney();
+  // What a money column with no code of its own is in — the board's unit, the
+  // same chain the grid and the ledger resolve.
+  const currency = boardCurrencyOf(board, money.baseCurrency);
+  // The BOARD's roster, not the workspace's: an owner is somebody on this board.
+  const members = useBoardMembers(board?._id);
+  const memberById = useMemo(
+    () => new Map(members.map((m) => [String(m._id || m.id || ''), m])),
+    [members]
+  );
 
   /**
    * Which columns feed the card, resolved once.
@@ -429,6 +500,7 @@ const StagesView = ({
       money: all.find((c) => c.settings?.format === 'currency') || null,
       rating: all.find((c) => c.type === 'rating') || null,
       file: all.find((c) => c.type === 'file') || null,
+      owner: roleColumn(board, 'assignee'),
       subtitle: byKey(shape.subtitle),
       accent: 'var(--color-accent)',
     };
@@ -444,10 +516,10 @@ const StagesView = ({
     if (!cols.money) return 0;
     return ordered.reduce((sum, g) => {
       if (shape.terminal.includes((g.name || '').trim().toLowerCase())) return sum;
-      const t = computeSummary(tasksByGroup[g._id] || [], cols.money);
+      const t = computeSummary(tasksByGroup[g._id] || [], cols.money, board?.columns);
       return sum + (t?.value || 0);
     }, 0);
-  }, [ordered, tasksByGroup, cols.money, shape.terminal]);
+  }, [ordered, tasksByGroup, cols.money, shape.terminal, board?.columns]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -519,11 +591,13 @@ const StagesView = ({
             // is the same blue on both.
             color={groupColorAt(idx)}
             board={board}
+            currency={currency}
+            memberById={memberById}
             tasks={tasksByGroup[group._id] || []}
             cols={cols}
             shape={shape}
             openTotal={openTotal}
-            canEdit={canEdit}
+            canCreate={canCreate}
             dragEnabled={dragEnabled}
             onOpenTask={onOpenTask}
             onAddTask={onAddTask}

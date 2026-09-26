@@ -79,6 +79,10 @@ const OptionMenu = ({
   chipVariant = 'tag',
   width = 236,
   ariaLabel,
+  // What an EMPTY list says (no query typed): a column whose every choice is
+  // retired, a label set with nothing in it. Without it the body read
+  // 'Nothing matches “”', a search result for a search nobody ran.
+  emptyText = null,
 }) => {
   const menuRef = useRef(null);
   const searchRef = useRef(null);
@@ -357,7 +361,7 @@ const OptionMenu = ({
             className="font-body text-center"
             style={{ fontSize: 12, color: 'var(--color-text-muted)', padding: '14px 0' }}
           >
-            Nothing matches “{query}”
+            {query ? `Nothing matches “${query}”` : emptyText || 'Nothing to choose here.'}
           </p>
         ) : (
           visible.map(renderOption)

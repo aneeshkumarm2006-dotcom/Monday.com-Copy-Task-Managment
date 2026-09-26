@@ -1,4 +1,6 @@
+const mongoose = require('mongoose');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
+const { destroyCloudinaryAssets } = require('../config/cloudinary');
 
 /**
  * Uploading a file to a BOARD rather than to a task.
@@ -22,6 +24,26 @@ const { loadBoardContext, requireCapability } = require('../utils/boardContext')
  * after a successful upload. That is the right way round: a stray blob nobody
  * links to is invisible and cheap, and a phantom invoice is neither.
  *
+ * ---- WHY THE CHECK RUNS BEFORE MULTER --------------------------------------
+ *
+ * multer-storage-cloudinary uploads WHILE it parses the request. This check
+ * used to live inside `uploadBoardFile`, which runs AFTER multer — so any
+ * signed-in user of any workspace could post 25 MB to any board id and have it
+ * stored in our account before being told 403, with nothing ever deleting it.
+ * `authorizeBoardFile` is route middleware mounted ahead of the storage
+ * (routes/boards.js), the same order logoController keeps, and it hands the
+ * resolved context on as `req.boardCtx`.
+ *
+ * ---- WHERE THE BYTES GO ---------------------------------------------------
+ *
+ * Into `macan/board-files/<boardId>/` (config/cloudinary.js `boardFileUpload`),
+ * never the shared task-attachment folder, and only for a PDF, an image or an
+ * office document. The folder is what makes the returned `publicId` safe to
+ * destroy later: utils/fileColumnAssets.js deletes an asset on a row's behalf
+ * only when its id sits under the prefix of the board that row belongs to, so
+ * a cell carrying anybody else's id — another board's, another workspace's, an
+ * avatar's — is left alone.
+ *
  * ---- WHAT THIS DOES NOT DO ------------------------------------------------
  *
  * It does not write to any task, board or column. It authorises the caller
@@ -30,37 +52,84 @@ const { loadBoardContext, requireCapability } = require('../utils/boardContext')
  * validated by the `file` column type when it lands in `columnValues`.
  */
 
+const DENIED = 'You do not have permission to add files to this board';
+
+/**
+ * Who may put bytes here: anyone who may create a row on the board.
+ *
+ * `task.create` rather than an upload-specific capability, because that is what
+ * this is FOR — the next call this enables is creating a row. A viewer who
+ * cannot add a row has no reason to be able to put bytes in the account's
+ * storage.
+ *
+ * @returns {Promise<{ ctx } | { status, error }>}
+ */
+const authorise = async (req) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return { status: 400, error: 'Invalid board id' };
+  }
+  const ctx = await loadBoardContext(req.params.id, req.user.userId);
+  if (ctx.error) return { status: ctx.status, error: ctx.error };
+  const denied = requireCapability(ctx, 'task.create', DENIED);
+  if (denied) return denied;
+  return { ctx };
+};
+
+/**
+ * Delete what multer already stored, when the request is not going to use it.
+ * Never throws: it runs on the way out of a refusal or a failure, and a cleanup
+ * error must not replace the answer the caller is owed.
+ */
+const discardUploadedFile = async (file) => {
+  if (!file || !file.filename) return;
+  try {
+    await destroyCloudinaryAssets([{ publicId: file.filename, mime: file.mimetype }]);
+  } catch (err) {
+    console.error('uploadBoardFile: discard failed:', err.message);
+  }
+};
+
+/**
+ * Route middleware — runs BEFORE the storage middleware. Refuses without ever
+ * letting a byte reach Cloudinary.
+ */
+const authorizeBoardFile = async (req, res, next) => {
+  try {
+    const verdict = await authorise(req);
+    if (verdict.error) return res.status(verdict.status).json({ error: verdict.error });
+    req.boardCtx = verdict.ctx;
+    return next();
+  } catch (err) {
+    console.error('authorizeBoardFile error:', err);
+    return res.status(500).json({ error: 'Failed to upload the file' });
+  }
+};
+
 /**
  * POST /api/boards/:id/files
  *
  * Multipart, field name `file`. Returns the descriptor shape the `file` column
  * type stores: `{ url, name, mime, size, publicId }`.
  *
- * Gated on `task.create` rather than an upload-specific capability, because
- * that is what this is FOR — the next call this enables is creating a row. A
- * viewer who cannot add a row has no reason to be able to put bytes in the
- * account's storage, and gating it any looser would make this the one endpoint
- * on the board that anybody who can read it could write through.
+ * Expects `authorizeBoardFile` to have run first. If it is ever mounted without
+ * it, it authorises here instead — too late to stop the upload, which is why
+ * the refusal also deletes what was stored.
  */
 const uploadBoardFile = async (req, res) => {
   try {
-    const ctx = await loadBoardContext(req.params.id, req.user.userId);
-    if (ctx.error) return res.status(ctx.status).json({ error: ctx.error });
-
-    const denied = requireCapability(
-      ctx,
-      'task.create',
-      'You do not have permission to add files to this board'
-    );
-    if (denied) return res.status(denied.status).json({ error: denied.error });
+    if (!req.boardCtx) {
+      const verdict = await authorise(req);
+      if (verdict.error) {
+        await discardUploadedFile(req.file);
+        return res.status(verdict.status).json({ error: verdict.error });
+      }
+      req.boardCtx = verdict.ctx;
+    }
 
     if (!req.file) {
       return res.status(400).json({ error: 'No file was uploaded' });
     }
 
-    // Multer + CloudinaryStorage has already stored it by the time we get here,
-    // which is also why the capability check above cannot be skipped: reaching
-    // this function at all means the bytes are in the account.
     return res.status(201).json({
       file: {
         url: req.file.path,
@@ -72,8 +141,9 @@ const uploadBoardFile = async (req, res) => {
     });
   } catch (err) {
     console.error('uploadBoardFile error:', err);
+    await discardUploadedFile(req.file);
     return res.status(500).json({ error: 'Failed to upload the file' });
   }
 };
 
-module.exports = { uploadBoardFile };
+module.exports = { authorizeBoardFile, uploadBoardFile };

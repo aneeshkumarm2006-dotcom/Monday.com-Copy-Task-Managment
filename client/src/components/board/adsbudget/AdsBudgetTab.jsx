@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ChevronDown, FileSpreadsheet, FileText, MoreHorizontal, Plus, Wallet,
+  ChevronDown, Coins, FileSpreadsheet, FileText, MoreHorizontal, Plus, Wallet,
 } from 'lucide-react';
 
 import Button from '../../ui/Button';
@@ -9,6 +9,9 @@ import Modal from '../../ui/Modal';
 import { SkeletonBlock } from '../../ui/Skeleton';
 import useTaskStore from '../../../store/taskStore';
 import useToastStore from '../../../store/toastStore';
+import useBoardStore from '../../../store/boardStore';
+import useMoney from '../../../hooks/useMoney';
+import { boardCurrencyOf, currencyByCode } from '../../../utils/money';
 import * as adsBudgetService from '../../../services/adsBudgetService';
 import { downloadAdsBudgetExport } from '../../../utils/adsBudgetExport';
 import ClientRosterScreen from './ClientRosterScreen';
@@ -79,6 +82,16 @@ const AdsBudgetTab = ({
 
   const boardRefreshSignal = useTaskStore((s) => s.boardRefreshSignal);
   const boardRefreshTarget = useTaskStore((s) => s.boardRefreshTarget);
+
+  /**
+   * The unit to fall back on when a payload names no currency — an Ads Budget
+   * whose currency was never chosen. The board's own currency, else the
+   * workspace's: the same chain the add-on card shows as its default, so the
+   * card and this tab cannot name two different units for one board.
+   */
+  const board = useBoardStore((s) => s.boards.find((b) => b._id === boardId) || null);
+  const { baseCurrency } = useMoney();
+  const fallbackCurrency = boardCurrencyOf(board, baseCurrency);
 
   /** null on the roster; a group id once drilled in. */
   const [openClientId, setOpenClientId] = useState(null);
@@ -284,15 +297,19 @@ const AdsBudgetTab = ({
    */
   const runExport = (format, report) => {
     const which = report || (openClientId ? 'budgets' : 'clients');
+    // The currency the screen showed, so the sheet's Currency column names
+    // the same unit rather than a default of its own.
     const payload = openClientId
-      ? { ...client, activity, boardName }
-      : { ...roster, boardName };
+      ? { ...client, currency: client?.currency || fallbackCurrency, activity, boardName }
+      : { ...roster, currency: roster?.currency || fallbackCurrency, boardName };
     downloadAdsBudgetExport(payload, which, format);
   };
 
   // ---- Render --------------------------------------------------------------
 
   const data = openClientId ? client : roster;
+  const currency = data?.currency || fallbackCurrency || null;
+  const cur = currencyByCode(currency);
 
   /**
    * The board page's answer is the starting point, so the controls do not
@@ -436,12 +453,36 @@ const AdsBudgetTab = ({
             Monthly
             <ChevronDown size={13} aria-hidden="true" style={{ opacity: 0.5 }} />
           </span>
+          {/* The unit every figure on this tab is ENTERED in. Separate from the
+              board's money columns on purpose — the add-on carries its own
+              currency — so it is named here, where the numbers are, rather
+              than left to be inferred from a symbol that may have been
+              converted into the reader's currency. Set under Add-ons. */}
+          {currency ? (
+            <span
+              className="inline-flex items-center gap-1.5 font-body tabular-nums"
+              title="The Ads Budget currency: what budgets and spend on this tab are entered in. Change it under Add-ons."
+              style={{
+                height: 30,
+                padding: '0 10px',
+                fontSize: 12.5,
+                borderRadius: 'var(--radius-md)',
+                border: '1px solid var(--color-border)',
+                background: 'var(--color-bg-surface)',
+                color: 'var(--color-text-secondary)',
+              }}
+            >
+              <Coins size={13} aria-hidden="true" />
+              {cur && cur.symbol !== cur.code ? `${cur.symbol} · ${cur.code}` : cur?.code || currency}
+            </span>
+          ) : null}
         </div>
       </div>
 
       {openClientId ? (
         <ClientBudgetScreen
           data={client}
+          fallbackCurrency={fallbackCurrency}
           activity={activity}
           activityError={activityError}
           onBack={() => setOpenClientId(null)}
@@ -455,7 +496,11 @@ const AdsBudgetTab = ({
           canManage={mayManage}
         />
       ) : (
-        <ClientRosterScreen data={roster} onOpenClient={(c) => setOpenClientId(c._id)} />
+        <ClientRosterScreen
+          data={roster}
+          fallbackCurrency={fallbackCurrency}
+          onOpenClient={(c) => setOpenClientId(c._id)}
+        />
       )}
 
       {modal ? (
@@ -478,6 +523,10 @@ const AdsBudgetTab = ({
           groupId={openClientId}
           groupName={client?.group?.name || ''}
           monthLabel={data.monthLabel || monthLabel}
+          // What every amount typed in the dialog is stored in, and the month
+          // whose rate its converted hint uses.
+          currency={currency}
+          monthKey={data.monthKey || monthKey}
           platformSuggestions={platformSuggestions}
           saving={saving}
           serverErrors={formErrors}

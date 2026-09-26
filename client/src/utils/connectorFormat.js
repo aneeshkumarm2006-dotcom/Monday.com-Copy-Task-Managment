@@ -1,3 +1,5 @@
+import { formatIn } from './money.js';
+
 /**
  * Formatting for connector readings.
  *
@@ -59,40 +61,26 @@ export const formatNumber = (value, { compact = false } = {}) => {
  *
  * The currency defaults to USD because that is what the SEO provider quotes CPC
  * and keyword value in, and every one of this function's original callers is
- * reading one of those. It is a PARAMETER rather than a constant because the
- * Ads Budget tab renders whatever currency its board is set to — and a second
- * money formatter living next to this one would be two places to fix the day
- * somebody wants cents shown below a different threshold.
+ * reading one of those. That default is a FACT about the data, not a guess at
+ * the reader's currency — a component that wants the figure in the reader's
+ * currency should call `useMoney().in(value, 'USD')` instead.
+ *
+ * Rendered through `money.js`'s `formatIn`, so the unit is the catalog's: USD
+ * reads "$" whatever the browser locale (Intl alone printed "US$" in en-CA and
+ * "USD" in en-AU), and a code the catalog does not carry reads as the bare code
+ * ("JPY 1,234"). This used to catch an unknown code and re-render the number
+ * as USD — a borrowed symbol, which `money.js` exists to forbid: a confident
+ * figure in the wrong unit is the one outcome worse than a plain one.
  *
  * Cents are dropped above 100 units. A budget table full of "$8,000.00" is
  * harder to scan than one full of "$8,000", and the pennies on a four-figure
- * number are noise; below 100 they are the whole number.
- *
- * An unknown currency code makes `Intl.NumberFormat` throw, which would take
- * out every cell on the page rather than one. The server validates the code on
- * the way in; this is the belt to that pair of braces.
+ * number are noise; below 100 they are the whole number — unless there are
+ * none, so a round $57 does not read "$57.00" in a column of "$346".
  */
 export const formatMoney = (value, currency = 'USD') => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  /**
-   * `minimumFractionDigits: 0` is load-bearing, not tidying.
-   *
-   * `style: 'currency'` defaults the MINIMUM to the currency's own digits — two
-   * for USD — so setting only the maximum leaves every whole amount under $100
-   * rendering as "$57.00" in a column of "$346" and "$1,020". Pinning the
-   * minimum to zero lets a round number look round while $1.25 keeps its cents.
-   */
-  const options = {
-    style: 'currency',
-    currency: currency || 'USD',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: Math.abs(value) < 100 ? 2 : 0,
-  };
-  try {
-    return new Intl.NumberFormat(undefined, options).format(value);
-  } catch {
-    return new Intl.NumberFormat(undefined, { ...options, currency: 'USD' }).format(value);
-  }
+  const decimals = Math.abs(value) >= 100 || Number.isInteger(value) ? 0 : 2;
+  return formatIn(value, currency || 'USD', { decimals });
 };
 
 /**

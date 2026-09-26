@@ -18,6 +18,16 @@ const eventBus = require('../services/eventBus');
 const { logActivity } = require('../services/activityService');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
 const { getColumnType } = require('../utils/columnTypes');
+const { roleColumn } = require('../utils/columnRoles');
+const {
+  fileColumnAssets,
+  destroyFileColumnAssets,
+  droppedFileAssets,
+  destroyAssets,
+  withoutIdsHeldElsewhere,
+} = require('../utils/fileColumnAssets');
+const { normaliseCurrencyCode, boardCurrencyOf, isMoneyColumn } = require('../utils/money');
+const { settledStatusFor, touchesSettleColumns } = require('../utils/paymentsSettle');
 const { buildTaskDeepLink } = require('../utils/taskDeepLink');
 const { embedMirrorValues } = require('../services/mirrorRefresh');
 const { loadBoardContext, requireCapability } = require('../utils/boardContext');
@@ -604,9 +614,37 @@ const describeStatus = (board, statusInput) => {
 };
 
 /**
+ * A plain record — `{ url, name }`, `{ id, amount, date }` — as opposed to an
+ * ObjectId, a Date or a primitive. The prototype test is what tells them apart:
+ * an ObjectId and a Date are objects too, but they are VALUES with a
+ * meaningful `toString()`, where a record's is always "[object Object]".
+ */
+const isPlainRecord = (v) =>
+  v != null && typeof v === 'object' && !Array.isArray(v) &&
+  (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+
+/**
  * Compare two column values for equality. Handles arrays (ObjectId lists for
- * person/tags), plain objects (link/location/timeline), Dates, and primitives.
- * Used by the event-emit step to suppress no-op writes.
+ * person/tags, record lists for file/payments), plain objects
+ * (link/location/timeline/client), Dates, and primitives. Used to suppress
+ * no-op writes — a cell that compares equal is not set, not logged and not
+ * announced.
+ *
+ * TWO KINDS OF ARRAY, compared two different ways:
+ *
+ *   - ids and scalars (person, tags): a SET. Order means nothing — [A, B] and
+ *     [B, A] are the same two people — so both sides are stringified and
+ *     sorted.
+ *   - records (file, payments): a LIST, compared element by element IN ORDER.
+ *     The sorted-toString comparison above turned every record into
+ *     "[object Object]", so any two lists of the same LENGTH compared equal:
+ *     swapping one PDF for another, or correcting a payment from 100 to 250,
+ *     was dropped with a 200 — nothing stored, nothing logged, and the
+ *     replaced file never cleaned up. Both serializers emit a stable order and
+ *     key order (payments by date then entry order, files as sent), so a
+ *     positional JSON compare is exact. It errs towards WRITING: a legacy row
+ *     with different key order compares unequal and is simply re-saved, which
+ *     is harmless, where a false "equal" loses somebody's edit.
  */
 const columnValuesEqual = (a, b) => {
   if (a === b) return true;
@@ -614,6 +652,13 @@ const columnValuesEqual = (a, b) => {
   if (a == null || b == null) return false;
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
+    if (a.some(isPlainRecord) || b.some(isPlainRecord)) {
+      try {
+        return a.every((v, i) => JSON.stringify(v) === JSON.stringify(b[i]));
+      } catch (_err) {
+        return false;
+      }
+    }
     const aIds = a.map((v) => (v == null ? '' : v.toString())).sort();
     const bIds = b.map((v) => (v == null ? '' : v.toString())).sort();
     return aIds.every((v, i) => v === bIds[i]);
@@ -629,14 +674,48 @@ const columnValuesEqual = (a, b) => {
 };
 
 /**
+ * The column that IS the row title: the board's primary column, when it is
+ * plain text. Null on a board without flexible columns, and on one whose
+ * primary is some other type — there is nothing to mirror a name into then.
+ */
+const primaryTextColumn = (board) => {
+  if (!board || !board.useFlexibleColumns || !Array.isArray(board.columns)) return null;
+  return board.columns.find((c) => c && c.isPrimary && c.type === 'text') || null;
+};
+
+/** Same wording on every path that refuses a blank title. */
+const EMPTY_TITLE_MESSAGE = "The title can't be empty";
+
+/**
  * Validate and apply a `columnValues` patch onto a task. Returns either
- * `{ ok: true, changes: [{ column, fromValue, toValue }] }` or
+ * `{ ok: true, changes: [{ column, fromValue, toValue }], droppedFiles }` or
  * `{ ok: false, errors: [{ columnId, message }] }` so the caller can ship a
  * 400 with field-level errors.
  *
  * Merges into the existing Map — keys not present in the patch are left alone.
+ *
+ * THE PRIMARY TEXT COLUMN IS THE TASK'S NAME. The two used to be separate
+ * values: the ledger tile, the panel header, notifications and search read
+ * `task.name`, the Table read the cell, and neither write reached the other —
+ * so every dropped invoice showed a blank Invoice cell, and typing a number
+ * into that cell renamed nothing. Writing the primary cell now renames the task
+ * (callers log that as ONE `name` change, not a name change and a column
+ * change), and an empty primary is refused rather than allowed to blank the
+ * row's title.
+ *
+ * `droppedFiles` lists the files a file-column write let go of. Nothing is
+ * destroyed here — the patch has not been saved, and a Cloudinary delete
+ * cannot be rolled back — so the caller destroys them once the save lands.
+ *
+ * `opts.clientNames` is what `resolveClientCells` found: `Map<boardId, name>`
+ * for every client board this patch names. A `client` cell pointing at one of
+ * them has its `name` REPLACED by that board's own display name, so the
+ * snapshot the cell keeps is the board's, never whatever the request said the
+ * client was called. Synchronous on purpose — the lookups happened in the
+ * async gate before this, which is also where a bad board id was refused.
  */
-const applyColumnValuePatch = (task, board, patch) => {
+const applyColumnValuePatch = (task, board, patch, opts = {}) => {
+  const clientNames = opts && opts.clientNames instanceof Map ? opts.clientNames : null;
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
     return { ok: false, errors: [{ columnId: null, message: 'columnValues must be an object' }] };
   }
@@ -647,6 +726,7 @@ const applyColumnValuePatch = (task, board, patch) => {
   const columnsById = new Map(board.columns.map((c) => [c._id.toString(), c]));
   const errors = [];
   const changes = [];
+  const droppedFiles = [];
 
   for (const [cidRaw, rawValue] of Object.entries(patch)) {
     const cid = cidRaw.toString();
@@ -666,15 +746,278 @@ const applyColumnValuePatch = (task, board, patch) => {
       errors.push({ columnId: cid, message: err.message, code: err.code });
       continue;
     }
-    const serialized = entry.serialize ? entry.serialize(rawValue) : rawValue;
+    let serialized = entry.serialize ? entry.serialize(rawValue) : rawValue;
+
+    if (
+      col.type === 'client' &&
+      clientNames &&
+      serialized &&
+      typeof serialized === 'object' &&
+      serialized.boardId != null &&
+      clientNames.has(String(serialized.boardId))
+    ) {
+      serialized = { ...serialized, name: clientNames.get(String(serialized.boardId)) };
+    }
+
+    if (col.isPrimary && col.type === 'text') {
+      const title = typeof serialized === 'string' ? serialized.trim() : '';
+      if (!title) {
+        errors.push({ columnId: cid, message: EMPTY_TITLE_MESSAGE, code: 'EMPTY_TITLE' });
+        continue;
+      }
+      task.name = title;
+    }
+
     const prevValue = task.columnValues ? task.columnValues.get(cid) : undefined;
     if (columnValuesEqual(prevValue, serialized)) continue;
     task.columnValues.set(cid, serialized);
+    // Only files uploaded into THIS board's folder can ever be let go of — see
+    // utils/fileColumnAssets.js; without the board id nothing is returned.
+    if (col.type === 'file') {
+      droppedFiles.push(...droppedFileAssets(prevValue, serialized, task.board || board._id));
+    }
     changes.push({ column: col, fromValue: prevValue == null ? null : prevValue, toValue: serialized });
   }
 
   if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, changes };
+  return { ok: true, changes, droppedFiles };
+};
+
+/**
+ * The board status this write SETTLES the row into, or null.
+ *
+ * A row whose payments now cover its amount is done — see
+ * utils/paymentsSettle.js for the rule and why it is generic. Only a write
+ * that moved the amount or the payments (`changes`, from
+ * `applyColumnValuePatch`) may settle: somebody who deliberately moved a
+ * covered row back out of done keeps that status through every later edit of
+ * its title, due date or owner.
+ *
+ * Returns the board's status subdoc, so the caller can record the change
+ * exactly the way a person's status change is recorded — the activity row, the
+ * audience notification, the client-portal "resolved" email.
+ */
+const settledStatusOf = (task, board, changes) => {
+  if (!touchesSettleColumns(board, changes)) return null;
+  const doneId = settledStatusFor(board, task);
+  if (!doneId) return null;
+  // A migrated board's status CELL would put the old status straight back
+  // (see `legacyStatusCellOf`). Settle only where the cell can say done too;
+  // otherwise the row would stay open while the activity row, notification
+  // and client email all claimed it closed — again on every later edit.
+  const legacy = legacyStatusCellOf(task, board);
+  if (legacy && !legacy.options.some((o) => o && String(o.id) === String(doneId))) return null;
+  return findBoardStatus(board, doneId);
+};
+
+/**
+ * A board migrated from the legacy table (scripts/migrateLegacyColumns.js)
+ * has a column KEYED 'status' whose options are the board's statuses, and the
+ * save hook copies that cell onto `task.status` on every save (models/Task.js
+ * `LEGACY_COLUMN_KEY_TO_TASK_FIELD`). Returns `{ id, options }` for it when the
+ * row holds a value there — the only case the hook copies — else null.
+ */
+const legacyStatusCellOf = (task, board) => {
+  const col = ((board && board.columns) || []).find((c) => c && c.key === 'status' && c._id != null);
+  if (!col) return null;
+  const id = String(col._id);
+  const cv = task && task.columnValues;
+  const value = cv && typeof cv.get === 'function' ? cv.get(id) : cv ? cv[id] : undefined;
+  if (value === undefined) return null;
+  const options = col.settings && Array.isArray(col.settings.options) ? col.settings.options : [];
+  return { id, options };
+};
+
+/** Move the row to `status` — and its legacy status cell with it, so the hook agrees. */
+const applySettledStatus = (task, board, status) => {
+  task.status = status._id;
+  const legacy = legacyStatusCellOf(task, board);
+  if (legacy) task.columnValues.set(legacy.id, String(status._id));
+};
+
+/**
+ * Tell the people a write put on a row that they are on it: the in-app
+ * "assigned" notification and the assignment email, gated by each person's
+ * email preferences.
+ *
+ * One helper for every way somebody gets assigned — `assignedTo` from the
+ * panel, and the Owner cell written from the Table, the ledger or the invoice
+ * sheet, which the save hook copies onto `assignedTo`. Before, only the first
+ * announced anything, so assigning an invoice from its Owner cell handed the
+ * row over in silence.
+ *
+ * The ACTOR is never told. The in-app notification always skipped them
+ * (`excludeUserId`), but the email did not, so claiming a row sent you an
+ * email saying you had been assigned to it.
+ */
+const announceAssignment = async ({ task, ids, actorId, actorName, orgId, boardId, taskLink }) => {
+  const actor = String(actorId);
+  const targets = [...new Set((ids || []).map((id) => (id == null ? '' : id.toString())))]
+    .filter((id) => id && id !== actor);
+  if (!targets.length) return;
+
+  await createNotificationsForUsers({
+    userIds: targets,
+    type: 'assigned',
+    message: `You were assigned to "${task.name}"`,
+    taskId: task._id,
+    orgId,
+    excludeUserId: actorId,
+    actorId,
+    boardId,
+  });
+
+  const assigneeUsers = await User.find({ _id: { $in: targets } }).select('email').lean();
+  const emailAllowed = await filterByEmailPreference(targets, 'assigned', { boardId, actorId });
+  const recipients = assigneeUsers.filter((u) => u.email && emailAllowed.has(u._id.toString()));
+  const emailResults = await Promise.allSettled(
+    recipients.map((u) =>
+      sendTaskAssignmentEmail({
+        to: u.email,
+        taskName: task.name,
+        priority: task.priority,
+        dueDate: task.dueDate,
+        taskLink,
+        assignedByName: actorName || '',
+      })
+    )
+  );
+  emailResults.forEach((result, i) => {
+    if (result.status === 'rejected') {
+      console.error(`[email] Failed to send to ${recipients[i]?.email}:`, result.reason?.message || result.reason);
+    }
+  });
+};
+
+/**
+ * Mirror `task.name` into the primary text column. The other half of the
+ * primary ↔ name contract above: a rename from the panel or the ledger now
+ * reaches the Table too. No-op on a board with no primary text column.
+ */
+const syncPrimaryFromName = (task, board) => {
+  const primary = primaryTextColumn(board);
+  if (!primary || typeof task.name !== 'string' || !task.name) return null;
+  const cid = primary._id.toString();
+  const prevValue = task.columnValues.get(cid);
+  if (prevValue === task.name) return null;
+  task.columnValues.set(cid, task.name);
+  return { column: primary, fromValue: prevValue == null ? null : prevValue, toValue: task.name };
+};
+
+/**
+ * Write a legacy field's new value into the column that plays its ROLE
+ * (utils/columnRoles.js), through that column type's own serializer — the same
+ * path a `columnValues` PUT takes, so the cell is exactly what the grid would
+ * have written.
+ *
+ * Why the controller writes it rather than leaving it to the pre-save hook
+ * alone: the panel's Due date and Assigned to controls set the FIELD, and the
+ * ledger, the Table and the Due/Owner columns read the CELL. Writing both here
+ * means the request's own response already agrees with itself, and the hook
+ * (which takes the column's side whenever the cell was written in the save)
+ * copies it straight back onto the field instead of reverting it.
+ *
+ * Skipped when the same request's `columnValues` addresses that column: an
+ * explicit cell write is the more specific instruction, and the hook will carry
+ * it across to the field.
+ *
+ * Returns the change `{ column, fromValue, toValue }`, or null when there is no
+ * role column or nothing moved.
+ */
+const writeRoleColumn = (task, board, role, value, patch) => {
+  if (!board || !board.useFlexibleColumns) return null;
+  const col = roleColumn(board, role);
+  if (!col) return null;
+  const cid = col._id.toString();
+  if (patch && typeof patch === 'object' && Object.prototype.hasOwnProperty.call(patch, cid)) {
+    return null;
+  }
+  const entry = getColumnType(col.type);
+  const serialized = entry && entry.serialize ? entry.serialize(value) : value;
+  const prevValue = task.columnValues.get(cid);
+  if (columnValuesEqual(prevValue, serialized)) return null;
+  task.columnValues.set(cid, serialized);
+  return { column: col, fromValue: prevValue == null ? null : prevValue, toValue: serialized };
+};
+
+/**
+ * What an activity row about a column needs to be read back later, stamped at
+ * WRITE time because none of it is recoverable afterwards: the column can be
+ * renamed or deleted, and a money column's currency can be changed (which
+ * relabels, never converts — so an old "12,000" is only correct in the unit it
+ * was typed in). Both renderers — services/activityFormat.js and the client's
+ * ActivityEntry.jsx — branch on `columnType`.
+ *
+ *   columnLabel   the column's display name
+ *   columnType    its type, which says how to read the values
+ *   currency      for a money column: the unit the figures were entered in
+ *   optionLabels  for status / dropdown / tags: { optionId: label } for every
+ *                 choice either side names, so a choice deleted later still
+ *                 reads as itself
+ */
+const columnActivityMeta = (column, board, org, fromValue, toValue) => {
+  const meta = { columnLabel: column.name, columnType: column.type };
+  const settings = column.settings && typeof column.settings === 'object' ? column.settings : {};
+  if (isMoneyColumn(column)) {
+    const code =
+      normaliseCurrencyCode(settings.currency) ||
+      boardCurrencyOf(board, org ? org.baseCurrency : null);
+    if (code) meta.currency = code;
+  }
+  if (['status', 'dropdown', 'tags'].includes(column.type) && Array.isArray(settings.options)) {
+    const ids = new Set(
+      [fromValue, toValue]
+        .flatMap((v) => (Array.isArray(v) ? v : [v]))
+        .filter((v) => v != null && v !== '')
+        .map((v) => v.toString())
+    );
+    const optionLabels = {};
+    for (const o of settings.options) {
+      if (!o || o.id == null) continue;
+      const id = o.id.toString();
+      if (ids.has(id)) optionLabels[id] = o.label || o.name || '';
+    }
+    if (Object.keys(optionLabels).length) meta.optionLabels = optionLabels;
+  }
+  return meta;
+};
+
+/** A column change as the activity loop logs it. */
+const columnActivityChange = (change, board, org) => ({
+  field: `column:${change.column.key}`,
+  oldValue: change.fromValue,
+  newValue: change.toValue,
+  meta: columnActivityMeta(change.column, board, org, change.fromValue, change.toValue),
+});
+
+/**
+ * Destroy the files a saved cell edit let go of — unless the task still holds
+ * the same asset somewhere else (another file column, or its Files tab), in
+ * which case destroying it would break a live link. Fire-and-forget and never
+ * throws: the edit has already been saved and answered for.
+ *
+ * …and unless ANOTHER row on the board still holds it. The board prefix only
+ * scopes a destroy to the board, and every reader sees every row's ids, so a
+ * member who may edit only their own row could otherwise plant a colleague's
+ * invoice id there, clear it, and have that PDF destroyed from under her row
+ * (see `withoutIdsHeldElsewhere` in utils/fileColumnAssets.js).
+ */
+const destroyDroppedColumnFiles = (task, board, dropped) => {
+  if (!Array.isArray(dropped) || dropped.length === 0) return;
+  (async () => {
+    const boardId = task.board || (board && board._id);
+    const columns = board ? board.columns : [];
+    const stillHeld = new Set([
+      ...(task.attachments || []).map((a) => a && a.publicId).filter(Boolean),
+      ...fileColumnAssets(columns, [task], { boardId }).map((a) => a.publicId),
+    ]);
+    const gone = dropped.filter((f) => f && f.publicId && !stillHeld.has(f.publicId));
+    if (!gone.length) return;
+    const free = await withoutIdsHeldElsewhere(gone, { boardId, columns, excludeTaskIds: [task._id] });
+    if (free.length) await destroyAssets(free);
+  })().catch((err) => {
+    console.error('destroyDroppedColumnFiles error:', err && err.message);
+  });
 };
 
 /**
@@ -713,6 +1056,7 @@ const requireColumnPatchCapabilities = async (ctx, patch, userId, task = null) =
   // against `task.assignedTo`, which is the point — a person column IS
   // assignment, so the two must answer the same question the same way.
   const personChanged = new Set();
+  const personAdded = new Set();
   let touchesConnect = false;
   const targetTaskIds = new Set();
 
@@ -726,7 +1070,11 @@ const requireColumnPatchCapabilities = async (ctx, patch, userId, task = null) =
       const prevRaw = task && task.columnValues ? task.columnValues.get(cid) : null;
       const prev = new Set(personIdsOf(prevRaw));
       const next = new Set(personIdsOf(rawValue));
-      for (const id of next) if (!prev.has(id)) personChanged.add(id);
+      for (const id of next) {
+        if (prev.has(id)) continue;
+        personChanged.add(id);
+        personAdded.add(id);
+      }
       for (const id of prev) if (!next.has(id)) personChanged.add(id);
     }
     if (col.type === 'connect_boards') {
@@ -739,6 +1087,26 @@ const requireColumnPatchCapabilities = async (ctx, patch, userId, task = null) =
         if (tid) targetTaskIds.add(tid);
       }
     }
+  }
+
+  // WHO may be put in a person cell — the same rule `body.assignedTo` answers
+  // to in `validateAssignees`: a member of this workspace who can READ this
+  // board. The capability gate below only asks whether the CALLER may move
+  // names; without this, the Owner cell (which the save hook copies into
+  // `assignedTo`) took any id at all — someone from another workspace, or a
+  // member locked out of this private board — and handed them the row, its
+  // notification and a deep link that 403s. Every person cell, not only the
+  // Owner: each one IS assignment (see above).
+  //
+  // Only the ADDED names are judged. A name already in the cell was let in
+  // when it was written; someone who has since left the workspace must not
+  // make the cell unwritable, including by the edit that takes them out.
+  // Malformed ids are left to the column type's validator, which answers with
+  // the field-level `errors[]` shape the grid reads.
+  const addedIds = [...personAdded].filter((id) => mongoose.Types.ObjectId.isValid(id));
+  if (addedIds.length) {
+    const { error: personErr } = await validateAssignees(addedIds, ctx.org, ctx.board);
+    if (personErr) return { status: 400, error: personErr };
   }
 
   const personDenied = requireAssignCapability(ctx, userId, [...personChanged]);
@@ -816,6 +1184,117 @@ const requireColumnPatchCapabilities = async (ctx, patch, userId, task = null) =
   }
 
   return null;
+};
+
+/** How long a client name may be — the `client` column type's own limit. */
+const CLIENT_NAME_MAX = 120;
+
+/**
+ * What a client board is called: its portal label, else its board name —
+ * whitespace-collapsed and clamped the way the `client` serializer stores a
+ * typed name, so a board name and a typed one never differ by a double space.
+ */
+const clientBoardDisplayName = (b) =>
+  String((b && (b.portalClientName || '').trim()) || (b && b.name) || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .slice(0, CLIENT_NAME_MAX);
+
+/**
+ * Resolve every `client` cell in a patch that points at a board, BEFORE the
+ * patch is applied. Returns `{ clientNames: Map<boardId, name> }` for
+ * `applyColumnValuePatch` to stamp, or `{ status, error }` to refuse.
+ *
+ * A `client` cell is `{ boardId, name }`: a workspace CLIENT board (one board
+ * is one client, and its display name is `portalClientName || name`), or,
+ * with `boardId` null, a name typed in for a client that has no board. The
+ * name is a SNAPSHOT so the row still reads for somebody who cannot open that
+ * board — which is exactly why the server writes it, not the request. Left to
+ * the client, a cell could point at one board while calling it something
+ * else, and every ledger, filter and export would believe the label.
+ *
+ * A board id NEW to the cell must be:
+ *   - a board that exists (boards are hard-deleted, so "not deleted" is
+ *     "found");
+ *   - `boardType: 'client'` — a standard or tracker board is not a client;
+ *   - in THIS workspace — a board id from another tenant would otherwise
+ *     leak that tenant's client names through the snapshot;
+ *   - readable by the caller. Linking a private client board you cannot open
+ *     would put its name on a board you can, the same read channel
+ *     `connect_boards` is gated against above.
+ *
+ * A board id the cell ALREADY held is not re-judged, the same rule person
+ * cells follow: a client board since deleted, converted or made private must
+ * not make the row unwritable, least of all by the edit that moves it off
+ * that client. It keeps its name refreshed while the board still qualifies,
+ * and keeps the previous snapshot when it no longer does.
+ *
+ * Malformed values (not an object, an id that is not an ObjectId) are left to
+ * the column type's validator in `applyColumnValuePatch`, which answers with
+ * the field-level `errors[]` the grid reads.
+ */
+const resolveClientCells = async (ctx, patch, userId, task = null) => {
+  const clientNames = new Map();
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return { clientNames };
+
+  const columns = Array.isArray(ctx.board.columns) ? ctx.board.columns : [];
+  const columnsById = new Map(columns.map((c) => [c._id.toString(), c]));
+
+  // boardId -> { isNew, prevName } across every client cell in the patch.
+  const wanted = new Map();
+  for (const [cidRaw, rawValue] of Object.entries(patch)) {
+    const cid = cidRaw.toString();
+    const col = columnsById.get(cid);
+    if (!col || col.type !== 'client') continue;
+    if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) continue;
+    // Lower-cased the way the column type's serializer stores it, so the map
+    // this returns is keyed exactly as `applyColumnValuePatch` looks it up.
+    const bid = rawValue.boardId == null ? '' : String(rawValue.boardId).trim().toLowerCase();
+    if (!/^[a-f0-9]{24}$/.test(bid)) continue;
+
+    const prev = task && task.columnValues ? task.columnValues.get(cid) : null;
+    const prevBid =
+      prev && typeof prev === 'object' && prev.boardId != null ? String(prev.boardId).toLowerCase() : '';
+    const held = prevBid === bid;
+    const seen = wanted.get(bid);
+    wanted.set(bid, {
+      // New to ANY cell in the patch makes it new: two cells naming the same
+      // board are judged once, strictly.
+      isNew: (seen ? seen.isNew : false) || !held,
+      prevName: held && typeof prev.name === 'string' ? prev.name : (seen ? seen.prevName : ''),
+    });
+  }
+  if (wanted.size === 0) return { clientNames };
+
+  const boards = await Board.find({ _id: { $in: [...wanted.keys()] } }).select(
+    'name portalClientName boardType organisation visibility publicDefaultLevel memberAccess createdBy'
+  );
+  const byId = new Map(boards.map((b) => [b._id.toString(), b]));
+  const orgId = ctx.board.organisation.toString();
+
+  for (const [bid, { isNew, prevName }] of wanted) {
+    const target = byId.get(bid);
+    const qualifies =
+      !!target &&
+      target.boardType === 'client' &&
+      !!target.organisation &&
+      target.organisation.toString() === orgId;
+
+    if (!qualifies) {
+      if (isNew) {
+        return { status: 400, error: "Client must be one of this workspace's client boards" };
+      }
+      if (prevName) clientNames.set(bid, prevName.slice(0, CLIENT_NAME_MAX));
+      continue;
+    }
+    if (isNew && !resolveAccess(target, ctx.org, userId).canRead) {
+      return { status: 403, error: 'You do not have access to that client board' };
+    }
+    const name = clientBoardDisplayName(target);
+    if (name) clientNames.set(bid, name);
+  }
+
+  return { clientNames };
 };
 
 /**
@@ -1159,6 +1638,7 @@ const createTask = async (req, res) => {
       parent: parentId,
       portalShared,
       monthKey,
+      columnValues,
     } = req.body;
 
     // Mutable because a SUBITEM's group is not the caller's to choose — it is
@@ -1177,6 +1657,12 @@ const createTask = async (req, res) => {
 
     // Personal task path
     if (isPersonal) {
+      if (columnValues !== undefined) {
+        // Same refusal as updateTask: a personal task has no board, so no columns.
+        return res
+          .status(400)
+          .json({ error: 'Personal tasks do not support columnValues' });
+      }
       const personalStatus =
         typeof status === 'string' && LEGACY_STATUS_KEYS.includes(status)
           ? status
@@ -1346,7 +1832,12 @@ const createTask = async (req, res) => {
       }
     }
 
-    const task = await Task.create({
+    // Built in memory and saved ONCE, so the row and its cells land in a single
+    // insert. The ledger's invoice drop used to create the row by name and then
+    // write the PDF cell with a second request; when that second call failed the
+    // board kept an invoice row with no invoice on it — the one state the drop
+    // flow exists to prevent.
+    const task = new Task({
       name: name.trim(),
       board: boardId,
       group: groupId,
@@ -1363,8 +1854,60 @@ const createTask = async (req, res) => {
       createdBy: userId,
       portalShared: wantsPortalShare,
       portalSharedAt: wantsPortalShare ? new Date() : null,
-      portalRef: wantsPortalShare ? await claimPortalRef(boardId) : null,
+      portalRef: null,
     });
+
+    // The title cell starts as the name (see applyColumnValuePatch on why the
+    // two are one value), and the Due / Owner cells start as the fields they
+    // stand for. Written BEFORE the caller's own cells, so an explicit cell in
+    // `columnValues` wins over either.
+    syncPrimaryFromName(task, ctx.board);
+    if (dueDate) writeRoleColumn(task, ctx.board, 'dueDate', dueDate, columnValues);
+    if (assigneeIds.length) writeRoleColumn(task, ctx.board, 'assignee', assigneeIds, columnValues);
+
+    // The caller's cells: gated and validated exactly as `updateTask` gates and
+    // validates them, and refused before anything is written. The row is new,
+    // so the person gate diffs against empty cells — every name in the payload
+    // is judged, which is the same rule `assignedTo` gets above.
+    let createdColumnChanges = [];
+    // Set when the row is created already paid in full: the payments it was
+    // created with cover its amount. See `settledStatusOf`.
+    let settledOnCreate = null;
+    if (columnValues !== undefined) {
+      const colDenied = await requireColumnPatchCapabilities(ctx, columnValues, userId, task);
+      if (colDenied) {
+        return res.status(colDenied.status).json({ error: colDenied.error });
+      }
+      const clientCells = await resolveClientCells(ctx, columnValues, userId, task);
+      if (clientCells.error) {
+        return res.status(clientCells.status).json({ error: clientCells.error });
+      }
+      const result = applyColumnValuePatch(task, ctx.board, columnValues, {
+        clientNames: clientCells.clientNames,
+      });
+      if (!result.ok) {
+        return res.status(400).json({ errors: result.errors, error: result.errors[0]?.message });
+      }
+      createdColumnChanges = result.changes;
+
+      // A status the caller NAMED is their instruction and stands; only a row
+      // left on the board's default is settled by what it was created with.
+      const namedStatus = status !== undefined && status !== null && status !== '';
+      if (!namedStatus) {
+        const settled = settledStatusOf(task, ctx.board, createdColumnChanges);
+        if (settled) {
+          settledOnCreate = { from: task.status != null ? task.status.toString() : null, status: settled };
+          applySettledStatus(task, ctx.board, settled);
+          resolvedStatus = settled._id;
+        }
+      }
+    }
+
+    // Claimed last: a ticket number is a counter increment, and a request
+    // refused above must not burn one.
+    if (wantsPortalShare) task.portalRef = await claimPortalRef(boardId);
+
+    await task.save();
 
     await Board.updateOne({ _id: boardId }, { $set: { updatedAt: new Date() } });
 
@@ -1378,6 +1921,47 @@ const createTask = async (req, res) => {
         portalShared: wantsPortalShare,
       },
     });
+    // The cells the row was created WITH ("attached INV-12.pdf"), so its
+    // history says what it started as. The title is the task name, which the
+    // creation row already carries.
+    for (const change of createdColumnChanges) {
+      if (change.column.isPrimary && change.column.type === 'text') continue;
+      const c = columnActivityChange(change, ctx.board, ctx.org);
+      logActivity({
+        task,
+        actor: userId,
+        type: 'task.field_changed',
+        field: c.field,
+        oldValue: c.oldValue,
+        newValue: c.newValue,
+        metadata: { taskName: task.name, ...c.meta },
+      });
+    }
+    // Created already covered by its payments: the move to done is recorded as
+    // the status change it is — a history row saying why, and the same
+    // audience notification and client "resolved" email a person's status
+    // change sends — rather than the row silently appearing done.
+    if (settledOnCreate) {
+      logActivity({
+        task,
+        actor: userId,
+        type: 'task.field_changed',
+        field: 'status',
+        oldValue: settledOnCreate.from,
+        newValue: settledOnCreate.status._id.toString(),
+        metadata: { taskName: task.name, settledBy: 'payments' },
+      });
+      await notifyTaskAudience(task, {
+        type: 'statusChanged',
+        message: `Status of "${task.name}" changed to ${settledOnCreate.status.name}`,
+        orgId: ctx.board.organisation,
+        excludeUserId: userId,
+        actorId: userId,
+        boardId,
+      });
+      emailClientOnResolve(task, ctx.board);
+      logClientStatusChange(task, settledOnCreate.status.name);
+    }
 
     // Created already visible to the client — tell them, same as flipping the
     // toggle later would. Fire-and-forget; the helper swallows its own errors.
@@ -1430,44 +2014,21 @@ const createTask = async (req, res) => {
       }
     }
 
-    if (assigneeIds.length > 0) {
-      await createNotificationsForUsers({
-        userIds: assigneeIds,
-        type: 'assigned',
-        message: `You were assigned to "${task.name}"`,
-        taskId: task._id,
+    // Everybody the new row is assigned to, read off the SAVED row rather than
+    // `assignedTo` from the body: an Owner cell in `columnValues` is an
+    // assignment too (the save hook copies it onto `assignedTo`), and when the
+    // two disagree the cell is the one that landed. A row created from the
+    // ledger with its Owner already filled in used to notify nobody.
+    const createdAssigneeIds = (task.assignedTo || []).map((u) => u.toString());
+    if (createdAssigneeIds.length > 0) {
+      await announceAssignment({
+        task,
+        ids: createdAssigneeIds,
+        actorId: userId,
+        actorName: req.user?.name || '',
         orgId: ctx.board.organisation,
-        excludeUserId: userId,
-        actorId: userId,
         boardId,
-      });
-    }
-
-    if (assigneeIds.length > 0) {
-      const taskLink = buildTaskDeepLink(task, { boardId });
-      const assigneeUsers = await User.find({ _id: { $in: assigneeIds } }).select('email').lean();
-      const emailAllowed = await filterByEmailPreference(assigneeIds, 'assigned', {
-        boardId,
-        actorId: userId,
-      });
-      const emailResults = await Promise.allSettled(
-        assigneeUsers
-          .filter((u) => u.email && emailAllowed.has(u._id.toString()))
-          .map((u) =>
-            sendTaskAssignmentEmail({
-              to: u.email,
-              taskName: task.name,
-              priority: task.priority,
-              dueDate: task.dueDate,
-              taskLink,
-              assignedByName: req.user?.name || '',
-            })
-          )
-      );
-      emailResults.forEach((result, i) => {
-        if (result.status === 'rejected') {
-          console.error(`[email] Failed to send to ${assigneeUsers[i]?.email}:`, result.reason?.message || result.reason);
-        }
+        taskLink: buildTaskDeepLink(task, { boardId }),
       });
     }
 
@@ -1626,11 +2187,20 @@ const updateTask = async (req, res) => {
     const prevDueIso = task.dueDate ? new Date(task.dueDate).toISOString() : null;
     const prevNote = task.note || '';
     const prevGroup = task.group ? task.group.toString() : null;
+    // The column playing the assignee ROLE (the Owner cell) and who it named
+    // before this write. Anyone the write puts on the row who was in neither
+    // this cell nor `assignedTo` is newly assigned and gets told so — see
+    // `announceAssignment` after the save.
+    const assigneeRoleCol = ctx.board.useFlexibleColumns ? roleColumn(ctx.board, 'assignee') : null;
+    const prevOwnerCellIds = assigneeRoleCol
+      ? personIdsOf(task.columnValues.get(assigneeRoleCol._id.toString()))
+      : [];
     let statusChanged = false;
     let newAssigneeIds = null;
     let removedAssigneeIds = null;
     let statusName = null;
     let columnChanges = [];
+    let droppedFiles = [];
     const activityChanges = [];
 
     // ----- columnValues patch (flexible-columns engine, F1) ---------------
@@ -1650,17 +2220,27 @@ const updateTask = async (req, res) => {
       if (colDenied) {
         return res.status(colDenied.status).json({ error: colDenied.error });
       }
-      const result = applyColumnValuePatch(task, ctx.board, body.columnValues);
+      // A `client` cell names a client BOARD: it must be one of this
+      // workspace's, and the name it keeps is that board's, not the request's.
+      const clientCells = await resolveClientCells(ctx, body.columnValues, userId, task);
+      if (clientCells.error) {
+        return res.status(clientCells.status).json({ error: clientCells.error });
+      }
+      const result = applyColumnValuePatch(task, ctx.board, body.columnValues, {
+        clientNames: clientCells.clientNames,
+      });
       if (!result.ok) {
-        return res.status(400).json({ errors: result.errors });
+        // `error` alongside the field-level list so a client that toasts
+        // `error` (most of them) says something readable.
+        return res.status(400).json({ errors: result.errors, error: result.errors[0]?.message });
       }
       columnChanges = result.changes;
+      droppedFiles = result.droppedFiles || [];
       for (const change of result.changes) {
-        activityChanges.push({
-          field: `column:${change.column.key}`,
-          oldValue: change.fromValue,
-          newValue: change.toValue,
-        });
+        // The primary text cell is the task's name: the rename is logged once,
+        // as `name`, below — not a second time as a column.
+        if (change.column.isPrimary && change.column.type === 'text') continue;
+        activityChanges.push(columnActivityChange(change, ctx.board, ctx.org));
       }
     }
 
@@ -1668,9 +2248,16 @@ const updateTask = async (req, res) => {
       if (!body.name.trim()) {
         return res.status(400).json({ error: 'Task name cannot be empty' });
       }
-      const next = body.name.trim();
-      if (next !== prevName) activityChanges.push({ field: 'name', oldValue: prevName, newValue: next });
-      task.name = next;
+      task.name = body.name.trim();
+      // …and the Table's title cell with it. Not logged: the name change below
+      // already says it.
+      const primaryChange = syncPrimaryFromName(task, ctx.board);
+      if (primaryChange) columnChanges.push(primaryChange);
+    }
+    // One `name` row however the title moved — from `body.name` or from the
+    // primary cell — judged against where it started.
+    if (task.name !== prevName) {
+      activityChanges.push({ field: 'name', oldValue: prevName, newValue: task.name });
     }
     if (body.priority !== undefined) {
       if (!VALID_PRIORITIES.includes(body.priority)) {
@@ -1737,13 +2324,63 @@ const updateTask = async (req, res) => {
         }
         activityChanges.push({ field: 'assignees', oldValue: prevAssigneeIds, newValue: ids });
       }
-      task.assignedTo = ids;
+      // The Owner cell follows (see `writeRoleColumn`). That cell can name
+      // people `assignedTo` does not — a row whose Owner was set in the Table
+      // before the two were kept in step — and the panel, which shows
+      // `assignedTo`, never showed them. So what the request sent is not the
+      // whole truth about the cell, and what happens to those unseen names
+      // depends on who is asking:
+      //
+      //   - someone holding `task.assign` REPLACES, as they always have. Their
+      //     list is an instruction about who is on the row, and dropping a
+      //     name is a power they hold.
+      //   - anyone else can only have reached here moving their OWN name (the
+      //     gate above refuses any other delta), so their write is MERGED into
+      //     the cell: its previous names, minus anyone this request removed,
+      //     plus everyone it asked for. Refusing that with a 403 — the old
+      //     behaviour — meant a contributor could not claim a row at all
+      //     because of names they could not see; overwriting instead would take
+      //     those people off the work, the one thing the assign gate exists to
+      //     stop.
+      //
+      // The save hook copies the cell onto `assignedTo` (the cell was written,
+      // so the column wins), so the merged list is set on the field here too
+      // rather than left for the hook to overwrite. The activity row above
+      // keeps the caller's own delta: it is a record of what THEY did, and the
+      // names that surface from the cell were put there by somebody else.
+      // (When the same request writes the Owner cell itself, that write was
+      // gated as a person patch and `writeRoleColumn` stands aside.)
+      const ownerCol = assigneeRoleCol;
+      const patchWritesOwner =
+        !!ownerCol &&
+        !!body.columnValues &&
+        typeof body.columnValues === 'object' &&
+        Object.prototype.hasOwnProperty.call(body.columnValues, ownerCol._id.toString());
+      let resulting = ids;
+      if (ownerCol && !patchWritesOwner && !ctx.can('task.assign')) {
+        const cellPrev = personIdsOf(task.columnValues.get(ownerCol._id.toString()));
+        const unseen = cellPrev.filter((id) => !nextSet.has(id) && !prevSet.has(id));
+        if (unseen.length) {
+          const removedSet = new Set(removedAssigneeIds);
+          resulting = [
+            ...cellPrev.filter((id) => !removedSet.has(id)),
+            ...ids.filter((id) => !cellPrev.includes(id)),
+          ];
+        }
+      }
+      task.assignedTo = resulting;
+      const roleChange = writeRoleColumn(task, ctx.board, 'assignee', resulting, body.columnValues);
+      if (roleChange) columnChanges.push(roleChange);
     }
     if (body.dueDate !== undefined) {
       const nextDue = body.dueDate || null;
       const nextIso = nextDue ? new Date(nextDue).toISOString() : null;
       if (prevDueIso !== nextIso) activityChanges.push({ field: 'dueDate', oldValue: prevDueIso, newValue: nextIso });
       task.dueDate = body.dueDate || undefined;
+      // The Due cell follows, so the ledger and the Table agree with the panel
+      // and the save hook does not revert the field from the old cell.
+      const roleChange = writeRoleColumn(task, ctx.board, 'dueDate', nextDue, body.columnValues);
+      if (roleChange) columnChanges.push(roleChange);
     }
     if (body.note !== undefined) {
       const nextNote = body.note || '';
@@ -1791,6 +2428,30 @@ const updateTask = async (req, res) => {
       task.group = body.group;
     }
 
+    // Paid in full: a write that moved the payments or the amount, leaving the
+    // payments covering the amount, moves the row to the board's done status —
+    // logged, notified and emailed below exactly like a status change somebody
+    // made by hand, because to everyone reading the board it is one. Never the
+    // other way: a payment removed later does not reopen the row.
+    //
+    // A status this same request CHANGED is the more specific instruction and
+    // stands — the same rule `writeRoleColumn` follows for the Due and Owner
+    // cells. A status merely echoed back unchanged is not an instruction.
+    if (!statusChanged) {
+      const settled = settledStatusOf(task, ctx.board, columnChanges);
+      if (settled) {
+        statusChanged = true;
+        activityChanges.push({
+          field: 'status',
+          oldValue: prevStatus,
+          newValue: settled._id.toString(),
+          meta: { settledBy: 'payments' },
+        });
+        applySettledStatus(task, ctx.board, settled);
+        statusName = settled.name;
+      }
+    }
+
     await task.save();
 
     // The parent has landed in its new group; its subitems are still in the old
@@ -1816,6 +2477,10 @@ const updateTask = async (req, res) => {
       if (follow) await Task.updateMany(follow.filter, follow.update);
     }
 
+    // Only now that the edit is saved: a file the cell let go of is gone for
+    // good once Cloudinary drops it, so it must not go on a request that failed.
+    destroyDroppedColumnFiles(task, ctx.board, droppedFiles);
+
     for (const c of activityChanges) {
       logActivity({
         task,
@@ -1824,7 +2489,9 @@ const updateTask = async (req, res) => {
         field: c.field,
         oldValue: c.oldValue,
         newValue: c.newValue,
-        metadata: { taskName: task.name },
+        // `taskName` is read here, after the save, so a rename in the same
+        // request is logged under the name the row now has.
+        metadata: { taskName: task.name, ...(c.meta || {}) },
       });
     }
     // F1: emit column-change events for direct columnValues writes. Dormant
@@ -1840,16 +2507,33 @@ const updateTask = async (req, res) => {
       { $set: { updatedAt: new Date() } }
     );
 
-    if (newAssigneeIds && newAssigneeIds.length > 0) {
-      await createNotificationsForUsers({
-        userIds: newAssigneeIds,
-        type: 'assigned',
-        message: `You were assigned to "${task.name}"`,
-        taskId: task._id,
-        orgId: ctx.board.organisation,
-        excludeUserId: userId,
+    // Who this write put on the row. `newAssigneeIds` is what `assignedTo` in
+    // the body added. The rest is read off the SAVED row: an Owner cell written
+    // from the Table or the ledger is copied onto `assignedTo` by the save hook,
+    // so anyone there now who was in neither the old `assignedTo` nor the old
+    // Owner cell was assigned by this write, whichever way it came in. Someone
+    // already named in the cell before (a row from before the two were kept in
+    // step) is not newly assigned and is not told again.
+    //
+    // Both lists are checked against the SAVED row: when the same request also
+    // wrote the Owner cell, the save hook lets the cell win, and telling
+    // somebody "you were assigned" (or "removed") over a value that never
+    // landed is a notification and an email about a thing that did not happen.
+    const prevPeople = new Set([...prevAssigneeIds, ...prevOwnerCellIds]);
+    const savedPeople = new Set((task.assignedTo || []).map((u) => u.toString()));
+    const bodyAdded = (newAssigneeIds || []).filter((id) => savedPeople.has(id));
+    const cellAdded = [...savedPeople].filter((id) => !prevPeople.has(id) && !bodyAdded.includes(id));
+    const assignedNow = [...bodyAdded, ...cellAdded];
+    if (removedAssigneeIds) removedAssigneeIds = removedAssigneeIds.filter((id) => !savedPeople.has(id));
+    if (assignedNow.length > 0) {
+      await announceAssignment({
+        task,
+        ids: assignedNow,
         actorId: userId,
+        actorName: req.user?.name || '',
+        orgId: ctx.board.organisation,
         boardId: task.board,
+        taskLink: buildTaskDeepLink(task),
       });
     }
     if (removedAssigneeIds && removedAssigneeIds.length > 0) {
@@ -1894,34 +2578,6 @@ const updateTask = async (req, res) => {
         excludeUserId: userId,
         actorId: userId,
         boardId: task.board,
-      });
-    }
-
-    if (newAssigneeIds && newAssigneeIds.length > 0) {
-      const taskLink = buildTaskDeepLink(task);
-      const assigneeUsers = await User.find({ _id: { $in: newAssigneeIds } }).select('email').lean();
-      const emailAllowed = await filterByEmailPreference(newAssigneeIds, 'assigned', {
-        boardId: task.board,
-        actorId: userId,
-      });
-      const emailResults = await Promise.allSettled(
-        assigneeUsers
-          .filter((u) => u.email && emailAllowed.has(u._id.toString()))
-          .map((u) =>
-            sendTaskAssignmentEmail({
-              to: u.email,
-              taskName: task.name,
-              priority: task.priority,
-              dueDate: task.dueDate,
-              taskLink,
-              assignedByName: req.user?.name || '',
-            })
-          )
-      );
-      emailResults.forEach((result, i) => {
-        if (result.status === 'rejected') {
-          console.error(`[email] Failed to send to ${assigneeUsers[i]?.email}:`, result.reason?.message || result.reason);
-        }
       });
     }
 
@@ -2880,6 +3536,9 @@ const deleteTask = async (req, res) => {
     const task = await Task.findById(id);
     if (!task) return res.status(404).json({ error: 'Task not found' });
 
+    // The board's columns, for the file cells below. A personal task has no
+    // board and so no columns — nothing of its can be in a file cell.
+    let boardColumns = [];
     if (task.isPersonal) {
       if (!task.createdBy || task.createdBy.toString() !== userId) {
         return res.status(403).json({ error: 'Not authorised' });
@@ -2893,11 +3552,12 @@ const deleteTask = async (req, res) => {
         'You do not have permission to delete tasks'
       );
       if (denied) return res.status(denied.status).json({ error: denied.error });
+      boardColumns = ctx.board.columns || [];
     }
 
     // Cascade subitems first — fetch their ids so their updates and
     // notifications are also cleaned up.
-    const subitems = await Task.find({ parent: id }).select('_id attachments').lean();
+    const subitems = await Task.find({ parent: id }).select('_id attachments columnValues').lean();
     const subitemIds = subitems.map((s) => s._id);
     const idsToDelete = [id, ...subitemIds];
 
@@ -2909,6 +3569,18 @@ const deleteTask = async (req, res) => {
       ...updateDocs.flatMap((u) => u.attachments || []),
     ];
     await destroyCloudinaryAssets(allAttachments);
+    // …and the files in FILE COLUMNS, which no delete path used to reach: an
+    // invoice's PDF lives in one, and deleting the invoice left the PDF public
+    // at its URL. Before the rows go, because the cell is the only record of
+    // the asset. See utils/fileColumnAssets.js.
+    // The board id rides along explicitly: the subitems above were read
+    // without `board`, and a row whose board cannot be named destroys nothing.
+    // `excludeTaskIds`: a file another row on the board still links to (a
+    // Retry that created the row twice, a planted copy) is kept.
+    await destroyFileColumnAssets(boardColumns, [task, ...subitems], {
+      boardId: task.board,
+      excludeTaskIds: idsToDelete,
+    });
 
     // Log the deletion before the row disappears so the log can resolve task name.
     logActivity({
@@ -3202,4 +3874,6 @@ module.exports = {
   // pure — hand them a ctx-like `{ can }` and plain objects.
   requireAssignCapability,
   isSelfClaim,
+  // The no-op-write test, exported for taskColumnSync.test.js. Pure.
+  columnValuesEqual,
 };

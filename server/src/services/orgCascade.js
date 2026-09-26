@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Organisation = require('../models/Organisation');
 const Board = require('../models/Board');
 const TaskGroup = require('../models/TaskGroup');
@@ -31,6 +32,7 @@ const GoalConnectorLink = require('../models/GoalConnectorLink');
 const ClientContact = require('../models/ClientContact');
 const PortalDigest = require('../models/PortalDigest');
 const { destroyCloudinaryAssets, destroyLogos } = require('../config/cloudinary');
+const { destroyFileColumnAssets } = require('../utils/fileColumnAssets');
 const VaultEscrow = require('../models/VaultEscrow');
 const ExecutiveView = require('../models/ExecutiveView');
 const ServiceCatalogEntry = require('../models/ServiceCatalogEntry');
@@ -60,13 +62,27 @@ const cascadeDeleteOrg = async (orgId) => {
 
   if (taskIds.length) {
     // Collect and destroy all Cloudinary assets before wiping the DB rows.
-    const taskDocs = await Task.find({ _id: { $in: taskIds } }).select('attachments').lean();
+    // `board` too: several boards are torn down together here, and a
+    // file-column asset is only destroyed under the folder of the task's OWN
+    // board (utils/fileColumnAssets.js) — without it, nothing would be.
+    const taskDocs = await Task.find({ _id: { $in: taskIds } })
+      .select('attachments columnValues board')
+      .lean();
     const updateDocs = await Update.find({ task: { $in: taskIds } }).select('attachments').lean();
     const allAttachments = [
       ...taskDocs.flatMap((t) => t.attachments || []),
       ...updateDocs.flatMap((u) => u.attachments || []),
     ];
     await destroyCloudinaryAssets(allAttachments);
+    // Files in FILE COLUMNS (an invoice's PDF lives in one) are not in
+    // `attachments`, and nothing collected them. Every board's columns are
+    // handed over at once: column ids are ObjectIds, so each task only ever
+    // matches the file columns of its own board.
+    const boardColumns = await Board.find({ _id: { $in: boardIds } }).select('columns').lean();
+    await destroyFileColumnAssets(
+      boardColumns.flatMap((b) => b.columns || []),
+      taskDocs
+    );
 
     await Update.deleteMany({ task: { $in: taskIds } });
     await Notification.deleteMany({ task: { $in: taskIds } });
@@ -358,7 +374,18 @@ const cascadeDeleteOrg = async (orgId) => {
     { $pull: { organisations: orgId } }
   );
 
-  await destroyLogos([await Organisation.findById(orgId).select('logoPublicId').lean()]);
+  // Guarded on the id's SHAPE before it reaches `findById`. This lookup exists
+  // only to find a logo to destroy, and `findById` casts — a cast failure is a
+  // throw rather than a null. An id
+  // that cannot be an ObjectId cannot have a logo on record, so skipping the
+  // lookup loses nothing — whereas throwing here aborts the teardown at its
+  // very last step, after every child row is already gone, and leaves the org
+  // row behind. It is also what lets the cascade be driven against stubbed
+  // models with a placeholder id, which is how its ORDER is tested.
+  const orgRow = mongoose.isValidObjectId(orgId)
+    ? await Organisation.findById(orgId).select('logoPublicId').lean()
+    : null;
+  await destroyLogos([orgRow]);
   await Organisation.deleteOne({ _id: orgId });
 };
 

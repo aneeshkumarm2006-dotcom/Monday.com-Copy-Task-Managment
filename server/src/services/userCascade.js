@@ -14,6 +14,7 @@ const Channel = require('../models/Channel');
 const DueDigest = require('../models/DueDigest');
 const ExecutiveView = require('../models/ExecutiveView');
 const { destroyCloudinaryAssets } = require('../config/cloudinary');
+const { roleColumn } = require('../utils/columnRoles');
 const { purgeChannels } = require('./workstreamSurfaces');
 const { logExecutiveRemoved } = require('./executiveActivity');
 
@@ -382,6 +383,10 @@ const cascadeDeleteUser = async (userId) => {
     createdBy: userId,
   });
   if (personalTaskIds.length) {
+    // `attachments` is the whole of a personal task's files. The other place a
+    // task can hold one — a file COLUMN (see utils/fileColumnAssets.js) — needs
+    // a board, and a personal task has none: both task write paths refuse
+    // `columnValues` on it. So there is no second sweep to run here.
     const taskDocs = await Task.find({ _id: { $in: personalTaskIds } })
       .select('attachments')
       .lean();
@@ -402,6 +407,38 @@ const cascadeDeleteUser = async (userId) => {
   // The rows themselves stay (see the header); only the pointer that would keep
   // addressing work to a person who is gone comes off.
   await Task.updateMany({ assignedTo: userId }, { $pull: { assignedTo: userId } });
+  // On a flexible-columns board that pointer has a second copy: the column
+  // playing the `assignee` role (billing's Owner, content's Writer — see
+  // utils/columnRoles.js). The task's save hook copies that cell back onto
+  // `assignedTo`, so pulling only the field would put the person straight back
+  // on the row the next time anybody edited it. Pull the cell too. Only the ROLE
+  // column: other person cells never feed `assignedTo`, and what they record is
+  // the board's content, which this cascade keeps.
+  //
+  // Scoped to the workspaces they belonged to — assignees must be members, so
+  // no other board can name them. Cells hold id STRINGS (the person column's
+  // serializer), with ObjectIds pulled as well for rows written by hand.
+  const everyOrgId = [...new Set([...memberOrgIds, ...reverseOrgIds].map(idOf))];
+  if (everyOrgId.length) {
+    const roleBoards = await Board.find({
+      organisation: { $in: everyOrgId },
+      useFlexibleColumns: true,
+      'columns.type': 'person',
+    })
+      .select('columns templateKey')
+      .lean();
+    const uid = idOf(userId);
+    const asIds = [uid, ...(mongoose.Types.ObjectId.isValid(uid) ? [new mongoose.Types.ObjectId(uid)] : [])];
+    for (const board of roleBoards) {
+      const ownerCol = roleColumn(board, 'assignee');
+      if (!ownerCol) continue;
+      const path = `columnValues.${String(ownerCol._id)}`;
+      await Task.updateMany(
+        { board: board._id, [path]: { $in: asIds } },
+        { $pull: { [path]: { $in: asIds } } }
+      );
+    }
+  }
 
   // ---- 4. Comments they authored ----------------------------------------
   // Deleted, as before — an update is addressed FROM somebody in a way a task

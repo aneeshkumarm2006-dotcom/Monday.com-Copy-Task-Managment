@@ -328,8 +328,20 @@ function App() {
   // are global — a rate is a public fact — so switching workspace must not
   // re-fetch an identical table. `ensureRates` is a no-op once loaded, so this
   // is one request per session.
+  //
+  // Plus one refresh path for the tab that stays open for days: when it comes
+  // back into view, `ensureFresh` refetches only if the table is empty or more
+  // than six hours old (fxStore's header says why), so returning to the tab is
+  // free almost every time and never shows yesterday's newest rate as today's.
+  // Board pages call `ensureFresh` on mount for the same reason.
   useEffect(() => {
-    if (user) ensureRates();
+    if (!user) return undefined;
+    ensureRates();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') useFxStore.getState().ensureFresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?._id]);
 

@@ -27,7 +27,23 @@ export const getUpdates = async (taskId, visibility = 'shared') => {
  * @param {'shared'|'internal'} payload.visibility — 'internal' posts to the
  *        team-only thread; the client never sees it and is never emailed it.
  */
-export const addUpdate = async (
+export const addUpdate = async (taskId, payload) => (await postUpdate(taskId, payload)).update;
+
+/**
+ * POST /api/tasks/:taskId/updates — the WHOLE reply, not just the update.
+ *
+ * `addUpdate` above hands back only the new update, which is all a thread
+ * needs. But a post that @mentions somebody also stamps the task — who has been
+ * told, and when (`notifiedUsers` / `notifiedAt`) — and the ledger's "Told"
+ * strip reads exactly that. The server returns the fresh stamp beside the
+ * update so the page can patch its copy of the row at once, instead of the
+ * strip saying "Nobody told" until the next board fetch.
+ *
+ * @returns {{ update: object, task: { _id, notifiedUsers, notifiedAt } | null }}
+ *   `task` is null when the post stamped nobody (no valid mention) — the row
+ *   is then unchanged, and there is nothing to patch.
+ */
+export const postUpdate = async (
   taskId,
   {
     body,
@@ -46,7 +62,7 @@ export const addUpdate = async (
     replyTo,
     visibility,
   });
-  return data.update;
+  return { update: data.update, task: data.task || null };
 };
 
 /**

@@ -512,6 +512,203 @@ const describeGoalActivity = (entry) => {
   return `${actor} changed ${label} on ${goalName} from ${from} to ${to}.`;
 };
 
+/**
+ * The currency catalog's DISPLAY half — symbol and locale per code.
+ *
+ * Mirrors `CURRENCIES` in client/src/utils/money.js, which is where symbols
+ * live (the server's own utils/money.js deliberately carries only the codes).
+ * Duplicated here for the same reason WEIGHT_LABELS is: the export has to write
+ * "CA$500" in the same words the panel shows, and a symbol is presentation on
+ * both sides of the wire. A code missing from this table prints as "JPY 1,234",
+ * exactly as the client's `formatIn` does.
+ */
+const CURRENCY_DISPLAY = {
+  INR: { symbol: '₹', locale: 'en-IN' },
+  USD: { symbol: '$', locale: 'en-US' },
+  CAD: { symbol: 'CA$', locale: 'en-CA' },
+  EUR: { symbol: '€', locale: 'de-DE' },
+  GBP: { symbol: '£', locale: 'en-GB' },
+  AED: { symbol: 'AED', locale: 'en-AE' },
+  AUD: { symbol: 'A$', locale: 'en-AU' },
+  SGD: { symbol: 'S$', locale: 'en-SG' },
+};
+
+/**
+ * `value` in `code`, the way the client's `formatIn` renders it: the locale's
+ * grouping and symbol position, the CATALOG symbol (so CAD reads "CA$", never a
+ * bare "$" that could be any of four currencies), and cents only when there
+ * are some.
+ */
+const formatMoney = (value, code) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return String(value);
+  const d = Number.isInteger(value) ? 0 : 2;
+  const cur = CURRENCY_DISPLAY[code];
+  const opts = { minimumFractionDigits: d, maximumFractionDigits: d };
+  if (!cur) {
+    const plain = value.toLocaleString('en-US', opts);
+    return code ? `${code} ${plain}` : plain;
+  }
+  try {
+    return new Intl.NumberFormat(cur.locale, { style: 'currency', currency: code, ...opts })
+      .formatToParts(value)
+      .map((p) => (p.type === 'currency' ? cur.symbol : p.value))
+      .join('');
+  } catch (_err) {
+    return `${cur.symbol}${value.toLocaleString(cur.locale, opts)}`;
+  }
+};
+
+/** A plain figure: grouped, cents only when present. */
+const formatPlainNumber = (value) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return String(value);
+  return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+};
+
+/** A column value that holds nothing. */
+const isBlank = (v) =>
+  v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
+
+/**
+ * One side of a column change, in words, or null when it is empty. Driven by
+ * `metadata.columnType`, stamped by the writer (taskController
+ * `columnActivityMeta`) because the stored value alone cannot say whether
+ * `["65f…"]` is people, tags or files.
+ *
+ * Mirrors `columnScalarText` in client/src/components/board/ActivityEntry.jsx.
+ */
+const columnScalarText = (type, value, meta = {}) => {
+  if (isBlank(value)) return null;
+  switch (type) {
+    case 'number':
+      if (typeof value !== 'number') return String(value);
+      // The currency recorded IN THE ROW — the unit at write time. A board's
+      // currency can be changed later, and that relabels without converting,
+      // so reading today's unit would misstate what was typed.
+      return meta.currency ? formatMoney(value, meta.currency) : formatPlainNumber(value);
+    case 'rating':
+      return String(value);
+    case 'date':
+      return formatDate(value) || String(value);
+    case 'status':
+    case 'dropdown':
+      return (meta.optionLabels && meta.optionLabels[String(value)]) || 'a removed choice';
+    case 'text':
+    case 'long_text':
+    case 'email':
+    case 'phone':
+      return quote(truncate(value, 80));
+    case 'link':
+      if (typeof value === 'object') return value.label || value.url || null;
+      return String(value);
+    case 'client': {
+      // `{ boardId, name }`. The name is the snapshot the writer stamped from
+      // the client board (or typed, for a client with no board), so the row
+      // reads "set Client to Acme" even for somebody who cannot open Acme's
+      // board — and still reads that way after the board is renamed or gone.
+      // Bare, not quoted: it is a name, like a person's, not typed text.
+      if (typeof value === 'object') {
+        const name = typeof value.name === 'string' ? value.name.trim() : '';
+        return name ? truncate(name, 80) : null;
+      }
+      return truncate(String(value), 80);
+    }
+    default:
+      return null;
+  }
+};
+
+/** A payment entry's amount in the row's currency. */
+const paymentAmount = (p, meta) =>
+  formatMoney(Number(p && p.amount), meta.currency || null);
+
+/**
+ * A column change as a sentence — the typed branch, for rows that carry
+ * `metadata.columnType`. Returns null for a type with no sentence of its own,
+ * which falls back to "updated <column>".
+ */
+const describeColumnChange = (entry, actor, label) => {
+  const meta = entry.metadata || {};
+  const type = meta.columnType;
+  const oldV = entry.oldValue;
+  const newV = entry.newValue;
+
+  if (type === 'person') {
+    // Already resolved to { id, name } by resolveFieldValue.
+    const { added, removed } = diffMembers(
+      Array.isArray(oldV) ? oldV : [],
+      Array.isArray(newV) ? newV : []
+    );
+    const parts = [];
+    if (added.length) parts.push(`assigned ${names(added)}`);
+    if (removed.length) parts.push(`unassigned ${names(removed)}`);
+    return parts.length ? `${actor} ${parts.join(' and ')} in ${label}.` : null;
+  }
+
+  if (type === 'file') {
+    const keyOf = (f) => (f && (f.url || f.name)) || '';
+    const before = Array.isArray(oldV) ? oldV : [];
+    const after = Array.isArray(newV) ? newV : [];
+    const beforeKeys = new Set(before.map(keyOf));
+    const afterKeys = new Set(after.map(keyOf));
+    const fileName = (f) => quote(truncate((f && f.name) || 'file', 60));
+    const added = after.filter((f) => !beforeKeys.has(keyOf(f))).map(fileName);
+    const removed = before.filter((f) => !afterKeys.has(keyOf(f))).map(fileName);
+    const parts = [];
+    if (added.length) parts.push(`attached ${andList(added)} to ${label}`);
+    if (removed.length) parts.push(`removed ${andList(removed)} from ${label}`);
+    return parts.length ? `${actor} ${parts.join(' and ')}.` : null;
+  }
+
+  if (type === 'payments') {
+    // Compared by entry id, never by position: payments are kept sorted by
+    // date, so recording an older one shifts every index after it.
+    const before = new Map((Array.isArray(oldV) ? oldV : []).map((p) => [String(p && p.id), p]));
+    const after = new Map((Array.isArray(newV) ? newV : []).map((p) => [String(p && p.id), p]));
+    const added = [...after.keys()].filter((id) => !before.has(id)).map((id) => paymentAmount(after.get(id), meta));
+    const removed = [...before.keys()].filter((id) => !after.has(id)).map((id) => paymentAmount(before.get(id), meta));
+    const edited = [...after.keys()]
+      .filter((id) => before.has(id) && Number(before.get(id).amount) !== Number(after.get(id).amount))
+      .map((id) => `changed a payment from ${paymentAmount(before.get(id), meta)} to ${paymentAmount(after.get(id), meta)}`);
+    const parts = [];
+    if (added.length) parts.push(`recorded ${added.length === 1 ? 'a payment' : 'payments'} of ${andList(added)}`);
+    if (removed.length) parts.push(`removed ${removed.length === 1 ? 'a payment' : 'payments'} of ${andList(removed)}`);
+    parts.push(...edited);
+    return parts.length ? `${actor} ${parts.join(' and ')}.` : `${actor} updated a payment.`;
+  }
+
+  if (type === 'tags') {
+    const labelOf = (id) => (meta.optionLabels && meta.optionLabels[String(id)]) || 'a removed tag';
+    const before = new Set((Array.isArray(oldV) ? oldV : []).map(String));
+    const after = new Set((Array.isArray(newV) ? newV : []).map(String));
+    const added = [...after].filter((id) => !before.has(id)).map(labelOf);
+    const removed = [...before].filter((id) => !after.has(id)).map(labelOf);
+    const parts = [];
+    if (added.length) parts.push(`added ${andList(added)}`);
+    if (removed.length) parts.push(`removed ${andList(removed)}`);
+    return parts.length ? `${actor} ${parts.join(' and ')} in ${label}.` : null;
+  }
+
+  if (type === 'checkbox') {
+    return `${actor} ${newV ? 'checked' : 'unchecked'} ${label}.`;
+  }
+
+  if (type === 'connect_boards') {
+    const count = (v) => (Array.isArray(v) ? v.length : (v && Array.isArray(v.links) ? v.links.length : 0));
+    const before = count(oldV);
+    const after = count(newV);
+    if (before === after) return null;
+    const n = Math.abs(after - before);
+    return `${actor} ${after > before ? 'linked' : 'unlinked'} ${n} item${n === 1 ? '' : 's'} in ${label}.`;
+  }
+
+  const from = columnScalarText(type, oldV, meta);
+  const to = columnScalarText(type, newV, meta);
+  if (from === null && to === null) return null;
+  if (from === null) return `${actor} set ${label} to ${to}.`;
+  if (to === null) return `${actor} cleared ${label} (was ${from}).`;
+  return `${actor} changed ${label} from ${from} to ${to}.`;
+};
+
 /** Money as a sentence reads it. Not a currency — the board owns that. */
 const describeAmount = (value) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 'nothing';
@@ -616,6 +813,13 @@ const describeActivity = (entry, { oldGroupName, newGroupName } = {}) => {
       // the writer stores the column's display name alongside it.
       if (typeof entry.field === 'string' && entry.field.startsWith('column:')) {
         const label = meta.columnLabel || entry.field.slice('column:'.length);
+        // Rows that say what TYPE the column was read their values properly
+        // ("changed Amount from CA$12,000 to CA$15,000"). Rows written before
+        // the type was stamped — and link rows from linkController, which
+        // carry a label but no type — keep the count-or-"updated" wording.
+        if (meta.columnType) {
+          return describeColumnChange(entry, actor, label) || `${actor} updated ${label}.`;
+        }
         const before = Array.isArray(entry.oldValue) ? entry.oldValue.length : null;
         const after = Array.isArray(entry.newValue) ? entry.newValue.length : null;
         if (before !== null && after !== null && before !== after) {
@@ -667,9 +871,16 @@ const describeActivity = (entry, { oldGroupName, newGroupName } = {}) => {
         return `${actor} moved the task from ${from} to ${to}.`;
       }
 
+      // A status the SERVER moved because the row's payments came to cover
+      // its amount (utils/paymentsSettle.js). Still the actor's sentence — it
+      // was their payment that did it — but it says why, so nobody reading
+      // the history wonders who ticked Paid.
+      const why = entry.field === 'status' && meta.settledBy === 'payments'
+        ? ' (payments cover the amount)'
+        : '';
       return (
         `${actor} changed ${label} from ${describeScalar(entry.field, entry.oldValue)}` +
-        ` to ${describeScalar(entry.field, entry.newValue)}.`
+        ` to ${describeScalar(entry.field, entry.newValue)}${why}.`
       );
     }
 
@@ -765,6 +976,7 @@ module.exports = {
   goalFieldLabel,
   eventLabel,
   formatDate,
+  formatMoney,
   weightLabel,
   FIELD_LABELS,
   LEGACY_STATUS_LABELS,

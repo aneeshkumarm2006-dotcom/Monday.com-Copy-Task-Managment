@@ -71,6 +71,28 @@ export const updateBoard = async (id, payload) => {
 };
 
 /**
+ * PATCH /api/boards/:id/currency — the unit this board's money is in.
+ *
+ * `currency` is a catalog code, or NULL:
+ *   'USD'  an OVERRIDE — the board keeps USD whatever the workspace says;
+ *   null   FOLLOW the workspace — `Board.currency` goes back to null and the
+ *          money is relabelled to the workspace's current base currency, then
+ *          moves with it every time the workspace currency changes.
+ *
+ * RELABELS, never converts: every money column on the board takes the new
+ * code, and the stored numbers are left exactly as typed. Needs
+ * `column.manage`, the same gate as editing a column.
+ *
+ * Returns `{ board: { _id, currency, columns }, following, effective }` —
+ * `board.currency` may be null (following), `effective` is the code the money
+ * is now in either way. The store merges `board` into its cached copy.
+ */
+export const setBoardCurrency = async (boardId, currency) => {
+  const { data } = await api.patch(`/api/boards/${boardId}/currency`, { currency });
+  return data;
+};
+
+/**
  * DELETE /api/boards/:id — delete board + cascade (admin only).
  */
 export const deleteBoard = async (id) => {

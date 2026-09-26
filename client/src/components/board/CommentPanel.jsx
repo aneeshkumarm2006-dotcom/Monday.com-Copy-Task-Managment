@@ -38,6 +38,12 @@ import AssigneePicker from './AssigneePicker';
 import FollowButton from './FollowButton';
 import useAuthStore from '../../store/authStore';
 import { useBoardPermissions } from '../../hooks/usePermissions';
+import ColumnFieldList from './ColumnFieldList';
+import { boardOffersFilter, templateDisplay } from '../../utils/boardTemplateDisplay';
+import { columnValue } from '../../utils/columnValues';
+import { invoiceState, issuedDayOf, ledgerColumns, statePill, statusOf } from '../../utils/ledger';
+import { isLedgerBoard } from '../../utils/boardRowCreation';
+import { roleColumn } from '../../utils/columnRoles';
 
 // Mirror of TaskEditRow's toDateInputValue so the date input round-trips
 // the same ISO/YYYY-MM-DD shape used elsewhere in the app.
@@ -49,6 +55,83 @@ const toDateInputValue = (d) => {
   const m = String(dt.getMonth() + 1).padStart(2, '0');
   const day = String(dt.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+};
+
+const capitalize = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : '');
+
+/**
+ * How many of a row's typed fields hold something — the phone's "3/7" on the
+ * collapsed field card. Formula and mirror columns are left out of both sides:
+ * nobody fills them in, so counting them would make a row look finished (or
+ * unfinished) for reasons the reader cannot act on.
+ */
+const fieldFillCount = (columns, task) => {
+  let total = 0;
+  let filled = 0;
+  for (const col of columns) {
+    if (!col || col.isPrimary || col.type === 'formula' || col.type === 'mirror') continue;
+    total += 1;
+    const v = columnValue(task, col);
+    const blank =
+      v === null ||
+      v === undefined ||
+      v === '' ||
+      (Array.isArray(v) && v.length === 0) ||
+      (col.type === 'connect_boards' && !(Array.isArray(v?.links) && v.links.length));
+    if (!blank) filled += 1;
+  }
+  return { filled, total };
+};
+
+/** Tones for the derived-state pill, from the status palette tokens. */
+const PILL_TONES = {
+  bad: { bg: 'var(--color-status-stuck-bg)', fg: 'var(--color-status-stuck)' },
+  warn: { bg: 'var(--color-status-working-bg)', fg: 'var(--color-status-working)' },
+  good: { bg: 'var(--color-status-done-bg)', fg: 'var(--color-status-done)' },
+  // A plain fact rather than a warning — "Due in 12 days".
+  muted: { bg: 'var(--color-bg-subtle)', fg: 'var(--color-text-secondary)' },
+};
+
+/**
+ * The pill that sits beside the status chip on a ledger row, or null.
+ *
+ * WORDED BY `statePill` — the one line the ledger tile and the invoice sheet
+ * put beside their stamp — so the panel cannot describe the same invoice a
+ * third way. It used to word the state itself, and said nothing at all for a
+ * draft whose due date had passed, which the sheet calls "Not sent · due date
+ * passed". The derivation is `invoiceState`; this only picks the words.
+ *
+ * What the panel adds, because its chip is the STATUS where the tile's stamp
+ * is the DERIVED state — and the two differ exactly when the ledger knows
+ * something the status does not:
+ *   - paid by receipts while the status still says Sent. `statePill` is silent
+ *     on a paid invoice (the tile's stamp already says Paid), so here the pill
+ *     carries the ledger's own paid label;
+ *   - part-paid. The chip still reads Sent, so the stamp's "Part-paid" leads
+ *     the line: "Part-paid · Due in 5 days".
+ *
+ * And the rule it keeps: it never says what the chip already says. A line that
+ * only echoes the status name ("Overdue" beside a hand-set Overdue) is dropped.
+ */
+const invoicePillOf = (state, status) => {
+  if (!state) return null;
+  const statusName = (status?.name || '').trim().toLowerCase();
+  const echoes = (text) => !text || text.trim().toLowerCase() === statusName;
+
+  let label = statePill(state);
+  if (state.key === 'paid') {
+    label = state.label || 'Paid';
+  } else if (state.key === 'partial' && label && label !== state.label && !echoes(state.label)) {
+    label = `${state.label} · ${label}`;
+  }
+  if (echoes(label)) return null;
+
+  let tone = 'muted';
+  if (state.key === 'overdue') tone = 'bad';
+  else if (state.key === 'paid') tone = 'good';
+  else if (state.key === 'partial' || state.key === 'draft') tone = 'warn';
+  else if (typeof state.daysUntilDue === 'number' && state.daysUntilDue <= 1) tone = 'warn';
+  return { tone, label };
 };
 
 /**
@@ -127,15 +210,18 @@ const CommentPanel = ({
   initialTab = null,
   // When true, the priority + status badges become inline dropdowns even for
   // non-admins. Used by the "My Work" view so users can re-triage their own
-  // tasks straight from the detail panel. Board context leaves this off so
-  // its existing admin-gated permission model is unchanged.
+  // tasks straight from the detail panel. Board context leaves this off: there
+  // priority stays a static chip, and the STATUS dropdown follows the board's
+  // own `task.change_status` capability instead (see `canChangeStatusHere`).
   editableStatusPriority = false,
   // Client Portal: async (task, nextValue) => void. Omitted where the viewer may
   // not publish to the client, which is what hides the control entirely.
   onSharePortal = null,
-  // Tracker boards: called with the server’s updated task after evidence is
-  // attached or detached, so the board grid’s marker refreshes. Omitting it
-  // does not hide the row — the row is gated on the board being a tracker.
+  // Called with the server’s updated task after a write that bypasses
+  // `onUpdateTask`: evidence attached or detached on a tracker board (so the
+  // grid’s marker refreshes), and a field edited in the flexible-column field
+  // list (so the grid / ledger row shows the new value). Omitting it hides
+  // nothing — the field list then updates the task store itself.
   onTaskPatched = null,
   // Tracker boards: a token (the task id) meaning “this panel was opened
   // BECAUSE the task was just marked done” — scroll the sidebar to the Goal
@@ -473,6 +559,143 @@ const CommentPanel = ({
     !!onUpdateTask && (canAssignOthers || canOnBoard('task.edit_assigned'));
   const selfId = currentUser?._id ? String(currentUser._id) : null;
 
+  // --- Flexible-column boards ------------------------------------------
+  // On a board with `useFlexibleColumns`, the row's facts live in its COLUMNS:
+  // a Billing row's amount, client, issued/due dates, owner and PDF. The
+  // legacy Assigned to / Due date / Labels rows edit `task.assignedTo` /
+  // `task.dueDate` / `task.labels`, which that board's grid, ledger and filters
+  // do not show — so there the header lists the columns instead, edited
+  // through the same cells as the grid.
+  //
+  // Subitems keep the legacy rows: the grid never shows a subitem's cells, so a
+  // subitem has no column values anyone would look for. A flexible board whose
+  // only column is the primary (the title, already the <h2>) has nothing to
+  // list, and keeps the legacy rows too.
+  const flexColumns =
+    board?.useFlexibleColumns && Array.isArray(board.columns) ? board.columns : [];
+  const showFields = !task.parent && flexColumns.some((c) => c && !c.isPrimary);
+  const fieldsLabel = `${capitalize(templateDisplay(board).rowNoun[0])} details`;
+
+  // Priority is a task-board idea. A template board that does not offer the
+  // Priority filter (Billing: an invoice has no "Medium") does not get a chip
+  // either — every task defaults to `medium`, so the chip would be noise that
+  // looks like data. Plain boards offer it, and keep the chip exactly as before.
+  const offersPriority = boardOffersFilter(board, 'priority');
+
+  // Status is its own capability, not the `edit` rung: `task.change_status` is
+  // what the board's own status chip checks, and on a flexible board — where
+  // the grid has no status cell — the panel is the only place besides the
+  // ledger stamp to change it. My Work still opts in with
+  // `editableStatusPriority` (it has no board capability set to consult).
+  const canChangeStatusHere =
+    !!onUpdateTask &&
+    (editableStatusPriority || (!!board && canOnBoard('task.change_status')));
+
+  // A board that keeps a ledger (it offers the Ledger view and has an amount
+  // and a due column — `isLedgerBoard`) derives each row's real state — "12
+  // days late", "Paid" — rather than storing it. The panel shows that same
+  // derivation beside the status, so it cannot read "Sent" while the tile
+  // behind it reads "12 DAYS LATE". A Pipeline or a blank board that merely
+  // has a money column and a due date has no tile to agree with, and calling
+  // its deals "Not sent" would be invoice vocabulary leaking onto it.
+  const ledgerCols = showFields ? ledgerColumns(board) : null;
+  const hasLedger = !!(ledgerCols?.amount && ledgerCols?.due) && isLedgerBoard(board);
+  const invoicePill = hasLedger
+    ? invoicePillOf(invoiceState(task, board, ledgerCols), statusOf(task, board))
+    : null;
+  // The day a converted figure is valued at: when the invoice was ISSUED, the
+  // same day the ledger tile uses, so the panel and the tile show one number.
+  const fieldsDay = hasLedger ? issuedDayOf(task, ledgerCols) : null;
+
+  // --- Claiming a row you cannot otherwise edit -------------------------
+  // The field list is read-only below the `edit` rung, and it replaced the
+  // legacy Assigned-to row — so a contributor, who may move their OWN name on
+  // a row (`task.edit_assigned`, the self-claim carve-out), lost the only
+  // place on a flexible board to do it: the grid is read-only for them too.
+  //
+  // So for exactly those people the Assigned-to row comes back. It writes
+  // `assignedTo`, which the server accepts as a self-claim and copies into the
+  // board's assignee-role cell (the Owner), and that cell is left out of the
+  // list so the same people are not shown twice. It is NOT done by making the
+  // Owner cell editable: a `columnValues` write from someone who is not on the
+  // row yet is refused before the self-claim rule is ever consulted, so the
+  // cell would fail for the one case that matters — claiming an unassigned
+  // row. Only where the board HAS an assignee column: without one, the claim
+  // would land in a field that board shows nowhere.
+  const ownerCol = showFields ? roleColumn(board, 'assignee') : null;
+  const showAssigneeRow = !!ownerCol && !canEditFields && canOpenAssignees;
+  const fieldsFill = showFields
+    ? fieldFillCount(
+        showAssigneeRow
+          ? flexColumns.filter((c) => String(c?._id) !== String(ownerCol._id))
+          : flexColumns,
+        task
+      )
+    : null;
+
+  const fieldList = showFields ? (
+    <ColumnFieldList
+      board={board}
+      task={task}
+      exclude={showAssigneeRow ? [ownerCol._id] : null}
+      readOnly={!canEditFields}
+      // The board page's store update. A host that passes none gets the list's
+      // own fallback, which writes the task store directly.
+      onPatched={onTaskPatched}
+      on={fieldsDay}
+      collapseAfter={isMobilePanel ? null : 8}
+      canManage={!!board && canOnBoard('column.manage')}
+    />
+  ) : null;
+
+  // The Assigned-to control: the legacy header's first row, and the claim row
+  // on a flexible board (see `showAssigneeRow`).
+  const assigneeControl = (
+    <>
+      {canOpenAssignees ? (
+        <div style={{ maxWidth: 280 }}>
+          <AssigneePicker
+            members={pickerMembers}
+            value={assignedIds}
+            onChange={handleAssigneesChange}
+            isAdmin={isAdmin}
+            canAssignOthers={canAssignOthers}
+            selfId={selfId}
+            showNames
+          />
+        </div>
+      ) : assignees.length > 0 ? (
+        <div className="flex items-center gap-2 flex-wrap">
+          {assignees.map((u) => (
+            <span
+              key={u._id || u.email || u.name}
+              className="inline-flex items-center gap-2"
+            >
+              <Avatar user={u} size={20} />
+              <span
+                className="font-body"
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: 'var(--color-text-primary)',
+                }}
+              >
+                {u.name}
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <span
+          className="font-body"
+          style={{ fontSize: 13, color: 'var(--color-text-muted)' }}
+        >
+          Unassigned
+        </span>
+      )}
+    </>
+  );
+
   const panel = (
     <>
       {/* Subtle backdrop — clicking it closes the panel */}
@@ -579,8 +802,12 @@ const CommentPanel = ({
           </div>
         </div>
 
-        {/* Task detail header */}
+        {/* Task detail header. With a field list open on a phone the header
+            can outgrow the screen — it is not a flex child that shrinks — so
+            there, and only there, it scrolls on its own and the thread below
+            keeps its share of the height. */}
         <header
+          className={showFields ? 'max-md:max-h-[60vh] max-md:overflow-y-auto' : undefined}
           style={{
             padding: '4px 24px 20px 24px',
             borderBottom: '1px solid var(--color-border)',
@@ -666,24 +893,42 @@ const CommentPanel = ({
             className="mt-3 flex flex-wrap items-center gap-2"
             aria-label="Task badges"
           >
+            {/* Priority and status are gated separately: priority is still
+                only editable where the host opts in (My Work), while status
+                follows the board's `task.change_status` capability. */}
             {editableStatusPriority && onUpdateTask ? (
-              <>
-                <PriorityEditor task={task} onUpdateTask={onUpdateTask} />
-                <StatusEditor
-                  task={task}
-                  board={board || task.board}
-                  onUpdateTask={onUpdateTask}
-                />
-              </>
+              <PriorityEditor task={task} onUpdateTask={onUpdateTask} />
+            ) : task.priority && offersPriority ? (
+              <Chip type="priority" value={task.priority} />
+            ) : null}
+            {canChangeStatusHere ? (
+              <StatusEditor
+                task={task}
+                board={board || task.board}
+                onUpdateTask={onUpdateTask}
+              />
             ) : (
-              <>
-                {task.priority && <Chip type="priority" value={task.priority} />}
-                <Chip
-                  type="status"
-                  value={task.status || 'not_started'}
-                  board={board}
-                />
-              </>
+              <Chip
+                type="status"
+                value={task.status || 'not_started'}
+                board={board}
+              />
+            )}
+            {invoicePill && (
+              <span
+                className="inline-flex items-center font-body font-semibold whitespace-nowrap"
+                title="Worked out from the due date, the payments and the status — the same line the ledger shows"
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1,
+                  padding: '4px 10px',
+                  borderRadius: 'var(--radius-full)',
+                  background: PILL_TONES[invoicePill.tone].bg,
+                  color: PILL_TONES[invoicePill.tone].fg,
+                }}
+              >
+                {invoicePill.label}
+              </span>
             )}
             {canOfferShare && (
               <PortalShareToggle
@@ -693,50 +938,46 @@ const CommentPanel = ({
             )}
           </div>
 
-          <dl className="mt-4 flex flex-col gap-2">
-            <MetaRow label="Assigned to">
-              {canOpenAssignees ? (
-                <div style={{ maxWidth: 280 }}>
-                  <AssigneePicker
-                    members={pickerMembers}
-                    value={assignedIds}
-                    onChange={handleAssigneesChange}
-                    isAdmin={isAdmin}
-                    canAssignOthers={canAssignOthers}
-                    selfId={selfId}
-                    showNames
-                  />
-                </div>
-              ) : assignees.length > 0 ? (
-                <div className="flex items-center gap-2 flex-wrap">
-                  {assignees.map((u) => (
-                    <span
-                      key={u._id || u.email || u.name}
-                      className="inline-flex items-center gap-2"
+          {showFields ? (
+            <>
+              {/* A contributor's way to claim the row — see `showAssigneeRow`.
+                  Labelled with the Owner column's own name, since that is the
+                  column the claim lands in, and laid out like a field-list row
+                  so it reads as the first of them. */}
+              {showAssigneeRow && (
+                <dl className="mt-4">
+                  <div className="flex flex-col gap-0.5 sm:flex-row sm:items-start sm:gap-3">
+                    <dt
+                      className="font-body truncate sm:w-[120px] sm:shrink-0 sm:pt-1"
+                      title={ownerCol.name || 'Assigned to'}
+                      style={{ fontSize: 12, fontWeight: 500, color: 'var(--color-text-muted)' }}
                     >
-                      <Avatar user={u} size={20} />
-                      <span
-                        className="font-body"
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 500,
-                          color: 'var(--color-text-primary)',
-                        }}
-                      >
-                        {u.name}
-                      </span>
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <span
-                  className="font-body"
-                  style={{ fontSize: 13, color: 'var(--color-text-muted)' }}
-                >
-                  Unassigned
-                </span>
+                      {ownerCol.name || 'Assigned to'}
+                    </dt>
+                    <dd className="min-w-0 w-full sm:flex-1 sm:max-w-[320px]">
+                      {assigneeControl}
+                    </dd>
+                  </div>
+                </dl>
               )}
-            </MetaRow>
+              <section className={showAssigneeRow ? 'mt-1.5' : 'mt-4'} aria-label={fieldsLabel}>
+                {isMobilePanel ? (
+                  <MobileSection
+                    label={fieldsLabel}
+                    count={
+                      fieldsFill.total > 0 ? `${fieldsFill.filled}/${fieldsFill.total}` : null
+                    }
+                  >
+                    {fieldList}
+                  </MobileSection>
+                ) : (
+                  fieldList
+                )}
+              </section>
+            </>
+          ) : (
+          <dl className="mt-4 flex flex-col gap-2">
+            <MetaRow label="Assigned to">{assigneeControl}</MetaRow>
 
             <MetaRow label="Due date">
               {canEditFields ? (
@@ -779,6 +1020,7 @@ const CommentPanel = ({
               </MetaRow>
             )}
           </dl>
+          )}
 
           {task.note ? (
             <div className="mt-4">
@@ -1683,12 +1925,30 @@ const StatusEditor = ({ task, board, onUpdateTask }) => {
         return { value: s._id.toString(), label: s.name, bg: pair.bg, text: pair.text };
       });
     const valStr = task.status != null ? task.status.toString() : null;
+    // A row with no (or a since-deleted) status reads as the board's DEFAULT
+    // status — "Draft" on a billing board — not a hardcoded "Not Started" that
+    // names a status the board may not have. No `value`, so picking that
+    // default still writes it.
+    //
+    // Before that, a row still carrying a pre-migration enum string ('done')
+    // is matched by the status's `key` (as the ledger's `statusOf` does), then
+    // by the legacy palette (as `Chip` does) — or the editor would call a
+    // finished task by the default status's name.
+    const def = boardStatuses.find((s) => s.isDefault);
+    const defPair = def ? getColorPair(def.color) : null;
+    const byKey = valStr ? boardStatuses.find((s) => s.key === valStr) : null;
+    const legacy = valStr ? STATUS_COLORS[valStr] : null;
     current =
-      options.find((o) => o.value === valStr) || {
-        label: 'Not Started',
-        bg: STATUS_COLORS.not_started.bg,
-        text: STATUS_COLORS.not_started.text,
-      };
+      options.find((o) => o.value === valStr) ||
+      (byKey ? options.find((o) => o.value === byKey._id.toString()) : null) ||
+      (legacy ? { label: legacy.label, bg: legacy.bg, text: legacy.text } : null) ||
+      (def
+        ? { label: def.name, bg: defPair.bg, text: defPair.text }
+        : {
+            label: 'Not Started',
+            bg: STATUS_COLORS.not_started.bg,
+            text: STATUS_COLORS.not_started.text,
+          });
     return (
       <InlineSelectChip
         value={current.value ?? null}

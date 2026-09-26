@@ -14,6 +14,9 @@ const {
   sanitizeColumnCurrency,
   sanitizeRates,
   isDayKey,
+  isMoneyColumn,
+  isOwnMoneyColumn,
+  boardCurrencyOf,
 } = require('./money');
 
 /**
@@ -158,4 +161,69 @@ test('a day key is a real calendar day', () => {
   assert.ok(!isDayKey('2026-03'), 'a month key is not a day key');
   assert.ok(!isDayKey('2026-3-1'), 'unpadded');
   assert.ok(!isDayKey(null));
+});
+
+// ---------------------------------------------------------------------------
+// A board's unit — boardCurrencyOf
+// ---------------------------------------------------------------------------
+
+const money = (currency, extra = {}) => ({ type: 'number', settings: { format: 'currency', currency, ...extra } });
+
+test('a money column is one formatted as currency, whatever its type', () => {
+  assert.ok(isMoneyColumn(money('INR')));
+  assert.ok(isMoneyColumn({ type: 'payments', settings: { format: 'currency' } }));
+  assert.ok(isMoneyColumn({ type: 'formula', settings: { format: 'currency' } }));
+  assert.ok(!isMoneyColumn({ type: 'number', settings: { format: 'percent' } }));
+  assert.ok(!isMoneyColumn({ type: 'number' }));
+  assert.ok(!isMoneyColumn(null));
+});
+
+test('the board says first, then its first money column, then the workspace', () => {
+  // The board's own field wins, even over a column that disagrees.
+  assert.equal(boardCurrencyOf({ currency: 'CAD', columns: [money('INR')] }, 'USD'), 'CAD');
+  // A board from before the field existed resolves to what it has been
+  // rendering in — its money columns — not to today's workspace setting.
+  assert.equal(boardCurrencyOf({ currency: null, columns: [money('AUD'), money('INR')] }, 'USD'), 'AUD');
+  // First VALID code, in array order: a blank or junk code is skipped.
+  assert.equal(boardCurrencyOf({ columns: [money(''), money('ZZZ'), money('SGD')] }, 'USD'), 'SGD');
+  // Nothing on the board names a unit: the workspace does.
+  assert.equal(boardCurrencyOf({ columns: [{ type: 'number', settings: {} }] }, 'inr'), 'INR');
+  // And with nothing anywhere, say nothing rather than guess.
+  assert.equal(boardCurrencyOf({ columns: [] }, null), null);
+  assert.equal(boardCurrencyOf(null, null), null);
+});
+
+test('a stored board code is normalised before it is trusted', () => {
+  assert.equal(boardCurrencyOf({ currency: ' cad ' }, 'INR'), 'CAD');
+  assert.equal(boardCurrencyOf({ currency: 'DOLLARS', columns: [money('EUR')] }, 'INR'), 'EUR');
+});
+
+// ---------------------------------------------------------------------------
+// A mirror is money, but not THIS board's money — isOwnMoneyColumn
+// ---------------------------------------------------------------------------
+
+const mirror = (currency) => ({ type: 'mirror', settings: { format: 'currency', currency, aggregation: 'sum' } });
+
+test("a mirror is money for rendering, but not the board's own", () => {
+  // Its figure — and so its unit — comes from the board it mirrors from.
+  assert.ok(isMoneyColumn(mirror('CAD')));
+  assert.ok(!isOwnMoneyColumn(mirror('CAD')));
+  assert.ok(isOwnMoneyColumn(money('INR')));
+  assert.ok(isOwnMoneyColumn({ type: 'payments', settings: { format: 'currency' } }));
+  assert.ok(isOwnMoneyColumn({ type: 'formula', settings: { format: 'currency' } }));
+  assert.ok(!isOwnMoneyColumn({ type: 'number', settings: { format: 'percent' } }));
+  assert.ok(!isOwnMoneyColumn(null));
+});
+
+test('a mirror never decides what unit a board is in', () => {
+  /**
+   * THE BUG: an INR invoice board with a "Deal value" mirrored from a CAD
+   * pipeline, and no Board.currency yet, resolved to CAD because the mirror
+   * happened to sit first — and every stamp and relabel followed it.
+   */
+  assert.equal(boardCurrencyOf({ currency: null, columns: [mirror('CAD'), money('INR')] }, 'USD'), 'INR');
+  // Only mirrors: nothing of the board's own names a unit, so the workspace does.
+  assert.equal(boardCurrencyOf({ currency: null, columns: [mirror('CAD')] }, 'SGD'), 'SGD');
+  // The board's own field still wins over everything.
+  assert.equal(boardCurrencyOf({ currency: 'EUR', columns: [money('INR'), mirror('CAD')] }, 'USD'), 'EUR');
 });

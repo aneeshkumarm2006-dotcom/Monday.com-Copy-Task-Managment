@@ -3,7 +3,7 @@ import { Pencil, Plus, Trash2 } from 'lucide-react';
 
 import { ScrollTable, Th, Td } from '../addons/connector/SectionShell';
 import useMoney from '../../../hooks/useMoney';
-import { dayKeyOfMonthKey } from '../../../utils/money';
+import { currencyByCode, dayKeyOfMonthKey, formatIn } from '../../../utils/money';
 import { formatPct } from '../../../utils/adsBudgetDisplay';
 import { PlatformMark, SectionEmpty, StatusText } from './BudgetBits';
 
@@ -38,6 +38,9 @@ import { PlatformMark, SectionEmpty, StatusText } from './BudgetBits';
 
 const EDIT_WIDTH = 96;
 
+/** The symbol a field is prefixed with: the catalog's, else the bare code. */
+const symbolOf = (code) => currencyByCode(code)?.symbol || code || '';
+
 /**
  * Spend: formatted until you click it, a number field while you type.
  *
@@ -53,21 +56,44 @@ const EDIT_WIDTH = 96;
  */
 const SpendCell = ({ row, canTrack, currency, monthKey, onCommit }) => {
   const [editing, setEditing] = useState(false);
+  /**
+   * What is in the field, tracked only so the converted hint can follow it.
+   * The input itself stays uncontrolled — see the note on it below.
+   */
+  const [draft, setDraft] = useState('');
   // Its own hook: `money` in the table below is a different component's local.
   const fx = useMoney();
-  const money = (v) => fx.in(v, currency, dayKeyOfMonthKey(monthKey));
+  const on = dayKeyOfMonthKey(monthKey);
+  const money = (v) => fx.in(v, currency, on);
+  const who = row.name || row.platform;
+  const code = currencyByCode(currency)?.code || currency || null;
 
-  if (!canTrack) return <>{money(row.spent)}</>;
+  /**
+   * A converted figure carries what was actually entered, on hover — the same
+   * per-row answer NumberCell gives. Whether the page is converted at all is
+   * said once, under the stat cards, not on every cell.
+   */
+  const spentResolved = fx.resolve(row.spent, currency, on);
+  const enteredAs = spentResolved.converted
+    ? `Entered as ${formatIn(row.spent, currency, { decimals: 'auto' })}`
+    : undefined;
+
+  if (!canTrack) return <span title={enteredAs}>{money(row.spent)}</span>;
 
   if (!editing) {
     return (
       <button
         type="button"
-        onClick={() => setEditing(true)}
-        aria-label={`Spend for ${row.name || row.platform}. Click to edit.`}
+        onClick={() => {
+          setDraft(row.spent == null ? '' : String(row.spent));
+          setEditing(true);
+        }}
+        title={enteredAs}
+        aria-label={`Spend for ${who}: ${money(row.spent)}. Click to edit${code ? `, in ${code}` : ''}.`}
         className="font-body tabular-nums text-right transition-colors duration-100 hover:bg-[color:var(--color-bg-input)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
         style={{
           width: EDIT_WIDTH,
+          maxWidth: '100%',
           height: 26,
           padding: '0 6px',
           fontSize: 13,
@@ -83,52 +109,93 @@ const SpendCell = ({ row, canTrack, currency, monthKey, onCommit }) => {
     );
   }
 
+  /**
+   * WHICH CURRENCY YOU ARE TYPING IN.
+   *
+   * Always the board's Ads Budget currency, never the reader's. The resting
+   * figure may read "₹2,58,000" to somebody reading in rupees while the row is
+   * stored in CAD; a bare number field under that invited typing 250000 as
+   * rupees and storing CA$250,000. So the field is prefixed with the unit it
+   * stores, and the converted hint underneath says what the typed number comes
+   * to in the reader's currency — the treatment NumberCell already gives a
+   * money column.
+   */
+  const typed = draft.trim() === '' ? null : Number(draft);
+  const hintResolved =
+    typed !== null && Number.isFinite(typed) ? fx.resolve(typed, currency, on) : null;
+  const hint = hintResolved?.converted ? money(typed) : '';
+
   return (
-    <input
-      type="number"
-      min="0"
-      step="0.01"
-      inputMode="decimal"
-      autoFocus
-      defaultValue={row.spent}
-      aria-label={`Spend for ${row.name || row.platform}`}
-      /**
-       * `defaultValue` plus a commit on blur, NOT a controlled value.
-       *
-       * A controlled input re-rendered from the server's answer fights the
-       * person typing in it: the quiet SSE refetch lands mid-keystroke and
-       * replaces "48" with "4850" under the cursor. Uncontrolled means the
-       * field is the person's until they leave it, and `key` on the cell is
-       * what resets it when the underlying value genuinely changes.
-       */
-      onBlur={(e) => {
-        const next = e.target.value === '' ? 0 : Number(e.target.value);
-        setEditing(false);
-        if (!Number.isFinite(next) || next < 0) return;
-        if (next === row.spent) return;
-        onCommit(row, next);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') e.currentTarget.blur();
-        if (e.key === 'Escape') {
-          // Reset before blurring, so the blur handler sees the old value and
-          // commits nothing. Escape has to mean "forget it", not "save it".
-          e.currentTarget.value = row.spent;
-          e.currentTarget.blur();
-        }
-      }}
-      className="font-body tabular-nums text-right focus:outline-none focus:bg-white focus:border-[color:var(--color-accent)]"
-      style={{
-        width: EDIT_WIDTH,
-        height: 26,
-        padding: '0 6px',
-        fontSize: 13,
-        border: '1px solid var(--color-border)',
-        borderRadius: 'var(--radius-sm)',
-        background: 'var(--color-bg-input)',
-        color: 'var(--color-text-primary)',
-      }}
-    />
+    <span className="inline-flex flex-col items-end max-w-full" style={{ gap: 2 }}>
+      <span className="inline-flex items-center max-w-full" style={{ gap: 4 }}>
+        {code ? (
+          <span
+            aria-hidden="true"
+            className="font-body shrink-0"
+            style={{ fontSize: 11, color: 'var(--color-text-muted)' }}
+          >
+            {symbolOf(currency)}
+          </span>
+        ) : null}
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          inputMode="decimal"
+          autoFocus
+          defaultValue={row.spent}
+          aria-label={`Spend for ${who}${code ? `, in ${code}` : ''}`}
+          onChange={(e) => setDraft(e.target.value)}
+          /**
+           * `defaultValue` plus a commit on blur, NOT a controlled value.
+           *
+           * A controlled input re-rendered from the server's answer fights the
+           * person typing in it: the quiet SSE refetch lands mid-keystroke and
+           * replaces "48" with "4850" under the cursor. Uncontrolled means the
+           * field is the person's until they leave it, and `key` on the cell is
+           * what resets it when the underlying value genuinely changes.
+           */
+          onBlur={(e) => {
+            const next = e.target.value === '' ? 0 : Number(e.target.value);
+            setEditing(false);
+            if (!Number.isFinite(next) || next < 0) return;
+            if (next === row.spent) return;
+            onCommit(row, next);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') e.currentTarget.blur();
+            if (e.key === 'Escape') {
+              // Reset before blurring, so the blur handler sees the old value and
+              // commits nothing. Escape has to mean "forget it", not "save it".
+              e.currentTarget.value = row.spent;
+              e.currentTarget.blur();
+            }
+          }}
+          className="font-body tabular-nums text-right focus:outline-none focus:bg-white focus:border-[color:var(--color-accent)]"
+          style={{
+            width: EDIT_WIDTH,
+            minWidth: 0,
+            flex: '0 1 auto',
+            height: 26,
+            padding: '0 6px',
+            fontSize: 13,
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--color-bg-input)',
+            color: 'var(--color-text-primary)',
+          }}
+        />
+      </span>
+      {hint ? (
+        <span
+          className="font-body tabular-nums"
+          title="What that comes to in the currency you are reading in"
+          style={{ fontSize: 10.5, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}
+        >
+          ≈ {hint}
+        </span>
+      ) : null}
+    </span>
   );
 };
 
@@ -204,7 +271,7 @@ const CardStat = ({ label, children }) => (
  * job), everything else goes through the modal via the edit action.
  */
 const BudgetCard = ({
-  row, isCampaign, currency, money, canTrack, canManage, onCommitSpend, onEdit, onDelete,
+  row, isCampaign, currency, monthKey, money, canTrack, canManage, onCommitSpend, onEdit, onDelete,
 }) => (
   <div
     style={{
@@ -390,7 +457,6 @@ const BudgetTable = ({
                   canTrack={canTrack}
                   currency={currency}
                   monthKey={monthKey}
-          monthKey={monthKey}
                   onCommit={onCommitSpend}
                 />
               </Td>

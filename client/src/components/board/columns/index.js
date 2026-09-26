@@ -25,6 +25,8 @@ import RatingCell from './RatingCell';
 import FormulaCell from './FormulaCell';
 import ConnectBoardsCell from './ConnectBoardsCell';
 import MirrorCell from './MirrorCell';
+import PaymentsCell from './PaymentsCell';
+import ClientCell from './ClientCell';
 
 const CELL_BY_TYPE = {
   text: TextCell,
@@ -46,6 +48,11 @@ const CELL_BY_TYPE = {
   formula: FormulaCell,
   connect_boards: ConnectBoardsCell,
   mirror: MirrorCell,
+  // A list of receipts, not a number — the TextCell fallback would be handed an
+  // array of objects and take the whole grid down with it.
+  payments: PaymentsCell,
+  // { boardId, name } — which of the workspace's client boards a row is for.
+  client: ClientCell,
 };
 
 export const cellComponentFor = (type) => CELL_BY_TYPE[type] || TextCell;
@@ -70,4 +77,6 @@ export {
   FormulaCell,
   ConnectBoardsCell,
   MirrorCell,
+  PaymentsCell,
+  ClientCell,
 };

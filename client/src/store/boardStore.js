@@ -14,6 +14,46 @@ const replaceBoardChips = (boards, boardId, key, list) =>
   );
 
 /**
+ * Board ids whose cached document is known to be behind the server.
+ *
+ * Module-level, like the roster promises below: nothing renders from it, and a
+ * set() per `board.changed` ping would re-render every board consumer for no
+ * visible change. A fetch of the board (one, or the whole list) clears it.
+ *
+ * Why it exists: the board page reuses the cached board when one is in the
+ * store, and only the board OPEN at the time of a `board.changed` ping refetches
+ * itself. A workspace currency change relabels every following board at once,
+ * so without this a person who then opened a second board saw its old symbol
+ * over its new unit until a reload. The open board reads it too: a burst of
+ * pings can overwrite its refresh target before the page runs, and its stale
+ * mark is what still tells it to refetch (BoardDetailPage).
+ */
+const staleBoardIds = new Set();
+
+/**
+ * Fold a column write's reply — `{ columns, currency? }` — into the cached board.
+ *
+ * `currency` rides along because a column write can move the BOARD's unit: the
+ * server's `reconcileMoneyUnits` re-stamps `board.currency` when the column
+ * that set it is relabelled or switched out of money. Taking only `columns`
+ * left the chip and the ledger strip reading the old unit until a reload.
+ * On a board that follows the workspace it may be null — that null is the
+ * answer and is merged.
+ *
+ * Merged only when the reply carries the key at all. A reply without it (an
+ * endpoint that does not report the unit) says nothing about the board's
+ * currency, which is not the same as saying it is null.
+ */
+const mergeColumnsReply = (boards, boardId, data) => {
+  let next = boards;
+  if (Array.isArray(data?.columns)) next = replaceBoardChips(next, boardId, 'columns', data.columns);
+  if (data && typeof data === 'object' && 'currency' in data) {
+    next = replaceBoardChips(next, boardId, 'currency', data.currency ?? null);
+  }
+  return next;
+};
+
+/**
  * boardId -> the in-flight roster request, so concurrent callers share one.
  *
  * Deliberately module-level rather than store state: a DataGrid can mount fifty
@@ -53,6 +93,7 @@ const useBoardStore = create((set, get) => ({
     set({ loading: true, error: null });
     try {
       const boards = await boardService.getBoards(orgId);
+      for (const b of boards || []) staleBoardIds.delete(String(b._id));
       set({ boards, loading: false });
       return boards;
     } catch (err) {
@@ -72,6 +113,7 @@ const useBoardStore = create((set, get) => ({
    */
   fetchBoard: async (boardId) => {
     const board = await boardService.getBoard(boardId);
+    staleBoardIds.delete(String(board?._id || boardId));
     set((s) => ({
       boards: s.boards.some((b) => b._id === board._id)
         ? s.boards.map((b) => (b._id === board._id ? board : b))
@@ -195,6 +237,7 @@ const useBoardStore = create((set, get) => ({
 
   clearBoards: () => {
     inFlightBoardMembers.clear();
+    staleBoardIds.clear();
     set({ boards: [], error: null, boardMembers: {}, boardMembersLoaded: {} });
   },
 
@@ -346,15 +389,20 @@ const useBoardStore = create((set, get) => ({
   },
 
   addColumn: async (boardId, payload) => {
-    const { columns } = await columnService.addColumn(boardId, payload);
-    set((s) => ({ boards: replaceBoardChips(s.boards, boardId, 'columns', columns) }));
-    return columns;
+    const data = await columnService.addColumn(boardId, payload);
+    set((s) => ({ boards: mergeColumnsReply(s.boards, boardId, data) }));
+    return data?.columns;
   },
 
+  /**
+   * PATCH one column. The reply is `{ column, columns, currency }` — the board's
+   * unit comes back too, because relabelling a money column can move it (see
+   * `mergeColumnsReply`). Returns the columns, as it always has.
+   */
   updateColumn: async (boardId, columnId, payload) => {
-    const { columns } = await columnService.updateColumn(boardId, columnId, payload);
-    set((s) => ({ boards: replaceBoardChips(s.boards, boardId, 'columns', columns) }));
-    return columns;
+    const data = await columnService.updateColumn(boardId, columnId, payload);
+    set((s) => ({ boards: mergeColumnsReply(s.boards, boardId, data) }));
+    return data?.columns;
   },
 
   reorderColumns: async (boardId, order) => {
@@ -376,6 +424,66 @@ const useBoardStore = create((set, get) => ({
       set((s) => ({ boards: replaceBoardChips(s.boards, boardId, 'columns', prev) }));
       throw err;
     }
+  },
+
+  /**
+   * Relabel the board's money — `board.currency` and every currency column —
+   * in one request. Not optimistic: the server decides which columns are money
+   * and stamps them, so the cached columns are replaced from its answer rather
+   * than guessed at here.
+   *
+   * `currency` null means FOLLOW the workspace: the server stores null and
+   * relabels to the workspace's current base. The reply's `board.currency` is
+   * then null, and that null is merged — it is the answer, not a missing one.
+   *
+   * Returns `{ board, following, effective }`. The last two are derived from
+   * `board` when a server does not send them, so a caller can always read them.
+   */
+  setBoardCurrency: async (boardId, currency) => {
+    const data = await boardService.setBoardCurrency(boardId, currency ?? null);
+    const board = data?.board || null;
+    if (board) {
+      set((s) => {
+        let boards = s.boards;
+        if ('currency' in board) {
+          boards = replaceBoardChips(boards, boardId, 'currency', board.currency ?? null);
+        }
+        if (Array.isArray(board.columns)) {
+          boards = replaceBoardChips(boards, boardId, 'columns', board.columns);
+        }
+        return { boards };
+      });
+      // What this reply carried IS the fresh copy of this board.
+      staleBoardIds.delete(String(boardId));
+    }
+    const following =
+      typeof data?.following === 'boolean' ? data.following : !(board?.currency);
+    return {
+      board,
+      following,
+      effective: data?.effective || board?.currency || null,
+    };
+  },
+
+  /**
+   * Note that boards changed on the server while this tab was not looking at
+   * them — a `board.changed` ping for a board that is not open, or the boards a
+   * workspace currency change relabelled. Nothing is fetched here: the board
+   * page asks `takeBoardStale` when it opens one, and refetches only then, so a
+   * workspace with forty boards does not cost forty requests nobody reads.
+   */
+  markBoardsStale: (ids) => {
+    for (const id of Array.isArray(ids) ? ids : [ids]) {
+      if (id) staleBoardIds.add(String(id));
+    }
+  },
+
+  /** Was this board marked stale? Clears the mark — the caller refetches. */
+  takeBoardStale: (boardId) => {
+    const key = String(boardId || '');
+    if (!key || !staleBoardIds.has(key)) return false;
+    staleBoardIds.delete(key);
+    return true;
   },
 
   deleteColumn: async (boardId, columnId) => {

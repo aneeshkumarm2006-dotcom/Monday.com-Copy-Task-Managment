@@ -139,8 +139,13 @@ const linkTask = async (req, res) => {
       return res.status(400).json({ error: err.message });
     }
     const serialized = entry.serialize({ links: nextLinks });
+    // `Map#set` marks exactly `columnValues.<columnId>` as modified (and only
+    // when the value really changed), which is all this save writes. Do NOT
+    // `markModified('columnValues')` on top: marking the whole map makes every
+    // cell read as written in this save, so the save hook (models/Task.js)
+    // takes the Due and Owner cells' side — a null Due cell cleared the row's
+    // due date and an empty Owner cell unassigned it, just for linking a client.
     task.columnValues.set(columnId.toString(), serialized);
-    task.markModified('columnValues');
     await task.save();
 
     // This task's own mirrors read from this connect column — invalidate them.
@@ -204,8 +209,9 @@ const unlinkTask = async (req, res) => {
 
     const entry = getColumnType('connect_boards');
     const serialized = entry.serialize({ links: nextLinks });
+    // Path-precise change tracking only — see linkTask for why the whole map
+    // must never be marked modified here.
     task.columnValues.set(columnId.toString(), serialized);
-    task.markModified('columnValues');
     await task.save();
 
     await invalidateOwnMirrors(task._id, ctx.board);

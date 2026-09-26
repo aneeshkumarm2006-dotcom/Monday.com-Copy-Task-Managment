@@ -10,12 +10,36 @@ const {
 const { sendMentionEmail, sendUpdateEmail } = require('../services/emailService');
 const ItemFollow = require('../models/ItemFollow');
 const { logActivity } = require('../services/activityService');
-const { destroyCloudinaryAssets } = require('../config/cloudinary');
+const { destroyCloudinaryAssets, UPDATE_ATTACHMENTS_ROOT } = require('../config/cloudinary');
 const { loadBoardContext } = require('../utils/boardContext');
 const { filterUsersWithBoardRead } = require('../utils/boardAudience');
 const { buildTaskDeepLink } = require('../utils/taskDeepLink');
 const { sendPortalReplyEmailForTask } = require('./portalController');
 const { isClientVisibleTask } = require('../utils/portalVisibility');
+
+/**
+ * The `publicId` an attachment in a request body may be STORED with, or ''.
+ *
+ * The id arrives from the client, and deleting or editing the update later
+ * destroys it with the account-wide Cloudinary secret. Stored verbatim, anyone
+ * who may post an update could name any asset they had ever seen a URL for —
+ * an invoice PDF under `macan/board-files/…`, which every board reader sees —
+ * then delete the update and have the server destroy it. The only place a team
+ * update's file legitimately comes from is `uploadAttachment` below, which
+ * writes under `macan/updates/`, so that is the only folder kept. On an edit,
+ * an id this update ALREADY holds is kept whatever it is (`alreadyStored`) —
+ * it was accepted once, and dropping it would only leak it.
+ */
+const UPDATES_PREFIX = `${UPDATE_ATTACHMENTS_ROOT}/`;
+const ownUpdatePublicId = (id, alreadyStored = new Set()) => {
+  const s = typeof id === 'string' ? id.trim() : '';
+  if (!s) return '';
+  if (alreadyStored.has(s)) return s;
+  if (!s.startsWith(UPDATES_PREFIX) || s.length === UPDATES_PREFIX.length) return '';
+  const rest = s.slice(UPDATES_PREFIX.length).split('/');
+  if (rest.some((seg) => seg === '' || seg === '.' || seg === '..')) return '';
+  return s;
+};
 
 /**
  * Access rules:
@@ -114,6 +138,45 @@ const getUpdates = async (req, res) => {
 };
 
 /**
+ * A task's "who has been told" stamp, in the shape the board already holds it:
+ * `{ _id, notifiedUsers: [{ _id, name, email, profilePic, avatar }], notifiedAt }`.
+ *
+ * The people carry the same three fields `populateTask` gives them on every
+ * board read (`name profilePic email`), so the client can drop this straight
+ * over the task it has. `avatar` repeats `profilePic` under the name the
+ * response contract uses; the shared Avatar component reads `profilePic`.
+ *
+ * Never throws: the post is already made, and a stamp that cannot be read back
+ * just means the reply carries no `task` and the client keeps what it had.
+ */
+const readNotifiedStamp = async (taskId) => {
+  try {
+    const t = await Task.findById(taskId)
+      .select('notifiedUsers notifiedAt')
+      .populate('notifiedUsers', 'name profilePic email')
+      .lean();
+    if (!t) return null;
+    return {
+      _id: t._id,
+      notifiedUsers: (t.notifiedUsers || [])
+        // A person deleted since they were told populates to null.
+        .filter(Boolean)
+        .map((u) => ({
+          _id: u._id,
+          name: u.name,
+          email: u.email,
+          profilePic: u.profilePic || null,
+          avatar: u.profilePic || null,
+        })),
+      notifiedAt: t.notifiedAt || null,
+    };
+  } catch (err) {
+    console.error('addUpdate: notified stamp read failed:', err.message);
+    return null;
+  }
+};
+
+/**
  * POST /api/tasks/:taskId/updates
  *
  * Body: {
@@ -182,7 +245,8 @@ const addUpdate = async (req, res) => {
             name: a.name || '',
             mime: a.mime || '',
             size: Number.isFinite(a.size) ? a.size : 0,
-            publicId: a.publicId || '',
+            // Only an id this app uploaded for an update — see ownUpdatePublicId.
+            publicId: ownUpdatePublicId(a.publicId),
           }))
       : [];
 
@@ -222,18 +286,39 @@ const addUpdate = async (req, res) => {
      * somebody without access notifies nobody, and a tile claiming they were
      * told would be a lie the board never corrects.
      *
-     * Fire-and-forget: failing to stamp must not fail the post. The update is
-     * already created and the mention notifications go out below; losing the
-     * denormalised marker costs a "Nobody told" badge, not a message.
+     * AWAITED, but still unable to fail the post. The update is already created
+     * and the mention notifications go out below; losing the denormalised marker
+     * costs a "Nobody told" badge, not a message — so an error is logged and
+     * swallowed. It is awaited so the stamp has landed before the response
+     * does: the ledger patches its tile from this reply and may refetch the
+     * board straight after, and a refetch that beat an unawaited write would
+     * read the row back as "Nobody told" and overwrite the patch with it.
+     *
+     * The stamp as it now stands is handed back on the response (`task`,
+     * below) so the ledger can patch its tile from the reply itself — "told
+     * Aneesh, just now" — instead of refetching the board to find out what it
+     * just did. It is read back AFTER the write, not computed from
+     * `validMentions`: `$addToSet` merges into whoever was told before, and the
+     * tile shows all of them.
      */
+    let notifiedStamp = null;
     if (validMentions.length > 0) {
-      Task.updateOne(
+      const stamped = await Task.updateOne(
         { _id: taskId },
         {
           $addToSet: { notifiedUsers: { $each: validMentions } },
           $set: { notifiedAt: new Date() },
         }
-      ).catch((err) => console.error('addUpdate: notified stamp failed:', err.message));
+      ).then(
+        () => true,
+        (err) => {
+          console.error('addUpdate: notified stamp failed:', err.message);
+          return false;
+        }
+      );
+      if (stamped) {
+        notifiedStamp = await readNotifiedStamp(taskId);
+      }
     }
 
     logActivity({
@@ -426,7 +511,12 @@ const addUpdate = async (req, res) => {
       }
     }
 
-    return res.status(201).json({ update: populated });
+    // `task` only when this post stamped somebody as told — see the stamp
+    // above. Absent otherwise, so a client can tell "nothing changed" from
+    // "nobody has been told".
+    return res.status(201).json(
+      notifiedStamp ? { update: populated, task: notifiedStamp } : { update: populated }
+    );
   } catch (err) {
     console.error('addUpdate error:', err);
     return res.status(500).json({ error: 'Server error' });
@@ -488,6 +578,9 @@ const editUpdate = async (req, res) => {
       validMentions = mentions.filter((id) => allowed.has(id.toString()));
     }
 
+    // What this update already holds may stay; anything NEW must be an id
+    // this app uploaded for an update (ownUpdatePublicId).
+    const had = new Set((update.attachments || []).map((a) => a && a.publicId).filter(Boolean));
     const cleanAttachments = Array.isArray(attachments)
       ? attachments
           .filter((a) => a && typeof a.url === 'string' && a.url.length > 0)
@@ -496,7 +589,7 @@ const editUpdate = async (req, res) => {
             name: a.name || '',
             mime: a.mime || '',
             size: Number.isFinite(a.size) ? a.size : 0,
-            publicId: a.publicId || '',
+            publicId: ownUpdatePublicId(a.publicId, had),
           }))
       : [];
 

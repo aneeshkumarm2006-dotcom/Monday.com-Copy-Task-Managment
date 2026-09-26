@@ -1,19 +1,29 @@
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Organisation = require('../models/Organisation');
+const Board = require('../models/Board');
 const User = require('../models/User');
 const { sendInviteEmail } = require('../services/emailService');
 const { cascadeDeleteOrg } = require('../services/orgCascade');
 const { revokeUserFromOrg } = require('../services/userCascade');
 const { listCatalog } = require('../services/serviceCatalogService');
 const connectorCrypto = require('../utils/connectorCrypto');
-const { sanitizeFxSettings, keyPreviewOf } = require('../utils/money');
+const {
+  sanitizeFxSettings,
+  keyPreviewOf,
+  normaliseCurrencyCode,
+  isOwnMoneyColumn,
+  boardCurrencyOf,
+  CURRENCY_CODES,
+} = require('../utils/money');
 const { createNotificationsForUsers } = require('../services/notificationService');
+// Boards that FOLLOW the workspace currency move with it — see saveCurrencySettings.
+const { relabelFollowingBoards, isFollowing } = require('../services/boardCurrency');
 // Ownership transfer is the one event that can leave an executive view on the
 // workspace owner, which invariant 8 forbids. See `transferOrgOwnership`.
 const executiveView = require('../services/executiveView');
 const { logExecutiveRemoved } = require('../services/executiveActivity');
-const { resolveOrgAccess, isOrgOwner } = require('../utils/permissions');
+const { resolveAccess, resolveOrgAccess, isOrgOwner } = require('../utils/permissions');
 const { DEFAULT_ROLE_KEY, OWNER_ROLE_KEY } = require('../utils/capabilities');
 const {
   sanitizeHoliday,
@@ -39,10 +49,22 @@ const generateInviteCode = () => {
  */
 const createOrg = async (req, res) => {
   try {
-    const { name } = req.body;
+    const { name, baseCurrency } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Organisation name is required' });
+    }
+
+    // Optional. A workspace that says what it bills in on day one is not
+    // silently rupees until an admin finds the Currency tab — every board it
+    // creates before then would be born in the wrong unit. Refused rather than
+    // defaulted when it is present and not a code we carry.
+    let currency = null;
+    if (baseCurrency !== undefined && baseCurrency !== null && baseCurrency !== '') {
+      currency = normaliseCurrencyCode(baseCurrency);
+      if (!currency) {
+        return res.status(400).json({ error: `Currency must be one of ${CURRENCY_CODES.join(', ')}.` });
+      }
     }
 
     const userId = req.user.userId;
@@ -52,6 +74,7 @@ const createOrg = async (req, res) => {
       admin: userId,
       members: [userId],
       inviteCode: generateInviteCode(),
+      ...(currency ? { baseCurrency: currency } : {}),
     });
 
     // Seed the permissions matrix. Every org gets every `SYSTEM_ROLES` preset
@@ -899,6 +922,34 @@ const getCurrencySettings = async (req, res) => {
 };
 
 /**
+ * A workspace relabel's result as THIS caller may be told it: only the boards
+ * they can read.
+ *
+ * The relabel itself reaches every following board — the workspace currency
+ * is the workspace's, private boards included. But `org.manage_settings` is a
+ * workspace power, not a key to every private board (the same line
+ * `listMoneyBoards` draws), so the ids — and the count, which is what the
+ * Currency tab says out loud — are of the boards the caller can see. A board
+ * they cannot open is also one they could do nothing about had it failed.
+ */
+const relabelledVisibleTo = async (org, userId, result) => {
+  const ids = [...result.boardIds, ...result.failed];
+  if (ids.length === 0) return { count: 0, boardIds: [], failed: [] };
+  const boards = await Board.find({ _id: { $in: ids } })
+    .select('visibility createdBy memberAccess publicDefaultLevel boardType organisation')
+    .lean();
+  const readable = new Set(
+    boards.filter((b) => resolveAccess(b, org, userId).canRead).map((b) => String(b._id))
+  );
+  const boardIds = result.boardIds.filter((id) => readable.has(String(id)));
+  return {
+    count: boardIds.length,
+    boardIds,
+    failed: result.failed.filter((id) => readable.has(String(id))),
+  };
+};
+
+/**
  * PUT /api/orgs/:id/currency — requires `org.manage_settings`.
  *
  * Body is PARTIAL: { baseCurrency?, provider?, cadence?, apiKey? }. A screen
@@ -912,6 +963,23 @@ const getCurrencySettings = async (req, res) => {
  * Written with `updateOne` rather than `doc.save()` for the reason documented
  * on the holiday writes: `save()` carries a `__v` check and two overlapping
  * Settings writes lost the race with a VersionError.
+ *
+ * ---- Boards that follow the workspace move with it --------------------------
+ *
+ * A board whose `currency` is null FOLLOWS the workspace. When `baseCurrency`
+ * is saved, every such board with an own money column not already in the new
+ * unit is RELABELLED to it (`relabelFollowingBoards`): the same relabel as
+ * `PATCH /api/boards/:id/currency`, so mirrors on other boards follow and every
+ * open tab is told. Stored figures are kept exactly as typed — nothing is
+ * converted. Boards with their own currency (an override) are left alone.
+ *
+ * Run whenever `baseCurrency` is in the body, not only when it differs: it is
+ * a no-op for boards already in step, and re-saving is how a board that failed
+ * last time is retried. The answer gains `relabelled: { count, boardIds,
+ * failed }` — `failed` is boards that could not be relabelled (logged here);
+ * the settings change itself has been saved either way. All three name only
+ * boards the CALLER can read (`relabelledVisibleTo`); the relabel itself
+ * reaches every following board.
  */
 const saveCurrencySettings = async (req, res) => {
   try {
@@ -961,22 +1029,126 @@ const saveCurrencySettings = async (req, res) => {
       update['fx.lastError'] = '';
     }
 
+    // The unit the workspace was in BEFORE this save — what a following
+    // board's code-less money columns rendered in until now.
+    const previousBase = (req.org && req.org.baseCurrency) || null;
+
     const result = await Organisation.updateOne({ _id: req.params.id }, { $set: update });
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: 'Organisation not found' });
     }
 
+    let relabelled = { count: 0, boardIds: [], failed: [] };
+    if (update.baseCurrency) {
+      try {
+        // The whole org (members, roles) — the relabel announces each board
+        // to everyone who can read it.
+        const org = await Organisation.findById(req.params.id);
+        if (org) {
+          const all = await relabelFollowingBoards(org, {
+            actorId: req.user.userId,
+            fromBase: previousBase,
+          });
+          relabelled = await relabelledVisibleTo(org, req.user.userId, all);
+        }
+      } catch (relabelErr) {
+        // The setting is saved; a board left behind is retried by saving again.
+        console.error('saveCurrencySettings: following-board relabel failed:', relabelErr);
+      }
+    }
+
     const fresh = await Organisation.findById(req.params.id)
       .select('baseCurrency fx')
       .lean();
-    return res.json({ currency: currencySettingsOf(fresh) });
+    return res.json({ currency: currencySettingsOf(fresh), relabelled });
   } catch (err) {
     console.error('saveCurrencySettings error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 };
 
+/**
+ * GET /api/orgs/:id/currency/boards — requires `org.manage_settings`.
+ *
+ * Every board in the workspace that holds money, with the unit it is in — what
+ * the Currency tab lists. Boards that FOLLOW the workspace move with it on
+ * their own (see `saveCurrencySettings`); the ones with a currency of their
+ * own are listed so an admin can see them and relabel them, or put them back to
+ * following, one by one (`PATCH /api/boards/:id/currency`).
+ *
+ *   currency     — the board's resolved unit (`boardCurrencyOf`)
+ *   following    — true while `Board.currency` is null: the board follows the
+ *                  workspace currency; false for a board with its own
+ *   effective    — the unit its money is in now (the same resolution as
+ *                  `currency`, named for what the Currency tab shows)
+ *   moneyColumns — how many money columns it OWNS (mirrors are not counted:
+ *                  their unit belongs to the board they mirror from)
+ *   mixed        — its money columns disagree with each other, or with the
+ *                  board's own `currency`, so its totals add unlike units or
+ *                  are labelled in one they are not in
+ *   canManage    — whether THIS caller may relabel it (`column.manage` there);
+ *                  the settings capability does not reach into boards
+ *
+ * Only boards the caller can READ are listed. `org.manage_settings` is a
+ * workspace power, not a key to every private board, and a board's name and
+ * shape are not the admin's to learn just because they may change the
+ * workspace currency.
+ */
+const listMoneyBoards = async (req, res) => {
+  try {
+    const org = req.org || (await Organisation.findById(req.params.id));
+    if (!org) return res.status(404).json({ error: 'Organisation not found' });
+    const userId = req.user.userId;
+
+    const boards = await Board.find({
+      organisation: org._id,
+      archived: { $ne: true },
+      'columns.settings.format': 'currency',
+    })
+      .select('name currency columns visibility createdBy memberAccess publicDefaultLevel boardType order')
+      .sort({ order: 1 })
+      .lean();
+
+    const out = [];
+    for (const board of boards) {
+      const access = resolveAccess(board, org, userId);
+      if (!access.canRead) continue;
+      // The board's OWN money only. A mirror's unit is its source board's
+      // (`isOwnMoneyColumn`), so counting it here listed an INR invoice board
+      // with one CAD mirror as "mixed" forever — and relabelling it, which
+      // leaves mirrors alone, could never clear the flag.
+      const money = (board.columns || []).filter(isOwnMoneyColumn);
+      if (money.length === 0) continue;
+      const currency = boardCurrencyOf(board, org.baseCurrency);
+      // A column with no code renders in the board's unit, so it only makes
+      // the board mixed if the codes that ARE stored disagree with that.
+      const units = new Set(money.map((c) => normaliseCurrencyCode(c.settings.currency) || currency));
+      // …and the board's OWN unit is one of the voices. Every column relabelled
+      // to CAD one at a time from the Table header, on a board that still says
+      // INR, agrees with itself and not with the ledger strip or this list —
+      // which then reported "INR, not mixed" about a board showing dollars.
+      if (currency) units.add(currency);
+      out.push({
+        _id: board._id,
+        name: board.name,
+        currency,
+        following: isFollowing(board),
+        effective: currency,
+        moneyColumns: money.length,
+        mixed: units.size > 1,
+        canManage: !!access.can('column.manage'),
+      });
+    }
+
+    return res.json({ boards: out });
+  } catch (err) {
+    console.error('listMoneyBoards error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+};
+
 module.exports = {
+  listMoneyBoards,
   listServiceCatalog,
   createOrg,
   getOrg,

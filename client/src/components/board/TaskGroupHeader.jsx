@@ -583,16 +583,29 @@ const TaskGroupHeader = ({
           columns after it still line up down the board, and only rendered at
           all when the board actually sums something. */}
       {summaries.length > 0 && (
-        <div className="shrink-0 hidden md:flex items-center gap-3 w-[176px] overflow-hidden">
+        <div className="shrink-0 hidden md:flex items-center gap-3 w-[196px] overflow-hidden">
+          {/* STACKED — the column's name small above its figure. Side by side,
+              "Amount CA$4,000 Payments CA$2,300" needed ~230px and the slot
+              clipped both figures to "Amount CA$…", hiding the one thing the
+              slot exists to show. Stacked, each figure gets the item's whole
+              width and the 48px header still holds both lines. */}
           {summaries.slice(0, 2).map((s) => (
             <span
               key={s.key}
-              className="font-body whitespace-nowrap truncate"
-              style={{ fontSize: 11.5, color: 'var(--color-text-secondary)' }}
-              title={`${s.label} of ${s.name}`}
+              className="font-body flex min-w-0 flex-1 flex-col"
+              style={{ lineHeight: 1.15 }}
+              title={`${s.label} of ${s.name}: ${s.display}`}
             >
-              {s.name}{' '}
-              <b style={{ fontWeight: 700, color: 'var(--color-text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+              <span
+                className="truncate"
+                style={{ fontSize: 10, color: 'var(--color-text-muted)', letterSpacing: '0.02em' }}
+              >
+                {s.name}
+              </span>
+              <b
+                className="truncate"
+                style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--color-text-primary)', fontVariantNumeric: 'tabular-nums' }}
+              >
                 {s.display}
               </b>
             </span>

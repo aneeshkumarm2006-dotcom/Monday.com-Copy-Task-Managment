@@ -22,7 +22,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { targetFieldOf, hasBaselineField, describeGoal } from './goalDisplay.js';
+import {
+  targetFieldOf, hasBaselineField, describeGoal, formatGoalValue, GOAL_CURRENCY,
+} from './goalDisplay.js';
+import { makeMoneyFormatter } from './money.js';
 
 /** The shape `GET /api/goal-types` sends, cut to what these two functions read. */
 const spec = (over = {}) => ({
@@ -127,4 +130,44 @@ test('the units a band is measured in follow it into the sentence', () => {
     spec()
   );
   assert.match(sentence, /between 80% and 95%/);
+});
+
+// ---------------------------------------------------------------------------
+// Money goals: USD by design, with the symbol taken from the catalog
+// ---------------------------------------------------------------------------
+
+/**
+ * A `useMoney()`-shaped stand-in, built on the real formatter, so these
+ * assertions exercise the same conversion path the goals table does.
+ */
+const moneyFor = (display, snapshots) => {
+  const fmt = makeMoneyFormatter({ display, snapshots });
+  return { in: (value, from, on = null) => fmt.format(value, { from, on }) };
+};
+
+test('a money goal with no reader currency renders in dollars from the catalog', () => {
+  assert.equal(GOAL_CURRENCY, 'USD');
+  const goal = { unit: 'currency', monthKey: '2026-09' };
+  assert.equal(formatGoalValue(40000, goal), '$40,000');
+  // Typed precision is kept, not rounded to the magnitude rule and not padded.
+  assert.equal(formatGoalValue(1234.5, goal), '$1,234.50');
+  assert.equal(formatGoalValue(57, goal), '$57');
+});
+
+test('a money goal read in CAD converts at its own month and says CA$, never a bare $', () => {
+  const money = moneyFor('CAD', [
+    { dayKey: '2026-08-01', rates: { USD: 1, CAD: 1.3 } },
+    { dayKey: '2026-09-01', rates: { USD: 1, CAD: 1.39 } },
+  ]);
+  const shown = formatGoalValue(40000, { unit: 'currency', monthKey: '2026-09' }, money);
+  assert.equal(shown, 'CA$55,600');
+  // An August goal uses August's rate, not the latest one.
+  const august = formatGoalValue(40000, { unit: 'currency', monthKey: '2026-08' }, money);
+  assert.equal(august, 'CA$52,000');
+});
+
+test('non-money goals never pick up a currency symbol', () => {
+  assert.equal(formatGoalValue(12, { unit: 'percent' }), '12%');
+  assert.equal(formatGoalValue(12, { unit: 'custom', unitLabel: 'leads' }), '12 leads');
+  assert.equal(formatGoalValue(1200, {}), (1200).toLocaleString(undefined, { maximumFractionDigits: 2 }));
 });

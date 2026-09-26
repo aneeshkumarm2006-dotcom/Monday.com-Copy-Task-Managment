@@ -36,7 +36,17 @@ const {
   isTemplateKey,
   templateByKey,
   templateSummaries,
+  seedTemplateColumns,
+  TEMPLATE_REVISION,
 } = require('../utils/boardTemplates');
+const {
+  sanitizeColumnCurrency,
+  normaliseCurrencyCode,
+  boardCurrencyOf,
+} = require('../utils/money');
+const { planNewBoardCurrency, planCopiedBoardCurrency } = require('../services/boardCurrency');
+const { syncBoardConnection } = require('./columnController');
+const { destroyFileColumnAssets } = require('../utils/fileColumnAssets');
 const { doneStatusIdsForBoard } = require('../utils/doneStatus');
 const { isValidTimezone } = require('../utils/tzDay');
 const { monthKeyOf } = require('../utils/monthKey');
@@ -618,6 +628,10 @@ const getBoardAsTemplate = async (req, res) => {
         })),
         groups: groups.map((g) => g.name),
         defaultView: board.defaultView || 'table',
+        // What a copy will be denominated in — a copy keeps its source's unit
+        // rather than taking the workspace's (see `seedTemplateColumns`), so the
+        // picker can say so before anybody creates one.
+        currency: boardCurrencyOf(board, org.baseCurrency),
       },
     });
   } catch (err) {
@@ -644,6 +658,11 @@ const createBoard = async (req, res) => {
       // Which template to seed from. Absent or 'blank' keeps the previous
       // behaviour exactly — four statuses, no columns, no groups.
       template = 'blank',
+      // The unit this board's money is in. Optional: absent (or the
+      // workspace's own code) means the board FOLLOWS the workspace's
+      // `baseCurrency`; any other code pins it as the board's override.
+      // Ignored on a copy, which keeps its source's unit — see below.
+      currency: requestedCurrency,
     } = req.body;
 
     if (!organisation) {
@@ -654,6 +673,12 @@ const createBoard = async (req, res) => {
     }
     if (!isBoardType(boardType)) {
       return res.status(400).json({ error: 'Invalid board type' });
+    }
+    let chosenCurrency = null;
+    if (requestedCurrency !== undefined && requestedCurrency !== null && requestedCurrency !== '') {
+      const r = sanitizeColumnCurrency(requestedCurrency);
+      if (!r.ok) return res.status(400).json({ error: r.error });
+      chosenCurrency = r.code;
     }
     /**
      * The template, which is either one of the built-in keys or `board:<id>` —
@@ -692,18 +717,35 @@ const createBoard = async (req, res) => {
         .sort({ order: 1 })
         .select('name')
         .lean();
+      /**
+       * Every copied column gets its id NOW, so a mirror can be re-pointed at
+       * the copy's own connect column. Left to Mongoose, the ids were minted at
+       * insert and a copied mirror kept naming the SOURCE board's connect
+       * column — which the copy does not have — so it rendered '—' forever.
+       */
+      const sourceColumns = (source.columns || [])
+        .slice()
+        .sort((a, b) => (a.order || 0) - (b.order || 0));
+      const newIdOf = new Map(
+        sourceColumns.map((c) => [String(c._id), new mongoose.Types.ObjectId()])
+      );
       tpl = {
-        columns: (source.columns || [])
-          .slice()
-          .sort((a, b) => (a.order || 0) - (b.order || 0))
-          .map((c) => ({
+        columns: sourceColumns.map((c) => {
+          const settings = { ...(c.settings || {}) };
+          if (c.type === 'mirror' && settings.sourceConnectColumnId) {
+            const remapped = newIdOf.get(String(settings.sourceConnectColumnId));
+            if (remapped) settings.sourceConnectColumnId = remapped;
+          }
+          return {
+            _id: newIdOf.get(String(c._id)),
             key: c.key,
             name: c.name,
             type: c.type,
             width: c.width,
             isPrimary: !!c.isPrimary,
-            settings: { ...(c.settings || {}) },
-          })),
+            settings,
+          };
+        }),
         statuses: (source.statuses || []).map((st) => ({
           key: st.key, name: st.name, color: st.color, order: st.order, isDefault: !!st.isDefault,
         })),
@@ -711,6 +753,17 @@ const createBoard = async (req, res) => {
         defaultView: source.defaultView || 'table',
         forceVisibility: null,
         templateKey: source.templateKey || null,
+        fromBoard: true,
+        // A copy is in its SOURCE's unit, resolved the way the source itself
+        // renders — not re-denominated into whatever the workspace is set to.
+        currency: boardCurrencyOf(source, sourceOrg && sourceOrg.baseCurrency),
+        // …and whether the source FOLLOWED the workspace, which decides
+        // whether the copy may too (`planCopiedBoardCurrency`).
+        sourceCurrency: source.currency || null,
+        // …and at its source's template revision: the columns ARE the
+        // source's, so a copy of a board the upgrade script has not reached
+        // yet must still be reachable by it. See `Board.templateRevision`.
+        templateRevision: Number(source.templateRevision) || 0,
       };
       // A board with no statuses (pre-migration) would seed a board that cannot
       // hold a status at all. Fall back rather than copy the gap.
@@ -812,10 +865,33 @@ const createBoard = async (req, res) => {
     //
     // Chat and mail need no opt-in: there is no tier, and every service group
     // gets its surfaces on creation (services/workstreamSurfaces.js).
-    // The unit every money column on this board is born in. Falls back to
-    // rupees for an org created before the field existed, which is what those
-    // boards would have got anyway.
-    const baseCurrency = org.baseCurrency || 'INR';
+    // ---- The board's money unit ------------------------------------------
+    //
+    // `stamp` is the unit every money column is born in; `Board.currency` is
+    // null (the board FOLLOWS the workspace, and moves when the workspace
+    // currency changes) unless the creator explicitly picked a DIFFERENT code,
+    // which is then the board's override (services/boardCurrency.js). Picking
+    // the workspace's own code is not an override.
+    //
+    // A copy is stamped in its source's unit, and follows only if the source
+    // did and its copied columns are all in the workspace's unit — otherwise
+    // it is pinned to the source's unit, so the next workspace change cannot
+    // relabel figures that were typed in something else. Rupees only for an
+    // org created before `baseCurrency` existed, which is what those boards
+    // would have got anyway.
+    const workspaceCurrency = normaliseCurrencyCode(org.baseCurrency) || 'INR';
+    const planned = tpl.fromBoard
+      ? { stamp: tpl.currency || workspaceCurrency }
+      : planNewBoardCurrency({ chosen: chosenCurrency, orgBase: workspaceCurrency });
+    const seededColumns = seedTemplateColumns(tpl, { currency: planned.stamp, fromBoard: !!tpl.fromBoard });
+    const boardCurrency = tpl.fromBoard
+      ? planCopiedBoardCurrency({
+        sourceCurrency: tpl.sourceCurrency,
+        sourceEffective: planned.stamp,
+        columns: seededColumns,
+        orgBase: workspaceCurrency,
+      })
+      : planned.currency;
 
     const isClient = boardType === 'client';
     const portalFields = isClient
@@ -836,32 +912,39 @@ const createBoard = async (req, res) => {
       statuses: tpl.statuses.map((s) => ({ ...s })),
       labels: [],
       /**
-       * Template columns, with every money column denominated in the
-       * WORKSPACE's currency rather than the template's.
+       * Template columns, with every money column denominated in the BOARD's
+       * effective currency (the workspace's, while it follows) rather than the
+       * template's placeholder.
        *
-       * `boardTemplates.js` spreads a `RUPEES` constant into six money columns
-       * across four templates, with the comment "the workspace this is being
-       * built for bills in rupees". That was true, and it was also the reason
-       * an agency billing in dollars had to fix every money column by hand on
-       * every board it ever created.
+       * `boardTemplates.js` used to spread a `RUPEES` constant into every money
+       * column, which is why an agency billing in dollars had to fix each one
+       * by hand on every board it ever created. The template stays a static
+       * description of SHAPE; the unit is decided here, where the org is in
+       * hand.
        *
-       * Substituting here rather than in the template keeps the template a
-       * static description of SHAPE, with no dependency on the database — and
-       * it costs nothing, because `loadOrgForMember` above already has the org
-       * in hand.
-       *
-       * Only `format: 'currency'` columns are touched. A percent or plain
-       * column has no currency to change, and a formula column inherits one
-       * only because it is also money.
+       * A COPY is the exception, and `seedTemplateColumns` is where it lives:
+       * a copied column keeps the currency somebody chose for it, and only one
+       * with no valid code takes the board's. Re-stamping copies is how a CAD
+       * board's copy came out in rupees.
        */
-      columns: tpl.columns.map((c, i) => ({
-        ...c,
-        order: i,
-        settings: {
-          ...(c.settings || {}),
-          ...(c.settings?.format === 'currency' ? { currency: baseCurrency } : {}),
-        },
-      })),
+      columns: seededColumns,
+      // null = follows the workspace; a code = this board's override.
+      currency: boardCurrency,
+      /**
+       * The Ads Budget add-on starts OFF and with NO unit of its own — null is
+       * "not chosen yet", and the unit is pinned when somebody switches the
+       * add-on on (adsBudgetController.setSettings: `boardCurrencyOf` at that
+       * moment).
+       *
+       * It used to be stamped here with the board's unit at birth. That froze
+       * the wrong moment: relabelling the board CAD afterwards
+       * (`PATCH /currency`) never touched it, the pin-on-enable branch never
+       * fired because a unit was already there, and the CAD board opened its
+       * Ads Budget in rupees nobody chose. Deciding at switch-on time follows
+       * the board to wherever it has been relabelled since, and the add-on
+       * card's "follows this board's currency" line is true until then.
+       */
+      adsBudget: { enabled: false, currency: null },
       // The flexible-columns engine is what renders `columns` at all, so a
       // template that seeds any must switch it on. A blank board seeds none
       // and stays on the legacy path, unchanged.
@@ -872,6 +955,16 @@ const createBoard = async (req, res) => {
       // from another board inherits ITS label, because the shape is the same
       // thing and calling the copy "Blank" would be less true, not more.
       templateKey: tpl.templateKey || (template === 'blank' ? null : template),
+      /**
+       * Which revision of the template shapes this board was seeded at. A
+       * board born from a built-in template is born CURRENT — the upgrade
+       * script (scripts/upgradeTemplateBoards.js) skips it, so a column its
+       * owner deletes next week is never put back by a re-run. A copy carries
+       * its source's revision (see the copy branch above).
+       */
+      templateRevision: tpl.fromBoard
+        ? Number(tpl.templateRevision) || 0
+        : TEMPLATE_REVISION,
     });
 
     // Seed the template's groups. Best-effort and AFTER the board exists: a
@@ -890,6 +983,20 @@ const createBoard = async (req, res) => {
         );
       } catch (groupErr) {
         console.error('createBoard: template groups failed:', groupErr.message);
+      }
+    }
+
+    // Connect columns that arrived WITH targets (a copy of a configured board)
+    // owe their BoardConnection edge, exactly as one added through addColumn
+    // does — without it, editing a linked row never refreshes the mirrors that
+    // read it. Best-effort for the same reason as the groups: the board is
+    // usable without the edge, and the next settings write heals it.
+    for (const col of board.columns || []) {
+      if (col.type !== 'connect_boards') continue;
+      try {
+        await syncBoardConnection(board, col);
+      } catch (edgeErr) {
+        console.error('createBoard: connect edge failed:', edgeErr.message);
       }
     }
 
@@ -1166,6 +1273,44 @@ const purgeLinksToDeletedBoard = async (boardId, organisationId) => {
 };
 
 /**
+ * Turn every `client` cell that names a board about to be deleted into a
+ * free-typed client: `{ boardId: <gone>, name }` → `{ boardId: null, name }`.
+ *
+ * A `client` cell (utils/columnTypes.js) points at a client BOARD and carries a
+ * snapshot of its name. Deleting the client board does not make the invoices
+ * for that client stop having been for it — so the name stays, exactly as it
+ * reads today. Only the pointer goes: left behind, it would name a board that
+ * no longer exists, and every later write of the same cell would be refused by
+ * the "must be a live client board" check for a choice nobody just made.
+ *
+ * Scoped to the workspace the board was in, because a `client` cell may only
+ * ever name a client board of its own workspace. The board ids stored are
+ * strings (the serializer normalises them), which is what the match is on. One
+ * `updateMany` per `client` column in the workspace — a handful, not one per
+ * row.
+ */
+const detachClientCellsFromDeletedBoard = async (boardId, organisationId) => {
+  const target = String(boardId).toLowerCase();
+  const boards = await Board.find({
+    organisation: organisationId,
+    _id: { $ne: boardId },
+    'columns.type': 'client',
+  })
+    .select('_id columns')
+    .lean();
+  for (const b of boards) {
+    for (const col of (b.columns || []).filter((c) => c.type === 'client')) {
+      const path = `columnValues.${String(col._id)}`;
+      // eslint-disable-next-line no-await-in-loop
+      await Task.updateMany(
+        { board: b._id, [`${path}.boardId`]: target },
+        { $set: { [`${path}.boardId`]: null } }
+      );
+    }
+  }
+};
+
+/**
  * DELETE /api/boards/:id
  *
  * Requires `board.delete`, which is resolved against the board itself — so an
@@ -1206,13 +1351,28 @@ const deleteBoard = async (req, res) => {
       // its publicId appears twice in this list. That is left as it is: a repeat
       // destroy is swallowed per asset, and de-duplicating is the kind of tidying
       // that ends up dropping the task-side entry.
-      const taskDocs = await Task.find({ _id: { $in: taskIds } }).select('attachments').lean();
+      const taskDocs = await Task.find({ _id: { $in: taskIds } })
+        .select('attachments columnValues board')
+        .lean();
       const updateDocs = await Update.find({ task: { $in: taskIds } }).select('attachments').lean();
       const allAttachments = [
         ...taskDocs.flatMap((t) => t.attachments || []),
         ...updateDocs.flatMap((u) => u.attachments || []),
       ];
       await destroyCloudinaryAssets(allAttachments);
+      // And the files held in FILE COLUMNS — the invoice PDFs, CVs and
+      // receipts a ledger row was created from. They were never in
+      // `attachments`, so this cascade left every one of them publicly
+      // fetchable after the board was gone. Same timing rule as above: the
+      // handles live on the task rows, so this runs before they are dropped.
+      // Contained, because a storage hiccup must never block the delete the
+      // person asked for. Only ids under THIS board's upload folder are ever
+      // destroyed (`boardId` names it) — see utils/fileColumnAssets.js.
+      try {
+        await destroyFileColumnAssets(ctx.board.columns || [], taskDocs, { boardId: ctx.board._id });
+      } catch (fileErr) {
+        console.error('deleteBoard: file-column cleanup failed:', fileErr.message);
+      }
 
       await Update.deleteMany({ task: { $in: taskIds } });
       await Notification.deleteMany({ task: { $in: taskIds } });
@@ -1284,6 +1444,15 @@ const deleteBoard = async (req, res) => {
     // and with the tasks deleted there is nothing left to name. See the helper
     // above for why this does not go through the `task.deleted` event.
     await purgeLinksToDeletedBoard(id, ctx.board.organisation);
+    // `client` cells on OTHER boards that name this one as their client (an
+    // invoice for the client this board was). Detached, not cleared — see the
+    // helper. Best-effort: a missed detach leaves a pointer the cell still
+    // renders by its name, never a reason to refuse the delete.
+    try {
+      await detachClientCellsFromDeletedBoard(id, ctx.board.organisation);
+    } catch (clientErr) {
+      console.error('deleteBoard: client-cell detach failed:', clientErr.message);
+    }
     // Connect-column edges in either direction. A row pointing at a board that
     // no longer exists is a dangling reference the mirror-invalidation lookup
     // keeps paying for on every task change; one pointing FROM this board names

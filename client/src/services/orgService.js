@@ -177,10 +177,55 @@ export const getCurrencySettings = async (orgId) => {
  *
  * The key is never returned by anything, here or anywhere: the server replies
  * with a four-character preview so the screen can tell two keys apart.
+ *
+ * Returns `{ currency, relabelled }`. `relabelled` is `{ count, boardIds,
+ * failed }` — the boards that FOLLOW the workspace and were relabelled to the
+ * saved `baseCurrency` (relabelled, never converted), and those that could not
+ * be — or null when the server sent nothing about it.
  */
 export const saveCurrencySettings = async (orgId, patch) => {
   const { data } = await api.put(`/api/orgs/${orgId}/currency`, patch);
-  return data.currency;
+  const raw = data?.currency || null;
+  // Read from the top level, which is where the contract puts it; tolerated
+  // inside the settings object too, and stripped from there, so the settings
+  // the store caches are only ever settings.
+  const relabelled = data?.relabelled ?? raw?.relabelled ?? null;
+  let currency = raw;
+  if (raw && 'relabelled' in raw) {
+    currency = { ...raw };
+    delete currency.relabelled;
+  }
+  return {
+    currency,
+    relabelled: relabelled
+      ? {
+        count: Number(relabelled.count) || 0,
+        boardIds: Array.isArray(relabelled.boardIds) ? relabelled.boardIds.map(String) : [],
+        // Following boards the relabel could not reach — the save itself
+        // stands; they show on the Currency tab as "not relabelled yet".
+        failed: Array.isArray(relabelled.failed) ? relabelled.failed.map(String) : [],
+      }
+      : null,
+  };
+};
+
+/**
+ * GET /api/orgs/:id/currency/boards — every live board in the workspace that
+ * holds money, what unit each is in, and whether it follows the workspace.
+ *
+ * What the Currency tab lists: the boards with a currency of their OWN (which a
+ * workspace change leaves alone), each with a "Follow workspace" action — the
+ * change itself is `boardService.setBoardCurrency(id, null)`, per board. Same
+ * gate as the other currency settings, `org.manage_settings`.
+ *
+ * Returns `[{ _id, name, currency, effective, following, moneyColumns, mixed,
+ * canManage }]` — `currency`/`effective` are the board's RESOLVED unit,
+ * `following` is `Board.currency == null`, and `mixed` says its money columns
+ * disagree.
+ */
+export const listMoneyBoards = async (orgId) => {
+  const { data } = await api.get(`/api/orgs/${orgId}/currency/boards`);
+  return data.boards || [];
 };
 
 // --- logo -------------------------------------------------------------------

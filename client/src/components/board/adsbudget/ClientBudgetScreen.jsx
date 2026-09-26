@@ -6,7 +6,7 @@ import { formatPct } from '../../../utils/adsBudgetDisplay';
 import BudgetOverviewCard from './BudgetOverviewCard';
 import BudgetTable from './BudgetTable';
 import BudgetActivityTable from './BudgetActivityTable';
-import { BudgetStat, MiniButton, Section } from './BudgetBits';
+import { BudgetStat, MiniButton, MoneyNote, Section } from './BudgetBits';
 
 /**
  * One client's month.
@@ -30,8 +30,15 @@ const ClientBudgetScreen = ({
   // Resolved by the tab: the board page's answer until the server's arrives.
   canTrack,
   canManage,
+  /**
+   * The unit to use when the payload names none — resolved by the tab from the
+   * board (its own currency, else the workspace's). Never a literal: the
+   * 'USD' this used to fall back to put a dollar sign on a rupee or CAD
+   * board's figures whenever the setting had not been chosen yet.
+   */
+  fallbackCurrency = null,
 }) => {
-  const currency = data.currency || 'USD';
+  const currency = data.currency || fallbackCurrency || null;
   /**
    * The reader's currency, at the rate in force for the month being shown.
    *
@@ -65,31 +72,38 @@ const ClientBudgetScreen = ({
         </h2>
       </div>
 
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
-        <BudgetStat
-          label="Monthly Budget"
-          value={money(totals.allocated)}
-          sub="Planned advertising budget"
-        />
-        <BudgetStat
-          label="Total Spend"
-          value={money(totals.spent)}
-          sub={
-            totals.usedPct === null
-              ? 'Nothing budgeted yet'
-              : `${formatPct(totals.usedPct)} of total budget used`
-          }
-        />
-        <BudgetStat
-          label="Remaining Budget"
-          value={money(totals.remaining)}
-          sub="Available to allocate"
-        />
-        <BudgetStat
-          label="Daily Average Spend"
-          value={totals.dailyAverage === null ? '—' : money(Math.round(totals.dailyAverage))}
-          sub="Based on current campaign activity"
-        />
+      <div className="flex flex-col gap-2.5">
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 md:gap-4">
+          <BudgetStat
+            label="Monthly Budget"
+            value={money(totals.allocated)}
+            sub="Planned advertising budget"
+          />
+          <BudgetStat
+            label="Total Spend"
+            value={money(totals.spent)}
+            sub={
+              totals.usedPct === null
+                ? 'Nothing budgeted yet'
+                : `${formatPct(totals.usedPct)} of total budget used`
+            }
+          />
+          <BudgetStat
+            label="Remaining Budget"
+            value={money(totals.remaining)}
+            sub="Available to allocate"
+          />
+          <BudgetStat
+            label="Daily Average Spend"
+            value={totals.dailyAverage === null ? '—' : money(Math.round(totals.dailyAverage))}
+            sub="Based on current campaign activity"
+          />
+        </div>
+
+        {/* Said ONCE for the whole screen rather than on every figure: that the
+            amounts were converted into the reader's currency and from what — or
+            that a conversion was asked for and no rate exists yet. */}
+        <MoneyNote text={fx.surfaceNote(currency, dayKeyOfMonthKey(data.monthKey))} />
       </div>
 
       <BudgetOverviewCard
@@ -117,7 +131,6 @@ const ClientBudgetScreen = ({
           level="platform"
           currency={currency}
           monthKey={data.monthKey}
-        monthKey={data.monthKey}
           canTrack={canTrack}
           canManage={canManage}
           onCommitSpend={onCommitSpend}
@@ -154,7 +167,6 @@ const ClientBudgetScreen = ({
           level="campaign"
           currency={currency}
           monthKey={data.monthKey}
-        monthKey={data.monthKey}
           canTrack={canTrack}
           canManage={canManage}
           onCommitSpend={onCommitSpend}

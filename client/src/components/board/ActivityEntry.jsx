@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { timeAgo, formatDate } from '../../utils/dateUtils';
 import { weightLabel } from '../../utils/goalDisplay';
+import { formatIn } from '../../utils/money';
 
 const LEGACY_STATUS_LABELS = {
   not_started: 'Not started',
@@ -159,6 +160,192 @@ const diffMembers = (oldArr, newArr) => {
   const added = (newArr || []).filter((m) => !oldIds.has(m.id));
   const removed = (oldArr || []).filter((m) => !newIds.has(m.id));
   return { added, removed };
+};
+
+// ---------------------------------------------------------------------------
+// Flexible-column changes
+//
+// The JSX mirror of `describeColumnChange` / `columnScalarText` in
+// server/src/services/activityFormat.js — same branches, same words, so a
+// change reads the same in this panel and in the exported report. Driven by
+// `metadata.columnType`, which the writer stamps because the stored value alone
+// cannot say whether `["65f…"]` is people, tags or files.
+// ---------------------------------------------------------------------------
+
+const isBlank = (v) =>
+  v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
+
+/**
+ * Money in the currency recorded IN THE ROW — the unit at write time. A
+ * board's currency can be changed later, and that relabels without converting,
+ * so today's unit would misstate what was typed. Cents only when there are some.
+ */
+const moneyText = (value, code) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  const decimals = Number.isInteger(n) ? 0 : 2;
+  if (!code) return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return formatIn(n, code, { decimals });
+};
+
+/** One side of a column change as text, or null when it is empty. */
+const columnScalarText = (type, value, meta = {}) => {
+  if (isBlank(value)) return null;
+  switch (type) {
+    case 'number':
+      if (typeof value !== 'number') return String(value);
+      return meta.currency
+        ? moneyText(value, meta.currency)
+        : value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    case 'rating':
+      return String(value);
+    case 'date':
+      return formatDate(value) || String(value);
+    case 'status':
+    case 'dropdown':
+      return meta.optionLabels?.[String(value)] || 'a removed choice';
+    case 'text':
+    case 'long_text':
+    case 'email':
+    case 'phone': {
+      const text = String(value);
+      return `“${text.length > 80 ? `${text.slice(0, 80)}…` : text}”`;
+    }
+    case 'link':
+      if (typeof value === 'object') return value.label || value.url || null;
+      return String(value);
+    case 'client': {
+      // `{ boardId, name }` — the name is the snapshot the server stamped from
+      // the client board (or typed, for a client with no board), so the row
+      // reads "set Client to Acme" even for somebody who cannot open Acme's
+      // board, and still does after that board is renamed or gone. Same words
+      // as the server's `columnScalarText`.
+      if (typeof value === 'object') {
+        const name = typeof value.name === 'string' ? value.name.trim() : '';
+        if (!name) return null;
+        return name.length > 80 ? `${name.slice(0, 80)}…` : name;
+      }
+      const text = String(value);
+      return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+    }
+    default:
+      return null;
+  }
+};
+
+/** "a", "a and b", "a, b and c". */
+const andList = (arr) => {
+  if (!arr.length) return '';
+  if (arr.length === 1) return arr[0];
+  return `${arr.slice(0, -1).join(', ')} and ${arr[arr.length - 1]}`;
+};
+
+/**
+ * A typed column change as a sentence body (everything after the actor), or
+ * null for a type with no sentence of its own — the caller then falls back to
+ * "updated <column>".
+ */
+const renderColumnChange = (entry, Actor, colLabel) => {
+  const meta = entry.metadata || {};
+  const type = meta.columnType;
+  const oldV = entry.oldValue;
+  const newV = entry.newValue;
+  const Col = <Quoted>{colLabel}</Quoted>;
+
+  if (type === 'person') {
+    // Already resolved to { id, name } by the server's resolveFieldValue.
+    const { added, removed } = diffMembers(
+      Array.isArray(oldV) ? oldV : [],
+      Array.isArray(newV) ? newV : []
+    );
+    const parts = [];
+    if (added.length) parts.push(`assigned ${added.map((m) => m.name).join(', ')}`);
+    if (removed.length) parts.push(`unassigned ${removed.map((m) => m.name).join(', ')}`);
+    if (!parts.length) return null;
+    return <span>{Actor} {parts.join(' and ')} in {Col}.</span>;
+  }
+
+  if (type === 'file') {
+    const keyOf = (f) => (f && (f.url || f.name)) || '';
+    const before = Array.isArray(oldV) ? oldV : [];
+    const after = Array.isArray(newV) ? newV : [];
+    const beforeKeys = new Set(before.map(keyOf));
+    const afterKeys = new Set(after.map(keyOf));
+    const fileName = (f) => `“${(f && f.name) || 'file'}”`;
+    const added = after.filter((f) => !beforeKeys.has(keyOf(f))).map(fileName);
+    const removed = before.filter((f) => !afterKeys.has(keyOf(f))).map(fileName);
+    if (!added.length && !removed.length) return null;
+    return (
+      <span>
+        {Actor}{' '}
+        {added.length > 0 && <>attached <Quoted>{andList(added)}</Quoted> to {Col}</>}
+        {added.length > 0 && removed.length > 0 && ' and '}
+        {removed.length > 0 && <>removed <Quoted>{andList(removed)}</Quoted> from {Col}</>}
+        .
+      </span>
+    );
+  }
+
+  if (type === 'payments') {
+    // Compared by entry id, never by position: payments are kept sorted by
+    // date, so recording an older one shifts every index after it.
+    const amount = (p) => moneyText(Number(p?.amount), meta.currency || null);
+    const before = new Map((Array.isArray(oldV) ? oldV : []).map((p) => [String(p?.id), p]));
+    const after = new Map((Array.isArray(newV) ? newV : []).map((p) => [String(p?.id), p]));
+    const added = [...after.keys()].filter((id) => !before.has(id)).map((id) => amount(after.get(id)));
+    const removed = [...before.keys()].filter((id) => !after.has(id)).map((id) => amount(before.get(id)));
+    const edited = [...after.keys()]
+      .filter((id) => before.has(id) && Number(before.get(id).amount) !== Number(after.get(id).amount))
+      .map((id) => `changed a payment from ${amount(before.get(id))} to ${amount(after.get(id))}`);
+    const parts = [];
+    if (added.length) parts.push(`recorded ${added.length === 1 ? 'a payment' : 'payments'} of ${andList(added)}`);
+    if (removed.length) parts.push(`removed ${removed.length === 1 ? 'a payment' : 'payments'} of ${andList(removed)}`);
+    parts.push(...edited);
+    return <span>{Actor} {parts.length ? parts.join(' and ') : 'updated a payment'}.</span>;
+  }
+
+  if (type === 'tags') {
+    const labelOf = (id) => meta.optionLabels?.[String(id)] || 'a removed tag';
+    const before = new Set((Array.isArray(oldV) ? oldV : []).map(String));
+    const after = new Set((Array.isArray(newV) ? newV : []).map(String));
+    const added = [...after].filter((id) => !before.has(id)).map(labelOf);
+    const removed = [...before].filter((id) => !after.has(id)).map(labelOf);
+    const parts = [];
+    if (added.length) parts.push(`added ${andList(added)}`);
+    if (removed.length) parts.push(`removed ${andList(removed)}`);
+    if (!parts.length) return null;
+    return <span>{Actor} {parts.join(' and ')} in {Col}.</span>;
+  }
+
+  if (type === 'checkbox') {
+    return <span>{Actor} {newV ? 'checked' : 'unchecked'} {Col}.</span>;
+  }
+
+  if (type === 'connect_boards') {
+    const count = (v) => (Array.isArray(v) ? v.length : (Array.isArray(v?.links) ? v.links.length : 0));
+    const before = count(oldV);
+    const after = count(newV);
+    if (before === after) return null;
+    const n = Math.abs(after - before);
+    return (
+      <span>
+        {Actor} {after > before ? 'linked' : 'unlinked'} {n} item{n === 1 ? '' : 's'} in {Col}.
+      </span>
+    );
+  }
+
+  const from = columnScalarText(type, oldV, meta);
+  const to = columnScalarText(type, newV, meta);
+  if (from === null && to === null) return null;
+  if (from === null) return <span>{Actor} set {Col} to <Quoted>{to}</Quoted>.</span>;
+  if (to === null) return <span>{Actor} cleared {Col} (was <Quoted>{from}</Quoted>).</span>;
+  return (
+    <span>
+      {Actor} changed {Col} from <Quoted>{from}</Quoted>
+      <Arrow />
+      <Quoted>{to}</Quoted>.
+    </span>
+  );
 };
 
 
@@ -378,6 +565,18 @@ const renderBody = (entry, typeLabels = {}) => {
     // rather than showing the user "column:owner_2".
     if (typeof entry.field === 'string' && entry.field.startsWith('column:')) {
       const colLabel = entry.metadata?.columnLabel || 'a column';
+      // Rows that say what TYPE the column was show the real values. Rows
+      // written before the type was stamped — and link rows, which carry a
+      // label but no type — keep the count-or-"updated" wording below.
+      if (entry.metadata?.columnType) {
+        const typed = renderColumnChange(entry, Actor, colLabel);
+        if (typed) return typed;
+        return (
+          <span>
+            {Actor} updated <Quoted>{colLabel}</Quoted>.
+          </span>
+        );
+      }
       const before = Array.isArray(entry.oldValue) ? entry.oldValue.length : null;
       const after = Array.isArray(entry.newValue) ? entry.newValue.length : null;
       if (before !== null && after !== null && before !== after) {
@@ -481,11 +680,21 @@ const renderBody = (entry, typeLabels = {}) => {
       );
     }
 
+    // A status the SERVER moved because the row's payments came to cover its
+    // amount (server utils/paymentsSettle.js). Still the actor's sentence — it
+    // was their payment that did it — but it says why, so nobody reading the
+    // history wonders who ticked Paid. Same words as the exported report.
+    const settledNote =
+      entry.field === 'status' && entry.metadata?.settledBy === 'payments'
+        ? ' (payments cover the amount)'
+        : '';
+
     return (
       <span>
         {Actor} changed {label} from {renderScalarValue(entry.field, entry.oldValue)}
         <Arrow />
-        {renderScalarValue(entry.field, entry.newValue)}.
+        {renderScalarValue(entry.field, entry.newValue)}
+        {settledNote}.
       </span>
     );
   }

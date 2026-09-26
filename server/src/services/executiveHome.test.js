@@ -1062,6 +1062,38 @@ test('adsBudgetPacing sums PLATFORM rows only, through the real rollUp', async (
   }
 });
 
+test('adsBudgetPacing on a board with no Ads Budget currency reads the WORKSPACE unit', async () => {
+  // `adsBudget.currency` defaults to null now. A bare `|| 'USD'` put a rupee
+  // (here: Canadian) workspace's spend on this tile in dollars while the tab it
+  // links to said CA$ — the same three steps as the controller, or the two lie.
+  const { restore } = stubAll({
+    adsRows: [{ _id: 'p1', group: GROUP_A, allocated: 1000, spent: 500, lifecycle: 'active' }],
+  });
+  const boards = Board.find;
+  try {
+    const unset = makeBoard({
+      _id: BOARD_OPEN,
+      memberAccess: grantedToExec,
+      adsBudget: { enabled: true, currency: null },
+    });
+    Board.find = () => query([unset]);
+    const { sections } = await composeFor(makeOrg({ baseCurrency: 'CAD' }), EXEC, [
+      section('adsBudgetPacing', { board: BOARD_OPEN, month: '2026-08' }),
+    ]);
+    assert.equal(sections[0].state, 'ok');
+    assert.equal(sections[0].data.currency, 'CAD');
+
+    // Neither the add-on nor the workspace says anything: dollars, as before.
+    const { sections: bare } = await composeFor(makeOrg({ baseCurrency: undefined }), EXEC, [
+      section('adsBudgetPacing', { board: BOARD_OPEN, month: '2026-08' }),
+    ]);
+    assert.equal(bare[0].data.currency, 'USD');
+  } finally {
+    Board.find = boards;
+    restore();
+  }
+});
+
 test('adsBudgetPacing with nothing budgeted is empty rather than $0 of $0', async () => {
   const { restore } = stubAll({ adsRows: [] });
   try {

@@ -36,10 +36,11 @@ const {
   updateColumn,
   reorderColumns,
   deleteColumn,
+  setBoardCurrency,
 } = require('../controllers/columnController');
 const { getActivityExport } = require('../controllers/boardExportController');
-const { uploadBoardFile } = require('../controllers/boardFileController');
-const { taskAttachmentUpload, handleUploadError } = require('../config/cloudinary');
+const { authorizeBoardFile, uploadBoardFile } = require('../controllers/boardFileController');
+const { boardFileUpload, handleUploadError } = require('../config/cloudinary');
 const rateLimit = require('../middleware/rateLimit');
 const {
   convertBoardType, getBoardMonths, setMonthTimezone,
@@ -59,6 +60,17 @@ router.use(authMiddleware);
  * the row that will hold it exists. See `boardFileController` for why that
  * ordering is the safe one.
  *
+ * `authorizeBoardFile` MUST stay ahead of `boardFileUpload`: the storage
+ * middleware uploads to Cloudinary while it parses, so anything checked after
+ * it is checked too late — the bytes are already in the account. A refusal
+ * here means the file never left the request.
+ *
+ * `boardFileUpload` is its own storage, not the task-attachment one: every
+ * file lands under `macan/board-files/<boardId>/`, which is the only prefix the
+ * file-column cleanup will ever destroy on this board's behalf, and a MIME
+ * allowlist (PDF, images, office documents) refuses anything else before a byte
+ * is sent. See config/cloudinary.js.
+ *
  * Tighter than the vault's 30/min: this is reached by dragging a folder of
  * files onto a board, so a genuine burst is a handful at once, and the ceiling
  * is there to stop a runaway loop filling the Cloudinary account rather than to
@@ -73,7 +85,8 @@ const boardFileLimit = rateLimit({
 router.post(
   '/:id/files',
   boardFileLimit,
-  taskAttachmentUpload.single('file'),
+  authorizeBoardFile,
+  boardFileUpload.single('file'),
   handleUploadError,
   uploadBoardFile
 );
@@ -151,6 +164,13 @@ router.post('/:id/columns',           addColumn);
 router.patch('/:id/columns/reorder',  reorderColumns);
 router.patch('/:id/columns/:cid',     updateColumn);
 router.delete('/:id/columns/:cid',    deleteColumn);
+
+// The board's money unit: Board.currency plus every money column's currency,
+// in one move. `{ currency: 'CAD' }` pins the board to its own unit;
+// `{ currency: null }` puts it back to following the workspace currency.
+// RELABELS, never converts — see the controller. `column.manage`, the same gate
+// as editing any one of those columns.
+router.patch('/:id/currency',         setBoardCurrency);
 
 // --- Cross-board connectivity (F2) ----------------------------------------
 // Boards a connect_boards column on this board may target.

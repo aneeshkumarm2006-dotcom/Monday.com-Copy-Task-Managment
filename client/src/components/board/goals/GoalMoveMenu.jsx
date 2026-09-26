@@ -141,7 +141,12 @@ const GoalMoveMenu = ({
         aria-expanded={!!anchor}
         aria-label={`Move ${goalName}`}
         title={title}
-        onClick={(e) => setAnchor((prev) => (prev ? null : e.currentTarget))}
+        onClick={(e) => {
+          // Read before the updater runs: React may call it after the event,
+          // when `currentTarget` is already null — every second click did nothing.
+          const el = e.currentTarget;
+          setAnchor((prev) => (prev ? null : el));
+        }}
         className={className}
         style={{ opacity: stuck ? 0.3 : 1, cursor: stuck ? 'default' : 'pointer' }}
       >

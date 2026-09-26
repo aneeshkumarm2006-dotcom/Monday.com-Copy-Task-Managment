@@ -1,20 +1,53 @@
 import { useEffect, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import useBoardStore from '../../store/boardStore';
+import useTaskStore from '../../store/taskStore';
 import useToastStore from '../../store/toastStore';
+import useMoney from '../../hooks/useMoney';
+import AnchoredPopover from '../ui/AnchoredPopover';
+import FormulaEditor from './FormulaEditor';
+import ConnectTargetsEditor from './ConnectTargetsEditor';
+import { boardCurrencyOf } from '../../utils/money';
+import { checkFormula, formulaDraftOf, formulaSettingsFrom } from '../../utils/dataGrid';
 
 /**
  * AddColumnButton — opens a type picker and creates a new column via the
  * boardStore. Categories mirror the grouping in the phase doc.
  *
- * Cross-board types (F2) carry extra configuration:
- *   - connect_boards → pick target board(s) + allow-multiple
- *   - mirror         → pick a source connect column + a source column +
+ * Types that carry configuration get a step of their own before "Add":
+ *   - formula        → `FormulaEditor`: the expression (with column chips, a
+ *                      live check in the server's words and a preview on the
+ *                      first row), format, currency and decimals. It used to be
+ *                      offered as "Formula (read-only)" and sent with NO
+ *                      expression, which the server refuses — so the type was
+ *                      in the menu and could never be created.
+ *   - connect_boards → `ConnectTargetsEditor`: which boards it links rows from
+ *                      + allow-multiple. The same editor the column menu's
+ *                      "Connected boards…" and the cell's "Set up" open, so the
+ *                      three can never disagree about what a target is.
+ *   - mirror         → a source connect column + a source column +
  *                      aggregation (disabled until a connect column exists)
  *
+ * And two whose settings are decided here rather than asked:
+ *   - payments       → money by definition: `format: 'currency'`, the BOARD's
+ *                      currency (`boardCurrencyOf`, the same unit its Amount
+ *                      is in — never a literal, never the reader's display
+ *                      choice), and a sum footer. The server pins the format
+ *                      too; sending the currency keeps a new column from
+ *                      starting in a unit the board does not use.
+ *   - client         → which of the workspace's client boards a row is for
+ *                      (`ClientCell`); no settings at all.
+ *
+ * The panel is an `AnchoredPopover`, not an absolute box: the button lives in
+ * the grid header, inside the grid's horizontal scroller and an
+ * `overflow: hidden` group card, and the formula step is taller than a short
+ * group — the old absolute panel was cut off below its first few fields.
+ *
  * Props:
- *   board   — current board doc (with `columns`); preferred
- *   boardId — fallback board id (back-compat)
+ *   board      — current board doc (with `columns`); preferred
+ *   boardId    — fallback board id (back-compat)
+ *   sampleTask — optional row the formula preview computes against; defaults
+ *                to the first of this board's rows the task store holds
  */
 
 const MIRROR_AGGREGATIONS = ['first', 'concat', 'sum', 'min', 'max', 'count'];
@@ -34,13 +67,17 @@ const CATEGORIES = [
     name: 'Numbers',
     types: [
       { id: 'number', label: 'Number' },
+      { id: 'payments', label: 'Payments' },
       { id: 'rating', label: 'Rating' },
-      { id: 'formula', label: 'Formula (read-only)' },
+      { id: 'formula', label: 'Formula' },
     ],
   },
   {
     name: 'People',
-    types: [{ id: 'person', label: 'People' }],
+    types: [
+      { id: 'person', label: 'People' },
+      { id: 'client', label: 'Client' },
+    ],
   },
   {
     name: 'Dates',
@@ -68,6 +105,23 @@ const CATEGORIES = [
     ],
   },
 ];
+
+/** A line under a type's name in the naming step, where the type needs saying. */
+const TYPE_HINTS = {
+  payments:
+    'Money received against each row, receipt by receipt. Totals add up in the board’s currency.',
+  client:
+    'Which client a row is for — one of this workspace’s client boards, or a name you type.',
+};
+
+/** The popover's width per step — the formula editor needs room for its chips. */
+const STEP_WIDTH = {
+  picker: 240,
+  naming: 280,
+  'formula-config': 380,
+  'connect-config': 320,
+  'mirror-config': 300,
+};
 
 const menuItemStyle = {
   display: 'block',
@@ -100,61 +154,88 @@ const controlStyle = {
   color: 'var(--color-text-primary)',
 };
 
-const AddColumnButton = ({ boardId, board }) => {
+/** The first row of `boardId` the task store holds, for the formula preview. */
+const firstTaskOf = (tasksByGroup, boardId) => {
+  if (!boardId || !tasksByGroup) return null;
+  for (const list of Object.values(tasksByGroup)) {
+    if (!Array.isArray(list)) continue;
+    for (const t of list) {
+      const b = t?.board;
+      const bid = b && typeof b === 'object' ? b._id : b;
+      if (bid != null && String(bid) === String(boardId)) return t;
+    }
+  }
+  return null;
+};
+
+const AddColumnButton = ({ boardId, board, sampleTask = null }) => {
   const id = boardId || (board && board._id);
-  const [open, setOpen] = useState(false);
-  // 'picker' | 'naming' | 'connect-config' | 'mirror-config'
+  const [anchor, setAnchor] = useState(null);
+  // 'picker' | 'naming' | 'formula-config' | 'connect-config' | 'mirror-config'
   const [step, setStep] = useState('picker');
   const [pickedType, setPickedType] = useState(null);
+  const [pickedLabel, setPickedLabel] = useState('');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // connect_boards config
-  const [connectable, setConnectable] = useState([]);
-  const [selectedTargetIds, setSelectedTargetIds] = useState([]);
-  const [allowMultiple, setAllowMultiple] = useState(true);
+  // connect_boards config — the editor's controlled value
+  const [connectTargets, setConnectTargets] = useState({ targetBoardIds: [], allowMultiple: true });
+
+  // formula config — FormulaEditor's controlled value
+  const [formulaDraft, setFormulaDraft] = useState(null);
 
   // mirror config
+  const [connectable, setConnectable] = useState([]);
   const [sourceConnectColumnId, setSourceConnectColumnId] = useState('');
   const [sourceColumnId, setSourceColumnId] = useState('');
   const [aggregation, setAggregation] = useState('first');
 
-  const ref = useRef(null);
+  const triggerRef = useRef(null);
   const nameRef = useRef(null);
   const addColumn = useBoardStore((s) => s.addColumn);
   const fetchConnectable = useBoardStore((s) => s.fetchConnectable);
   const toastError = useToastStore((s) => s.error);
-
-  const connectColumns = (board && Array.isArray(board.columns) ? board.columns : []).filter(
-    (c) => c.type === 'connect_boards'
+  const money = useMoney();
+  // Only looked up while the formula step is open; otherwise every task edit
+  // on the board would walk the store for a preview nobody is looking at.
+  const storeSample = useTaskStore((s) =>
+    step === 'formula-config' && !sampleTask ? firstTaskOf(s.tasksByGroup, id) : null
   );
+
+  const columns = board && Array.isArray(board.columns) ? board.columns : [];
+  const boardCurrency = boardCurrencyOf(board, money.baseCurrency);
+  const connectColumns = columns.filter((c) => c.type === 'connect_boards');
   const hasConnectColumn = connectColumns.length > 0;
+  const open = !!anchor;
 
   const resetAll = () => {
     setStep('picker');
     setPickedType(null);
+    setPickedLabel('');
     setName('');
-    setSelectedTargetIds([]);
-    setAllowMultiple(true);
+    setConnectTargets({ targetBoardIds: [], allowMultiple: true });
+    setFormulaDraft(null);
     setSourceConnectColumnId('');
     setSourceColumnId('');
     setAggregation('first');
   };
 
+  // Focus follows the step: into the name field on the way in, and back onto
+  // the type list on the way out (Back, or Escape in the name field) — the
+  // control that had focus has just unmounted, which would otherwise drop it
+  // on <body> with the popover still open.
+  const pickerRef = useRef(null);
+  const prevStepRef = useRef(step);
   useEffect(() => {
-    if (!open) return undefined;
-    const onClickOutside = (e) => {
-      if (ref.current && ref.current.contains(e.target)) return;
-      setOpen(false);
-      resetAll();
-    };
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [open]);
-
-  useEffect(() => {
-    if (step === 'naming' && nameRef.current) nameRef.current.focus();
-  }, [step]);
+    const prev = prevStepRef.current;
+    prevStepRef.current = step;
+    if (!open) return;
+    if (step !== 'picker') {
+      nameRef.current?.focus();
+    } else if (prev !== 'picker') {
+      pickerRef.current?.querySelector('button:not([disabled])')?.focus();
+    }
+  }, [step, open]);
 
   const loadConnectable = async () => {
     if (!id) return;
@@ -168,10 +249,13 @@ const AddColumnButton = ({ boardId, board }) => {
 
   const startWithType = (typeId, defaultName) => {
     setPickedType(typeId);
+    setPickedLabel(defaultName);
     setName(defaultName);
     if (typeId === 'connect_boards') {
       setStep('connect-config');
-      loadConnectable();
+    } else if (typeId === 'formula') {
+      setFormulaDraft(formulaDraftOf(null, boardCurrency));
+      setStep('formula-config');
     } else if (typeId === 'mirror') {
       if (!hasConnectColumn) return; // disabled — guard
       setStep('mirror-config');
@@ -182,7 +266,7 @@ const AddColumnButton = ({ boardId, board }) => {
   };
 
   const close = () => {
-    setOpen(false);
+    setAnchor(null);
     resetAll();
   };
 
@@ -202,43 +286,6 @@ const AddColumnButton = ({ boardId, board }) => {
     return cols.filter((c) => c.type !== 'connect_boards');
   })();
 
-  const createSimple = async () => {
-    if (!name.trim() || !pickedType) return;
-    const payload = { name: name.trim(), type: pickedType };
-    if (pickedType === 'status' || pickedType === 'dropdown' || pickedType === 'tags') {
-      payload.settings = { options: [] };
-    } else if (pickedType === 'rating') {
-      payload.settings = { max: 5 };
-    }
-    await submit(payload);
-  };
-
-  const createConnect = async () => {
-    if (!name.trim()) return;
-    if (selectedTargetIds.length === 0) {
-      toastError('Pick at least one board to connect to');
-      return;
-    }
-    await submit({
-      name: name.trim(),
-      type: 'connect_boards',
-      settings: { targetBoardIds: selectedTargetIds, allowMultiple },
-    });
-  };
-
-  const createMirror = async () => {
-    if (!name.trim()) return;
-    if (!sourceConnectColumnId || !sourceColumnId) {
-      toastError('Pick a connect column and a source column');
-      return;
-    }
-    await submit({
-      name: name.trim(),
-      type: 'mirror',
-      settings: { sourceConnectColumnId, sourceColumnId, aggregation },
-    });
-  };
-
   const submit = async (payload) => {
     setBusy(true);
     try {
@@ -251,18 +298,116 @@ const AddColumnButton = ({ boardId, board }) => {
     }
   };
 
-  const toggleTarget = (bid) => {
-    setSelectedTargetIds((prev) =>
-      prev.includes(bid) ? prev.filter((x) => x !== bid) : [...prev, bid]
-    );
+  const createSimple = async () => {
+    if (!name.trim() || !pickedType || busy) return;
+    const payload = { name: name.trim(), type: pickedType };
+    if (pickedType === 'status' || pickedType === 'dropdown' || pickedType === 'tags') {
+      payload.settings = { options: [] };
+    } else if (pickedType === 'rating') {
+      payload.settings = { max: 5 };
+    } else if (pickedType === 'payments') {
+      payload.settings = {
+        format: 'currency',
+        ...(boardCurrency ? { currency: boardCurrency } : {}),
+        summary: 'sum',
+      };
+    }
+    await submit(payload);
   };
 
+  const formulaCheck =
+    step === 'formula-config' ? checkFormula(formulaDraft?.expression || '', columns, null) : null;
+
+  const createFormula = async () => {
+    if (!name.trim() || busy) return;
+    if (!formulaCheck?.ok) {
+      toastError(formulaCheck?.error || 'Write the formula first');
+      return;
+    }
+    await submit({
+      name: name.trim(),
+      type: 'formula',
+      settings: formulaSettingsFrom({}, formulaDraft),
+    });
+  };
+
+  const createConnect = async () => {
+    if (!name.trim() || busy) return;
+    if (connectTargets.targetBoardIds.length === 0) {
+      toastError('Pick at least one board to connect to');
+      return;
+    }
+    await submit({
+      name: name.trim(),
+      type: 'connect_boards',
+      settings: {
+        targetBoardIds: connectTargets.targetBoardIds,
+        allowMultiple: !!connectTargets.allowMultiple,
+      },
+    });
+  };
+
+  const createMirror = async () => {
+    if (!name.trim() || busy) return;
+    if (!sourceConnectColumnId || !sourceColumnId) {
+      toastError('Pick a connect column and a source column');
+      return;
+    }
+    await submit({
+      name: name.trim(),
+      type: 'mirror',
+      settings: { sourceConnectColumnId, sourceColumnId, aggregation },
+    });
+  };
+
+  /**
+   * Escape inside a step's name field goes BACK to the type list, as it always
+   * has, rather than closing the whole popover. Stopped here so the popover's
+   * own Escape (which closes) never sees it.
+   */
+  const backOnEscape = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    resetAll();
+  };
+
+  const nameField = (onEnter) => (
+    <>
+      <label style={labelStyle} htmlFor={`add-col-name-${id}`}>
+        Column name
+      </label>
+      <input
+        id={`add-col-name-${id}`}
+        ref={nameRef}
+        type="text"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && onEnter) {
+            e.preventDefault();
+            onEnter();
+          }
+          backOnEscape(e);
+        }}
+        style={controlStyle}
+      />
+    </>
+  );
+
   return (
-    <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
+    <div style={{ position: 'relative', display: 'inline-block' }}>
       <button
+        ref={triggerRef}
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          if (anchor) close();
+          else setAnchor(triggerRef.current);
+        }}
         aria-label="Add column"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        className="focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
         style={{
           width: 28,
           height: 28,
@@ -277,164 +422,124 @@ const AddColumnButton = ({ boardId, board }) => {
           justifyContent: 'center',
         }}
       >
-        <Plus size={14} />
+        <Plus size={14} aria-hidden="true" />
       </button>
       {open && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            right: 0,
-            marginTop: 6,
-            zIndex: 50,
-            minWidth: 'min(260px, calc(100vw - 32px))',
-            maxWidth: 'calc(100vw - 32px)',
-            maxHeight: 380,
-            overflowY: 'auto',
-            background: 'var(--color-bg-elevated)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-md)',
-            boxShadow: 'var(--shadow-md)',
-            padding: 8,
-          }}
+        <AnchoredPopover
+          anchorEl={anchor}
+          onClose={close}
+          align="end"
+          width={STEP_WIDTH[step] || 280}
+          maxHeight={step === 'formula-config' ? 560 : 420}
+          padding={8}
+          ariaLabel={step === 'picker' ? 'Add a column' : `New ${pickedLabel || 'column'} column`}
+          initialFocus
         >
-          {step === 'picker' &&
-            CATEGORIES.map((cat) => (
-              <div key={cat.name} style={{ marginBottom: 8 }}>
-                <div
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.06em',
-                    color: 'var(--color-text-muted)',
-                    padding: '4px 6px',
-                  }}
-                >
-                  {cat.name}
+          {step === 'picker' && (
+            <div ref={pickerRef}>
+              {CATEGORIES.map((cat) => (
+                <div key={cat.name} role="group" aria-label={cat.name} style={{ marginBottom: 8 }}>
+                  <div
+                    aria-hidden="true"
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.06em',
+                      color: 'var(--color-text-muted)',
+                      padding: '4px 6px',
+                    }}
+                  >
+                    {cat.name}
+                  </div>
+                  {cat.types.map((t) => {
+                    const disabled = t.id === 'mirror' && !hasConnectColumn;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        disabled={disabled}
+                        title={
+                          disabled
+                            ? 'Add a “Connect boards” column first to mirror data from it'
+                            : undefined
+                        }
+                        onClick={() => startWithType(t.id, t.label)}
+                        className="hover:bg-[color:var(--color-bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--color-accent)]"
+                        style={{
+                          ...menuItemStyle,
+                          cursor: disabled ? 'not-allowed' : 'pointer',
+                          opacity: disabled ? 0.4 : 1,
+                        }}
+                      >
+                        {t.label}
+                      </button>
+                    );
+                  })}
                 </div>
-                {cat.types.map((t) => {
-                  const disabled = t.id === 'mirror' && !hasConnectColumn;
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      disabled={disabled}
-                      title={
-                        disabled
-                          ? 'Add a “Connect boards” column first to mirror data from it'
-                          : undefined
-                      }
-                      onClick={() => startWithType(t.id, t.label)}
-                      style={{
-                        ...menuItemStyle,
-                        cursor: disabled ? 'not-allowed' : 'pointer',
-                        opacity: disabled ? 0.4 : 1,
-                      }}
-                    >
-                      {t.label}
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
+              ))}
+            </div>
+          )}
 
           {step === 'naming' && (
             <div style={{ padding: 6 }}>
-              <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 6 }}>
-                Name your new {pickedType} column
-              </div>
-              <input
-                ref={nameRef}
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') createSimple();
-                  if (e.key === 'Escape') resetAll();
-                }}
-                style={controlStyle}
-              />
+              {nameField(createSimple)}
+              {TYPE_HINTS[pickedType] && (
+                <p style={{ margin: '-4px 0 10px', fontSize: 11, lineHeight: 1.45, color: 'var(--color-text-muted)' }}>
+                  {TYPE_HINTS[pickedType]}
+                  {pickedType === 'payments' && boardCurrency ? ` (${boardCurrency})` : ''}
+                </p>
+              )}
               <ConfigFooter onBack={resetAll} onSubmit={createSimple} disabled={!name.trim() || busy} />
+            </div>
+          )}
+
+          {step === 'formula-config' && formulaDraft && (
+            <div style={{ padding: 6 }}>
+              {nameField(null)}
+              <FormulaEditor
+                columns={columns}
+                sampleTask={sampleTask || storeSample}
+                value={formulaDraft}
+                onChange={setFormulaDraft}
+                boardCurrency={boardCurrency}
+                disabled={busy}
+              />
+              <div style={{ marginTop: 10 }}>
+                <ConfigFooter
+                  onBack={resetAll}
+                  onSubmit={createFormula}
+                  disabled={!name.trim() || !formulaCheck?.ok || busy}
+                />
+              </div>
             </div>
           )}
 
           {step === 'connect-config' && (
             <div style={{ padding: 6 }}>
-              <label style={labelStyle}>Column name</label>
-              <input
-                ref={nameRef}
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                style={controlStyle}
+              {nameField(null)}
+              <ConnectTargetsEditor
+                boardId={id}
+                value={connectTargets}
+                onChange={setConnectTargets}
+                disabled={busy}
               />
-              <label style={labelStyle}>Connect to board(s)</label>
-              <div
-                style={{
-                  maxHeight: 140,
-                  overflowY: 'auto',
-                  border: '1px solid var(--color-border)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: 4,
-                  marginBottom: 10,
-                }}
-              >
-                {connectable.length === 0 ? (
-                  <div style={{ padding: 6, fontSize: 12, color: 'var(--color-text-muted)' }}>
-                    No other boards in this workspace
-                  </div>
-                ) : (
-                  connectable.map((entry) => {
-                    const bid = entry.board._id.toString();
-                    const checked = selectedTargetIds.includes(bid);
-                    return (
-                      <label
-                        key={bid}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 8,
-                          padding: '5px 6px',
-                          fontSize: 13,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <input type="checkbox" checked={checked} onChange={() => toggleTarget(bid)} />
-                        <span>{entry.board.name}</span>
-                      </label>
-                    );
-                  })
-                )}
-              </div>
-              <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                <input
-                  type="checkbox"
-                  checked={allowMultiple}
-                  onChange={(e) => setAllowMultiple(e.target.checked)}
-                />
-                Allow linking multiple rows
-              </label>
               <ConfigFooter
                 onBack={resetAll}
                 onSubmit={createConnect}
-                disabled={!name.trim() || selectedTargetIds.length === 0 || busy}
+                disabled={!name.trim() || connectTargets.targetBoardIds.length === 0 || busy}
               />
             </div>
           )}
 
           {step === 'mirror-config' && (
             <div style={{ padding: 6 }}>
-              <label style={labelStyle}>Column name</label>
-              <input
-                ref={nameRef}
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                style={controlStyle}
-              />
-              <label style={labelStyle}>From connect column</label>
+              {nameField(null)}
+              <label style={labelStyle} htmlFor={`add-col-mirror-src-${id}`}>
+                From connect column
+              </label>
               <select
+                id={`add-col-mirror-src-${id}`}
                 value={sourceConnectColumnId}
                 onChange={(e) => {
                   setSourceConnectColumnId(e.target.value);
@@ -449,8 +554,11 @@ const AddColumnButton = ({ boardId, board }) => {
                   </option>
                 ))}
               </select>
-              <label style={labelStyle}>Mirror which column</label>
+              <label style={labelStyle} htmlFor={`add-col-mirror-col-${id}`}>
+                Mirror which column
+              </label>
               <select
+                id={`add-col-mirror-col-${id}`}
                 value={sourceColumnId}
                 onChange={(e) => setSourceColumnId(e.target.value)}
                 disabled={!sourceConnectColumnId}
@@ -465,8 +573,11 @@ const AddColumnButton = ({ boardId, board }) => {
                   </option>
                 ))}
               </select>
-              <label style={labelStyle}>Aggregation</label>
+              <label style={labelStyle} htmlFor={`add-col-mirror-agg-${id}`}>
+                Aggregation
+              </label>
               <select
+                id={`add-col-mirror-agg-${id}`}
                 value={aggregation}
                 onChange={(e) => setAggregation(e.target.value)}
                 style={controlStyle}
@@ -484,7 +595,7 @@ const AddColumnButton = ({ boardId, board }) => {
               />
             </div>
           )}
-        </div>
+        </AnchoredPopover>
       )}
     </div>
   );
@@ -495,12 +606,14 @@ const ConfigFooter = ({ onBack, onSubmit, disabled }) => (
     <button
       type="button"
       onClick={onBack}
+      className="focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
       style={{
         padding: '4px 10px',
         fontSize: 12,
         background: 'transparent',
         border: '1px solid var(--color-border)',
         borderRadius: 'var(--radius-sm)',
+        color: 'var(--color-text-primary)',
         cursor: 'pointer',
       }}
     >
@@ -510,6 +623,7 @@ const ConfigFooter = ({ onBack, onSubmit, disabled }) => (
       type="button"
       onClick={onSubmit}
       disabled={disabled}
+      className="focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-accent)]"
       style={{
         padding: '4px 10px',
         fontSize: 12,

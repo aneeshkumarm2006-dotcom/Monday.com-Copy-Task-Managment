@@ -4,9 +4,10 @@ import { Wallet } from 'lucide-react';
 import Switch from '../../ui/Switch';
 import { SelectField } from '../../ui/FormControls';
 import useToastStore from '../../../store/toastStore';
-import useOrgStore from '../../../store/orgStore';
+import useOrgStore, { selectBaseCurrency } from '../../../store/orgStore';
+import useBoardStore from '../../../store/boardStore';
 import { setAdsBudgetSettings } from '../../../services/adsBudgetService';
-import { currencyOptions } from '../../../utils/money';
+import { boardCurrencyOf, currencyByCode, currencyOptions } from '../../../utils/money';
 
 /**
  * The Ads Budget add-on's switch.
@@ -32,6 +33,24 @@ import { currencyOptions } from '../../../utils/money';
  * rather than buried in the tab, since it is a decision made once at setup and
  * changing it later reinterprets every number already entered — which the
  * warning below says out loud rather than leaving to be discovered.
+ *
+ * It is the ADS BUDGET's currency, and the card calls it that. A board also
+ * has its own currency (its money columns — Amount, Deal value), and two
+ * controls both labelled "Currency" on one board made "the board is CAD" mean
+ * two different things. They usually agree, which is why the board's is the
+ * default here; when they do not, the card says so.
+ *
+ * ---- The default is the BOARD's currency, never a literal ------------------
+ *
+ * `adsBudget.currency` is null until somebody chooses (the schema default was
+ * 'USD', which made the workspace fallback here dead code and put a dollar
+ * sign on every rupee and CAD board). Unset, the tab shows the board's own
+ * currency, else the workspace's — `boardCurrencyOf`, the same chain every
+ * other money surface on the board resolves. Switching the add-on on stamps
+ * that default onto a board with a currency of its OWN, so the stored value
+ * and what the tab showed can never disagree afterwards. A board that FOLLOWS
+ * the workspace leaves it unset: its Ads Budget then follows too, and a
+ * workspace currency change relabels it along with the board's columns.
  */
 
 /**
@@ -48,15 +67,26 @@ import { currencyOptions } from '../../../utils/money';
 const CURRENCIES = currencyOptions();
 
 const AdsBudgetAddonCard = ({ boardId, adsBudget, canManage, onChanged }) => {
-  const baseCurrency = useOrgStore((s) => s.currency?.baseCurrency) || 'USD';
+  const orgBase = useOrgStore(selectBaseCurrency);
+  const board = useBoardStore((s) => s.boards.find((b) => b._id === boardId) || null);
   const toastError = useToastStore((s) => s.error);
   const toastSuccess = useToastStore((s) => s.success);
 
   const enabled = !!adsBudget?.enabled;
-  // Falls back to the WORKSPACE's currency rather than to dollars. A board that
-  // has never had the add-on configured has no currency of its own, and an
-  // agency billing in rupees should not have to correct a dollar sign first.
-  const currency = adsBudget?.currency || baseCurrency;
+  // The board's own money unit (its currency, else its first money column,
+  // else the workspace's) — what its money columns are in.
+  const boardCurrency = boardCurrencyOf(board, orgBase);
+  // Whether the board FOLLOWS the workspace (no currency of its own). An Ads
+  // Budget nobody gave a unit reads the board's own currency, else the
+  // workspace's — the server's `adsBudgetCurrencyOf` — so on a following
+  // board it moves with a workspace currency change, like the columns do.
+  const boardOwn = currencyByCode(board?.currency)?.code || null;
+  const followsWorkspace = !!board && !boardOwn;
+  const unchosenUnit = boardOwn || currencyByCode(orgBase)?.code || boardCurrency || null;
+  const chosen = currencyByCode(adsBudget?.currency)?.code || adsBudget?.currency || null;
+  const currency = chosen || unchosenUnit || '';
+  const differsFromBoard =
+    !!chosen && !!boardCurrency && currencyByCode(chosen)?.code !== boardCurrency;
   const [busy, setBusy] = useState(false);
 
   const save = async (settings, message) => {
@@ -118,7 +148,15 @@ const AdsBudgetAddonCard = ({ boardId, adsBudget, canManage, onChanged }) => {
           label="Ads Budget tracker"
           onChange={(next) =>
             save(
-              { enabled: next },
+              // First switch-on with no currency chosen, on a board with a
+              // currency of its own: stamp the default the tab would show
+              // anyway, so what is stored and what was shown are the same unit
+              // from the first figure onwards. A board that follows the
+              // workspace sends none, and its Ads Budget follows along with it
+              // (the server leaves it unset there too).
+              next && !chosen && currency && !followsWorkspace
+                ? { enabled: next, currency }
+                : { enabled: next },
               next ? 'Ads Budget tracker switched on for this board.' : 'Ads Budget tracker switched off.'
             )
           }
@@ -132,28 +170,49 @@ const AdsBudgetAddonCard = ({ boardId, adsBudget, canManage, onChanged }) => {
         >
           <div style={{ minWidth: 220 }}>
             <SelectField
-              label="Currency"
+              label="Ads Budget currency"
               value={currency}
               disabled={!canManage || busy}
-              onChange={(e) => save({ currency: e.target.value }, 'Currency updated.')}
+              onChange={(e) =>
+                save({ currency: e.target.value }, `Ads Budget amounts are now in ${e.target.value}.`)}
               options={
                 // A board already set to something outside the common list keeps
                 // its own code as an option rather than silently switching to
                 // whatever happens to be first.
-                CURRENCIES.some((c) => c.value === currency)
+                !currency || CURRENCIES.some((c) => c.value === currency)
                   ? CURRENCIES
                   : [{ value: currency, label: currency }, ...CURRENCIES]
               }
             />
           </div>
-          <p
-            className="font-body flex-1 min-w-[220px]"
-            style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.5 }}
-          >
-            One currency for the whole board — every total on the tab is a sum across clients, and
-            amounts in different currencies cannot be added. Changing it re-labels figures already
-            entered rather than converting them.
-          </p>
+          <div className="flex-1 min-w-[220px] flex flex-col gap-1.5">
+            <p
+              className="font-body"
+              style={{ fontSize: 12, color: 'var(--color-text-muted)', lineHeight: 1.5 }}
+            >
+              What budgets and spend on the Ads Budget tab are entered in — one currency for every
+              client, because the tab&rsquo;s totals add them up. Changing it relabels figures
+              already entered; it does not convert them.
+            </p>
+            {!chosen && currency ? (
+              <p
+                className="font-body"
+                style={{ fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.5 }}
+              >
+                {followsWorkspace
+                  ? `Not chosen, so it follows this board — which follows the workspace currency (${currency}) — and is relabelled with it if that changes.`
+                  : `Not chosen yet, so it follows this board’s currency (${currency}).`}
+              </p>
+            ) : differsFromBoard ? (
+              <p
+                className="font-body"
+                style={{ fontSize: 12, color: 'var(--color-status-working)', lineHeight: 1.5 }}
+              >
+                This board&rsquo;s own money columns are in {boardCurrency}; the Ads Budget tab
+                uses {chosen}.
+              </p>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </section>

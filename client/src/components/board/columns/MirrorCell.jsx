@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { GitBranch } from 'lucide-react';
 import { cellWrapperStyle } from './cellShared';
+import AnchoredPopover from '../../ui/AnchoredPopover';
 import useBoardStore from '../../../store/boardStore';
+import useMoney from '../../../hooks/useMoney';
 
 /**
  * MirrorCell — read-only badge showing a `mirror` column's computed value.
@@ -10,7 +12,10 @@ import useBoardStore from '../../../store/boardStore';
  * column points at, so the cell fetches it via `boardStore.mirrorValue` on
  * mount and whenever the source links change. The initial `value` prop (the
  * embedded value from the task list, or a cache wrapper) renders instantly to
- * avoid a flash. Clicking opens a small detail panel describing the source.
+ * avoid a flash. Clicking opens a small detail panel describing the source —
+ * an `AnchoredPopover` (portal, `position: fixed`), because an absolutely
+ * positioned panel inside the Table's scroll wrapper was cut off on a short
+ * group.
  */
 
 const unwrap = (value) => {
@@ -18,17 +23,32 @@ const unwrap = (value) => {
   return value;
 };
 
-const displayString = (value) => {
+/**
+ * The mirrored value as text.
+ *
+ * A NUMBER goes through the column's format like any number column's figure —
+ * `money.column` renders a currency-format mirror in its unit (and converts it
+ * for a reader who chose a display currency) and a plain one as a grouped
+ * number. It used to be `String(value)`: a mirrored sum of 540000 read
+ * "540000" beside a source column reading "CA$540,000", while the footer under
+ * it said "₹5,40,000". Text, lists and empties are unchanged.
+ *
+ * `on` and `currency` are the optional `NumberCell` props: the record's day
+ * for the rate, and the board's currency for a column with no code.
+ */
+const displayString = (value, format) => {
   if (value == null || value === '') return '—';
   if (Array.isArray(value)) return value.join(', ');
+  if (typeof value === 'number' && Number.isFinite(value)) return format(value) || '—';
   return String(value);
 };
 
-const MirrorCell = ({ value, column, task }) => {
+const MirrorCell = ({ value, column, task, on = null, currency = null }) => {
   const mirrorValueAction = useBoardStore((s) => s.mirrorValue);
+  const money = useMoney();
   const [display, setDisplay] = useState(() => unwrap(value));
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef(null);
+  // The trigger the detail panel hangs off, or null while it is closed.
+  const [anchor, setAnchor] = useState(null);
 
   const settings = column.settings || {};
   const sourceConnectColumnId = settings.sourceConnectColumnId
@@ -67,25 +87,20 @@ const MirrorCell = ({ value, column, task }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task && task._id, column._id, linksSig]);
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const onClickOutside = (e) => {
-      if (wrapperRef.current && wrapperRef.current.contains(e.target)) return;
-      setOpen(false);
-    };
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, [open]);
-
-  const text = displayString(display);
+  const text = displayString(display, (n) => money.column(n, settings, on, currency));
   const isEmpty = text === '—';
 
   return (
-    <div ref={wrapperRef} style={{ position: 'relative', width: '100%' }}>
+    <div style={{ position: 'relative', width: '100%' }}>
       <div
         style={{ ...cellWrapperStyle, gap: 6, cursor: 'pointer' }}
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e) => {
+          const el = e.currentTarget;
+          setAnchor((a) => (a ? null : el));
+        }}
         title="Mirrored value — click for source"
+        aria-haspopup="dialog"
+        aria-expanded={!!anchor}
       >
         <GitBranch size={12} color="var(--color-text-muted)" aria-hidden="true" style={{ flexShrink: 0 }} />
         <span
@@ -100,21 +115,13 @@ const MirrorCell = ({ value, column, task }) => {
         </span>
       </div>
 
-      {open && (
-        <div
-          style={{
-            position: 'absolute',
-            top: '100%',
-            left: 0,
-            marginTop: 4,
-            zIndex: 50,
-            minWidth: 220,
-            background: 'var(--color-bg-elevated)',
-            border: '1px solid var(--color-border)',
-            borderRadius: 'var(--radius-md)',
-            boxShadow: 'var(--shadow-md)',
-            padding: 12,
-          }}
+      {anchor && (
+        <AnchoredPopover
+          anchorEl={anchor}
+          onClose={() => setAnchor(null)}
+          minWidth={220}
+          padding={12}
+          ariaLabel={`${column.name || 'Mirror'} — source`}
         >
           <div
             style={{
@@ -137,7 +144,7 @@ const MirrorCell = ({ value, column, task }) => {
           <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', marginTop: 2 }}>
             Source: {links.length} linked {links.length === 1 ? 'row' : 'rows'}
           </div>
-        </div>
+        </AnchoredPopover>
       )}
     </div>
   );

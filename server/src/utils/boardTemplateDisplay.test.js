@@ -101,6 +101,24 @@ test('the client knows every template the server offers', () => {
   }
 });
 
+test('the billing card describes the board it actually creates', () => {
+  /**
+   * The blurb used to say "Groups are months" over a template that seeds ONE
+   * group — the month is derived from the Issued date on purpose. A card that
+   * promises a shape the board does not have is the first thing a new user
+   * reads, and the first thing that turns out to be untrue.
+   */
+  const billing = templateSummaries().find((t) => t.key === 'billing');
+  assert.deepEqual(billing.groups, ['Invoices']);
+  assert.ok(!/groups are months/i.test(billing.blurb), 'the blurb still promises month groups');
+  assert.match(billing.blurb, /Issued/);
+  // The payments list is part of what you are shown you will get.
+  assert.ok(
+    billing.columns.some((c) => c.name === 'Payments' && c.type === 'payments'),
+    'the picker does not show the Payments column'
+  );
+});
+
 test('the picker payload carries the naming', () => {
   // The dialog shows what you will get; the board page reads its own copy.
   for (const t of templateSummaries()) {

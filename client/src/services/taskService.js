@@ -55,6 +55,11 @@ export const getCalendarTasks = async (month, year, orgId) => {
  *
  * For board tasks, payload requires: name, board, group, priority, status,
  * assignedTo (string[]), dueDate (optional ISO string), note (optional).
+ * On a flexible-columns board it may also carry `columnValues`
+ * ({ [columnId]: value }), validated and permission-checked exactly as a PUT's
+ * are and written in the same insert as the row — so a row and its cells (an
+ * invoice and its PDF) either both exist or neither does. The payload is sent
+ * as-is, so nothing here needs to know about it.
  * For personal tasks, pass `isPersonal: true` (no board/group).
  */
 export const createTask = async (payload) => {
